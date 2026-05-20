@@ -1,0 +1,1572 @@
+package portage
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+)
+
+func TestParseMakeConf_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	content := `# Comment line
+CFLAGS="-O2 -pipe -march=native"
+MAKEOPTS="-j8"
+USE="X ssl -qt5"
+ACCEPT_KEYWORDS="~amd64"
+ACCEPT_LICENSE="* -@EULA"
+FEATURES="ccache parallel-install"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseMakeConf(path)
+	if err != nil {
+		t.Fatalf("ParseMakeConf: %v", err)
+	}
+
+	if m["CFLAGS"] != "-O2 -pipe -march=native" {
+		t.Errorf("CFLAGS = %q", m["CFLAGS"])
+	}
+	if m["MAKEOPTS"] != "-j8" {
+		t.Errorf("MAKEOPTS = %q", m["MAKEOPTS"])
+	}
+	if m["USE"] != "X ssl -qt5" {
+		t.Errorf("USE = %q", m["USE"])
+	}
+	if m["ACCEPT_KEYWORDS"] != "~amd64" {
+		t.Errorf("ACCEPT_KEYWORDS = %q", m["ACCEPT_KEYWORDS"])
+	}
+	if m["ACCEPT_LICENSE"] != "* -@EULA" {
+		t.Errorf("ACCEPT_LICENSE = %q", m["ACCEPT_LICENSE"])
+	}
+	if m["FEATURES"] != "ccache parallel-install" {
+		t.Errorf("FEATURES = %q", m["FEATURES"])
+	}
+}
+
+func TestParseMakeConf_LineContinuation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	content := `CFLAGS="-O2 \
+-pipe \
+-march=native"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseMakeConf(path)
+	if err != nil {
+		t.Fatalf("ParseMakeConf: %v", err)
+	}
+
+	want := "-O2 -pipe -march=native"
+	if m["CFLAGS"] != want {
+		t.Errorf("CFLAGS = %q, want %q", m["CFLAGS"], want)
+	}
+}
+
+func TestParseMakeConf_MultiLineVariableContinuation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	content := `EMERGE_DEFAULT_OPTS="--jobs=4 \
+--load-average=8 \
+--keep-going \
+--verbose"
+MAKEOPTS="-j8"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseMakeConf(path)
+	if err != nil {
+		t.Fatalf("ParseMakeConf: %v", err)
+	}
+
+	wantOpts := "--jobs=4 --load-average=8 --keep-going --verbose"
+	if m["EMERGE_DEFAULT_OPTS"] != wantOpts {
+		t.Errorf("EMERGE_DEFAULT_OPTS = %q, want %q", m["EMERGE_DEFAULT_OPTS"], wantOpts)
+	}
+	if m["MAKEOPTS"] != "-j8" {
+		t.Errorf("MAKEOPTS = %q", m["MAKEOPTS"])
+	}
+}
+
+func TestParseMakeConf_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseMakeConf(path)
+	if err != nil {
+		t.Fatalf("ParseMakeConf: %v", err)
+	}
+	if len(m) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(m))
+	}
+}
+
+func TestParseMakeConf_CommentOnlyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	content := "# only comments\n# nothing here\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseMakeConf(path)
+	if err != nil {
+		t.Fatalf("ParseMakeConf: %v", err)
+	}
+	if len(m) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(m))
+	}
+}
+
+func TestParseMakeConf_MissingFile(t *testing.T) {
+	m, err := ParseMakeConf("/nonexistent/make.conf")
+	if err != nil {
+		t.Errorf("ParseMakeConf should not error on missing file: %v", err)
+	}
+	if m != nil {
+		t.Errorf("expected nil map for missing file, got %v", m)
+	}
+}
+
+func TestParseMakeConf_UnquotedValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	content := "MAKEOPTS=-j8\nPORTAGE_TMPDIR=/var/tmp\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseMakeConf(path)
+	if err != nil {
+		t.Fatalf("ParseMakeConf: %v", err)
+	}
+	if m["MAKEOPTS"] != "-j8" {
+		t.Errorf("MAKEOPTS = %q", m["MAKEOPTS"])
+	}
+	if m["PORTAGE_TMPDIR"] != "/var/tmp" {
+		t.Errorf("PORTAGE_TMPDIR = %q", m["PORTAGE_TMPDIR"])
+	}
+}
+
+func TestResolveMakeConfRefs_Basic(t *testing.T) {
+	m := map[string]string{
+		"CFLAGS":   "-O2 -pipe -march=native",
+		"CXXFLAGS": "${CFLAGS}",
+	}
+
+	ResolveMakeConfRefs(m)
+
+	if m["CXXFLAGS"] != "-O2 -pipe -march=native" {
+		t.Errorf("CXXFLAGS = %q, want %q", m["CXXFLAGS"], "-O2 -pipe -march=native")
+	}
+}
+
+func TestResolveMakeConfRefs_MultiLevel(t *testing.T) {
+	m := map[string]string{
+		"BASE":  "-O2",
+		"FLAGS": "${BASE} -pipe",
+		"FINAL": "${FLAGS} -march=native",
+	}
+
+	ResolveMakeConfRefs(m)
+
+	if m["FLAGS"] != "-O2 -pipe" {
+		t.Errorf("FLAGS = %q, want %q", m["FLAGS"], "-O2 -pipe")
+	}
+	if m["FINAL"] != "-O2 -pipe -march=native" {
+		t.Errorf("FINAL = %q, want %q", m["FINAL"], "-O2 -pipe -march=native")
+	}
+}
+
+func TestResolveMakeConfRefs_PartialReference(t *testing.T) {
+	m := map[string]string{
+		"ARCH":    "x86_64",
+		"CFLAGS":  "-march=${ARCH} -pipe",
+	}
+
+	ResolveMakeConfRefs(m)
+
+	if m["CFLAGS"] != "-march=x86_64 -pipe" {
+		t.Errorf("CFLAGS = %q", m["CFLAGS"])
+	}
+}
+
+func TestResolveMakeConfRefs_MultipleRefs(t *testing.T) {
+	m := map[string]string{
+		"OPT":    "-O2",
+		"ARCH":   "native",
+		"CFLAGS": "${OPT} -march=${ARCH} -pipe",
+	}
+
+	ResolveMakeConfRefs(m)
+
+	if m["CFLAGS"] != "-O2 -march=native -pipe" {
+		t.Errorf("CFLAGS = %q", m["CFLAGS"])
+	}
+}
+
+func TestResolveMakeConfRefs_SelfReference(t *testing.T) {
+	m := map[string]string{
+		"CFLAGS": "${CFLAGS} -extra",
+	}
+
+	ResolveMakeConfRefs(m)
+
+	if m["CFLAGS"] != " -extra" {
+		t.Errorf("CFLAGS = %q, want %q", m["CFLAGS"], " -extra")
+	}
+}
+
+func TestResolveMakeConfRefs_Cycle(t *testing.T) {
+	m := map[string]string{
+		"A": "${B}",
+		"B": "${A}",
+	}
+
+	ResolveMakeConfRefs(m)
+
+	if m["A"] != "" || m["B"] != "" {
+		t.Errorf("cycle should resolve to empty: A=%q, B=%q", m["A"], m["B"])
+	}
+}
+
+func TestResolveMakeConfRefs_Nil(t *testing.T) {
+	ResolveMakeConfRefs(nil)
+}
+
+func TestResolveMakeConfRefs_DeepNesting(t *testing.T) {
+	m := make(map[string]string)
+	for i := 1; i <= 20; i++ {
+		key := keyFor(i)
+		nextKey := keyFor(i + 1)
+		if i == 20 {
+			m[key] = "final-value"
+		} else {
+			m[key] = "${" + nextKey + "}"
+		}
+	}
+
+	ResolveMakeConfRefs(m)
+
+	for i := 1; i <= 20; i++ {
+		if m[keyFor(i)] != "final-value" {
+			t.Errorf("%s = %q, want \"final-value\"", keyFor(i), m[keyFor(i)])
+		}
+	}
+}
+
+func keyFor(i int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz"
+	var name string
+	n := i - 1
+	for {
+		name = string(alphabet[n%26]) + name
+		n = n/26 - 1
+		if n < 0 {
+			break
+		}
+	}
+	return "VAR_" + strings.ToUpper(name)
+}
+
+func TestSplitShWords_Basic(t *testing.T) {
+	words := splitShWords("X ssl -qt5")
+	expected := []string{"X", "ssl", "-qt5"}
+	if !reflect.DeepEqual(words, expected) {
+		t.Errorf("splitShWords = %v, want %v", words, expected)
+	}
+}
+
+func TestSplitShWords_NegativeFlag(t *testing.T) {
+	words := splitShWords("X ssl -qt5 -X")
+	expected := []string{"X", "ssl", "-qt5", "-X"}
+	if !reflect.DeepEqual(words, expected) {
+		t.Errorf("splitShWords = %v, want %v", words, expected)
+	}
+}
+
+func TestSplitShWords_DoubleQuoted(t *testing.T) {
+	words := splitShWords(`"hello world" foo`)
+	expected := []string{"hello world", "foo"}
+	if !reflect.DeepEqual(words, expected) {
+		t.Errorf("splitShWords = %v, want %v", words, expected)
+	}
+}
+
+func TestSplitShWords_SingleQuoted(t *testing.T) {
+	words := splitShWords(`'hello world' foo`)
+	expected := []string{"hello world", "foo"}
+	if !reflect.DeepEqual(words, expected) {
+		t.Errorf("splitShWords = %v, want %v", words, expected)
+	}
+}
+
+func TestSplitShWords_Empty(t *testing.T) {
+	words := splitShWords("")
+	if words != nil {
+		t.Errorf("splitShWords empty string: expected nil, got %v", words)
+	}
+
+	words = splitShWords("   ")
+	if words != nil {
+		t.Errorf("splitShWords whitespace: expected nil, got %v", words)
+	}
+}
+
+func TestSplitShWords_OnlyNegatedFlags(t *testing.T) {
+	words := splitShWords("-X -ssl -qt5")
+	expected := []string{"-X", "-ssl", "-qt5"}
+	if !reflect.DeepEqual(words, expected) {
+		t.Errorf("splitShWords = %v, want %v", words, expected)
+	}
+}
+
+func TestSplitShWords_Star(t *testing.T) {
+	words := splitShWords("*")
+	expected := []string{"*"}
+	if !reflect.DeepEqual(words, expected) {
+		t.Errorf("splitShWords = %v, want %v", words, expected)
+	}
+}
+
+func TestSplitShWords_EULASlash(t *testing.T) {
+	words := splitShWords("* -@EULA")
+	expected := []string{"*", "-@EULA"}
+	if !reflect.DeepEqual(words, expected) {
+		t.Errorf("splitShWords = %v, want %v", words, expected)
+	}
+}
+
+func TestParseAtomConfig_Basic(t *testing.T) {
+	tests := []struct {
+		line      string
+		atom, val string
+	}{
+		{"dev-lang/python ssl sqlite", "dev-lang/python", "ssl sqlite"},
+		{"app-editors/vim -X", "app-editors/vim", "-X"},
+		{"*/* python_targets_python3_11", "*/*", "python_targets_python3_11"},
+		{">=dev-lang/python-3.11 ssl", ">=dev-lang/python-3.11", "ssl"},
+		{"=app-editors/vim-9.0 **", "=app-editors/vim-9.0", "**"},
+		{"   dev-lang/python   ssl  ", "dev-lang/python", "ssl"},
+		{"dev-lang/python", "dev-lang/python", ""},
+		{"sys-devel/gcc-12", "sys-devel/gcc-12", ""},
+		{"", "", ""},
+		{"   ", "", ""},
+		{">=dev-util/nvidia-cuda-toolkit-11 NVIDIA-r2", ">=dev-util/nvidia-cuda-toolkit-11", "NVIDIA-r2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.line, func(t *testing.T) {
+			atom, val := parseAtomConfig(tt.line)
+			if atom != tt.atom || val != tt.val {
+				t.Errorf("parseAtomConfig(%q) = (%q, %q), want (%q, %q)",
+					tt.line, atom, val, tt.atom, tt.val)
+			}
+		})
+	}
+}
+
+func TestParsePackageUse_SimpleAtom(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+	content := ">=dev-lang/python-3.11 ssl sqlite berkdb\napp-editors/vim -X\n*/* python_targets_python3_11\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageUse(path)
+	if err != nil {
+		t.Fatalf("ParsePackageUse: %v", err)
+	}
+
+	want := map[string][]string{
+		">=dev-lang/python-3.11": {"ssl", "sqlite", "berkdb"},
+		"app-editors/vim":        {"-X"},
+		"*/*":                    {"python_targets_python3_11"},
+	}
+
+	if !reflect.DeepEqual(m, want) {
+		t.Errorf("ParsePackageUse =\n  got:  %v\n  want: %v", m, want)
+	}
+}
+
+func TestParsePackageUse_NegativeFlags(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+	content := "app-editors/vim -X\nsys-devel/gcc -fortran -objc\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageUse(path)
+	if err != nil {
+		t.Fatalf("ParsePackageUse: %v", err)
+	}
+
+	if flags := m["app-editors/vim"]; len(flags) != 1 || flags[0] != "-X" {
+		t.Errorf("app-editors/vim flags = %v, want [-X]", flags)
+	}
+	if flags := m["sys-devel/gcc"]; len(flags) != 2 {
+		t.Errorf("sys-devel/gcc flags = %v, want 2 flags", flags)
+	}
+}
+
+func TestParsePackageUse_MultipleLinesSameAtom(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+	content := "dev-lang/python ssl\nsys-devel/gcc fortran\ndev-lang/python sqlite\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageUse(path)
+	if err != nil {
+		t.Fatalf("ParsePackageUse: %v", err)
+	}
+
+	pythonFlags := m["dev-lang/python"]
+	if len(pythonFlags) != 2 {
+		t.Errorf("dev-lang/python flags = %v, want 2 flags", pythonFlags)
+	}
+}
+
+func TestParsePackageUse_DirectoryOfFiles(t *testing.T) {
+	dir := t.TempDir()
+	pkgUseDir := filepath.Join(dir, "package.use")
+	if err := os.MkdirAll(pkgUseDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(pkgUseDir, "python"), []byte("dev-lang/python ssl sqlite\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgUseDir, "vim"), []byte("app-editors/vim -X\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageUse(pkgUseDir)
+	if err != nil {
+		t.Fatalf("ParsePackageUse directory: %v", err)
+	}
+
+	if len(m) != 2 {
+		t.Fatalf("expected 2 entries, got %d: %v", len(m), m)
+	}
+	if !reflect.DeepEqual(m["dev-lang/python"], []string{"ssl", "sqlite"}) {
+		t.Errorf("python flags = %v", m["dev-lang/python"])
+	}
+	if !reflect.DeepEqual(m["app-editors/vim"], []string{"-X"}) {
+		t.Errorf("vim flags = %v", m["app-editors/vim"])
+	}
+}
+
+func TestParsePackageUse_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageUse(path)
+	if err != nil {
+		t.Fatalf("ParsePackageUse: %v", err)
+	}
+	if len(m) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(m))
+	}
+}
+
+func TestParsePackageUse_CommentOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+	content := "# comment\n# another comment\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageUse(path)
+	if err != nil {
+		t.Fatalf("ParsePackageUse: %v", err)
+	}
+	if len(m) != 0 {
+		t.Errorf("expected empty map, got %d entries", len(m))
+	}
+}
+
+func TestParsePackageUse_MissingFile(t *testing.T) {
+	m, err := ParsePackageUse("/nonexistent/package.use")
+	if err != nil {
+		t.Fatalf("ParsePackageUse should not error on missing: %v", err)
+	}
+	if m != nil {
+		t.Errorf("expected nil map, got %v", m)
+	}
+}
+
+func TestParsePackageAcceptKeywords_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.accept_keywords")
+	content := "dev-lang/python ~amd64\n=app-editors/vim-9.0 **\n*/* ~amd64\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageAcceptKeywords(path)
+	if err != nil {
+		t.Fatalf("ParsePackageAcceptKeywords: %v", err)
+	}
+
+	want := map[string]string{
+		"dev-lang/python":       "~amd64",
+		"=app-editors/vim-9.0":  "**",
+		"*/*":                   "~amd64",
+	}
+
+	if !reflect.DeepEqual(m, want) {
+		t.Errorf("ParsePackageAcceptKeywords =\n  got:  %v\n  want: %v", m, want)
+	}
+}
+
+func TestParsePackageAcceptKeywords_Directory(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "package.accept_keywords")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(pkgDir, "01"), []byte("dev-lang/python ~amd64\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "02"), []byte("=app-editors/vim-9.0 **\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageAcceptKeywords(pkgDir)
+	if err != nil {
+		t.Fatalf("ParsePackageAcceptKeywords directory: %v", err)
+	}
+
+	if len(m) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(m))
+	}
+	if m["dev-lang/python"] != "~amd64" {
+		t.Errorf("python keyword = %q", m["dev-lang/python"])
+	}
+}
+
+func TestParsePackageLicense_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.license")
+	content := "dev-lang/oracle-jdk-bin Oracle-BCLA-JavaSE\n>=dev-util/nvidia-cuda-toolkit-11 NVIDIA-r2\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageLicense(path)
+	if err != nil {
+		t.Fatalf("ParsePackageLicense: %v", err)
+	}
+
+	want := map[string]string{
+		"dev-lang/oracle-jdk-bin":               "Oracle-BCLA-JavaSE",
+		">=dev-util/nvidia-cuda-toolkit-11":       "NVIDIA-r2",
+	}
+
+	if !reflect.DeepEqual(m, want) {
+		t.Errorf("ParsePackageLicense =\n  got:  %v\n  want: %v", m, want)
+	}
+}
+
+func TestParsePackageLicense_MissingFile(t *testing.T) {
+	m, err := ParsePackageLicense("/nonexistent/package.license")
+	if err != nil {
+		t.Fatalf("ParsePackageLicense should not error on missing: %v", err)
+	}
+	if m != nil {
+		t.Errorf("expected nil map, got %v", m)
+	}
+}
+
+func TestParsePackageMask_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.mask")
+	content := ">=dev-lang/python-3.12\n<app-editors/vim-9\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	atoms, err := ParsePackageMask(path)
+	if err != nil {
+		t.Fatalf("ParsePackageMask: %v", err)
+	}
+
+	want := []string{">=dev-lang/python-3.12", "<app-editors/vim-9"}
+	if !reflect.DeepEqual(atoms, want) {
+		t.Errorf("ParsePackageMask = %v, want %v", atoms, want)
+	}
+}
+
+func TestParsePackageMask_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.mask")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	atoms, err := ParsePackageMask(path)
+	if err != nil {
+		t.Fatalf("ParsePackageMask: %v", err)
+	}
+	if atoms != nil {
+		t.Errorf("expected nil for empty file, got %v", atoms)
+	}
+}
+
+func TestParsePackageMask_Directory(t *testing.T) {
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "package.mask")
+	if err := os.MkdirAll(pkgDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(pkgDir, "01"), []byte(">=dev-lang/python-3.12\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "02"), []byte("# comment\n<app-editors/vim-9\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	atoms, err := ParsePackageMask(pkgDir)
+	if err != nil {
+		t.Fatalf("ParsePackageMask directory: %v", err)
+	}
+
+	if len(atoms) != 2 {
+		t.Fatalf("expected 2 atoms, got %d: %v", len(atoms), atoms)
+	}
+}
+
+func TestParsePackageUnmask_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.unmask")
+	content := ">=dev-lang/python-3.12\n<app-editors/vim-9\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	atoms, err := ParsePackageUnmask(path)
+	if err != nil {
+		t.Fatalf("ParsePackageUnmask: %v", err)
+	}
+
+	want := []string{">=dev-lang/python-3.12", "<app-editors/vim-9"}
+	if !reflect.DeepEqual(atoms, want) {
+		t.Errorf("ParsePackageUnmask = %v, want %v", atoms, want)
+	}
+}
+
+func TestParsePackageUnmask_Comments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.unmask")
+	content := "# Header comment\n>=dev-lang/python-3.12\n# Middle comment\n<app-editors/vim-9\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	atoms, err := ParsePackageUnmask(path)
+	if err != nil {
+		t.Fatalf("ParsePackageUnmask: %v", err)
+	}
+
+	if len(atoms) != 2 {
+		t.Fatalf("expected 2 atoms, got %d: %v", len(atoms), atoms)
+	}
+}
+
+func TestParsePackageEnv_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.env")
+	content := "dev-lang/python python3.env\napp-editors/vim vim-no-x.env\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageEnv(path)
+	if err != nil {
+		t.Fatalf("ParsePackageEnv: %v", err)
+	}
+
+	want := map[string]string{
+		"dev-lang/python": "python3.env",
+		"app-editors/vim": "vim-no-x.env",
+	}
+
+	if !reflect.DeepEqual(m, want) {
+		t.Errorf("ParsePackageEnv =\n  got:  %v\n  want: %v", m, want)
+	}
+}
+
+func TestParsePackageEnv_MissingFile(t *testing.T) {
+	m, err := ParsePackageEnv("/nonexistent/package.env")
+	if err != nil {
+		t.Fatalf("ParsePackageEnv should not error on missing: %v", err)
+	}
+	if m != nil {
+		t.Errorf("expected nil map, got %v", m)
+	}
+}
+
+func TestReadConfigFile_File(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.conf")
+	content := "# comment\nline1\n\nline2\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, err := ReadConfigFile(path)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+
+	want := []string{"line1", "line2"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Errorf("ReadConfigFile = %v, want %v", lines, want)
+	}
+}
+
+func TestReadConfigFile_Directory(t *testing.T) {
+	dir := t.TempDir()
+	confDir := filepath.Join(dir, "config.d")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(confDir, "a.conf"), []byte("a1\na2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "b.conf"), []byte("b1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, err := ReadConfigFile(confDir)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+
+	sort.Strings(lines)
+	want := []string{"a1", "a2", "b1"}
+	if !reflect.DeepEqual(lines, want) {
+		t.Errorf("ReadConfigFile = %v, want %v", lines, want)
+	}
+}
+
+func TestReadConfigFile_DirectorySkipsHidden(t *testing.T) {
+	dir := t.TempDir()
+	confDir := filepath.Join(dir, "config.d")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(confDir, "visible"), []byte("visible\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, ".hidden"), []byte("hidden\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, err := ReadConfigFile(confDir)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+
+	if len(lines) != 1 || lines[0] != "visible" {
+		t.Errorf("ReadConfigFile = %v, want [visible]", lines)
+	}
+}
+
+func TestReadConfigFile_DirectorySkipsSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	confDir := filepath.Join(dir, "config.d")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(confDir, "subdir"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(confDir, "file"), []byte("file\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, err := ReadConfigFile(confDir)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+
+	if len(lines) != 1 || lines[0] != "file" {
+		t.Errorf("ReadConfigFile = %v, want [file]", lines)
+	}
+}
+
+func TestReadConfigFile_MissingPath(t *testing.T) {
+	lines, err := ReadConfigFile("/nonexistent/path")
+	if err != nil {
+		t.Fatalf("ReadConfigFile should not error on missing: %v", err)
+	}
+	if lines != nil {
+		t.Errorf("expected nil for missing path, got %v", lines)
+	}
+}
+
+func TestReadConfigFile_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.conf")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	lines, err := ReadConfigFile(path)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+	if lines != nil {
+		t.Errorf("expected nil for empty file, got %v", lines)
+	}
+}
+
+func TestLoadConfig_MissingConfigRoot(t *testing.T) {
+	cfg, err := LoadConfig("/nonexistent/portage/root")
+	if err != nil {
+		t.Fatalf("LoadConfig should not error on missing root: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if len(cfg.MakeConf) != 0 {
+		t.Errorf("expected empty MakeConf, got %v", cfg.MakeConf)
+	}
+	if cfg.USE != nil {
+		t.Errorf("expected nil USE, got %v", cfg.USE)
+	}
+}
+
+func TestLoadConfig_FullConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	makeConfContent := `CFLAGS="-O2 -pipe"
+CXXFLAGS="${CFLAGS}"
+MAKEOPTS="-j8"
+USE="X ssl -qt5"
+ACCEPT_KEYWORDS="~amd64"
+ACCEPT_LICENSE="* -@EULA"
+FEATURES="ccache parallel-install"
+`
+	if err := os.WriteFile(filepath.Join(dir, "make.conf"), []byte(makeConfContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "package.use"), []byte("dev-lang/python ssl sqlite\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.accept_keywords"), []byte("dev-lang/python ~amd64\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.license"), []byte("dev-lang/oracle-jdk-bin Oracle-BCLA-JavaSE\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.mask"), []byte(">=dev-lang/python-3.12\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.unmask"), []byte("<app-editors/vim-9\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "package.env"), []byte("dev-lang/python python3.env\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.CFLAGS != "-O2 -pipe" {
+		t.Errorf("CFLAGS = %q", cfg.CFLAGS)
+	}
+	if cfg.CXXFLAGS != "-O2 -pipe" {
+		t.Errorf("CXXFLAGS = %q, want resolved from CFLAGS", cfg.CXXFLAGS)
+	}
+	if cfg.MAKEOPTS != "-j8" {
+		t.Errorf("MAKEOPTS = %q", cfg.MAKEOPTS)
+	}
+
+	wantUse := []string{"X", "ssl", "-qt5"}
+	if !reflect.DeepEqual(cfg.USE, wantUse) {
+		t.Errorf("USE = %v, want %v", cfg.USE, wantUse)
+	}
+
+	wantKW := []string{"~amd64"}
+	if !reflect.DeepEqual(cfg.ACCEPT_KEYWORDS, wantKW) {
+		t.Errorf("ACCEPT_KEYWORDS = %v", cfg.ACCEPT_KEYWORDS)
+	}
+
+	wantLic := []string{"*", "-@EULA"}
+	if !reflect.DeepEqual(cfg.ACCEPT_LICENSE, wantLic) {
+		t.Errorf("ACCEPT_LICENSE = %v", cfg.ACCEPT_LICENSE)
+	}
+
+	wantFeat := []string{"ccache", "parallel-install"}
+	if !reflect.DeepEqual(cfg.FEATURES, wantFeat) {
+		t.Errorf("FEATURES = %v", cfg.FEATURES)
+	}
+
+	wantPkgUse := map[string][]string{
+		"dev-lang/python": {"ssl", "sqlite"},
+	}
+	if !reflect.DeepEqual(cfg.PackageUse, wantPkgUse) {
+		t.Errorf("PackageUse = %v", cfg.PackageUse)
+	}
+
+	if cfg.PackageAcceptKeywords["dev-lang/python"] != "~amd64" {
+		t.Errorf("PackageAcceptKeywords = %v", cfg.PackageAcceptKeywords)
+	}
+
+	if cfg.PackageLicense["dev-lang/oracle-jdk-bin"] != "Oracle-BCLA-JavaSE" {
+		t.Errorf("PackageLicense = %v", cfg.PackageLicense)
+	}
+
+	wantMask := []string{">=dev-lang/python-3.12"}
+	if !reflect.DeepEqual(cfg.PackageMask, wantMask) {
+		t.Errorf("PackageMask = %v", cfg.PackageMask)
+	}
+
+	wantUnmask := []string{"<app-editors/vim-9"}
+	if !reflect.DeepEqual(cfg.PackageUnmask, wantUnmask) {
+		t.Errorf("PackageUnmask = %v", cfg.PackageUnmask)
+	}
+
+	if cfg.PackageEnv["dev-lang/python"] != "python3.env" {
+		t.Errorf("PackageEnv = %v", cfg.PackageEnv)
+	}
+}
+
+func TestLoadConfig_NoMakeConf(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig without make.conf: %v", err)
+	}
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if len(cfg.MakeConf) != 0 {
+		t.Errorf("expected empty MakeConf, got %d entries", len(cfg.MakeConf))
+	}
+}
+
+func TestLoadConfig_OnlyMakeConf(t *testing.T) {
+	dir := t.TempDir()
+	content := `USE="pulseaudio alsa"
+MAKEOPTS="-j4"
+`
+	if err := os.WriteFile(filepath.Join(dir, "make.conf"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	wantUse := []string{"pulseaudio", "alsa"}
+	if !reflect.DeepEqual(cfg.USE, wantUse) {
+		t.Errorf("USE = %v", cfg.USE)
+	}
+	if cfg.MAKEOPTS != "-j4" {
+		t.Errorf("MAKEOPTS = %q", cfg.MAKEOPTS)
+	}
+}
+
+func TestLoadConfig_DirectoryBasedPackageFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, "make.conf"), []byte("USE=\"alsa\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgUseDir := filepath.Join(dir, "package.use")
+	if err := os.MkdirAll(pkgUseDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgUseDir, "python"), []byte("dev-lang/python ssl\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgMaskDir := filepath.Join(dir, "package.mask")
+	if err := os.MkdirAll(pkgMaskDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgMaskDir, "python"), []byte(">=dev-lang/python-3.12\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if !reflect.DeepEqual(cfg.PackageUse["dev-lang/python"], []string{"ssl"}) {
+		t.Errorf("PackageUse python = %v", cfg.PackageUse["dev-lang/python"])
+	}
+	if !reflect.DeepEqual(cfg.PackageMask, []string{">=dev-lang/python-3.12"}) {
+		t.Errorf("PackageMask = %v", cfg.PackageMask)
+	}
+}
+
+func TestAdversarial_HugeFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+
+	var sb strings.Builder
+	for i := 0; i < 50000; i++ {
+		sb.WriteString("sys-apps/pkg")
+		sb.WriteString(formatInt(i))
+		sb.WriteString(" flag_a flag_b flag_c\n")
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageUse(path)
+	if err != nil {
+		t.Fatalf("ParsePackageUse huge file: %v", err)
+	}
+	if len(m) != 50000 {
+		t.Errorf("expected 50000 entries, got %d", len(m))
+	}
+}
+
+func formatInt(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var digits []byte
+	n := i
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}
+
+func TestAdversarial_NullBytesInConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+	content := "dev-lang/python\x00 ssl sqlite\napp-editors/vim -X\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ParsePackageUse(path)
+	if err != nil {
+		t.Fatalf("ParsePackageUse with null bytes should not crash: %v", err)
+	}
+}
+
+func TestAdversarial_NullBytesInMakeConf(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	content := "USE=\"\x00\"\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ParseMakeConf(path)
+	if err != nil {
+		t.Fatalf("ParseMakeConf with null bytes should not crash: %v", err)
+	}
+}
+
+func TestAdversarial_DeeplyNestedShellExpansions(t *testing.T) {
+	m := make(map[string]string)
+	const depth = 120
+	m["ROOT"] = "final-value"
+	prev := "ROOT"
+	for i := 1; i < depth; i++ {
+		key := keyFor(i)
+		m[key] = "${" + prev + "}"
+		prev = key
+	}
+
+	ResolveMakeConfRefs(m)
+
+	for i := 1; i < depth; i++ {
+		if m[keyFor(i)] != "final-value" {
+			t.Errorf("depth %d: %s = %q, want \"final-value\"", i, keyFor(i), m[keyFor(i)])
+			break
+		}
+	}
+}
+
+func TestAdversarial_VeryLongLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+
+	longFlag := strings.Repeat("x", 100000)
+	content := "dev-lang/python " + longFlag + "\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParsePackageUse(path)
+	if err != nil {
+		t.Errorf("ParsePackageUse long line: %v", err)
+	}
+	if len(m) != 1 {
+		t.Errorf("expected 1 entry, got %d", len(m))
+	}
+}
+
+func TestMutation_ByteFlipMakeConf(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	valid := `CFLAGS="-O2 -pipe"
+MAKEOPTS="-j8"
+USE="X ssl"
+`
+	if err := os.WriteFile(path, []byte(valid), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < len(valid); i++ {
+		mutated := []byte(valid)
+		mutated[i] ^= 0xFF
+		if err := os.WriteFile(path, mutated, 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("ParseMakeConf panicked on byte-flip at position %d: %v", i, r)
+				}
+			}()
+			_, _ = ParseMakeConf(path)
+		}()
+	}
+}
+
+func TestMutation_ByteFlipPackageUseConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+	valid := "dev-lang/python ssl sqlite\napp-editors/vim -X\n"
+	if err := os.WriteFile(path, []byte(valid), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < len(valid); i++ {
+		mutated := []byte(valid)
+		mutated[i] ^= 0xFF
+		if err := os.WriteFile(path, mutated, 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("ParsePackageUse panicked on byte-flip at position %d: %v", i, r)
+				}
+			}()
+			_, _ = ParsePackageUse(path)
+		}()
+	}
+}
+
+func TestMutation_ByteFlipReadConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.d")
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	valid := "line1\nline2\n"
+	filePath := filepath.Join(path, "test")
+	if err := os.WriteFile(filePath, []byte(valid), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < len(valid); i++ {
+		mutated := []byte(valid)
+		mutated[i] ^= 0xFF
+		if err := os.WriteFile(filePath, mutated, 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("ReadConfigFile panicked on byte-flip at position %d: %v", i, r)
+				}
+			}()
+			_, _ = ReadConfigFile(path)
+		}()
+	}
+}
+
+func TestProperty_ParseAtomConfigIdempotent(t *testing.T) {
+	lines := []string{
+		"dev-lang/python ssl sqlite",
+		"app-editors/vim -X",
+		"*/* python_targets_python3_11",
+		">=sys-devel/gcc-12.2.0 fortran",
+	}
+
+	for _, line := range lines {
+		atom, val := parseAtomConfig(line)
+		if atom+val == "" && line != "" {
+			t.Errorf("parseAtomConfig(%q) dropped data", line)
+		}
+		if atomTag, valTag := parseAtomConfig(line); atomTag != atom || valTag != val {
+			t.Errorf("parseAtomConfig(%q) not idempotent: first=(%q,%q) second=(%q,%q)",
+				line, atom, val, atomTag, valTag)
+		}
+	}
+}
+
+func TestProperty_ResolveMakeConfRefs_Idempotent(t *testing.T) {
+	m := map[string]string{
+		"CFLAGS":   "-O2 -pipe",
+		"CXXFLAGS": "${CFLAGS}",
+		"OPTIMIZE": "${CXXFLAGS} -ftree-vectorize",
+	}
+
+	ResolveMakeConfRefs(m)
+
+	v1 := m["OPTIMIZE"]
+	ResolveMakeConfRefs(m)
+	v2 := m["OPTIMIZE"]
+
+	if v1 != v2 {
+		t.Errorf("ResolveMakeConfRefs not idempotent: %q vs %q", v1, v2)
+	}
+}
+
+func TestProperty_ReadConfigFile_DeterministicOrder(t *testing.T) {
+	dir := t.TempDir()
+	confDir := filepath.Join(dir, "config.d")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	files := []string{"c.conf", "a.conf", "b.conf"}
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(confDir, name), []byte(name+"-content\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := ReadConfigFile(confDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ReadConfigFile(confDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("ReadConfigFile not deterministic: first=%v, second=%v", first, second)
+	}
+}
+
+func TestAtomicity_ConfigRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+
+	makeConfContent := `CFLAGS="-O2 -pipe -march=native"
+CXXFLAGS="${CFLAGS}"
+MAKEOPTS="-j8"
+USE="X ssl -qt5"
+ACCEPT_KEYWORDS="~amd64"
+`
+	if err := os.WriteFile(filepath.Join(dir, "make.conf"), []byte(makeConfContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if cfg.CFLAGS != "-O2 -pipe -march=native" {
+		t.Errorf("CFLAGS = %q", cfg.CFLAGS)
+	}
+	if cfg.CXXFLAGS != "-O2 -pipe -march=native" {
+		t.Errorf("CXXFLAGS = %q", cfg.CXXFLAGS)
+	}
+	if cfg.MAKEOPTS != "-j8" {
+		t.Errorf("MAKEOPTS = %q", cfg.MAKEOPTS)
+	}
+
+	wantUse := []string{"X", "ssl", "-qt5"}
+	if !reflect.DeepEqual(cfg.USE, wantUse) {
+		t.Errorf("USE = %v, want %v", cfg.USE, wantUse)
+	}
+
+	wantKW := []string{"~amd64"}
+	if !reflect.DeepEqual(cfg.ACCEPT_KEYWORDS, wantKW) {
+		t.Errorf("ACCEPT_KEYWORDS = %v, want %v", cfg.ACCEPT_KEYWORDS, wantKW)
+	}
+}
+
+func TestUnquote(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{`"hello"`, "hello"},
+		{`'hello'`, "hello"},
+		{`no quotes`, "no quotes"},
+		{`"hello world"`, "hello world"},
+		{`'hello world'`, "hello world"},
+		{``, ""},
+		{`"`, `"`},
+		{`'`, `'`},
+		{`"--jobs=4 --load-average=8"`, "--jobs=4 --load-average=8"},
+	}
+
+	for _, tt := range tests {
+		got := unquote(tt.input)
+		if got != tt.want {
+			t.Errorf("unquote(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseMakeConf_BackslashContinuation_Complex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	content := `EMERGE_DEFAULT_OPTS="\
+--jobs=4 \
+--load-average=8 \
+--keep-going \
+"
+USE="X \
+ssl \
+-qt5"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseMakeConf(path)
+	if err != nil {
+		t.Fatalf("ParseMakeConf: %v", err)
+	}
+
+	wantOpts := "--jobs=4 --load-average=8 --keep-going "
+	if m["EMERGE_DEFAULT_OPTS"] != wantOpts {
+		t.Errorf("EMERGE_DEFAULT_OPTS = %q, want %q", m["EMERGE_DEFAULT_OPTS"], wantOpts)
+	}
+
+	wantUse := "X ssl -qt5"
+	if m["USE"] != wantUse {
+		t.Errorf("USE = %q, want %q", m["USE"], wantUse)
+	}
+}
+
+func TestParseMakeConf_EscapedBackslash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "make.conf")
+	content := `VAR="value with \\ backslash"
+OTHER="normal"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseMakeConf(path)
+	if err != nil {
+		t.Fatalf("ParseMakeConf: %v", err)
+	}
+
+	if m["OTHER"] != "normal" {
+		t.Errorf("OTHER = %q, want 'normal'", m["OTHER"])
+	}
+}
+
+func TestResolveMakeConfRefs_UnknownVar(t *testing.T) {
+	m := map[string]string{
+		"CFLAGS": "${UNKNOWN} -O2",
+	}
+
+	ResolveMakeConfRefs(m)
+
+	if m["CFLAGS"] != "${UNKNOWN} -O2" {
+		t.Errorf("CFLAGS = %q, want %q", m["CFLAGS"], "${UNKNOWN} -O2")
+	}
+}
+
+func TestParseBinhostConfig(t *testing.T) {
+	cfg := &Config{
+		MakeConf: map[string]string{
+			"PORTAGE_BINHOST": "https://example.com/binpkgs/ https://mirror.example.com/binpkgs/",
+		},
+	}
+
+	urls := ParseBinhostConfig(cfg)
+	if len(urls) != 2 {
+		t.Fatalf("expected 2 URLs, got %d: %v", len(urls), urls)
+	}
+	if urls[0] != "https://example.com/binpkgs/" {
+		t.Errorf("urls[0] = %q", urls[0])
+	}
+	if urls[1] != "https://mirror.example.com/binpkgs/" {
+		t.Errorf("urls[1] = %q", urls[1])
+	}
+}
+
+func TestParseBinhostConfig_Empty(t *testing.T) {
+	cfg := &Config{
+		MakeConf: map[string]string{},
+	}
+	urls := ParseBinhostConfig(cfg)
+	if urls != nil {
+		t.Errorf("expected nil, got %v", urls)
+	}
+}
+
+func TestParseBinhostConfig_NilConfig(t *testing.T) {
+	urls := ParseBinhostConfig(nil)
+	if urls != nil {
+		t.Errorf("expected nil, got %v", urls)
+	}
+}
+
+func TestParseBinhostConfig_SingleURL(t *testing.T) {
+	cfg := &Config{
+		MakeConf: map[string]string{
+			"PORTAGE_BINHOST": "https://binhost.example.com/packages",
+		},
+	}
+	urls := ParseBinhostConfig(cfg)
+	if len(urls) != 1 {
+		t.Fatalf("expected 1 URL, got %d", len(urls))
+	}
+	if urls[0] != "https://binhost.example.com/packages" {
+		t.Errorf("url = %q", urls[0])
+	}
+}
+
+func TestParseBinhostConfig_MissingKey(t *testing.T) {
+	cfg := &Config{
+		MakeConf: map[string]string{
+			"USE": "foo bar",
+		},
+	}
+	urls := ParseBinhostConfig(cfg)
+	if urls != nil {
+		t.Errorf("expected nil, got %v", urls)
+	}
+}
+
+func TestParsePackageProvided_Basic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.provided")
+	content := "dev-lang/python-3.11\napp-editors/vim-9.0\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	atoms, err := ParsePackageProvided(path)
+	if err != nil {
+		t.Fatalf("ParsePackageProvided: %v", err)
+	}
+
+	want := []string{"dev-lang/python-3.11", "app-editors/vim-9.0"}
+	if !reflect.DeepEqual(atoms, want) {
+		t.Errorf("ParsePackageProvided = %v, want %v", atoms, want)
+	}
+}
+
+func TestParsePackageProvided_Comments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.provided")
+	content := "# external packages\ndev-lang/python-3.11\n# another\napp-editors/vim-9.0\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	atoms, err := ParsePackageProvided(path)
+	if err != nil {
+		t.Fatalf("ParsePackageProvided: %v", err)
+	}
+
+	if len(atoms) != 2 {
+		t.Fatalf("expected 2 atoms, got %d: %v", len(atoms), atoms)
+	}
+}
+
+func TestParsePackageProvided_MissingFile(t *testing.T) {
+	atoms, err := ParsePackageProvided("/nonexistent/package.provided")
+	if err != nil {
+		t.Fatalf("ParsePackageProvided should not error on missing: %v", err)
+	}
+	if atoms != nil {
+		t.Errorf("expected nil for missing file, got %v", atoms)
+	}
+}
+
+func TestParsePackageProvided_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.provided")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	atoms, err := ParsePackageProvided(path)
+	if err != nil {
+		t.Fatalf("ParsePackageProvided: %v", err)
+	}
+	if atoms != nil {
+		t.Errorf("expected nil for empty file, got %v", atoms)
+	}
+}
+
+func TestLoadConfig_WithPackageProvided(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, "make.conf"), []byte("USE=\"alsa\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	profDir := filepath.Join(dir, "profile")
+	if err := os.MkdirAll(profDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profDir, "package.provided"), []byte("dev-lang/python-3.11\napp-editors/vim-9.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	want := []string{"dev-lang/python-3.11", "app-editors/vim-9.0"}
+	if !reflect.DeepEqual(cfg.PackageProvided, want) {
+		t.Errorf("PackageProvided = %v, want %v", cfg.PackageProvided, want)
+	}
+}

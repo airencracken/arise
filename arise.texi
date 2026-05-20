@@ -1,0 +1,525 @@
+\input texinfo    @c -*- texinfo -*-
+
+@setfilename arise.info
+@settitle arise -- Gentoo Package Manager
+@documentencoding UTF-8
+@set VERSION 0.1.0-dev
+
+@copying
+arise is a high-performance, self-healing package manager for Gentoo Linux.
+
+Copyright @copyright{} 2026
+
+This manual is for arise version @value{VERSION}.
+@end copying
+
+@titlepage
+@title arise
+@subtitle Gentoo Package Manager
+@subtitle Version @value{VERSION}
+@page
+@vskip 0pt plus 1filll
+@insertcopying
+@end titlepage
+
+@contents
+
+@ifnottex
+@node Top
+@top arise
+@insertcopying
+@end ifnottex
+
+@menu
+* Overview::                    What arise is and why it exists
+* Quick Start::                 Getting started
+* Invocation::                  Command-line syntax
+* Commands::                    All subcommands
+** Package Management::         install, update, uninstall, depclean, prune
+** Query and Information::      search, query, info, equery
+** System Maintenance::         sync, index, audit, preserved-rebuild
+** Configuration::              dispatch-conf, env-update, ldconfig, news
+** Binary Packages::            quickpkg
+* Search Filters::              eix-style search options
+* Package Flags::               emerge-style resolution flags
+* Configuration Files::         /etc/portage layout
+* Extending arise::                Architecture and internals
+* GNU Free Documentation License::
+* Index::
+@end menu
+
+@node Overview
+@chapter Overview
+
+arise (@emph{Gentoo Manager}) is a statically-linked Go binary that replaces
+@command{emerge}, @command{eix}, @command{equery}, @command{quickpkg},
+@command{perl-cleaner}, @command{python-updater}, @command{dispatch-conf},
+@command{env-update}, @command{revdep-rebuild}, and @command{eselect news}.
+
+It stores package metadata in a BadgerDB key-value store and operates directly
+against the Gentoo repository tree and VDB, without depending on Python or
+Bash for core operations. Build phases that require shell scripts execute via
+@code{os/exec} to the appropriate build tools.
+
+@table @emph
+@item Pure Go and static linking
+@code{CGO_ENABLED=0}. No runtime dependency on Python, Bash, or shared libraries.
+
+@item Filesystem is sovereign
+The database is an acceleration layer. The filesystem (ebuild tree, VDB) is
+the authoritative source of truth.
+
+@item Pragmatic fallback
+Build phases (configure, make, install) shell out to the native tools.
+Core logic (resolution, metadata, auditing) is pure Go.
+
+@item Self-healing
+Remains operational even when system Python or portage libraries are broken.
+@end table
+
+@node Quick Start
+@chapter Quick Start
+
+@example
+# Build from source
+$ CGO_ENABLED=0 go build -ldflags="-s -w" -o arise ./cmd/arise/
+
+# Sync the Gentoo repository
+$ arise -repo-url https://anongit.gentoo.org/git/repo/gentoo.git sync
+
+# Index metadata for fast queries
+$ arise index
+
+# Search packages (replaces eix)
+$ arise search gcc
+$ arise search --installed --category dev-lang
+$ arise search --versions --json python
+
+# Package queries (replaces equery)
+$ arise equery belongs /usr/bin/gcc
+$ arise equery files sys-devel/gcc
+$ arise equery size sys-devel/gcc
+$ arise equery uses sys-devel/gcc
+$ arise equery check sys-devel/gcc
+
+# Install packages
+$ arise install -av app-editors/vim
+
+# Update world
+$ arise update -uDN @world
+
+# Audit for outdated packages
+$ arise audit python
+$ arise audit perl --fix
+@end example
+
+@node Invocation
+@chapter Invocation Syntax
+
+@example
+arise [@var{global-flags}] @var{command} [@var{args}@dots{}]
+@end example
+
+Global flags must precede the command name. Package and search flags
+follow the command.
+
+@table @asis
+@item @option{-db @var{path}}
+Database path. Default: @file{/var/lib/arise/data}.
+@item @option{-repo @var{path}}
+Repository path. Default: @file{/var/db/repos/gentoo}.
+@item @option{-repo-url @var{url}}
+Remote repository URL for sync.
+@end table
+
+@node Commands
+@chapter Commands
+
+@menu
+* Package Management::
+* Query and Information::
+* System Maintenance::
+* Configuration::
+* Binary Packages::
+@end menu
+
+@node Package Management
+@section Package Management
+
+@table @command
+@item install [flags] @var{atoms@dots{}}
+Install one or more packages. Resolves dependencies and builds from source.
+
+@item update [flags] [@var{atoms@dots{}]
+Update installed packages. Defaults to @code{@@world} if no atoms given.
+
+@item uninstall @var{atoms@dots{}}
+Remove installed packages.
+
+@item depclean [flags]
+Remove orphaned packages not in @@world or its dependency tree.
+
+@item prune [flags]
+Remove old versions, keeping only the newest per slot.
+
+@item deselect @var{atom}
+Remove a package from @@world without uninstalling.
+@end table
+
+@node Query and Information
+@section Query and Information
+
+@table @command
+@item search [flags] [@var{query}]
+Search the package database with eix-style filtering.
+See @ref{Search Filters} for all available search flags.
+
+@item query @var{atom}
+Display metadata for a specific package.
+
+@item info
+Display system information: arise version, Go runtime, portage configuration,
+active profile, and repository status.
+
+@item equery @var{subcommand} [@var{args}]
+Package queries replacing @command{equery}.
+Subcommands:
+
+@table @command
+@item belongs @var{file}
+Find which installed package owns a file.
+@item files @var{atom}
+List installed files for a package.
+@item uses @var{atom}
+Show IUSE and active USE flags.
+@item size @var{atom}
+Show total installed size.
+@item check @var{atom}
+Verify installed files against checksums.
+@item which @var{atom}
+Find ebuild path.
+@item list [@var{pattern}]
+List installed packages matching a pattern.
+@end table
+@end table
+
+@node System Maintenance
+@section System Maintenance
+
+@table @command
+@item sync
+Synchronize the Gentoo repository via git (primary) or rsync (fallback).
+
+@item index
+Rebuild the BadgerDB metadata database from the ebuild tree.
+
+@item audit @var{python|perl} [--fix]
+Audit installed packages for outdated Python or Perl site-packages paths.
+
+@item preserved-rebuild [flags]
+Scan for broken shared library links and rebuild affected packages.
+
+@item revdep-rebuild [flags]
+Full reverse dependency scan for broken ELF dependencies.
+@end table
+
+@node Configuration
+@section Configuration
+
+@table @command
+@item dispatch-conf
+List pending @file{._cfg*} config file updates in @file{/etc/}.
+
+@item env-update
+Regenerate @file{/etc/profile.env} and @file{/etc/csh.env}.
+
+@item ldconfig
+Update the shared library linker cache.
+
+@item config @var{atom}
+Run the @code{pkg_config} phase.
+
+@item news [list|read|display]
+Display Gentoo news items (GLEP 42).
+@end table
+
+@node Binary Packages
+@section Binary Packages
+
+@table @command
+@item quickpkg @var{atom}
+Create a binary package (@file{.tbz2}) from an installed package.
+@end table
+
+@node Search Filters
+@chapter Search Filters
+
+The @command{search} command supports eix-compatible filtering with the
+following flags:
+
+@table @option
+@item --name @var{pkg}
+Filter by package name.
+@item --category @var{cat}
+Filter by category.
+@item --slot @var{slot}
+Filter by SLOT.
+@item --use @var{flags}
+USE flag filter (leading @code{+} required, @code{-} excluded).
+@item --keywords @var{kw}
+Filter by KEYWORDS content.
+@item --license @var{lic}
+Filter by LICENSE.
+@item --desc
+Search in descriptions.
+@item --installed
+Only show installed packages.
+@item --exact
+Exact match instead of substring.
+@item --regex
+Treat patterns as regular expressions.
+@item --stable
+Only stable-keyworded packages.
+@item --testing
+Only testing-keyworded packages.
+@item --sort @var{order}
+Sort by @code{category}, @code{name}, @code{version}, or @code{slot}.
+@item --versions
+Show all available versions.
+@item --format @var{fmt}
+Custom output format with template variables.
+@item --print @var{fields}
+Print specific fields (space-separated).
+@item --json
+JSON output.
+@item --brief
+Single-line output.
+@item --compact
+Compact output.
+@item --only-names
+Output only package names.
+@item --count-only
+Output only result count.
+@item --and
+Combine queries with AND logic.
+@item --not @var{pattern}
+Exclude packages matching pattern.
+@item --world
+Only @@world packages.
+@item --system
+Only @@system packages.
+@item --depends-on @var{atom}
+Packages that depend on atom.
+@item --required-by @var{atom}
+Packages required by atom.
+@item --has-use @var{flag}
+Packages with this USE flag available.
+@item --has-version @var{pat}
+Packages with version matching glob.
+@item --care
+Show packages needing attention.
+@item --overflow
+Only packages with masked keywords.
+@item --masked
+Only masked packages.
+@item --duplicates
+Show all versions of each package.
+@item --dump
+Dump in eix-compatible format.
+@end table
+
+@node Package Flags
+@chapter Package Flags
+
+Flags available for @command{install}, @command{update}, and @command{depclean}:
+
+@table @option
+@item -1, --oneshot
+Install without adding to @@world.
+@item -O, --nodeps
+Skip dependency resolution.
+@item -o, --onlydeps
+Only install dependencies.
+@item -e, --emptytree
+Rebuild as if nothing is installed.
+@item -D, --deep
+Full dependency tree.
+@item -u, --update
+Update to best version.
+@item -N, --newuse
+Rebuild on USE changes.
+@item -p, --pretend
+Dry run.
+@item -a, --ask
+Prompt before acting.
+@item -q, --quiet
+Minimal output.
+@item -v, --verbose
+Verbose output.
+@item -t, --tree
+Dependency tree display.
+@item -j @var{N}, --jobs @var{N}
+Parallel jobs.
+@item -k, --usepkg
+Use binary packages.
+@item -K, --usepkgonly
+Only binary packages.
+@item -b, --buildpkg
+Build binary packages.
+@item -B, --buildpkgonly
+Only build binaries.
+@item -f, --fetchonly
+Only fetch sources.
+@item --backtrack @var{N}
+Max backtracking levels (default 10).
+@item --complete-graph
+Rebuild reverse deps.
+@item --keep-going
+Continue on errors.
+@item --reinstall
+Force reinstall.
+@item --changed-use
+Reinstall on USE changes.
+@item --changed-deps
+Reinstall on DEPEND changes.
+@item --noreplace
+Skip same version.
+@item --exclude @var{pkg}
+Exclude package (repeatable).
+@item --resume
+Resume last operation.
+@item --skipfirst
+Skip first in resume.
+@item --autounmask-write
+Write unmask entries.
+@item --color y|n
+Colored output.
+@item --unordered-display
+Unsorted display.
+@item --load-average @var{LOAD}
+Pause above load threshold.
+@item --getbinpkg
+Download binpkgs from binhost.
+@item --getbinpkgonly
+Only downloaded binpkgs.
+@item --binpkg-respect-use
+USE-aware binpkg selection.
+@item --with-bdeps y|n|auto
+BDEPEND handling.
+@item --ignore-built-slot-operator-deps y|n
+Ignore slot operator rebuilds.
+@end table
+
+@node Configuration Files
+@chapter Configuration Files
+
+@table @file
+@item /etc/portage/make.conf
+Global system configuration (CHOST, CFLAGS, USE, MAKEOPTS, FEATURES,
+ACCEPT_KEYWORDS, ACCEPT_LICENSE, PORTAGE_BINHOST).
+
+@item /etc/portage/package.use[/]
+Per-package USE flag overrides. May be a file or directory.
+
+@item /etc/portage/package.accept_keywords[/]
+Per-package keyword overrides. May be a file or directory.
+
+@item /etc/portage/package.license[/]
+Per-package license acceptance. May be a file or directory.
+
+@item /etc/portage/package.mask[/]
+Masked packages (prevent installation). May be a file or directory.
+
+@item /etc/portage/package.unmask[/]
+Override masks for specific packages. May be a file or directory.
+
+@item /etc/portage/package.env[/]
+Per-package environment file assignments. May be a file or directory.
+
+@item /etc/portage/profile/package.provided
+User-provided virtual packages.
+
+@item /etc/portage/make.profile
+Symlink to the active Gentoo profile.
+
+@item /var/lib/portage/world
+User-requested package list (@@world set).
+
+@item /var/db/repos/gentoo/
+Gentoo repository tree.
+
+@item /var/db/pkg/
+VDB: installed package database.
+
+@item /var/cache/binpkgs/
+Binary package cache.
+
+@item /var/tmp/arise/
+Temporary build directory.
+
+@item /var/tmp/arise/resume
+Resume state for interrupted operations.
+@end table
+
+@node Extending arise
+@chapter Extending arise
+
+arise's internal packages are organized by concern:
+
+@table @file
+@item internal/atom
+Gentoo atom parser. Handles @code{>=cat/pkg-1.0:slot=[use]} syntax.
+
+@item internal/depstring
+DEPEND/RDEPEND string parser. Handles @code{||}, @code{use?}, @code{!},
+@code{^^}, nested groups, slot constraints.
+
+@item internal/ebuild
+Ebuild file parser. Extracts EAPI, inherit, variables, phase functions.
+
+@item internal/eclass
+Eclass loader. Resolves inherit chains, merges variables and exported functions.
+
+@item internal/metadata
+md5-cache parser. PackageMetadata struct with EAPI 8+ fields.
+
+@item internal/graph
+Dependency graph builder. Queries BadgerDB and walks the ebuild tree.
+
+@item internal/resolve
+Backtracking dependency solver. USE, keyword, license, mask awareness.
+
+@item internal/rebuild
+Full build pipeline: fetch @rightarrow{} unpack @rightarrow{} configure
+@rightarrow{} compile @rightarrow{} install @rightarrow{} merge.
+
+@item internal/portage
+Configuration parser. make.conf, package.use, package.accept_keywords, etc.
+
+@item internal/profile
+Profile inheritance chain parser. load parent chains, merge settings.
+
+@item internal/binpkg
+XPAK binary package read/write with USE compatibility checking.
+
+@item internal/search
+eix-style package search with 30+ filter options.
+
+@item internal/equery
+Package query: belongs, files, uses, size, check, which, list.
+@end table
+
+Each package has comprehensive tests including unit tests, adversarial input
+tests, mutation tests (byte-flip fuzzing), and integration tests.
+
+@node GNU Free Documentation License
+@appendix GNU Free Documentation License
+
+@include fdl.texi
+
+@node Index
+@unnumbered Index
+
+@printindex cp
+
+@bye

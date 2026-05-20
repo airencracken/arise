@@ -1,0 +1,485 @@
+.\" arise(1) - Gentoo Package Manager
+.\" Generated for arise version 0.1.0-dev
+.TH arise 1 "2026-05-20" "arise 0.1.0-dev" "Gentoo Package Manager"
+
+.SH NAME
+arise \- a high-performance, self-healing package manager for Gentoo Linux
+
+.SH SYNOPSIS
+.B arise
+[\fIglobal-flags\fR] \fIcommand\fR [\fIargs...\fR]
+
+.SH DESCRIPTION
+.B arise
+is a statically-linked Go binary that replaces
+.BR emerge (1),
+.BR eix (1),
+.BR equery (1),
+.BR quickpkg (1),
+.BR perl-cleaner (1),
+.BR python-updater (1),
+.BR dispatch-conf (1),
+.BR env-update (1),
+.BR revdep-rebuild (1),
+and
+.BR eselect-news (1).
+
+It stores package metadata in a BadgerDB key-value store and operates directly
+against the Gentoo repository tree and VDB, without depending on Python or Bash
+for core operations. Build phases that require shell scripts execute via
+\fBos/exec\fR to the appropriate build tools (make, bash, patch, etc.).
+
+.SH OPTIONS
+
+.SS Global Flags
+These flags apply to all commands and must precede the command name.
+.TP
+\fB\-db\fR \fIpath\fR
+Database path (default: \fI/var/lib/arise/data\fR).
+.TP
+\fB\-repo\fR \fIpath\fR
+Repository path (default: \fI/var/db/repos/gentoo\fR).
+.TP
+\fB\-repo-url\fR \fIurl\fR
+Remote repository URL for sync operations.
+
+.SS Package Flags
+These flags apply to \fBinstall\fR, \fBupdate\fR, and \fBdepclean\fR.
+.TP
+\fB\-1\fR, \fB\-oneshot\fR
+Install without adding to the world set.
+.TP
+\fB\-O\fR, \fB\-nodeps\fR
+Skip dependency resolution. Install only the specified packages.
+.TP
+\fB\-o\fR, \fB\-onlydeps\fR
+Only install dependencies, not the target packages themselves.
+.TP
+\fB\-e\fR, \fB\-emptytree\fR
+Rebuild the entire dependency tree as if nothing is installed.
+.TP
+\fB\-D\fR, \fB\-deep\fR
+Consider the full dependency tree, not just direct dependencies.
+.TP
+\fB\-u\fR, \fB\-update\fR
+Update packages to the best available version.
+.TP
+\fB\-N\fR, \fB\-newuse\fR
+Rebuild packages when USE flags have changed.
+.TP
+\fB\-p\fR, \fB\-pretend\fR
+Dry run. Display what would be done without performing actions.
+.TP
+\fB\-a\fR, \fB\-ask\fR
+Prompt for confirmation before performing actions.
+.TP
+\fB\-q\fR, \fB\-quiet\fR
+Suppress non-essential output.
+.TP
+\fB\-v\fR, \fB\-verbose\fR
+Increase output verbosity.
+.TP
+\fB\-t\fR, \fB\-tree\fR
+Display the dependency tree instead of a flat list.
+.TP
+\fB\-j\fR \fIN\fR, \fB\-jobs\fR \fIN\fR
+Number of parallel build jobs (default: 1).
+.TP
+\fB\-k\fR, \fB\-usepkg\fR
+Use binary packages when available, falling back to source.
+.TP
+\fB\-K\fR, \fB\-usepkgonly\fR
+Only use binary packages. Fail if a binary package is unavailable.
+.TP
+\fB\-b\fR, \fB\-buildpkg\fR
+Build binary packages during installation.
+.TP
+\fB\-B\fR, \fB\-buildpkgonly\fR
+Only build binary packages, do not install.
+.TP
+\fB\-f\fR, \fB\-fetchonly\fR
+Only fetch source files, do not build.
+.TP
+\fB\-backtrack\fR \fIN\fR
+Maximum backtracking levels for dependency resolution (default: 10).
+.TP
+\fB\-complete-graph\fR
+Rebuild reverse dependencies when packages change.
+.TP
+\fB\-keep-going\fR
+Continue as much as possible after an error.
+.TP
+\fB\-reinstall\fR
+Force reinstall of already-installed packages.
+.TP
+\fB\-changed-use\fR
+Reinstall when USE flags differ from current settings.
+.TP
+\fB\-changed-deps\fR
+Reinstall when dependency specifications have changed.
+.TP
+\fB\-noreplace\fR
+Do not reinstall the exact same version if already installed.
+.TP
+\fB\-exclude\fR \fIpkg\fR
+Exclude a package from installation (repeatable).
+.TP
+\fB\-resume\fR
+Resume the last interrupted operation.
+.TP
+\fB\-skipfirst\fR
+Skip the first package when resuming (used with \fB\-resume\fR).
+.TP
+\fB\-autounmask-write\fR
+Write necessary package.unmask and package.license entries when resolution fails.
+.TP
+\fB\-color\fR \fIy|n\fR
+Enable or disable colored output (default: terminal auto-detect).
+.TP
+\fB\-unordered-display\fR
+Display results in resolution order rather than sorted.
+.TP
+\fB\-load-average\fR \fILOAD\fR
+Pause when system load average exceeds the given value.
+.TP
+\fB\-getbinpkg\fR
+Download binary packages from configured binhosts.
+.TP
+\fB\-getbinpkgonly\fR
+Only use downloaded binary packages.
+.TP
+\fB\-binpkg-respect-use\fR
+Respect USE flag compatibility when selecting binary packages.
+.TP
+\fB\-with-bdeps\fR \fIy|n|auto\fR
+How to handle build dependencies (default: n).
+.TP
+\fB\-ignore-built-slot-operator-deps\fR \fIy|n\fR
+Ignore slot operator rebuilds (default: n).
+
+.SS Search Flags
+.TP
+\fB\-name-only\fR
+Search only package/category names, not descriptions.
+.TP
+\fB\-desc\fR
+Search descriptions.
+.TP
+\fB\-installed\fR
+Only show installed packages.
+.TP
+\fB\-exact\fR
+Exact match instead of substring.
+.TP
+\fB\-regex\fR
+Use regular expression patterns.
+.TP
+\fB\-category\fR \fIcat\fR
+Filter by category.
+.TP
+\fB\-name\fR \fIpkg\fR
+Filter by package name.
+.TP
+\fB\-slot\fR \fIslot\fR
+Filter by SLOT.
+.TP
+\fB\-use\fR \fIflags\fR
+USE flag filter (\fI+flag\fR required, \fI\-flag\fR excluded).
+.TP
+\fB\-keywords\fR \fIkw\fR
+Filter by KEYWORDS.
+.TP
+\fB\-license\fR \fIlic\fR
+Filter by LICENSE.
+.TP
+\fB\-stable\fR
+Only stable-keyworded packages.
+.TP
+\fB\-testing\fR
+Only testing-keyworded packages.
+.TP
+\fB\-sort\fR \fIorder\fR
+Sort by: category, name, version, slot.
+.TP
+\fB\-compact\fR
+Compact output format.
+.TP
+\fB\-versions\fR
+Show all available versions.
+.TP
+\fB\-format\fR \fIfmt\fR
+Custom format string with template variables.
+.TP
+\fB\-print\fR \fIfields\fR
+Print specific fields.
+.TP
+\fB\-json\fR
+Output results as JSON.
+.TP
+\fB\-brief\fR
+Brief single-line output.
+.TP
+\fB\-only-names\fR
+Only output package names.
+.TP
+\fB\-count-only\fR
+Only output result count.
+.TP
+\fB\-and\fR
+Combine multiple queries with AND logic.
+.TP
+\fB\-not\fR \fIpattern\fR
+Exclude packages matching this pattern.
+.TP
+\fB\-world\fR
+Only packages in the @world set.
+.TP
+\fB\-system\fR
+Only packages in the @system set.
+.TP
+\fB\-depends-on\fR \fIatom\fR
+Packages that depend on this.
+.TP
+\fB\-required-by\fR \fIatom\fR
+Packages required by this.
+.TP
+\fB\-has-use\fR \fIflag\fR
+Packages with this USE flag available.
+.TP
+\fB\-has-version\fR \fIpat\fR
+Packages with version matching glob pattern.
+.TP
+\fB\-care\fR
+Show packages needing attention (masked, overflow, etc.).
+.TP
+\fB\-overflow\fR
+Only show packages with masked keywords.
+.TP
+\fB\-masked\fR
+Only show masked packages.
+.TP
+\fB\-duplicates\fR
+Show all versions of each package.
+.TP
+\fB\-dump\fR
+Dump output in eix-compatible format.
+
+.SH COMMANDS
+
+.SS Package Management
+
+.TP
+\fBinstall\fR [\fIflags\fR] \fIatoms...\fR
+Install one or more packages. Resolves dependencies and builds from source.
+Accepts all package flags listed above.
+
+.TP
+\fBupdate\fR [\fIflags\fR] [\fIatoms...\fR]
+Update installed packages. If no atoms specified, updates @world.
+Equivalent to \fBinstall \-u @world\fR with the specified flags.
+
+.TP
+\fBuninstall\fR [\fIflags\fR] \fIatoms...\fR
+Remove installed packages without dependency checking.
+
+.TP
+\fBdepclean\fR [\fIflags\fR]
+Remove orphaned packages that are not in the @world set or its dependency tree.
+
+.TP
+\fBprune\fR [\fIflags\fR]
+Remove old versions of installed packages, keeping only the newest per slot.
+
+.TP
+\fBdeselect\fR \fIatom\fR
+Remove a package from the @world set without uninstalling it.
+
+.SS Query and Information
+
+.TP
+\fBsearch\fR [\fIflags\fR] [\fIquery\fR]
+Search the package database. Accepts all search flags listed above.
+Replaces \fBeix\fR and \fBemerge \-\-search\fR.
+
+.TP
+\fBquery\fR \fIatom\fR
+Look up metadata for a specific package from the database.
+Display description, homepage, license, and other cached metadata.
+
+.TP
+\fBinfo\fR
+Display system information: arise version, Go runtime, portage configuration
+(CFLAGS, USE, MAKEOPTS, CHOST, FEATURES), active profile, and repository status.
+Equivalent to \fBemerge \-\-info\fR.
+
+.TP
+\fBequery\fR \fIsubcommand\fR [\fIargs\fR]
+Package query tool replacing \fBequery\fR(1). Subcommands:
+.RS
+.TP
+\fBbelongs\fR \fIfile\fR
+Find which installed package owns a file.
+.TP
+\fBfiles\fR \fIatom\fR
+List files installed by a package.
+.TP
+\fBuses\fR \fIatom\fR
+Show IUSE and active USE flags for a package.
+.TP
+\fBsize\fR \fIatom\fR
+Show total installed size of a package.
+.TP
+\fBcheck\fR \fIatom\fR
+Verify installed files against recorded checksums.
+.TP
+\fBwhich\fR \fIatom\fR
+Find the ebuild path for a package.
+.TP
+\fBlist\fR [\fIpattern\fR]
+List installed packages matching a pattern.
+.RE
+
+.SS Maintenance
+
+.TP
+\fBsync\fR
+Synchronize the Gentoo repository. Uses \fBgit\fR(1) as primary method with
+\fBrsync\fR(1) fallback. Requires \fB\-repo-url\fR to be set.
+
+.TP
+\fBindex\fR
+Rebuild the metadata database from the ebuild tree. Walks the md5-cache
+directory in parallel and ingests all package metadata into BadgerDB.
+
+.TP
+\fBaudit\fR \fIpython|perl\fR [\fIflags\fR]
+Audit installed packages for outdated Python or Perl site-packages.
+With \fB\-\-fix\fR, schedules the affected packages for rebuild.
+Replaces \fBpython-updater\fR and \fBperl-cleaner\fR.
+
+.TP
+\fBpreserved-rebuild\fR [\fIflags\fR]
+Scan for broken shared library links and rebuild affected packages.
+Equivalent to \fBemerge @preserved-rebuild\fR.
+
+.TP
+\fBrevdep-rebuild\fR [\fIflags\fR]
+Full reverse dependency scan for broken ELF dependencies.
+Replaces \fBrevdep-rebuild\fR(1).
+
+.SS System Configuration
+
+.TP
+\fBdispatch-conf\fR
+List pending config file updates (\fI._cfg*\fR files in \fI/etc\fR).
+Replaces \fBdispatch-conf\fR(1).
+
+.TP
+\fBenv-update\fR
+Regenerate \fI/etc/profile.env\fR and \fI/etc/csh.env\fR from \fI/etc/env.d/\fR.
+Replaces \fBenv-update\fR(1).
+
+.TP
+\fBldconfig\fR
+Update the shared library linker cache.
+Delegates to \fB/sbin/ldconfig\fR when available.
+
+.TP
+\fBconfig\fR \fIatom\fR
+Run the \fBpkg_config\fR phase for an installed package.
+
+.TP
+\fBnews\fR [\fIsubcommand\fR]
+Display Gentoo news items (GLEP 42). Subcommands:
+.RS
+.TP
+\fBlist\fR
+List all available news items.
+.TP
+\fBread\fR
+Display unread news items.
+.TP
+\fBdisplay\fR \fIitem\fR
+Display a specific news item.
+.RE
+
+.SS Binary Packages
+
+.TP
+\fBquickpkg\fR \fIatom\fR
+Create a binary package (.tbz2) from an installed package.
+Replaces \fBquickpkg\fR(1).
+
+.SH FILES
+
+.TP
+\fI/var/lib/arise/data\fR
+BadgerDB database directory storing package metadata.
+
+.TP
+\fI/var/tdb/repos/gentoo\fR
+Default Gentoo repository path.
+
+.TP
+\fI/var/tdb/pkg\fR
+VDB directory with per-package CONTENTS, USE, IUSE, and environment files.
+
+.TP
+\fI/etc/portage/\fR
+Portage configuration directory (make.conf, package.use, etc.).
+
+.TP
+\fI/var/cache/binpkgs\fR
+Binary package cache directory.
+
+.TP
+\fI/var/lib/portage/world\fR
+World set file listing user-requested packages.
+
+.TP
+\fI/var/tmp/arise\fR
+Temporary build working directory.
+
+.TP
+\fI/var/tmp/arise/resume\fR
+Resume state file for interrupted operations.
+
+.SH ENVIRONMENT
+
+.TP
+\fBARISE_DB_PATH\fR
+Override the default database path.
+
+.TP
+\fBARISE_REPO_PATH\fR
+Override the default repository path.
+
+.TP
+\fBNO_COLOR\fR
+Disable colored output when set to any non-empty value.
+
+.TP
+\fBCFLAGS\fR, \fBCXXFLAGS\fR, \fBMAKEOPTS\fR, \fBARCH\fR
+Standard build environment variables used during package compilation.
+
+.SH EXIT STATUS
+
+.TP
+0
+Success.
+.TP
+1
+General failure (missing dependencies, conflicts, build errors).
+
+.SH BUGS
+Report bugs at the project issue tracker.
+
+.SH SEE ALSO
+.BR emerge (1),
+.BR eix (1),
+.BR equery (1),
+.BR portage (5),
+.BR make.conf (5)
+
+.SH AUTHORS
+Written for the Gentoo Linux ecosystem.
