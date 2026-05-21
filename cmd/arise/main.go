@@ -159,9 +159,13 @@ func main() {
 		}
 		defer db.Close()
 
+		var parseErrors int
 		go func() {
 			for e := range errs {
-				fmt.Fprintf(os.Stderr, "index: walk error: %v\n", e)
+				parseErrors++
+				if *verbose {
+					fmt.Fprintf(os.Stderr, "index: %v\n", e)
+				}
 			}
 		}()
 
@@ -170,7 +174,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "index: ingest: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("index: ingested %d packages\n", count)
+		fmt.Printf("index: ingested %d packages", count)
+		if parseErrors > 0 {
+			fmt.Printf(" (%d non-fatal parse errors, use -v to see)", parseErrors)
+		}
+		fmt.Println()
 	case "query":
 		if len(cmdArgs) == 0 {
 			fmt.Fprintf(os.Stderr, "query: missing package atom argument\n")
@@ -995,15 +1003,25 @@ func runSearch(args []string, dbPath string) {
 	}
 
 	for _, r := range results {
-		installed := ""
-		if r.Installed {
-			installed = "[I] "
-		}
-		fmt.Printf("%s%s/%s", installed, r.Category, r.Package)
+		cp := r.Category + "/" + r.Package
+		ver := ""
 		if r.Version != "" {
-			fmt.Printf("-%s", r.Version)
+			ver = r.Version
 		}
-		fmt.Printf(" | %s | %s\n", r.Slot, r.Description)
+		desc := ""
+		if r.Description != "" {
+			desc = fmt.Sprintf("%q", r.Description)
+		}
+		kw := r.Keywords
+
+		if r.Installed {
+			fmt.Printf("%s %s [%s] %s %s\n",
+				color.Green("[I]"), color.Bold(cp),
+				color.Green(ver), desc, kw)
+		} else {
+			fmt.Printf("  %s [%s] %s\n",
+				color.Bold(cp), ver, desc)
+		}
 	}
 }
 
