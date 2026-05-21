@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-unit test-adversarial test-mutation test-race test-bench test-integration test-coverage vet lint clean install uninstall man info bench bench-quick bench-compare bench-json
+.PHONY: all build static test test-v test-unit test-adversarial test-mutation test-race test-bench test-integration test-coverage vet lint clean install uninstall man info bench bench-quick bench-compare bench-json release
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -124,3 +124,17 @@ info:
 
 docs: man info
 	@echo "Documentation built."
+
+#
+# Release
+#
+
+VERSION ?= 0.1.0
+release: static test
+	@echo "Tagging release v$(VERSION)..."
+	git tag -a "v$(VERSION)" -m "arise v$(VERSION)"
+	git push origin master --tags
+	@echo ""
+	@echo "Now update the overlay:"
+	@echo "  cd ../arise-overlay && make manifest VERSION=$(VERSION)"
+	@echo "  cd ../arise-overlay && git add . && git commit -m 'release v$(VERSION)' && git push"
