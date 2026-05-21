@@ -11,17 +11,17 @@ import (
 )
 
 const (
-	// keyPrefix is used to namespace package metadata keys within BadgerDB.
-	keyPrefix = "pkg:"
-
-	// maxBatchSize is the number of entries to accumulate before flushing.
-	maxBatchSize = 1000
+	keyPrefix    = "pkg:"
+	maxBatchSize = 250
 )
 
 // OpenDB opens or creates a BadgerDB database at the given path.
 // Callers are responsible for closing the returned DB via db.Close().
 func OpenDB(path string) (*badger.DB, error) {
-	opts := badger.DefaultOptions(path)
+	opts := badger.DefaultOptions(path).
+		WithValueLogFileSize(1 << 30).
+		WithValueThreshold(1 << 20)
+
 	db, err := badger.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: open db: %w", err)
@@ -50,8 +50,14 @@ func Ingest(db *badger.DB, entries <-chan *metadata.PackageMetadata) (int, error
 		}
 
 		key := encodeKey(entry.Key())
-		if err := wb.Set(key, buf.Bytes()); err != nil {
-			return count, fmt.Errorf("ingest: write batch set: %w", err)
+		val := buf.Bytes()
+
+		if len(val) > 64<<20 {
+			continue
+		}
+
+		if err := wb.Set(key, val); err != nil {
+			return count, fmt.Errorf("ingest: write batch set %s (%d bytes): %w", entry.Key(), len(val), err)
 		}
 
 		batchCount++

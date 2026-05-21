@@ -128,13 +128,54 @@ docs: man info
 #
 # Release
 #
+# Full release workflow for cutting a new arise version:
+#
+#   1. make release VERSION=x.y.z
+#      - runs tests, static build, git tag, push
+#   2. cd ../arise-overlay && make manifest VERSION=x.y.z
+#      - downloads the actual GitHub archive tarball
+#      - computes real BLAKE2B/SHA512/SHA256 checksums
+#      - regenerates the Manifest with correct DIST + EBUILD entries
+#      - NOTE: the ebuild itself must exist (copy 9999 or previous version)
+#   3. cd ../arise-overlay && git add . && git commit -m "release vx.y.z" && git push
+#   4. On the Gentoo host: emerge --sync arise-overlay && emerge -av arise
+#
+# After release, on the Gentoo host:
+#   emerge --sync arise-overlay && emerge -av arise
+#
 
 VERSION ?= 0.1.0
-release: static test
-	@echo "Tagging release v$(VERSION)..."
+release: vendor static test
+	@echo "Tagging arise v$(VERSION)..."
 	git tag -a "v$(VERSION)" -m "arise v$(VERSION)"
 	git push origin master --tags
 	@echo ""
-	@echo "Now update the overlay:"
-	@echo "  cd ../arise-overlay && make manifest VERSION=$(VERSION)"
-	@echo "  cd ../arise-overlay && git add . && git commit -m 'release v$(VERSION)' && git push"
+	@echo "Tag pushed. Now update the overlay:"
+	@echo ""
+	@echo "  cd ../arise-overlay"
+	@echo "  make manifest VERSION=$(VERSION)"
+	@echo "  git add sys-apps/arise/Manifest sys-apps/arise/arise-$(VERSION).ebuild"
+	@echo "  git commit -m 'release arise v$(VERSION)'"
+	@echo "  git push origin master"
+	@echo ""
+	@echo "On the Gentoo host:"
+	@echo "  emerge --sync arise-overlay"
+	@echo "  emerge -av arise"
+
+vendor:
+	$(GO) mod vendor
+	@echo "Tagging arise v$(VERSION)..."
+	git tag -a "v$(VERSION)" -m "arise v$(VERSION)"
+	git push origin master --tags
+	@echo ""
+	@echo "Tag pushed. Now update the overlay:"
+	@echo ""
+	@echo "  cd ../arise-overlay"
+	@echo "  make manifest VERSION=$(VERSION)"
+	@echo "  git add sys-apps/arise/Manifest sys-apps/arise/arise-$(VERSION).ebuild"
+	@echo "  git commit -m 'release arise v$(VERSION)'"
+	@echo "  git push origin master"
+	@echo ""
+	@echo "On the Gentoo host:"
+	@echo "  emerge --sync arise-overlay"
+	@echo "  emerge -av arise"
