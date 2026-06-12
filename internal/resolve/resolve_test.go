@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -290,8 +291,8 @@ func TestResolve_DeepMode(t *testing.T) {
 func TestResolve_AnyOfPreferInstalled(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "app-shells/bash", "5.0", "0", "0", false, nil)
-	pkg(g, "virtual/editor", "1", "0", "0", true, nil)   // already installed
-	pkg(g, "app-editors/vim", "9.0", "0", "0", false, nil) // not installed
+	pkg(g, "virtual/editor", "1", "0", "0", true, nil)      // already installed
+	pkg(g, "app-editors/vim", "9.0", "0", "0", false, nil)  // not installed
 	pkg(g, "app-editors/nano", "7.0", "0", "0", false, nil) // not installed
 
 	anyOf(g, "app-shells/bash", DepTypeRuntime,
@@ -1143,19 +1144,19 @@ func TestDefaultResolveConfig(t *testing.T) {
 func TestResolve_NeverPanics_StressTest(t *testing.T) {
 	// Ensure resolve never panics regardless of input
 	tests := []struct {
-		name      string
-		graphFn   func() *DepGraph
-		targets   []string
-		config    ResolveConfig
+		name    string
+		graphFn func() *DepGraph
+		targets []string
+		config  ResolveConfig
 	}{
 		{
-			name: "nil graph",
+			name:    "nil graph",
 			graphFn: func() *DepGraph { return nil },
 			targets: []string{"app-editors/vim"},
 			config:  DefaultResolveConfig(),
 		},
 		{
-			name: "empty graph",
+			name:    "empty graph",
 			graphFn: func() *DepGraph { return makeGraph() },
 			targets: []string{"app-editors/vim"},
 			config:  DefaultResolveConfig(),
@@ -1254,6 +1255,7 @@ func TestPkgNode_FindMatchingVersion(t *testing.T) {
 		t.Errorf("expected no matching version for constraint %s, got %s", c2.String(), vi2.Version.Raw)
 	}
 }
+
 // ---------------------------------------------------------------------------
 // Test: DepGraph methods
 // ---------------------------------------------------------------------------
@@ -1564,12 +1566,12 @@ func TestResolve_WorldSet(t *testing.T) {
 	cfg := DefaultResolveConfig()
 
 	r := &resolver{
-		graph:    g,
-		config:   cfg,
-		toInstall: make(map[string]*PkgAction),
-		toUninstall: make(map[string]*PkgAction),
-		conflicts: []string{},
-		seenDeps: make(map[string]bool),
+		graph:              g,
+		config:             cfg,
+		toInstall:          make(map[string]*PkgAction),
+		toUninstall:        make(map[string]*PkgAction),
+		conflicts:          []string{},
+		seenDeps:           make(map[string]bool),
 		backtrackRemaining: cfg.Backtrack,
 		worldSet: &WorldSet{
 			Entries: []string{"app-editors/vim", "app-shells/bash"},
@@ -1602,12 +1604,12 @@ func TestResolve_WorldSetEmpty(t *testing.T) {
 	cfg := DefaultResolveConfig()
 
 	r := &resolver{
-		graph:    g,
-		config:   cfg,
-		toInstall: make(map[string]*PkgAction),
-		toUninstall: make(map[string]*PkgAction),
-		conflicts: []string{},
-		seenDeps: make(map[string]bool),
+		graph:              g,
+		config:             cfg,
+		toInstall:          make(map[string]*PkgAction),
+		toUninstall:        make(map[string]*PkgAction),
+		conflicts:          []string{},
+		seenDeps:           make(map[string]bool),
 		backtrackRemaining: cfg.Backtrack,
 	}
 	if cfg.Backtrack <= 0 {
@@ -3185,6 +3187,124 @@ func TestResume_SkipFirst_Nonexistent(t *testing.T) {
 	}
 }
 
+func TestResume_Schema_ValidJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resume")
+
+	state := ResumeState{
+		Packages: []ResumePackage{
+			{CPV: "app-misc/foo-1.0", Atom: "app-misc/foo-1.0", Completed: false},
+			{CPV: "dev-libs/bar-2.0", Atom: "dev-libs/bar-2.0", Completed: false},
+		},
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(path, data, 0644)
+
+	loaded, err := LoadResume(path)
+	if err != nil {
+		t.Fatalf("LoadResume: %v", err)
+	}
+	if len(loaded) != 2 {
+		t.Errorf("expected 2 atoms, got %d", len(loaded))
+	}
+	if loaded[0] != "app-misc/foo-1.0" {
+		t.Errorf("first atom = %q, want app-misc/foo-1.0", loaded[0])
+	}
+}
+
+func TestResume_Schema_EmptyPackages(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resume")
+
+	os.WriteFile(path, []byte(`{"packages":[]}`), 0644)
+
+	loaded, err := LoadResume(path)
+	if err != nil {
+		t.Fatalf("LoadResume: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Errorf("expected 0 atoms, got %d", len(loaded))
+	}
+}
+
+func TestResume_Schema_MissingCompletedField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resume")
+
+	os.WriteFile(path, []byte(`{"packages":[{"cpv":"foo/bar-1.0","atom":"foo/bar-1.0"}]}`), 0644)
+
+	loaded, err := LoadResume(path)
+	if err != nil {
+		t.Fatalf("LoadResume: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Errorf("expected 1 atom, got %d", len(loaded))
+	}
+	if loaded[0] != "foo/bar-1.0" {
+		t.Errorf("atom = %q, want foo/bar-1.0", loaded[0])
+	}
+}
+
+func TestResume_Schema_CorruptJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resume")
+
+	os.WriteFile(path, []byte(`{this is not json}`), 0644)
+
+	_, err := LoadResume(path)
+	if err == nil {
+		t.Error("expected error for corrupt JSON")
+	}
+}
+
+func TestResume_Schema_MissingPackagesField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resume")
+
+	os.WriteFile(path, []byte(`{"other": "data"}`), 0644)
+
+	loaded, err := LoadResume(path)
+	if err != nil {
+		t.Fatalf("LoadResume: %v", err)
+	}
+	if len(loaded) != 0 {
+		t.Errorf("expected 0 atoms, got %d", len(loaded))
+	}
+}
+
+func TestResume_Schema_SaveLoadMatch(t *testing.T) {
+	g := makeGraph()
+	vi := pkg(g, "app-misc/roundtrip", "1.0", "0", "0", false, nil)
+	_ = vi
+
+	result := &ResolveResult{
+		Install: []PkgAction{
+			{Atom: mustParse("app-misc/roundtrip-1.0"), Action: "install", Reason: "test", Slot: "0", Subslot: "0"},
+		},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "resume")
+
+	if err := SaveResume(path, result); err != nil {
+		t.Fatalf("SaveResume: %v", err)
+	}
+
+	loaded, err := LoadResume(path)
+	if err != nil {
+		t.Fatalf("LoadResume: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 atom, got %d", len(loaded))
+	}
+	if loaded[0] != "app-misc/roundtrip-1.0" {
+		t.Errorf("atom = %q, want app-misc/roundtrip-1.0", loaded[0])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // KeepGoing returns partial installs with conflicts
 // ---------------------------------------------------------------------------
@@ -4213,5 +4333,162 @@ func Test_stress_BdepsAuto_AllTypes(t *testing.T) {
 	}
 	if !foundLibbar {
 		t.Error("libbar should be installed (runtime dep)")
+	}
+}
+
+func setSlotOp(g *DepGraph, fromCP, toCP string, op atom.SlotOp) {
+	for _, edge := range g.Packages[fromCP].Deps {
+		if edge.To != nil && edge.To.Atom.CP() == toCP {
+			edge.DepAtom.SlotOp = op
+		}
+	}
+}
+
+func TestProcessCompleteGraph_SubslotChangeRebuildsSlotOpRevDeps(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-libs/somelib", "1.0", "0/1", "1", true, nil)
+	pkg(g, "dev-libs/somelib", "2.0", "0/2", "2", false, nil)
+	pkg(g, "app-misc/consumer", "1.0", "0", "0", true, nil)
+
+	deps(g, "app-misc/consumer", "dev-libs/somelib")
+	setSlotOp(g, "app-misc/consumer", "dev-libs/somelib", atom.SlotOpEq)
+
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.CompleteGraph = true
+
+	result, err := Resolve(g, []string{"dev-libs/somelib"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	consumerRebuilt := false
+	for _, a := range result.Install {
+		if a.Atom.CP() == "app-misc/consumer" && a.Action == "reinstall" {
+			consumerRebuilt = true
+		}
+	}
+	if !consumerRebuilt {
+		t.Error("consumer should be rebuilt when somelib subslot changes")
+	}
+}
+
+func TestProcessCompleteGraph_NoSubslotChangeNoRebuild(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-libs/somelib", "1.0", "0/1", "1", true, nil)
+	pkg(g, "dev-libs/somelib", "2.0", "0/1", "1", false, nil)
+	pkg(g, "app-misc/consumer", "1.0", "0", "0", true, nil)
+
+	deps(g, "app-misc/consumer", "dev-libs/somelib")
+	setSlotOp(g, "app-misc/consumer", "dev-libs/somelib", atom.SlotOpEq)
+
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.CompleteGraph = true
+
+	result, err := Resolve(g, []string{"dev-libs/somelib"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range result.Install {
+		if a.Atom.CP() == "app-misc/consumer" {
+			t.Error("consumer should NOT be rebuilt when subslot unchanged")
+		}
+	}
+}
+
+func TestProcessCompleteGraph_NoSlotOperatorNoRebuild(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-libs/somelib", "1.0", "0/1", "1", true, nil)
+	pkg(g, "dev-libs/somelib", "2.0", "0/2", "2", false, nil)
+	pkg(g, "app-misc/consumer", "1.0", "0", "0", true, nil)
+
+	deps(g, "app-misc/consumer", "dev-libs/somelib")
+
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.CompleteGraph = true
+
+	result, err := Resolve(g, []string{"dev-libs/somelib"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range result.Install {
+		if a.Atom.CP() == "app-misc/consumer" {
+			t.Error("consumer should NOT be rebuilt without slot operator dep")
+		}
+	}
+}
+
+func TestProcessCompleteGraph_IgnoreFlagSkipsRebuild(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-libs/somelib", "1.0", "0/1", "1", true, nil)
+	pkg(g, "dev-libs/somelib", "2.0", "0/2", "2", false, nil)
+	pkg(g, "app-misc/consumer", "1.0", "0", "0", true, nil)
+
+	deps(g, "app-misc/consumer", "dev-libs/somelib")
+	setSlotOp(g, "app-misc/consumer", "dev-libs/somelib", atom.SlotOpEq)
+
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.CompleteGraph = true
+	cfg.IgnoreBuiltSlotOperatorDeps = "y"
+
+	result, err := Resolve(g, []string{"dev-libs/somelib"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, a := range result.Install {
+		if a.Atom.CP() == "app-misc/consumer" {
+			t.Error("consumer should NOT be rebuilt when ignore-built-slot-operator-deps=y")
+		}
+	}
+}
+
+func TestProcessCompleteGraph_EmptyGraphNoop(t *testing.T) {
+	g := makeGraph()
+
+	cfg := DefaultResolveConfig()
+	cfg.CompleteGraph = true
+
+	result, err := Resolve(g, []string{}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(result.Install) != 0 {
+		t.Errorf("empty graph should produce empty install list, got %d", len(result.Install))
+	}
+}
+
+func TestProcessCompleteGraph_NotInstalledRevDepNoRebuild(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-libs/somelib", "1.0", "0/1", "1", true, nil)
+	pkg(g, "dev-libs/somelib", "2.0", "0/2", "2", false, nil)
+	pkg(g, "app-misc/consumer", "2.0", "0", "0", false, nil)
+
+	deps(g, "app-misc/consumer", "dev-libs/somelib")
+	setSlotOp(g, "app-misc/consumer", "dev-libs/somelib", atom.SlotOpEq)
+
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.CompleteGraph = true
+
+	result, err := Resolve(g, []string{"dev-libs/somelib"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	somelibUpdated := false
+	for _, a := range result.Install {
+		if a.Atom.CP() == "dev-libs/somelib" {
+			somelibUpdated = true
+		}
+	}
+	if !somelibUpdated {
+		t.Error("somelib should be in install list (update)")
 	}
 }

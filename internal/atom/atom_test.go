@@ -67,8 +67,8 @@ func TestParse_Basic(t *testing.T) {
 			input: ">=sys-devel/gcc-12.2.0:12/12.2=[fortran]",
 			want: &Atom{
 				Op: OpGtEq, Category: "sys-devel", Package: "gcc",
-				Version:  &Version{Raw: "12.2.0", Numbers: []int{12, 2, 0}, Revision: -1},
-				Slot: "12", Subslot: "12.2",
+				Version: &Version{Raw: "12.2.0", Numbers: []int{12, 2, 0}, Revision: -1},
+				Slot:    "12", Subslot: "12.2",
 				SlotOp:   SlotOpEq,
 				UseFlags: []UseFlag{{Name: "fortran", Enabled: true}},
 			},
@@ -367,5 +367,142 @@ func TestCompare_NilReceiver(t *testing.T) {
 	var c *Version
 	if got := c.Compare(c); got != 0 {
 		t.Errorf("nil.Compare(nil) on same nil = %d, want 0", got)
+	}
+}
+
+func TestProperty_VersionCompareAntisymmetry(t *testing.T) {
+	versions := []string{
+		"1.0", "2.0", "1.2.3", "1.2.3a", "1.2.3b",
+		"1.0_alpha", "1.0_beta", "1.0_pre", "1.0_rc", "1.0_p",
+		"1.0-r1", "1.0-r2", "0", "9999", "1.2.3_p4-r5",
+		"2.3.4a-r1", "3.4.5_alpha1", "4.5.6_beta2-r3",
+	}
+	parsed := make([]*Version, len(versions))
+	for i, v := range versions {
+		a, _ := Parse("cat/pkg-" + v)
+		parsed[i] = a.Version
+	}
+
+	for i := range parsed {
+		for j := range parsed {
+			cmp := parsed[i].Compare(parsed[j])
+			rev := parsed[j].Compare(parsed[i])
+			if cmp == 0 && rev != 0 {
+				t.Errorf("Compare(%s,%s)=0 but reverse=%d", versions[i], versions[j], rev)
+			}
+			if cmp > 0 && rev != -1 {
+				t.Errorf("Compare(%s,%s)=%d but reverse expected -1, got %d", versions[i], versions[j], cmp, rev)
+			}
+			if cmp < 0 && rev != 1 {
+				t.Errorf("Compare(%s,%s)=%d but reverse expected 1, got %d", versions[i], versions[j], cmp, rev)
+			}
+		}
+	}
+}
+
+func TestProperty_VersionCompareTransitivity(t *testing.T) {
+	versions := []string{
+		"1.0", "1.1", "2.0", "1.0-r1", "1.0-r2",
+		"1.0_alpha", "1.0_beta", "1.0_pre", "1.0_rc",
+		"1.0a", "1.0b", "1.0c", "3.0", "4.0", "5.0",
+		"1_p1", "1_p2", "1.0_p3",
+	}
+	parsed := make([]*Version, len(versions))
+	for i, v := range versions {
+		a, _ := Parse("cat/pkg-" + v)
+		parsed[i] = a.Version
+	}
+
+	for i := range parsed {
+		for j := range parsed {
+			if parsed[i].Compare(parsed[j]) <= 0 {
+				continue
+			}
+			for k := range parsed {
+				if parsed[j].Compare(parsed[k]) <= 0 {
+					continue
+				}
+				if parsed[i].Compare(parsed[k]) <= 0 {
+					t.Errorf("transitivity violation: %s > %s && %s > %s but %s not > %s",
+						versions[i], versions[j], versions[j], versions[k], versions[i], versions[k])
+				}
+			}
+		}
+	}
+}
+
+func TestProperty_AtomRoundTrip(t *testing.T) {
+	atoms := []string{
+		"sys-apps/portage",
+		"=sys-apps/portage-3.0.51",
+		">=dev-lang/python-3.11",
+		"~sys-libs/glibc-2.37-r3",
+		"<media-libs/libpng-1.6",
+		"dev-libs/openssl:0",
+		"=sys-devel/gcc-13.2.0:13",
+		"app-editors/vim:0/1",
+		"=dev-libs/boost-1.84.0:0/1.84.0=",
+		"virtual/libcrypt:=",
+		"=virtual/rust-1.84.0*",
+		"~dev-lang/ruby-3.3:3.3[ssl]",
+		"dev-libs/libfoo[-bar,baz]",
+		"dev-lang/rust::gentoo",
+		"null/nothing",
+	}
+
+	for _, input := range atoms {
+		t.Run(input, func(t *testing.T) {
+			parsed, err := Parse(input)
+			if err != nil {
+				t.Fatalf("Parse(%q) error: %v", input, err)
+			}
+			rendered := parsed.String()
+			reparsed, err := Parse(rendered)
+			if err != nil {
+				t.Fatalf("re-Parse(%q) error: %v", rendered, err)
+			}
+
+			if parsed.Category != reparsed.Category {
+				t.Errorf("Category: %q != %q", parsed.Category, reparsed.Category)
+			}
+			if parsed.Package != reparsed.Package {
+				t.Errorf("Package: %q != %q", parsed.Package, reparsed.Package)
+			}
+			if parsed.Op != reparsed.Op {
+				t.Errorf("Op: %q != %q", parsed.Op, reparsed.Op)
+			}
+			if parsed.Slot != reparsed.Slot {
+				t.Errorf("Slot: %q != %q", parsed.Slot, reparsed.Slot)
+			}
+			if parsed.Subslot != reparsed.Subslot {
+				t.Errorf("Subslot: %q != %q", parsed.Subslot, reparsed.Subslot)
+			}
+			if parsed.Repo != reparsed.Repo {
+				t.Errorf("Repo: %q != %q", parsed.Repo, reparsed.Repo)
+			}
+		})
+	}
+}
+
+func TestProperty_AtomStringIdempotency(t *testing.T) {
+	inputs := []string{
+		"=sys-apps/portage-3.0.51",
+		">=dev-lang/python-3.11",
+		"dev-libs/openssl:0",
+		"app-editors/vim:0/1",
+	}
+
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			a, err := Parse(input)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			s1 := a.String()
+			s2 := a.String()
+			if s1 != s2 {
+				t.Errorf("String() not idempotent: %q != %q", s1, s2)
+			}
+		})
 	}
 }

@@ -17,10 +17,10 @@ import (
 type PkgState int
 
 const (
-	StateMissing       PkgState = iota
-	StateInstalled     PkgState = iota
+	StateMissing         PkgState = iota
+	StateInstalled       PkgState = iota
 	StateUpdateAvailable PkgState = iota
-	StateOutdatedDeps  PkgState = iota
+	StateOutdatedDeps    PkgState = iota
 )
 
 func (s PkgState) String() string {
@@ -66,10 +66,10 @@ func (d DepType) String() string {
 }
 
 type DepEdge struct {
-	Atom       *atom.Atom
-	Type       DepType
+	Atom        *atom.Atom
+	Type        DepType
 	Conditional string
-	AnyOfGroup bool
+	AnyOfGroup  bool
 }
 
 type PkgNode struct {
@@ -81,9 +81,9 @@ type PkgNode struct {
 }
 
 type DepGraph struct {
-	Nodes         map[string]*PkgNode
+	Nodes          map[string]*PkgNode
 	InstalledAtoms map[string]*atom.Atom
-	AllAtoms      map[string]*atom.Atom
+	AllAtoms       map[string]*atom.Atom
 }
 
 func Build(db *badger.DB, repoDir string) (*DepGraph, error) {
@@ -652,6 +652,52 @@ func BuildParallel(db *badger.DB, repoDir string, workers int) (*DepGraph, error
 	for e := range errs {
 		if err == nil {
 			err = e
+		}
+	}
+
+	md5CacheDir := filepath.Join(repoDir, "metadata", "md5-cache")
+	if info, statErr := os.Stat(md5CacheDir); statErr == nil && info.IsDir() {
+		results, walkErrs := walkCache(md5CacheDir)
+		available := make(map[string]*metadata.PackageMetadata)
+
+		done := make(chan struct{})
+		go func() {
+			for {
+				select {
+				case m, ok := <-results:
+					if !ok {
+						results = nil
+					} else if m != nil {
+						cp := m.Key()
+						mu.Lock()
+						if existing, exists := available[cp]; !exists || versionGreater(m.Version, existing.Version) {
+							available[cp] = m
+						}
+						mu.Unlock()
+					}
+				case _, ok := <-walkErrs:
+					if !ok {
+						walkErrs = nil
+					}
+				}
+				if results == nil && walkErrs == nil {
+					break
+				}
+			}
+			close(done)
+		}()
+		<-done
+
+		for cp, m := range available {
+			mu.Lock()
+			if _, isInstalled := g.Nodes[cp]; !isInstalled {
+				node := g.getOrCreate(cp, m)
+				if node.State == StateMissing {
+					node.State = StateMissing
+				}
+				g.addEdgesFromMeta(node, m)
+			}
+			mu.Unlock()
 		}
 	}
 

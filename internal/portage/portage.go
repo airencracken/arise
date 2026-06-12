@@ -496,6 +496,135 @@ func unquote(s string) string {
 	return s
 }
 
+// RepoEntry holds a single repository configuration from repos.conf.
+type RepoEntry struct {
+	Name     string
+	Location string
+	SyncURI  string
+	SyncType string
+}
+
+// ParseReposConf reads repos.conf from the given path (file or directory)
+// and returns the sync-uri for the repo whose location matches targetDir.
+// If targetDir is empty, returns the sync-uri for the first repo found.
+func ParseReposConf(reposConfPath, targetDir string) string {
+	entries, err := parseReposConfDir(reposConfPath)
+	if err != nil || len(entries) == 0 {
+		return ""
+	}
+
+	if targetDir != "" {
+		for _, e := range entries {
+			if e.Location == targetDir {
+				return e.SyncURI
+			}
+		}
+		return ""
+	}
+
+	for _, e := range entries {
+		if e.SyncURI != "" {
+			return e.SyncURI
+		}
+	}
+	return ""
+}
+
+func parseReposConfDir(root string) ([]RepoEntry, error) {
+	info, err := os.Stat(root)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	if info.IsDir() {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			files = append(files, filepath.Join(root, e.Name()))
+		}
+		sort.Strings(files)
+	} else {
+		files = []string{root}
+	}
+
+	var allEntries []RepoEntry
+	for _, f := range files {
+		entries, err := parseReposConfFile(f)
+		if err != nil {
+			continue
+		}
+		allEntries = append(allEntries, entries...)
+	}
+	return allEntries, nil
+}
+
+func parseReposConfFile(path string) ([]RepoEntry, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var entries []RepoEntry
+	var current *RepoEntry
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			if current != nil && current.Name != "" {
+				entries = append(entries, *current)
+			}
+			name := line[1 : len(line)-1]
+			current = &RepoEntry{Name: name}
+			continue
+		}
+
+		if current == nil {
+			continue
+		}
+
+		idx := strings.IndexByte(line, '=')
+		if idx < 0 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		val := strings.TrimSpace(line[idx+1:])
+		switch key {
+		case "location":
+			current.Location = val
+		case "sync-uri":
+			current.SyncURI = val
+		case "sync-type":
+			current.SyncType = val
+		}
+	}
+
+	if current != nil && current.Name != "" {
+		entries = append(entries, *current)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+
+	return entries, nil
+}
+
 // ParseBinhostConfig reads binhost URLs from portage config.
 func ParseBinhostConfig(cfg *Config) []string {
 	if cfg == nil {

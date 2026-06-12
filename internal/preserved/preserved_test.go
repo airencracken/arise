@@ -206,19 +206,19 @@ func TestParseLDDMissing(t *testing.T) {
 			want:   nil,
 		},
 		{
-			name: "not a dynamic executable",
+			name:   "not a dynamic executable",
 			output: `	not a dynamic executable`,
-			want: nil,
+			want:   nil,
 		},
 		{
-			name: "whitespace variation",
+			name:   "whitespace variation",
 			output: `	libfoo.so.1 =>   not found`,
-			want: []string{"libfoo.so.1"},
+			want:   []string{"libfoo.so.1"},
 		},
 		{
-			name: "versioned missing",
+			name:   "versioned missing",
 			output: `	libssl.so.1.1 => not found`,
-			want: []string{"libssl.so.1.1"},
+			want:   []string{"libssl.so.1.1"},
 		},
 	}
 
@@ -850,7 +850,7 @@ func TestVdbContentsMap_Adversarial(t *testing.T) {
 
 	packages := map[string]map[string]string{
 		"cat": {
-			"giant-1.0":  strings.Repeat("obj /usr/lib/giant.so.1 a1 0\n", 10000),
+			"giant-1.0":   strings.Repeat("obj /usr/lib/giant.so.1 a1 0\n", 10000),
 			"corrupt-1.0": "garbage\n\x00\x00\x00\nobj /usr/lib/ok.so a1 0",
 		},
 	}
@@ -957,8 +957,8 @@ func TestELFSoname_NotSharedLib(t *testing.T) {
 
 func TestLDDMappingRE(t *testing.T) {
 	tests := []struct {
-		line    string
-		wantLib string
+		line     string
+		wantLib  string
 		wantPath string
 	}{
 		{"\tlibc.so.6 => /usr/lib/libc.so.6 (0x00007f8b2c000000)", "libc.so.6", "/usr/lib/libc.so.6"},
@@ -1409,6 +1409,80 @@ func TestIntegration_RevdepRebuild(t *testing.T) {
 		if a != "" && !strings.Contains(a, "/") {
 			t.Errorf("result atom %q should contain category/package", a)
 		}
+	}
+}
+
+func TestLddMissing_LddNotFound(t *testing.T) {
+	orig := lddPath
+	defer func() { lddPath = orig }()
+	lddPath = "/nonexistent/ldd"
+
+	_, err := lddMissing("/bin/sh")
+	if err == nil {
+		t.Error("expected error when ldd binary is not found")
+	}
+}
+
+func TestLddMissing_LddFails(t *testing.T) {
+	orig := lddPath
+	defer func() { lddPath = orig }()
+	lddPath = "false"
+
+	_, err := lddMissing("/dev/null")
+	if err == nil {
+		t.Error("expected error when ldd returns non-zero")
+	}
+}
+
+func TestFileExists_TrueForExisting(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "exists.txt")
+	os.WriteFile(f, []byte("hello"), 0644)
+
+	if !fileExists(f) {
+		t.Error("fileExists should return true for existing file")
+	}
+}
+
+func TestFileExists_FalseForMissing(t *testing.T) {
+	if fileExists("/nonexistent/path/definitely/not/there") {
+		t.Error("fileExists should return false for non-existent path")
+	}
+}
+
+func TestFileExists_TrueForDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	if !fileExists(dir) {
+		t.Error("fileExists should return true for existing directory")
+	}
+}
+
+func TestLddMissing_EmptyOutput(t *testing.T) {
+	orig := lddPath
+	defer func() { lddPath = orig }()
+	lddPath = "echo"
+
+	missing, err := lddMissing("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("expected 0 missing libs for empty ldd output, got %d", len(missing))
+	}
+}
+
+func TestLddMissing_RealLddIfAvailable(t *testing.T) {
+	if _, err := exec.LookPath("ldd"); err != nil {
+		t.Skip("ldd not available")
+	}
+
+	f := filepath.Join(t.TempDir(), "empty")
+	os.WriteFile(f, []byte{}, 0755)
+
+	_, err := lddMissing(f)
+	if err == nil {
+		t.Log("ldd on empty file returned success (unexpected but ok)")
 	}
 }
 

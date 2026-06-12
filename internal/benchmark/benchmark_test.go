@@ -2,11 +2,14 @@ package benchmark
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/binpkg"
@@ -604,6 +607,114 @@ func TestCompareEqueryBelongs(t *testing.T) {
 		},
 	)
 	t.Log(FormatComparison(Comparison))
+}
+
+func TestCreateTestDB_Small(t *testing.T) {
+	db, err := CreateTestDB(10)
+	if err != nil {
+		t.Fatalf("CreateTestDB: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	err = db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			count++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	if count != 10 {
+		t.Errorf("expected 10 packages, got %d", count)
+	}
+}
+
+func TestCreateTestDB_Zero(t *testing.T) {
+	db, err := CreateTestDB(0)
+	if err != nil {
+		t.Fatalf("CreateTestDB(0): %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	db.View(func(txn *badger.Txn) error {
+		it := txn.NewIterator(badger.DefaultIteratorOptions)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			count++
+		}
+		return nil
+	})
+	if count != 0 {
+		t.Errorf("expected 0 packages, got %d", count)
+	}
+}
+
+func TestFormatComparison(t *testing.T) {
+	c := Comparison{
+		Name:         "test-bench",
+		AriseOps:     1000,
+		EmergeOps:    500,
+		AriseTotal:   time.Millisecond * 100,
+		EmergeTotal:  time.Millisecond * 200,
+		AriseCorrect: true,
+		Speedup:      2.0,
+	}
+	out := FormatComparison(c)
+	if !strings.Contains(out, "test-bench") {
+		t.Error("output should contain benchmark name")
+	}
+	if !strings.Contains(out, "yes") {
+		t.Error("output should show correct = yes")
+	}
+}
+
+func TestFormatComparisonSummary(t *testing.T) {
+	comparisons := []Comparison{
+		{Name: "a", AriseOps: 100, EmergeOps: 50, AriseCorrect: true, Speedup: 2.0},
+		{Name: "b", AriseOps: 200, EmergeOps: 200, AriseCorrect: true, Speedup: 1.0},
+	}
+	out := FormatComparisonSummary(comparisons)
+	if !strings.Contains(out, "Benchmark") || !strings.Contains(out, "Speedup") {
+		t.Error("summary should have headers")
+	}
+	if !strings.Contains(out, "a") || !strings.Contains(out, "b") {
+		t.Error("summary should contain both benchmarks")
+	}
+}
+
+func TestFormatComparisonsJSON(t *testing.T) {
+	comparisons := []Comparison{
+		{Name: "json-test", AriseOps: 42, AriseCorrect: true},
+	}
+	out := FormatComparisonsJSON(comparisons)
+	var decoded []map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if len(decoded) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(decoded))
+	}
+	if decoded[0]["name"] != "json-test" {
+		t.Errorf("name = %v", decoded[0]["name"])
+	}
+}
+
+func TestRunComparison_NoEmerge(t *testing.T) {
+	c := RunComparison(t, "no-emerge", func() error { return nil }, nil)
+	if c.Name != "no-emerge" {
+		t.Errorf("Name = %q", c.Name)
+	}
+	if !c.AriseCorrect {
+		t.Error("AriseCorrect should be true for no-error fn")
+	}
+	if c.EmergeOps != 0 {
+		t.Error("EmergeOps should be 0 when emergeFn is nil")
+	}
 }
 
 func TestCompareEqueryFiles(t *testing.T) {

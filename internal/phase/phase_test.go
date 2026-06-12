@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/airencracken/arise/internal/features"
 )
 
 func TestNewRunner_NilConfig(t *testing.T) {
@@ -513,4 +516,430 @@ func TestCmdError(t *testing.T) {
 			t.Errorf("plain error should be passed through: %v", plain)
 		}
 	})
+
+	t.Run("nil error", func(t *testing.T) {
+		if err := cmdError(nil); err != nil {
+			t.Errorf("cmdError(nil) should return nil, got %v", err)
+		}
+	})
+
+	t.Run("exit error", func(t *testing.T) {
+		exitErr := &exec.ExitError{
+			ProcessState: &os.ProcessState{},
+		}
+		got := cmdError(exitErr)
+		if got == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if !strings.Contains(got.Error(), "command") {
+			t.Errorf("error should mention command: %v", got)
+		}
+	})
+}
+
+func TestRunner_BuildEnvEDAndEROOT(t *testing.T) {
+	cfg := PhaseConfig{
+		WorkDir:   "/tmp/work",
+		Sourcedir: "/tmp/src",
+		DESTDIR:   "/tmp/image",
+	}
+	r := &Runner{cfg: cfg}
+
+	env := r.buildEnv()
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if envMap["ED"] != "/tmp/image" {
+		t.Errorf("ED = %q, want /tmp/image", envMap["ED"])
+	}
+	if envMap["EROOT"] != "/tmp/image" {
+		t.Errorf("EROOT = %q, want /tmp/image", envMap["EROOT"])
+	}
+	if envMap["DESTDIR"] != "/tmp/image" {
+		t.Errorf("DESTDIR = %q, want /tmp/image", envMap["DESTDIR"])
+	}
+}
+
+func TestRunner_BuildEnvDefaultArch(t *testing.T) {
+	cfg := PhaseConfig{
+		WorkDir:   "/tmp/work",
+		Sourcedir: "/tmp/src",
+		DESTDIR:   "/tmp/dest",
+	}
+	r := &Runner{cfg: cfg}
+
+	env := r.buildEnv()
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if envMap["ARCH"] != "amd64" {
+		t.Errorf("ARCH = %q, want amd64 (default)", envMap["ARCH"])
+	}
+}
+
+func TestRunner_BuildEnvMAKEOPTS(t *testing.T) {
+	cfg := PhaseConfig{
+		WorkDir:   "/tmp/work",
+		Sourcedir: "/tmp/src",
+		DESTDIR:   "/tmp/dest",
+		MAKEOPTS:  "-j8 -l4",
+	}
+	r := &Runner{cfg: cfg}
+
+	env := r.buildEnv()
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if envMap["MAKEOPTS"] != "-j8 -l4" {
+		t.Errorf("MAKEOPTS = %q, want -j8 -l4", envMap["MAKEOPTS"])
+	}
+}
+
+func TestRunner_ApplyFeatures(t *testing.T) {
+	cfg := PhaseConfig{
+		WorkDir:           "/tmp/work",
+		Sourcedir:         "/tmp/src",
+		DESTDIR:           "/tmp/dest",
+		PortageConfigRoot: "/etc/portage",
+		Features:          features.ParseFeatures("split-log"),
+	}
+	r := &Runner{cfg: cfg}
+
+	cmd := exec.Command("echo", "test")
+	r.applyFeatures(cmd)
+
+	if cmd.Env == nil && len(cmd.ExtraFiles) == 0 {
+		t.Log("applyFeatures with split-log: no extra files for simple echo (expected)")
+	}
+}
+
+func TestRunner_ApplyFeaturesNil(t *testing.T) {
+	cfg := PhaseConfig{
+		WorkDir:   "/tmp/work",
+		Sourcedir: "/tmp/src",
+		DESTDIR:   "/tmp/dest",
+	}
+	r := &Runner{cfg: cfg}
+
+	cmd := exec.Command("echo", "test")
+	r.applyFeatures(cmd)
+}
+
+func TestRunner_InstallOpts(t *testing.T) {
+	cfg := PhaseConfig{
+		WorkDir:   "/tmp/work",
+		Sourcedir: "/tmp/src",
+		DESTDIR:   "/tmp/image",
+	}
+	r := &Runner{cfg: cfg}
+
+	opts := r.installOpts()
+	if len(opts) != 1 {
+		t.Fatalf("installOpts() len = %d, want 1", len(opts))
+	}
+	if opts[0] != "DESTDIR=/tmp/image" {
+		t.Errorf("installOpts()[0] = %q, want DESTDIR=/tmp/image", opts[0])
+	}
+}
+
+func TestCmdError_ExitStatus(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("syscall.WaitStatus test is Linux-specific")
+	}
+
+	exitErr := &exec.ExitError{
+		ProcessState: new(os.ProcessState),
+	}
+	err := cmdError(exitErr)
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+
+	if !strings.Contains(err.Error(), "command") {
+		t.Errorf("error should mention command: %v", err)
+	}
+}
+
+func TestCmdError_Formatting(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("syscall.WaitStatus test is Linux-specific")
+	}
+
+	exitErr := &exec.ExitError{
+		ProcessState: &os.ProcessState{},
+	}
+	err := cmdError(fmt.Errorf("wrap: %w", exitErr))
+
+	if err == nil {
+		t.Fatal("expected non-nil error")
+	}
+	if !strings.Contains(err.Error(), "command") {
+		t.Errorf("wrapped exit error should be transformed: %v", err)
+	}
+}
+
+func TestPhase_Adversarial_NilContext(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.Run(context.Background(), "src_prepare"); err != nil {
+		t.Errorf("src_prepare should be no-op: %v", err)
+	}
+}
+
+func TestPhase_Adversarial_EmptyPhaseName(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.Run(context.Background(), ""); err != nil {
+		t.Errorf("empty phase should be no-op: %v", err)
+	}
+}
+
+func TestPhase_Adversarial_VeryLongPhaseName(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	longName := strings.Repeat("x", 10000)
+	if err := r.Run(context.Background(), longName); err != nil {
+		t.Errorf("unknown phase should be no-op: %v", err)
+	}
+}
+
+func TestPhase_Adversarial_MalformedArchive(t *testing.T) {
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "work")
+	os.MkdirAll(workDir, 0755)
+
+	archivePath := filepath.Join(dir, "bad.tar.gz")
+	os.WriteFile(archivePath, []byte("this is not a valid gzip file"), 0644)
+
+	cfg := PhaseConfig{
+		WorkDir:   workDir,
+		Sourcedir: dir,
+		DESTDIR:   filepath.Join(dir, "dest"),
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	err = r.Run(context.Background(), "src_unpack")
+	if err == nil {
+		t.Error("expected error for malformed archive")
+	}
+}
+
+func TestPhase_Adversarial_UnsupportedExtension(t *testing.T) {
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "work")
+	os.MkdirAll(workDir, 0755)
+
+	os.WriteFile(filepath.Join(dir, "script.sh"), []byte("#!/bin/sh\necho hi"), 0755)
+
+	cfg := PhaseConfig{
+		WorkDir:   workDir,
+		Sourcedir: dir,
+		DESTDIR:   filepath.Join(dir, "dest"),
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.Run(context.Background(), "src_unpack"); err != nil {
+		t.Errorf("unsupported extension should be silently skipped: %v", err)
+	}
+}
+
+func TestPhase_Adversarial_CancelledCtx(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = r.RunPhases(ctx, []string{"src_prepare", "src_configure"})
+	if err == nil {
+		t.Error("expected context cancellation error")
+	}
+}
+
+func TestRunPhase_PkgPreinstNoop(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.RunPhase(context.Background(), "pkg_preinst"); err != nil {
+		t.Errorf("pkg_preinst should be no-op: %v", err)
+	}
+}
+
+func TestRunPhase_PkgPostinstNoop(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.RunPhase(context.Background(), "pkg_postinst"); err != nil {
+		t.Errorf("pkg_postinst should be no-op: %v", err)
+	}
+}
+
+func TestRunPhase_PkgPrermNoop(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.RunPhase(context.Background(), "pkg_prerm"); err != nil {
+		t.Errorf("pkg_prerm should be no-op: %v", err)
+	}
+}
+
+func TestRunPhase_PkgPostrmNoop(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.RunPhase(context.Background(), "pkg_postrm"); err != nil {
+		t.Errorf("pkg_postrm should be no-op: %v", err)
+	}
+}
+
+func TestRunPhase_SrcTestNoopWhenNoMakefile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.RunPhase(context.Background(), "src_test"); err != nil {
+		t.Errorf("src_test should be no-op when no Makefile: %v", err)
+	}
+}
+
+func TestRunPhase_PkgSetupNoop(t *testing.T) {
+	dir := t.TempDir()
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.RunPhase(context.Background(), "pkg_setup"); err != nil {
+		t.Errorf("pkg_setup should be no-op: %v", err)
+	}
+}
+
+func TestRunPhase_SrcTestWithTestTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	if _, err := exec.LookPath("make"); err != nil {
+		t.Skip("make not found, skipping src_test test")
+	}
+
+	dir := t.TempDir()
+	makefile := `test:
+	@echo test passed
+`
+	os.WriteFile(filepath.Join(dir, "Makefile"), []byte(makefile), 0644)
+
+	cfg := PhaseConfig{
+		WorkDir:   dir,
+		Sourcedir: dir,
+		DESTDIR:   dir,
+	}
+	r, err := NewRunner(cfg)
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+
+	if err := r.RunPhase(context.Background(), "src_test"); err != nil {
+		t.Errorf("src_test failed: %v", err)
+	}
 }

@@ -62,8 +62,19 @@ func (r *Runner) RunPhase(ctx context.Context, phase string) error {
 		return r.configure(ctx)
 	case "src_compile":
 		return r.compile(ctx)
+	case "src_test":
+		return r.srcTest(ctx)
 	case "src_install":
 		return r.install(ctx)
+	case "pkg_preinst",
+		"pkg_postinst",
+		"pkg_prerm",
+		"pkg_postrm",
+		"pkg_setup",
+		"pkg_config",
+		"pkg_info",
+		"pkg_nofetch":
+		return nil
 	default:
 		return nil
 	}
@@ -166,6 +177,39 @@ func (r *Runner) install(ctx context.Context) error {
 		makeBinary = "gmake"
 	}
 	args := append([]string{"-C", srcDir, "install"}, r.installOpts()...)
+	cmd := exec.CommandContext(ctx, makeBinary, args...)
+	cmd.Env = r.buildEnv()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	r.applyFeatures(cmd)
+	if err := cmd.Run(); err != nil {
+		return cmdError(err)
+	}
+	return nil
+}
+
+func (r *Runner) srcTest(ctx context.Context) error {
+	srcDir := r.cfg.Sourcedir
+	testTargets := []string{"check", "test"}
+	var target string
+	for _, t := range testTargets {
+		// attempt to run make check first, then make test
+		args := append([]string{"-C", srcDir, "--question", t})
+		cmd := exec.CommandContext(ctx, "make", args...)
+		if err := cmd.Run(); err == nil {
+			target = t
+			break
+		}
+	}
+	if target == "" {
+		return nil
+	}
+
+	makeBinary := "make"
+	if runtime.GOOS != "linux" {
+		makeBinary = "gmake"
+	}
+	args := append([]string{"-C", srcDir, target})
 	cmd := exec.CommandContext(ctx, makeBinary, args...)
 	cmd.Env = r.buildEnv()
 	cmd.Stdout = os.Stdout

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/airencracken/arise/internal/metadata"
@@ -68,6 +69,10 @@ func WalkCacheDir(root string, workers int) (<-chan *metadata.PackageMetadata, <
 				return nil
 			}
 			if d.IsDir() || !d.Type().IsRegular() {
+				return nil
+			}
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || name == "skel.ebuild" || name == "skel.metadata.xml" || name == "header.txt" || name == ".mailmap" {
 				return nil
 			}
 			paths <- path

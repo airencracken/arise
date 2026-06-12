@@ -1,0 +1,580 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/airencracken/arise/internal/search"
+)
+
+func snapshotFlags() struct {
+	backtrackVal       int
+	deep               bool
+	completeGraph      bool
+	newuse             bool
+	oneshot            bool
+	nodeps             bool
+	onlydeps           bool
+	emptytree          bool
+	reinstall          bool
+	changedUse         bool
+	changedDeps        bool
+	keepGoing          bool
+	fetchOnly          bool
+	buildPkgOnly       bool
+	buildPkg           bool
+	usePkg             bool
+	usePkgOnly         bool
+	pretend            bool
+	ask                bool
+	quiet              bool
+	verbose            bool
+	tree               bool
+	resume             bool
+	skipFirst          bool
+	unorderedDisp      bool
+	autoUnmaskW        bool
+	jobsVal            int
+	loadAverage        float64
+	withBdeps          string
+	binpkgRespectUse   bool
+	ignoreBuiltSlotOps string
+	getbinpkg          bool
+	getbinpkgOnly      bool
+	noreplace          bool
+} {
+	return struct {
+		backtrackVal       int
+		deep               bool
+		completeGraph      bool
+		newuse             bool
+		oneshot            bool
+		nodeps             bool
+		onlydeps           bool
+		emptytree          bool
+		reinstall          bool
+		changedUse         bool
+		changedDeps        bool
+		keepGoing          bool
+		fetchOnly          bool
+		buildPkgOnly       bool
+		buildPkg           bool
+		usePkg             bool
+		usePkgOnly         bool
+		pretend            bool
+		ask                bool
+		quiet              bool
+		verbose            bool
+		tree               bool
+		resume             bool
+		skipFirst          bool
+		unorderedDisp      bool
+		autoUnmaskW        bool
+		jobsVal            int
+		loadAverage        float64
+		withBdeps          string
+		binpkgRespectUse   bool
+		ignoreBuiltSlotOps string
+		getbinpkg          bool
+		getbinpkgOnly      bool
+		noreplace          bool
+	}{
+		backtrackVal:       *backtrackVal,
+		deep:               *deep,
+		completeGraph:      *completeGraph,
+		newuse:             *newuse,
+		oneshot:            *oneshot,
+		nodeps:             *nodeps,
+		onlydeps:           *onlydeps,
+		emptytree:          *emptytree,
+		reinstall:          *reinstall,
+		changedUse:         *changedUse,
+		changedDeps:        *changedDeps,
+		keepGoing:          *keepGoing,
+		fetchOnly:          *fetchOnly,
+		buildPkgOnly:       *buildPkgOnly,
+		buildPkg:           *buildPkg,
+		usePkg:             *usePkg,
+		usePkgOnly:         *usePkgOnly,
+		pretend:            *pretend,
+		ask:                *ask,
+		quiet:              *quiet,
+		verbose:            *verbose,
+		tree:               *tree,
+		resume:             *resume,
+		skipFirst:          *skipFirst,
+		unorderedDisp:      *unorderedDisp,
+		autoUnmaskW:        *autoUnmaskW,
+		jobsVal:            *jobsVal,
+		loadAverage:        *loadAverage,
+		withBdeps:          *withBdeps,
+		binpkgRespectUse:   *binpkgRespectUse,
+		ignoreBuiltSlotOps: *ignoreBuiltSlotOps,
+		getbinpkg:          *getbinpkg,
+		getbinpkgOnly:      *getbinpkgOnly,
+		noreplace:          *noreplace,
+	}
+}
+
+func restoreFlags(orig struct {
+	backtrackVal       int
+	deep               bool
+	completeGraph      bool
+	newuse             bool
+	oneshot            bool
+	nodeps             bool
+	onlydeps           bool
+	emptytree          bool
+	reinstall          bool
+	changedUse         bool
+	changedDeps        bool
+	keepGoing          bool
+	fetchOnly          bool
+	buildPkgOnly       bool
+	buildPkg           bool
+	usePkg             bool
+	usePkgOnly         bool
+	pretend            bool
+	ask                bool
+	quiet              bool
+	verbose            bool
+	tree               bool
+	resume             bool
+	skipFirst          bool
+	unorderedDisp      bool
+	autoUnmaskW        bool
+	jobsVal            int
+	loadAverage        float64
+	withBdeps          string
+	binpkgRespectUse   bool
+	ignoreBuiltSlotOps string
+	getbinpkg          bool
+	getbinpkgOnly      bool
+	noreplace          bool
+}) {
+	*backtrackVal = orig.backtrackVal
+	*deep = orig.deep
+	*completeGraph = orig.completeGraph
+	*newuse = orig.newuse
+	*oneshot = orig.oneshot
+	*nodeps = orig.nodeps
+	*onlydeps = orig.onlydeps
+	*emptytree = orig.emptytree
+	*reinstall = orig.reinstall
+	*changedUse = orig.changedUse
+	*changedDeps = orig.changedDeps
+	*keepGoing = orig.keepGoing
+	*fetchOnly = orig.fetchOnly
+	*buildPkgOnly = orig.buildPkgOnly
+	*buildPkg = orig.buildPkg
+	*usePkg = orig.usePkg
+	*usePkgOnly = orig.usePkgOnly
+	*pretend = orig.pretend
+	*ask = orig.ask
+	*quiet = orig.quiet
+	*verbose = orig.verbose
+	*tree = orig.tree
+	*resume = orig.resume
+	*skipFirst = orig.skipFirst
+	*unorderedDisp = orig.unorderedDisp
+	*autoUnmaskW = orig.autoUnmaskW
+	*jobsVal = orig.jobsVal
+	*loadAverage = orig.loadAverage
+	*withBdeps = orig.withBdeps
+	*binpkgRespectUse = orig.binpkgRespectUse
+	*ignoreBuiltSlotOps = orig.ignoreBuiltSlotOps
+	*getbinpkg = orig.getbinpkg
+	*getbinpkgOnly = orig.getbinpkgOnly
+	*noreplace = orig.noreplace
+}
+
+func resetAllFlags() {
+	*backtrackVal = 10
+	*deep = false
+	*completeGraph = false
+	*newuse = false
+	*oneshot = false
+	*nodeps = false
+	*onlydeps = false
+	*emptytree = false
+	*reinstall = false
+	*changedUse = false
+	*changedDeps = false
+	*keepGoing = false
+	*fetchOnly = false
+	*buildPkgOnly = false
+	*buildPkg = false
+	*usePkg = false
+	*usePkgOnly = false
+	*pretend = false
+	*ask = false
+	*quiet = false
+	*verbose = false
+	*tree = false
+	*resume = false
+	*skipFirst = false
+	*unorderedDisp = false
+	*autoUnmaskW = false
+	*jobsVal = 0
+	*loadAverage = 0
+	*withBdeps = "n"
+	*binpkgRespectUse = false
+	*ignoreBuiltSlotOps = "n"
+	*getbinpkg = false
+	*getbinpkgOnly = false
+	*noreplace = false
+}
+
+func TestResolveFlagsToConfig_Defaults(t *testing.T) {
+	orig := snapshotFlags()
+	defer restoreFlags(orig)
+	resetAllFlags()
+
+	cfg := resolveFlagsToConfig(false, false)
+
+	if cfg.Backtrack != 10 {
+		t.Errorf("Backtrack = %d, want 10", cfg.Backtrack)
+	}
+	if cfg.Deep {
+		t.Error("Deep should be false by default")
+	}
+	if cfg.Update {
+		t.Error("Update should be false")
+	}
+	if cfg.WithBdeps != "n" {
+		t.Errorf("WithBdeps = %q, want n", cfg.WithBdeps)
+	}
+	if cfg.WithBdepsAuto {
+		t.Error("WithBdepsAuto should be false")
+	}
+	if cfg.BinpkgDir != "/var/cache/binpkgs" {
+		t.Errorf("BinpkgDir = %q", cfg.BinpkgDir)
+	}
+}
+
+func TestResolveFlagsToConfig_UpdateAndDeep(t *testing.T) {
+	orig := snapshotFlags()
+	defer restoreFlags(orig)
+
+	resetAllFlags()
+	cfg := resolveFlagsToConfig(true, false)
+	if !cfg.Update {
+		t.Error("Update=true via param")
+	}
+	if cfg.Deep {
+		t.Error("Deep should be false")
+	}
+
+	resetAllFlags()
+	cfg = resolveFlagsToConfig(false, true)
+	if !cfg.Deep {
+		t.Error("Deep=true via param")
+	}
+
+	resetAllFlags()
+	*deep = true
+	cfg = resolveFlagsToConfig(false, false)
+	if !cfg.Deep {
+		t.Error("Deep=true via flag")
+	}
+
+	resetAllFlags()
+	cfg = resolveFlagsToConfig(true, true)
+	if !cfg.Update || !cfg.Deep {
+		t.Error("both Update and Deep should be true")
+	}
+}
+
+func TestResolveFlagsToConfig_AllFlagsSet(t *testing.T) {
+	orig := snapshotFlags()
+	defer restoreFlags(orig)
+	resetAllFlags()
+
+	*backtrackVal = 5
+	*completeGraph = true
+	*newuse = true
+	*oneshot = true
+	*nodeps = true
+	*onlydeps = true
+	*emptytree = true
+	*reinstall = true
+	*changedUse = true
+	*changedDeps = true
+	*keepGoing = true
+	*fetchOnly = true
+	*buildPkgOnly = true
+	*buildPkg = true
+	*usePkg = true
+	*usePkgOnly = true
+	*pretend = true
+	*ask = true
+	*quiet = true
+	*verbose = true
+	*tree = true
+	*resume = true
+	*skipFirst = true
+	*unorderedDisp = true
+	*autoUnmaskW = true
+	*jobsVal = 4
+	*loadAverage = 2.5
+	*withBdeps = "auto"
+	*binpkgRespectUse = true
+	*ignoreBuiltSlotOps = "y"
+	*getbinpkg = true
+	*getbinpkgOnly = true
+	*noreplace = true
+
+	cfg := resolveFlagsToConfig(true, false)
+
+	checks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"Backtrack", cfg.Backtrack, 5},
+		{"Deep", cfg.Deep, false},
+		{"CompleteGraph", cfg.CompleteGraph, true},
+		{"NewUse", cfg.NewUse, true},
+		{"Update", cfg.Update, true},
+		{"Oneshot", cfg.Oneshot, true},
+		{"NoDeps", cfg.NoDeps, true},
+		{"OnlyDeps", cfg.OnlyDeps, true},
+		{"EmptyTree", cfg.EmptyTree, true},
+		{"Reinstall", cfg.Reinstall, true},
+		{"ChangedUse", cfg.ChangedUse, true},
+		{"ChangedDeps", cfg.ChangedDeps, true},
+		{"KeepGoing", cfg.KeepGoing, true},
+		{"FetchOnly", cfg.FetchOnly, true},
+		{"BuildPkgOnly", cfg.BuildPkgOnly, true},
+		{"BuildPkg", cfg.BuildPkg, true},
+		{"UsePkg", cfg.UsePkg, true},
+		{"UsePkgOnly", cfg.UsePkgOnly, true},
+		{"Pretend", cfg.Pretend, true},
+		{"Ask", cfg.Ask, true},
+		{"Quiet", cfg.Quiet, true},
+		{"Verbose", cfg.Verbose, true},
+		{"Tree", cfg.Tree, true},
+		{"Resume", cfg.Resume, true},
+		{"SkipFirst", cfg.SkipFirst, true},
+		{"UnsortedDisplay", cfg.UnsortedDisplay, true},
+		{"AutoUnmaskWrite", cfg.AutoUnmaskWrite, true},
+		{"Jobs", cfg.Jobs, 4},
+		{"LoadAverage", cfg.LoadAverage, 2.5},
+		{"WithBdeps", cfg.WithBdeps, "auto"},
+		{"WithBdepsAuto", cfg.WithBdepsAuto, true},
+		{"BinpkgRespectUse", cfg.BinpkgRespectUse, true},
+		{"IgnoreBuiltSlotOperatorDeps", cfg.IgnoreBuiltSlotOperatorDeps, "y"},
+		{"GetBinPkg", cfg.GetBinPkg, true},
+		{"GetBinPkgOnly", cfg.GetBinPkgOnly, true},
+		{"NoReplace", cfg.NoReplace, true},
+		{"BinpkgDir", cfg.BinpkgDir, "/var/cache/binpkgs"},
+	}
+
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
+		}
+	}
+}
+
+func TestParseSortField(t *testing.T) {
+	tests := []struct {
+		input string
+		want  search.SortField
+	}{
+		{"category", search.SortByCategory},
+		{"CATEGORY", search.SortByCategory},
+		{"version", search.SortByVersion},
+		{"VERSION", search.SortByVersion},
+		{"slot", search.SortBySlot},
+		{"name", search.SortByPackage},
+		{"package", search.SortByPackage},
+		{"Package", search.SortByPackage},
+		{"unknown", search.SortByCategory},
+		{"", search.SortByCategory},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := parseSortField(tt.input)
+			if got != tt.want {
+				t.Errorf("parseSortField(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestActionLabel(t *testing.T) {
+	tests := []struct {
+		action string
+		want   string
+	}{
+		{"install", "install"},
+		{"update", "update"},
+		{"reinstall", "reinstall"},
+		{"uninstall", "uninstall"},
+		{"block", "block"},
+		{"unknown", "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.action, func(t *testing.T) {
+			got := actionLabel(tt.action)
+			if got != tt.want {
+				t.Errorf("actionLabel(%q) = %q, want %q", tt.action, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestColorIcon(t *testing.T) {
+	for _, action := range []string{"install", "update", "reinstall", "uninstall", "unknown"} {
+		t.Run(action, func(t *testing.T) {
+			got := colorIcon(action, action)
+			if !strings.HasPrefix(got, "[") || !strings.HasSuffix(got, "]") {
+				t.Errorf("colorIcon(%q) = %q, want bracketed output", action, got)
+			}
+		})
+	}
+}
+
+func TestFormatSize(t *testing.T) {
+	tests := []struct {
+		size int64
+		want string
+	}{
+		{0, "0 B"},
+		{512, "512 B"},
+		{1023, "1023 B"},
+		{1024, "1.0 KiB"},
+		{1536, "1.5 KiB"},
+		{1048576, "1.0 MiB"},
+		{1073741824, "1.0 GiB"},
+		{1099511627776, "1.0 TiB"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := formatSize(tt.size)
+			if got != tt.want {
+				t.Errorf("formatSize(%d) = %q, want %q", tt.size, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestVdbPathToAtoms(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want int
+	}{
+		{"with version", "/var/db/pkg/sys-apps/portage-3.0.51", 1},
+		{"without version", "/var/db/pkg/sys-apps/portage", 0},
+		{"nested path (extra dir)", "/var/db/pkg/sys-apps/portage-3.0.51/extra", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := vdbPathToAtoms(tt.path)
+			if len(got) != tt.want {
+				t.Errorf("vdbPathToAtoms(%q) = %d atoms, want %d", tt.path, len(got), tt.want)
+			}
+			if tt.want > 0 && len(got) > 0 {
+				parent := filepath.Base(filepath.Dir(tt.path))
+				base := filepath.Base(tt.path)
+				expected := "=" + parent + "/" + base
+				if got[0] != expected {
+					t.Errorf("vdbPathToAtoms(%q) = %q, want %q", tt.path, got[0], expected)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildRebuildConfig_Defaults(t *testing.T) {
+	var calls []string
+	phaseStart := func(phase string) { calls = append(calls, "start:"+phase) }
+	phaseEnd := func(phase string, err error) {
+		if err != nil {
+			calls = append(calls, "end:"+phase+":err")
+		} else {
+			calls = append(calls, "end:"+phase)
+		}
+	}
+
+	cfg := buildRebuildConfig("/var/db/repos/gentoo", 4, phaseStart, phaseEnd)
+
+	if cfg.RepoDir != "/var/db/repos/gentoo" {
+		t.Errorf("RepoDir = %q", cfg.RepoDir)
+	}
+	if cfg.DistfilesDir != "/var/cache/distfiles" {
+		t.Errorf("DistfilesDir = %q", cfg.DistfilesDir)
+	}
+	if cfg.RootDir != "/" {
+		t.Errorf("RootDir = %q", cfg.RootDir)
+	}
+	if cfg.VdbDir != "/var/db/pkg" {
+		t.Errorf("VdbDir = %q", cfg.VdbDir)
+	}
+	if cfg.WorkDirBase != "/var/tmp/arise" {
+		t.Errorf("WorkDirBase = %q", cfg.WorkDirBase)
+	}
+	if cfg.MAKEOPTS != "-j4" {
+		t.Errorf("MAKEOPTS = %q, want -j4", cfg.MAKEOPTS)
+	}
+
+	cfg.OnPhaseStart("test")
+	cfg.OnPhaseEnd("test", nil)
+	if len(calls) != 2 {
+		t.Errorf("callbacks not wired: got %v", calls)
+	}
+}
+
+func TestBuildRebuildConfig_ZeroJobs(t *testing.T) {
+	cfg := buildRebuildConfig("/tmp/repo", 0, nil, nil)
+	if cfg.MAKEOPTS == "-j0" {
+		t.Error("MAKEOPTS should fall back to env when jobs <= 0")
+	}
+}
+
+func TestBuildRebuildConfig_EnvOverrides(t *testing.T) {
+	os.Setenv("CFLAGS", "-O2 -pipe")
+	os.Setenv("CXXFLAGS", "-O2 -pipe")
+	os.Setenv("LDFLAGS", "-Wl,-O1")
+	os.Setenv("ARCH", "amd64")
+	defer func() {
+		os.Unsetenv("CFLAGS")
+		os.Unsetenv("CXXFLAGS")
+		os.Unsetenv("LDFLAGS")
+		os.Unsetenv("ARCH")
+	}()
+
+	cfg := buildRebuildConfig("/tmp/repo", 1, nil, nil)
+
+	if cfg.CFLAGS != "-O2 -pipe" {
+		t.Errorf("CFLAGS = %q", cfg.CFLAGS)
+	}
+	if cfg.CXXFLAGS != "-O2 -pipe" {
+		t.Errorf("CXXFLAGS = %q", cfg.CXXFLAGS)
+	}
+	if cfg.LDFLAGS != "-Wl,-O1" {
+		t.Errorf("LDFLAGS = %q", cfg.LDFLAGS)
+	}
+	if cfg.Arch != "amd64" {
+		t.Errorf("Arch = %q", cfg.Arch)
+	}
+}
+
+func TestBuildRebuildConfig_NilCallbacks(t *testing.T) {
+	cfg := buildRebuildConfig("/tmp/repo", 2, nil, nil)
+
+	if cfg.OnPhaseStart != nil {
+		t.Error("OnPhaseStart should be nil")
+	}
+	if cfg.OnPhaseEnd != nil {
+		t.Error("OnPhaseEnd should be nil")
+	}
+}

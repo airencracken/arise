@@ -125,7 +125,7 @@ func TestWalkCacheDir_Workers(t *testing.T) {
 			}
 
 			resCh, errCh := WalkCacheDir(root, workers)
-	pkgs, errs := drainChannels(t, resCh, errCh)
+			pkgs, errs := drainChannels(t, resCh, errCh)
 
 			if len(errs) != 0 {
 				t.Errorf("workers=%d: unexpected errors: %v", workers, errs)
@@ -414,7 +414,7 @@ func TestWalkCacheDir_Atomicity(t *testing.T) {
 	for _, workers := range []int{1, 3, 8} {
 		t.Run("workers", func(t *testing.T) {
 			resCh, errCh := WalkCacheDir(root, workers)
-	pkgs, errs := drainChannels(t, resCh, errCh)
+			pkgs, errs := drainChannels(t, resCh, errCh)
 			if len(errs) != 0 {
 				t.Errorf("unexpected errors: %v", errs)
 			}
@@ -745,7 +745,7 @@ func TestWalkCacheDir_PropertyResultCountEqualsFileCount(t *testing.T) {
 		}
 
 		resCh, errCh := WalkCacheDir(root, workers)
-	pkgs, errs := drainChannels(t, resCh, errCh)
+		pkgs, errs := drainChannels(t, resCh, errCh)
 		if len(errs) != 0 {
 			t.Errorf("workers=%d: unexpected errors: %v", workers, errs)
 		}
@@ -789,9 +789,8 @@ func TestWalkCacheDir_IgnoresDotFiles(t *testing.T) {
 	if len(errs) != 0 {
 		t.Errorf("unexpected errors: %v", errs)
 	}
-	// Both files are walked (WalkDir does not skip dotfiles by default)
-	if len(pkgs) < 1 {
-		t.Errorf("got %d packages, want at least 1", len(pkgs))
+	if len(pkgs) != 1 {
+		t.Errorf("got %d packages, want 1 (dotfiles are skipped)", len(pkgs))
 	}
 }
 
@@ -945,7 +944,7 @@ func TestWalkCacheDir_CachesCanBeWalkedConcurrently(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			resCh, errCh := WalkCacheDir(roots[idx], 2)
-	pkgs, errs := drainChannels(t, resCh, errCh)
+			pkgs, errs := drainChannels(t, resCh, errCh)
 			if len(errs) != 0 {
 				t.Errorf("root %d: unexpected errors: %v", idx, errs)
 			}

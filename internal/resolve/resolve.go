@@ -19,46 +19,46 @@ import (
 
 // ResolveConfig holds configuration parameters for the dependency resolver.
 type ResolveConfig struct {
-	Backtrack                    int    // max backtrack levels (default 10)
-	Deep                         bool   // -D, consider full dependency tree
-	CompleteGraph                bool   // rebuild reverse deps when packages change
-	NewUse                       bool   // -N, rebuild when USE flags changed
-	Update                       bool   // -u, update packages
-	Oneshot                      bool   // -1, install without adding to world
-	NoDeps                       bool   // skip dependency resolution
-	OnlyDeps                     bool   // only install dependencies, not target
-	EmptyTree                    bool   // -e, rebuild entire tree as if empty
-	Reinstall                    bool   // force reinstall of already-installed packages
-	ChangedUse                   bool   // reinstall when USE flags changed
-	ChangedDeps                  bool   // reinstall when DEPENDs changed
-	KeepGoing                    bool   // continue on errors
-	Exclude                      []string // packages to exclude
-	FetchOnly                    bool   // only fetch sources
-	BuildPkgOnly                 bool   // build binary packages without installing
-	Pretend                      bool   // -p, dry run
-	Ask                          bool   // -a, prompt before proceeding
-	Quiet                        bool   // -q, minimal output
-	Verbose                      bool   // -v, verbose output
-	Tree                         bool   // -t, display dependency tree
-	Resume                       bool   // resume last operation
-	SkipFirst                    bool   // skip first package in resume
-	AutoUnmaskWrite              bool   // --autounmask-write, write package.unmask entries
-	UnsortedDisplay              bool   // --unordered-display, don't sort results
-	Jobs                         int    // -j, parallel jobs
-	LoadAverage                  float64 // --load-average
-	IgnoreBuiltSlotOperatorDeps  string // --ignore-built-slot-operator-deps
-	WithBdeps                    string // --with-bdeps (y/n)
-	WithBdepsAuto                bool   // --with-bdeps-auto
-	BinpkgRespectUse             bool   // --binpkg-respect-use
-	UsePkg                       bool   // -k, use binary packages
-	UsePkgOnly                   bool   // -K, only use binary packages
-	BuildPkg                     bool   // -b, build binary packages
-	NoReplace                    bool   // --noreplace, skip if already installed
-	BinpkgDir                    string // directory for binary packages
-	BinhostURLs                  []string // remote binhost URLs
-	GetBinPkg                    bool   // --getbinpkg
-	GetBinPkgOnly                bool   // --getbinpkgonly
-	PortageConfig                *portage.Config
+	Backtrack                   int      // max backtrack levels (default 10)
+	Deep                        bool     // -D, consider full dependency tree
+	CompleteGraph               bool     // rebuild reverse deps when packages change
+	NewUse                      bool     // -N, rebuild when USE flags changed
+	Update                      bool     // -u, update packages
+	Oneshot                     bool     // -1, install without adding to world
+	NoDeps                      bool     // skip dependency resolution
+	OnlyDeps                    bool     // only install dependencies, not target
+	EmptyTree                   bool     // -e, rebuild entire tree as if empty
+	Reinstall                   bool     // force reinstall of already-installed packages
+	ChangedUse                  bool     // reinstall when USE flags changed
+	ChangedDeps                 bool     // reinstall when DEPENDs changed
+	KeepGoing                   bool     // continue on errors
+	Exclude                     []string // packages to exclude
+	FetchOnly                   bool     // only fetch sources
+	BuildPkgOnly                bool     // build binary packages without installing
+	Pretend                     bool     // -p, dry run
+	Ask                         bool     // -a, prompt before proceeding
+	Quiet                       bool     // -q, minimal output
+	Verbose                     bool     // -v, verbose output
+	Tree                        bool     // -t, display dependency tree
+	Resume                      bool     // resume last operation
+	SkipFirst                   bool     // skip first package in resume
+	AutoUnmaskWrite             bool     // --autounmask-write, write package.unmask entries
+	UnsortedDisplay             bool     // --unordered-display, don't sort results
+	Jobs                        int      // -j, parallel jobs
+	LoadAverage                 float64  // --load-average
+	IgnoreBuiltSlotOperatorDeps string   // --ignore-built-slot-operator-deps
+	WithBdeps                   string   // --with-bdeps (y/n)
+	WithBdepsAuto               bool     // --with-bdeps-auto
+	BinpkgRespectUse            bool     // --binpkg-respect-use
+	UsePkg                      bool     // -k, use binary packages
+	UsePkgOnly                  bool     // -K, only use binary packages
+	BuildPkg                    bool     // -b, build binary packages
+	NoReplace                   bool     // --noreplace, skip if already installed
+	BinpkgDir                   string   // directory for binary packages
+	BinhostURLs                 []string // remote binhost URLs
+	GetBinPkg                   bool     // --getbinpkg
+	GetBinPkgOnly               bool     // --getbinpkgonly
+	PortageConfig               *portage.Config
 }
 
 func (c *ResolveConfig) Defaults() {
@@ -89,10 +89,10 @@ type PkgAction struct {
 type PkgNode struct {
 	Atom      *atom.Atom
 	Installed bool
-	Versions  map[string]*VersionInfo // version string -> version info
+	Versions  map[string]*VersionInfo   // version string -> version info
 	Slots     map[string][]*VersionInfo // slot -> versions in that slot
-	Deps      []*DepEdge              // dependency edges
-	RevDeps   []*DepEdge              // reverse dependency edges
+	Deps      []*DepEdge                // dependency edges
+	RevDeps   []*DepEdge                // reverse dependency edges
 }
 
 // VersionInfo holds per-version data for a package.
@@ -103,35 +103,35 @@ type VersionInfo struct {
 	Subslot     string
 	UseFlags    map[string]bool
 	Installed   bool
-	DepStr      string    // raw dependency string (combined)
-	Depend      string    // DEPEND value
-	Rdepend     string    // RDEPEND value
-	Keywords    string    // ebuild keywords (e.g. "amd64 ~x86")
-	RequiredUse string    // REQUIRED_USE constraint
-	License     string    // LICENSE value
+	DepStr      string // raw dependency string (combined)
+	Depend      string // DEPEND value
+	Rdepend     string // RDEPEND value
+	Keywords    string // ebuild keywords (e.g. "amd64 ~x86")
+	RequiredUse string // REQUIRED_USE constraint
+	License     string // LICENSE value
 }
 
 // DepEdge represents a dependency relationship between packages.
 type DepEdge struct {
-	From     *PkgNode
-	To       *PkgNode
-	Type     DepType
-	DepAtom  *atom.Atom  // the atom as specified in the dep string
-	UseCond  string      // USE flag condition (empty = always)
-	Block    bool        // is this a blocker?
-	AnyOf    []*DepAtom  // if non-nil, this is an any-of group
+	From    *PkgNode
+	To      *PkgNode
+	Type    DepType
+	DepAtom *atom.Atom // the atom as specified in the dep string
+	UseCond string     // USE flag condition (empty = always)
+	Block   bool       // is this a blocker?
+	AnyOf   []*DepAtom // if non-nil, this is an any-of group
 }
 
 // DepType classifies a dependency.
 type DepType int
 
 const (
-	_ DepType = iota
-	DepTypeBuild       // BDEPEND
-	DepTypeRuntime     // RDEPEND
-	DepTypeDepend      // DEPEND
-	DepTypePost        // PDEPEND
-	DepTypeInstall     // IDEPEND
+	_              DepType = iota
+	DepTypeBuild           // BDEPEND
+	DepTypeRuntime         // RDEPEND
+	DepTypeDepend          // DEPEND
+	DepTypePost            // PDEPEND
+	DepTypeInstall         // IDEPEND
 )
 
 // DepAtom holds a dependency atom and metadata.
@@ -319,12 +319,12 @@ func (n *PkgNode) FindMatchingVersion(constraint *atom.Atom) *VersionInfo {
 // DefaultResolveConfig returns a ResolveConfig with sensible defaults.
 func DefaultResolveConfig() ResolveConfig {
 	return ResolveConfig{
-		Backtrack:  10,
-		Deep:       true,
-		Update:     false,
-		Jobs:       1,
-		KeepGoing:  false,
-		WithBdeps:  "n",
+		Backtrack: 10,
+		Deep:      true,
+		Update:    false,
+		Jobs:      1,
+		KeepGoing: false,
+		WithBdeps: "n",
 	}
 }
 
@@ -337,13 +337,13 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 	}
 
 	r := &resolver{
-		graph:    g,
-		config:   config,
-		installed: make(map[string]*PkgAction),
-		toInstall: make(map[string]*PkgAction),
-		toUninstall: make(map[string]*PkgAction),
-		conflicts: []string{},
-		seenDeps: make(map[string]bool),
+		graph:         g,
+		config:        config,
+		installed:     make(map[string]*PkgAction),
+		toInstall:     make(map[string]*PkgAction),
+		toUninstall:   make(map[string]*PkgAction),
+		conflicts:     []string{},
+		seenDeps:      make(map[string]bool),
 		portageConfig: config.PortageConfig,
 	}
 
@@ -474,9 +474,9 @@ type resolver struct {
 }
 
 type anyOfDecision struct {
-	depKey    string // fromCP + "->" + index in deps
-	chosen    int    // index of chosen option
-	options   int    // total options
+	depKey  string // fromCP + "->" + index in deps
+	chosen  int    // index of chosen option
+	options int    // total options
 }
 
 func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
@@ -509,6 +509,32 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 		// parse atom
 		a, err := atom.Parse(target)
 		if err != nil {
+			if !strings.Contains(target, "/") {
+				matches := r.findPackagesByName(target)
+				switch len(matches) {
+				case 0:
+					// no match, proceed with original error
+				case 1:
+					a, err = atom.Parse(matches[0])
+					if err != nil {
+						if r.config.KeepGoing {
+							r.conflicts = append(r.conflicts, fmt.Sprintf("bad target %q: %v", target, err))
+							continue
+						}
+						return nil, fmt.Errorf("parse target %q: %w", target, err)
+					}
+					atoms = append(atoms, a)
+					continue
+				default:
+					names := strings.Join(matches, ", ")
+					msg := fmt.Sprintf("ambiguous package name %q matches %d packages: [%s]", target, len(matches), names)
+					r.conflicts = append(r.conflicts, msg)
+					if r.config.KeepGoing {
+						continue
+					}
+					return nil, fmt.Errorf("resolve: %s", msg)
+				}
+			}
 			if r.config.KeepGoing {
 				r.conflicts = append(r.conflicts, fmt.Sprintf("bad target %q: %v", target, err))
 				continue
@@ -519,6 +545,18 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 	}
 
 	return atoms, nil
+}
+
+func (r *resolver) findPackagesByName(name string) []string {
+	var matches []string
+	for cp := range r.graph.Packages {
+		parts := strings.SplitN(cp, "/", 2)
+		if len(parts) == 2 && parts[1] == name {
+			matches = append(matches, cp)
+		}
+	}
+	sort.Strings(matches)
+	return matches
 }
 
 func (r *resolver) resolveTargets(targetAtoms []*atom.Atom) error {
@@ -695,10 +733,10 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			resolvedAtom = target
 		}
 		r.toInstall[cpv] = &PkgAction{
-			Atom:   resolvedAtom,
-			Action: action,
-			Reason: reason,
-			Slot:   vi.Slot,
+			Atom:    resolvedAtom,
+			Action:  action,
+			Reason:  reason,
+			Slot:    vi.Slot,
 			Subslot: vi.Subslot,
 		}
 	}
@@ -897,8 +935,8 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 
 	// try each option, preferring already-installed
 	type candidate struct {
-		idx      int
-		depAtom  *DepAtom
+		idx       int
+		depAtom   *DepAtom
 		installed bool
 	}
 	var candidates []candidate
@@ -922,8 +960,8 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 		satisfied := inst != nil && atomMatches(toNode.Atom, opt.Atom, inst.Slot, inst.Subslot, inst.UseFlags, inst.Version)
 
 		candidates = append(candidates, candidate{
-			idx:      i,
-			depAtom:  opt,
+			idx:       i,
+			depAtom:   opt,
 			installed: satisfied,
 		})
 	}

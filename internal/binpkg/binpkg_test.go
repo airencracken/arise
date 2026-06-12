@@ -1340,3 +1340,136 @@ func TestDownloadFromBinhost_InvalidAtom(t *testing.T) {
 		t.Errorf("expected 0 downloads, got %d", len(downloaded))
 	}
 }
+
+func TestReadVDBMetadata_Full(t *testing.T) {
+	dir := t.TempDir()
+	vdbPath := filepath.Join(dir, "vdb", "sys-apps", "testpkg-2.0")
+	os.MkdirAll(vdbPath, 0755)
+
+	os.WriteFile(filepath.Join(vdbPath, "CATEGORY"), []byte("sys-apps"), 0644)
+	os.WriteFile(filepath.Join(vdbPath, "PF"), []byte("testpkg-2.0"), 0644)
+	os.WriteFile(filepath.Join(vdbPath, "SLOT"), []byte("0/1"), 0644)
+	os.WriteFile(filepath.Join(vdbPath, "USE"), []byte("ssl python"), 0644)
+	os.WriteFile(filepath.Join(vdbPath, "EAPI"), []byte("8"), 0644)
+	os.WriteFile(filepath.Join(vdbPath, "BUILD_TIME"), []byte("1700000000"), 0644)
+	os.WriteFile(filepath.Join(vdbPath, "CHOST"), []byte("x86_64-pc-linux-gnu"), 0644)
+	os.WriteFile(filepath.Join(vdbPath, "repository"), []byte("gentoo"), 0644)
+
+	meta, err := readVDBMetadata(vdbPath)
+	if err != nil {
+		t.Fatalf("readVDBMetadata: %v", err)
+	}
+
+	if meta["CATEGORY"] != "sys-apps" {
+		t.Errorf("CATEGORY = %q, want sys-apps", meta["CATEGORY"])
+	}
+	if meta["PF"] != "testpkg-2.0" {
+		t.Errorf("PF = %q, want testpkg-2.0", meta["PF"])
+	}
+	if meta["PACKAGE"] != "testpkg" {
+		t.Errorf("PACKAGE = %q, want testpkg", meta["PACKAGE"])
+	}
+	if meta["VERSION"] != "2.0" {
+		t.Errorf("VERSION = %q, want 2.0", meta["VERSION"])
+	}
+	if meta["SLOT"] != "0/1" {
+		t.Errorf("SLOT = %q, want 0/1", meta["SLOT"])
+	}
+	if meta["USE"] != "ssl python" {
+		t.Errorf("USE = %q, want 'ssl python'", meta["USE"])
+	}
+}
+
+func TestReadVDBMetadata_Minimal(t *testing.T) {
+	dir := t.TempDir()
+	vdbPath := filepath.Join(dir, "vdb", "app-misc", "minimal-1.0")
+	os.MkdirAll(vdbPath, 0755)
+
+	os.WriteFile(filepath.Join(vdbPath, "CATEGORY"), []byte("app-misc"), 0644)
+
+	meta, err := readVDBMetadata(vdbPath)
+	if err != nil {
+		t.Fatalf("readVDBMetadata: %v", err)
+	}
+
+	if meta["CATEGORY"] != "app-misc" {
+		t.Errorf("CATEGORY = %q", meta["CATEGORY"])
+	}
+	if meta["PF"] != "" {
+		t.Errorf("PF should be empty when file missing")
+	}
+}
+
+func TestReadVDBMetadata_TrimsWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	vdbPath := filepath.Join(dir, "vdb", "app-misc", "trimmed-1.0")
+	os.MkdirAll(vdbPath, 0755)
+
+	os.WriteFile(filepath.Join(vdbPath, "CATEGORY"), []byte("app-misc\n"), 0644)
+	os.WriteFile(filepath.Join(vdbPath, "PF"), []byte("trimmed-1.0\n"), 0644)
+	os.WriteFile(filepath.Join(vdbPath, "SLOT"), []byte(" 0 \n"), 0644)
+
+	meta, err := readVDBMetadata(vdbPath)
+	if err != nil {
+		t.Fatalf("readVDBMetadata: %v", err)
+	}
+
+	if meta["CATEGORY"] != "app-misc" {
+		t.Errorf("CATEGORY = %q, want app-misc (trimmed)", meta["CATEGORY"])
+	}
+	if meta["SLOT"] != "0" {
+		t.Errorf("SLOT = %q, want 0 (trimmed)", meta["SLOT"])
+	}
+}
+
+func TestBrokenWriter_Write(t *testing.T) {
+	bw := &brokenWriter{err: os.ErrPermission}
+	n, err := bw.Write([]byte("hello"))
+	if n != 0 {
+		t.Errorf("Write() = %d, want 0", n)
+	}
+	if err != os.ErrPermission {
+		t.Errorf("Write() error = %v, want %v", err, os.ErrPermission)
+	}
+}
+
+func TestBrokenWriter_Close(t *testing.T) {
+	bw := &brokenWriter{err: os.ErrPermission}
+	err := bw.Close()
+	if err != os.ErrPermission {
+		t.Errorf("Close() = %v, want %v", err, os.ErrPermission)
+	}
+}
+
+type testCloser struct {
+	closed bool
+}
+
+func (c *testCloser) Close() error { c.closed = true; return nil }
+
+type errorCloser struct {
+	closed bool
+}
+
+func (c *errorCloser) Close() error { c.closed = true; return os.ErrInvalid }
+
+func TestCleanup_AllSucceed(t *testing.T) {
+	tc1 := &testCloser{}
+	tc2 := &testCloser{}
+
+	cleanup(tc1, tc2)
+
+	if !tc1.closed || !tc2.closed {
+		t.Error("cleanup should close all closers")
+	}
+}
+
+func TestCleanup_HandlesErrors(t *testing.T) {
+	ec := &errorCloser{}
+
+	cleanup(ec)
+
+	if !ec.closed {
+		t.Error("cleanup should attempt close even if it returns error")
+	}
+}

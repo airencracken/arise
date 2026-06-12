@@ -1,5 +1,5 @@
 # binaries
-arise
+/arise
 
 # test coverage
 *.out
@@ -15,3 +15,6 @@ arise
 .DS_Store
 Thumbs.db
 arise-*.tar.gz
+
+# Go vendor directory (use go mod download for reproducible builds)
+vendor/

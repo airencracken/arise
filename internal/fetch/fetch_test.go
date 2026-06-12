@@ -334,3 +334,97 @@ func TestFetchFile_Download(t *testing.T) {
 		t.Error("downloaded file does not exist")
 	}
 }
+
+func TestFetch_Adversarial_InvalidURL(t *testing.T) {
+	dir := t.TempDir()
+	cfg := FetchConfig{DistfilesDir: dir}
+
+	_, err := Fetch(context.Background(), []string{"://invalid-url"}, cfg)
+	if err == nil {
+		t.Error("expected error for invalid URL")
+	}
+}
+
+func TestFetch_Adversarial_EmptyURL(t *testing.T) {
+	dir := t.TempDir()
+	cfg := FetchConfig{DistfilesDir: dir}
+
+	paths, err := Fetch(context.Background(), []string{""}, cfg)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("expected 0 paths for empty URL, got %d", len(paths))
+	}
+}
+
+func TestFetch_Adversarial_CancelledContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("content"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfg := FetchConfig{DistfilesDir: dir}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := Fetch(ctx, []string{srv.URL + "/file.txt"}, cfg)
+	if err == nil {
+		t.Error("expected error for cancelled context")
+	}
+}
+
+func TestFetch_Adversarial_LargeResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data := make([]byte, 1024*1024)
+		for i := range data {
+			data[i] = byte(i % 256)
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfg := FetchConfig{DistfilesDir: dir}
+
+	paths, err := Fetch(context.Background(), []string{srv.URL + "/large.bin"}, cfg)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if len(paths) != 1 {
+		t.Errorf("expected 1 path, got %d", len(paths))
+	}
+
+	fi, err := os.Stat(paths[0])
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if fi.Size() != 1024*1024 {
+		t.Errorf("file size = %d, want %d", fi.Size(), 1024*1024)
+	}
+}
+
+func TestFetch_Adversarial_NoServer(t *testing.T) {
+	dir := t.TempDir()
+	cfg := FetchConfig{DistfilesDir: dir}
+
+	_, err := Fetch(context.Background(), []string{"http://127.0.0.1:1/noserver"}, cfg)
+	if err == nil {
+		t.Error("expected error for unreachable server")
+	}
+}
+
+func TestFetch_Adversarial_EmptyURIs(t *testing.T) {
+	dir := t.TempDir()
+	cfg := FetchConfig{DistfilesDir: dir}
+
+	paths, err := Fetch(context.Background(), []string{}, cfg)
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if len(paths) != 0 {
+		t.Errorf("expected 0 paths for empty URIs, got %d", len(paths))
+	}
+}

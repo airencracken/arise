@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -418,7 +419,10 @@ func TestDepType_String(t *testing.T) {
 }
 
 func TestVersionGreater(t *testing.T) {
-	tests := []struct{ a, b string; want bool }{
+	tests := []struct {
+		a, b string
+		want bool
+	}{
 		{"2.0", "1.0", true},
 		{"1.0", "2.0", false},
 		{"1.0", "1.0", false},
@@ -755,5 +759,62 @@ func TestFindOutdated_SkipUninstalled(t *testing.T) {
 		if o.Atom.CP() == "sys-apps/bar" {
 			t.Error("missing package should not appear in outdated")
 		}
+	}
+}
+
+func TestGraph_Adversarial_EmptyRepoDir(t *testing.T) {
+	db := openTestDB(t)
+	g, err := Build(db, "")
+	if err != nil {
+		t.Logf("Build with empty repo dir returned error (acceptable): %v", err)
+	}
+	if g == nil && err == nil {
+		t.Error("expected either an error or a non-nil graph")
+	}
+}
+
+func TestGraph_Adversarial_MassiveData(t *testing.T) {
+	max := 100
+	entries := make([]*metadata.PackageMetadata, max)
+	for i := range max {
+		entries[i] = makeMeta("sys-apps", fmt.Sprintf("pkg%d", i), fmt.Sprintf("%d.0", i), "", "", "")
+	}
+
+	t.Logf("building graph with %d packages", max)
+	graph := NewFromInstalled(entries)
+	if len(graph.Nodes) != max {
+		t.Errorf("expected %d nodes, got %d", max, len(graph.Nodes))
+	}
+}
+
+func TestGraph_Adversarial_DeepDepChain(t *testing.T) {
+	depth := 100
+	entries := make([]*metadata.PackageMetadata, depth)
+	for i := range depth {
+		pn := fmt.Sprintf("pkg%d", i)
+		depend := ""
+		if i > 0 {
+			depend = fmt.Sprintf(">=test-cat/pkg%d-%d", i-1, i-1)
+		}
+		entries[i] = makeMeta("test-cat", pn, fmt.Sprintf("%d.0", i), depend, depend, "")
+	}
+
+	graph := NewFromInstalled(entries)
+	if len(graph.Nodes) != depth {
+		t.Errorf("expected %d nodes, got %d", depth, len(graph.Nodes))
+	}
+}
+
+func TestGraph_Adversarial_SelfReferentialDep(t *testing.T) {
+	m := makeMeta("sys-apps", "selfref", "1.0", ">=sys-apps/selfref-1", ">=sys-apps/selfref-1", "")
+
+	graph := NewFromInstalled([]*metadata.PackageMetadata{m})
+
+	node := graph.Nodes["sys-apps/selfref"]
+	if node == nil {
+		t.Fatal("expected node for selfref")
+	}
+	if len(node.Depends) < 1 {
+		t.Error("self-referential dep should be in edge list (even if it's the same package)")
 	}
 }

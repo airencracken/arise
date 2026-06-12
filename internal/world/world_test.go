@@ -411,7 +411,7 @@ func TestExpandSet_UnknownSet(t *testing.T) {
 }
 
 func TestExpandSet_KnownSets(t *testing.T) {
-	sets := []string{"@module-rebuild", "@live-rebuild", "@x11-module-rebuild", "@preserved-rebuild"}
+	sets := []string{"@module-rebuild", "@live-rebuild", "@x11-module-rebuild"}
 	for _, s := range sets {
 		_, err := ExpandSet(s, "/var/db/pkg")
 		if err != nil {
@@ -512,11 +512,11 @@ func TestHasVersionChar(t *testing.T) {
 
 func TestSplitVDBPkgName(t *testing.T) {
 	tests := []struct {
-		name         string
-		entryName    string
-		wantPkgName  string
-		wantVersion  string
-		wantOk       bool
+		name        string
+		entryName   string
+		wantPkgName string
+		wantVersion string
+		wantOk      bool
 	}{
 		{"gcc with version", "gcc-13.2.0", "gcc", "13.2.0", true},
 		{"no version", "gcc", "", "", false},

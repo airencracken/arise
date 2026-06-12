@@ -26,13 +26,13 @@ static:
 #
 
 test:
-	$(GO) test ./internal/... -count=1 -timeout 120s
+	$(GO) test $$($(GO) list ./internal/... | grep -v /integration$$) -count=1 -timeout 120s
 
 test-v:
-	$(GO) test ./internal/... -v -count=1 -timeout 120s
+	$(GO) test $$($(GO) list ./internal/... | grep -v /integration$$) -v -count=1 -timeout 120s
 
 test-unit:
-	$(GO) test ./internal/... -run 'Test[^P]|TestP[a-ln-z]' -count=1 -timeout 60s
+	$(GO) test $$($(GO) list ./internal/... | grep -v /integration$$) -run 'Test[^P]|TestP[a-ln-z]' -count=1 -timeout 60s
 
 test-adversarial:
 	$(GO) test ./internal/... -run 'Adversar|Mutation' -count=1 -timeout 60s
@@ -52,7 +52,7 @@ test-integration:
 	fi
 
 test-coverage:
-	$(GO) test ./internal/... -coverprofile=/tmp/arise-coverage.out -covermode=atomic
+	$(GO) test $$($(GO) list ./internal/... | grep -v /integration$$) -coverprofile=/tmp/arise-coverage.out -covermode=atomic
 	$(GO) tool cover -func=/tmp/arise-coverage.out
 
 test-coverage-html: test-coverage
@@ -96,6 +96,8 @@ clean:
 	rm -f /tmp/arise-coverage.out /tmp/arise-coverage.html
 	$(GO) clean -testcache
 
+BASHCOMPDIR ?= $(PREFIX)/share/bash-completion/completions
+
 install: build
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 $(BINARY) $(DESTDIR)$(BINDIR)/
@@ -105,11 +107,14 @@ install: build
 	install -m 644 arise.info $(DESTDIR)$(INFODIR)/
 	install -d $(DESTDIR)$(DOCDIR)
 	install -m 644 README.md LICENSE $(DESTDIR)$(DOCDIR)/
+	install -d $(DESTDIR)$(BASHCOMPDIR)
+	install -m 644 misc/arise-completion.bash $(DESTDIR)$(BASHCOMPDIR)/arise
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(BINARY)
 	rm -f $(DESTDIR)$(MANDIR)/man1/arise.1
 	rm -f $(DESTDIR)$(INFODIR)/arise.info
+	rm -f $(DESTDIR)$(BASHCOMPDIR)/arise
 
 #
 # Docs
@@ -128,24 +133,18 @@ docs: man info
 #
 # Release
 #
-# Full release workflow for cutting a new arise version:
+# See misc/RELEASE.md for the full release runbook.
 #
-#   1. make release VERSION=x.y.z
-#      - runs tests, static build, git tag, push
-#   2. cd ../arise-overlay && make manifest VERSION=x.y.z
-#      - downloads the actual GitHub archive tarball
-#      - computes real BLAKE2B/SHA512/SHA256 checksums
-#      - regenerates the Manifest with correct DIST + EBUILD entries
-#      - NOTE: the ebuild itself must exist (copy 9999 or previous version)
-#   3. cd ../arise-overlay && git add . && git commit -m "release vx.y.z" && git push
-#   4. On the Gentoo host: emerge --sync arise-overlay && emerge -av arise
-#
-# After release, on the Gentoo host:
-#   emerge --sync arise-overlay && emerge -av arise
+# Quick summary:
+#   1. Export VERSION, run make download, make test, make vet
+#   2. make release VERSION=x.y.z  (tags and pushes)
+#   3. cd ../arise-overlay && cp arise-9999.ebuild arise-x.y.z.ebuild
+#   4. make manifest VERSION=x.y.z && git add . && git commit -m "release vx.y.z" && git push
+#   5. On the Gentoo host: emerge --sync arise-overlay && emerge -av arise
 #
 
-VERSION ?= 0.1.0
-release: vendor static test
+VERSION ?= 0.1.1
+release: download static test
 	@echo "Tagging arise v$(VERSION)..."
 	git tag -a "v$(VERSION)" -m "arise v$(VERSION)"
 	git push origin master --tags
@@ -161,21 +160,25 @@ release: vendor static test
 	@echo "On the Gentoo host:"
 	@echo "  emerge --sync arise-overlay"
 	@echo "  emerge -av arise"
+
+#
+# Go module management (no vendor/ committed; use go mod download)
+#
+# For emerge builds:
+#   export GOPROXY=off
+#   export GOMODCACHE=$(pwd)/modcache
+#   make download          # pre-fetch all deps offline
+#   make build
+#
+# For development:
+#   go mod download        # fetch deps from proxy
+#   go mod verify          # verify go.sum integrity
+#
+download:
+	$(GO) mod download
+	$(GO) mod verify
+	@echo "All module dependencies downloaded and verified."
 
 vendor:
-	$(GO) mod vendor
-	@echo "Tagging arise v$(VERSION)..."
-	git tag -a "v$(VERSION)" -m "arise v$(VERSION)"
-	git push origin master --tags
-	@echo ""
-	@echo "Tag pushed. Now update the overlay:"
-	@echo ""
-	@echo "  cd ../arise-overlay"
-	@echo "  make manifest VERSION=$(VERSION)"
-	@echo "  git add sys-apps/arise/Manifest sys-apps/arise/arise-$(VERSION).ebuild"
-	@echo "  git commit -m 'release arise v$(VERSION)'"
-	@echo "  git push origin master"
-	@echo ""
-	@echo "On the Gentoo host:"
-	@echo "  emerge --sync arise-overlay"
-	@echo "  emerge -av arise"
+	$(GO) mod download
+	$(GO) mod verify

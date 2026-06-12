@@ -20,7 +20,8 @@ const (
 func OpenDB(path string) (*badger.DB, error) {
 	opts := badger.DefaultOptions(path).
 		WithValueLogFileSize(1 << 30).
-		WithValueThreshold(1 << 20)
+		WithValueThreshold(1 << 20).
+		WithLoggingLevel(badger.WARNING)
 
 	db, err := badger.Open(opts)
 	if err != nil {
