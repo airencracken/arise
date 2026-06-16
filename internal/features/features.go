@@ -178,10 +178,10 @@ func (c *Config) applySplitLog(cmd *exec.Cmd) {
 		c.splitLogCmds[cmd] = struct{}{}
 	} else {
 		if outF != nil {
-			outF.Close()
+			if cerr := outF.Close(); cerr != nil { /* Best effort */ }
 		}
 		if errF != nil {
-			errF.Close()
+			if cerr := errF.Close(); cerr != nil { /* Best effort */ }
 		}
 	}
 }
@@ -194,10 +194,10 @@ func (c *Config) CloseSplitLogs() {
 	}
 	for cmd := range c.splitLogCmds {
 		if wc, ok := cmd.Stdout.(io.Closer); ok {
-			wc.Close()
+			if cerr := wc.Close(); cerr != nil { /* Best effort */ }
 		}
 		if wc, ok := cmd.Stderr.(io.Closer); ok {
-			wc.Close()
+			if cerr := wc.Close(); cerr != nil { /* Best effort */ }
 		}
 	}
 	c.splitLogCmds = make(map[*exec.Cmd]struct{})

@@ -90,7 +90,7 @@ func cloneGitRepo(ctx context.Context, cfg SyncConfig) error {
 		Depth: cfg.Depth,
 	})
 	if err != nil {
-		return fmt.Errorf("sync: clone failed: %w", err)
+		return fmt.Errorf("sync: could not clone the repository: %w", err)
 	}
 	return nil
 }
@@ -98,24 +98,24 @@ func cloneGitRepo(ctx context.Context, cfg SyncConfig) error {
 func updateGitRepo(ctx context.Context, cfg SyncConfig) error {
 	repo, err := git.PlainOpen(cfg.TargetDir)
 	if err != nil {
-		return fmt.Errorf("sync: open repo: %w", err)
+		return fmt.Errorf("sync: could not open the local repository: %w", err)
 	}
 
 	rem, err := repo.Remote("origin")
 	if err != nil {
-		return fmt.Errorf("sync: get remote: %w", err)
+		return fmt.Errorf("sync: could not contact the remote repository: %w", err)
 	}
 
 	err = rem.FetchContext(ctx, &git.FetchOptions{
 		Depth: cfg.Depth,
 	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) && !strings.Contains(err.Error(), "already up-to-date") {
-		return fmt.Errorf("sync: fetch: %w", err)
+		return fmt.Errorf("sync: could not fetch updates from the remote: %w", err)
 	}
 
 	w, err := repo.Worktree()
 	if err != nil {
-		return fmt.Errorf("sync: worktree: %w", err)
+		return fmt.Errorf("sync: could not check repository working tree status: %w", err)
 	}
 
 	err = w.PullContext(ctx, &git.PullOptions{
@@ -123,7 +123,7 @@ func updateGitRepo(ctx context.Context, cfg SyncConfig) error {
 		Depth:      cfg.Depth,
 	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) && !strings.Contains(err.Error(), "already up-to-date") {
-		return fmt.Errorf("sync: pull: %w", err)
+		return fmt.Errorf("sync: could not pull updates into the local repository: %w", err)
 	}
 
 	return nil

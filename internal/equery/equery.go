@@ -52,7 +52,7 @@ func findBestInstalledVersion(vdbPath, category, pkg string) (string, error) {
 	catDir := filepath.Join(vdbPath, category)
 	entries, err := os.ReadDir(catDir)
 	if err != nil {
-		return "", fmt.Errorf("reading category dir %s: %w", catDir, err)
+		return "", fmt.Errorf("could not read package category directory %s: %w", catDir, err)
 	}
 
 	prefix := pkg + "-"
@@ -68,7 +68,7 @@ func findBestInstalledVersion(vdbPath, category, pkg string) (string, error) {
 	}
 
 	if len(candidates) == 0 {
-		return "", fmt.Errorf("no installed version found for %s/%s", category, pkg)
+		return "", fmt.Errorf("no installed version found for %s/%s -- the package may need to be installed first", category, pkg)
 	}
 
 	sort.Slice(candidates, func(i, j int) bool {
@@ -93,7 +93,7 @@ func extractVersion(name string) string {
 func Belongs(vdbPath string, filePath string) (string, error) {
 	categories, err := os.ReadDir(vdbPath)
 	if err != nil {
-		return "", fmt.Errorf("reading vdb dir %s: %w", vdbPath, err)
+		return "", fmt.Errorf("could not read installed package database at %s: %w", vdbPath, err)
 	}
 
 	for _, catEntry := range categories {
@@ -143,13 +143,13 @@ func Belongs(vdbPath string, filePath string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("no package owns file %q", filePath)
+		return "", fmt.Errorf("no installed package owns the file %q", filePath)
 }
 
 func Files(vdbPath string, atomStr string) ([]string, error) {
 	a, err := atom.Parse(atomStr)
 	if err != nil {
-		return nil, fmt.Errorf("parsing atom %q: %w", atomStr, err)
+		return nil, fmt.Errorf("could not parse package name %q: %w", atomStr, err)
 	}
 
 	category := a.Category
@@ -169,7 +169,7 @@ func Files(vdbPath string, atomStr string) ([]string, error) {
 	contentsPath := filepath.Join(vdbPath, category, pvDir, "CONTENTS")
 	data, err := os.ReadFile(contentsPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading CONTENTS for %s/%s: %w", category, pvDir, err)
+		return nil, fmt.Errorf("could not read file list for %s/%s: %w", category, pvDir, err)
 	}
 
 	var files []string
@@ -189,7 +189,7 @@ func Files(vdbPath string, atomStr string) ([]string, error) {
 func Uses(db *badger.DB, vdbPath string, atomStr string) (string, string, error) {
 	a, err := atom.Parse(atomStr)
 	if err != nil {
-		return "", "", fmt.Errorf("parsing atom %q: %w", atomStr, err)
+		return "", "", fmt.Errorf("could not parse package name %q: %w", atomStr, err)
 	}
 
 	category := a.Category
@@ -259,7 +259,7 @@ func Size(vdbPath string, atomStr string) (int64, error) {
 func Check(vdbPath string, atomStr string) ([]string, error) {
 	a, err := atom.Parse(atomStr)
 	if err != nil {
-		return nil, fmt.Errorf("parsing atom %q: %w", atomStr, err)
+		return nil, fmt.Errorf("could not parse package name %q: %w", atomStr, err)
 	}
 
 	category := a.Category
@@ -279,7 +279,7 @@ func Check(vdbPath string, atomStr string) ([]string, error) {
 	contentsPath := filepath.Join(vdbPath, category, pvDir, "CONTENTS")
 	data, err := os.ReadFile(contentsPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading CONTENTS for %s/%s: %w", category, pvDir, err)
+		return nil, fmt.Errorf("could not read file list for %s/%s: %w", category, pvDir, err)
 	}
 
 	var mismatches []string
@@ -325,7 +325,11 @@ func computeMD5(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			/* Best effort */
+		}
+	}()
 
 	h := md5.New()
 	if _, err := io.Copy(h, f); err != nil {
@@ -346,7 +350,7 @@ func Which(repoDir string, atomStr string) (string, error) {
 	if a.Version != nil && a.Version.Raw != "" {
 		ebuildPath := filepath.Join(ebuildDir, a.Package+"-"+a.Version.Raw+".ebuild")
 		if _, err := os.Stat(ebuildPath); err != nil {
-			return "", fmt.Errorf("ebuild not found: %s", ebuildPath)
+			return "", fmt.Errorf("build recipe not found: %s", ebuildPath)
 		}
 		return ebuildPath, nil
 	}
@@ -354,10 +358,10 @@ func Which(repoDir string, atomStr string) (string, error) {
 	pattern := filepath.Join(ebuildDir, a.Package+"-*.ebuild")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		return "", fmt.Errorf("glob %s: %w", pattern, err)
+		return "", fmt.Errorf("could not match build recipe pattern %s: %w", pattern, err)
 	}
 	if len(matches) == 0 {
-		return "", fmt.Errorf("no ebuilds found for %s", a.CP())
+		return "", fmt.Errorf("no build recipes found for %s", a.CP())
 	}
 
 	sort.Slice(matches, func(i, j int) bool {

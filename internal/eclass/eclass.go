@@ -19,7 +19,7 @@ type EclassInfo struct {
 func LoadEclass(path string) (*EclassInfo, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("eclass: read %s: %w", path, err)
+		return nil, fmt.Errorf("eclass: could not read eclass file %s: %w", path, err)
 	}
 
 	name := strings.TrimSuffix(filepath.Base(path), ".eclass")
@@ -33,7 +33,7 @@ func LoadEclass(path string) (*EclassInfo, error) {
 
 	lines := mergeContinuations(string(data))
 	if err := parseEclassContent(lines, info); err != nil {
-		return nil, fmt.Errorf("eclass: parse %s: %w", path, err)
+		return nil, fmt.Errorf("eclass: could not parse eclass file %s: %w", path, err)
 	}
 
 	return info, nil
@@ -64,7 +64,7 @@ func ExpandInherit(inheritList []string, repoDir string) (map[string]string, map
 		path := filepath.Join(eclassDir, name+".eclass")
 		info, err := LoadEclass(path)
 		if err != nil {
-			return nil, nil, fmt.Errorf("eclass: expand inherit %s: %w", name, err)
+			return nil, nil, fmt.Errorf("eclass: could not load inherited eclass %s: %w", name, err)
 		}
 
 		// variables from later eclasses (in inherit order) override earlier ones
@@ -93,7 +93,7 @@ func resolveEclassOrder(names []string, eclassDir string, loaded map[string]bool
 		path := filepath.Join(eclassDir, name+".eclass")
 		info, err := LoadEclass(path)
 		if err != nil {
-			return fmt.Errorf("eclass: resolve %s: %w", name, err)
+			return fmt.Errorf("eclass: could not resolve eclass dependency %s: %w", name, err)
 		}
 
 		loaded[name] = true
@@ -227,10 +227,10 @@ func parseEclassContent(lines []string, info *EclassInfo) error {
 	}
 
 	if inFunc {
-		return fmt.Errorf("unclosed function %q", funcName)
+		return fmt.Errorf("eclass: unclosed function definition %q", funcName)
 	}
 	if braceDepth > 0 {
-		return fmt.Errorf("unclosed braces: depth %d", braceDepth)
+		return fmt.Errorf("eclass: unclosed braces at depth %d", braceDepth)
 	}
 
 	if v, ok := info.Variables["EAPI"]; ok {

@@ -30,9 +30,13 @@ func loadFile(path string) (*WorldSet, error) {
 		if os.IsNotExist(err) {
 			return &WorldSet{}, nil
 		}
-		return nil, fmt.Errorf("world: open %s: %w", path, err)
+		return nil, fmt.Errorf("world: could not open file %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			/* Best effort */
+		}
+	}()
 
 	return parseFile(f)
 }
@@ -48,7 +52,7 @@ func parseFile(f *os.File) (*WorldSet, error) {
 		ws.Atoms = append(ws.Atoms, line)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("world: read: %w", err)
+		return nil, fmt.Errorf("world: could not read file: %w", err)
 	}
 	ws.dedup()
 	return ws, nil
@@ -108,9 +112,13 @@ func (ws *WorldSet) Save(path string) error {
 
 	f, err := os.Create(path)
 	if err != nil {
-		return fmt.Errorf("world: create %s: %w", path, err)
+		return fmt.Errorf("world: could not create file %s: %w", path, err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			/* Best effort */
+		}
+	}()
 
 	sorted := make([]string, len(ws.Atoms))
 	copy(sorted, ws.Atoms)
@@ -118,7 +126,7 @@ func (ws *WorldSet) Save(path string) error {
 
 	for _, a := range sorted {
 		if _, err := fmt.Fprintln(f, a); err != nil {
-			return fmt.Errorf("world: write %s: %w", path, err)
+			return fmt.Errorf("world: could not write to file %s: %w", path, err)
 		}
 	}
 
@@ -175,7 +183,7 @@ func ExpandSet(setName string, vdbRoot string) ([]string, error) {
 	case "@preserved-rebuild":
 		return PreservedRebuild()
 	default:
-		return nil, fmt.Errorf("world: unknown set %q", setName)
+		return nil, fmt.Errorf("world: unknown package set %q", setName)
 	}
 }
 
@@ -202,7 +210,7 @@ func expandModuleRebuild(vdbRoot string) ([]string, error) {
 
 	owners, err := preserved.FindOwningPackages(vdbRoot, moduleFiles)
 	if err != nil {
-		return nil, fmt.Errorf("module-rebuild: %w", err)
+		return nil, fmt.Errorf("world: could not determine module-rebuild packages: %w", err)
 	}
 
 	seen := make(map[string]bool)
@@ -226,7 +234,7 @@ func expandX11ModuleRebuild(vdbRoot string) ([]string, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("x11-module-rebuild: %w", err)
+		return nil, fmt.Errorf("world: could not determine x11-module-rebuild packages: %w", err)
 	}
 
 	for _, pkgEntry := range pkgs {
@@ -297,7 +305,7 @@ func expandLiveRebuild(vdbRoot string) ([]string, error) {
 
 	categories, err := os.ReadDir(vdbRoot)
 	if err != nil {
-		return nil, fmt.Errorf("live-rebuild: %w", err)
+		return nil, fmt.Errorf("world: could not determine live-rebuild packages: %w", err)
 	}
 
 	for _, catEntry := range categories {

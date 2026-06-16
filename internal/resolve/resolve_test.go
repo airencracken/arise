@@ -1724,7 +1724,7 @@ func TestResolve_VersionConstraintDep(t *testing.T) {
 	// should have conflict about unsatisfied version constraint
 	hasConflict := false
 	for _, c := range result.Conflicts {
-		if strings.Contains(c, "no version") || strings.Contains(c, "unsatisfied") {
+		if strings.Contains(c, "no installable version") || strings.Contains(c, "could not be satisfied") {
 			hasConflict = true
 			break
 		}
@@ -2573,7 +2573,7 @@ func TestVirtualPackage_NoProviderConflict(t *testing.T) {
 	}
 	hasConflict := false
 	for _, c := range result.Conflicts {
-		if strings.Contains(c, "virtual/rust") || strings.Contains(c, "unsatisfied") {
+		if strings.Contains(c, "virtual/rust") || strings.Contains(c, "could not be satisfied") {
 			hasConflict = true
 			break
 		}
@@ -3229,7 +3229,7 @@ func TestResolve_KeepGoingReturnsPartialInstalls(t *testing.T) {
 		if strings.Contains(c, "package masked") && strings.Contains(c, "emacs") {
 			hasMaskedConflict = true
 		}
-		if strings.Contains(c, "unsatisfied") || strings.Contains(c, "no version") {
+		if strings.Contains(c, "could not be satisfied") || strings.Contains(c, "no installable version") {
 			hasDepConflict = true
 		}
 	}

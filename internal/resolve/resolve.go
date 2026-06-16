@@ -333,7 +333,7 @@ func DefaultResolveConfig() ResolveConfig {
 // emerge's --backtrack functionality.
 func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResult, error) {
 	if g == nil {
-		return nil, fmt.Errorf("resolve: nil dependency graph")
+		return nil, fmt.Errorf("resolve: no dependency graph provided (internal error)")
 	}
 
 	r := &resolver{
@@ -367,7 +367,7 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 		if config.KeepGoing {
 			return r.buildResult()
 		}
-		return nil, fmt.Errorf("resolve: expand targets: %w", err)
+		return nil, fmt.Errorf("resolve: failed to determine which packages to install: %w", err)
 	}
 	r.targetAtoms = targetAtoms
 
@@ -380,13 +380,13 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 			cp := target.CP()
 			node := g.Packages[cp]
 			if node == nil && !config.KeepGoing {
-				return nil, fmt.Errorf("resolve: unknown package: %s", cp)
+				return nil, fmt.Errorf("resolve: package %s is not available in the repository", cp)
 			}
 			if node != nil {
 				vi := r.findMatchingVersion(node, target)
 				if vi == nil {
 					if !config.KeepGoing {
-						return nil, fmt.Errorf("resolve: no matching version for %s", target)
+						return nil, fmt.Errorf("resolve: no installable version found for %s", target)
 					}
 					continue
 				}
@@ -419,7 +419,7 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 		if config.KeepGoing {
 			return r.buildResult()
 		}
-		return nil, fmt.Errorf("resolve: %w", err)
+		return nil, fmt.Errorf("resolve: dependency resolution failed: %w", err)
 	}
 
 	if config.OnlyDeps {
@@ -498,7 +498,7 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 							r.conflicts = append(r.conflicts, fmt.Sprintf("bad world entry %q: %v", entry, err))
 							continue
 						}
-						return nil, fmt.Errorf("parse world entry %q: %w", entry, err)
+						return nil, fmt.Errorf("resolve: could not parse world entry %q: %w", entry, err)
 					}
 					atoms = append(atoms, a)
 				}
@@ -513,7 +513,7 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 				r.conflicts = append(r.conflicts, fmt.Sprintf("bad target %q: %v", target, err))
 				continue
 			}
-			return nil, fmt.Errorf("parse target %q: %w", target, err)
+			return nil, fmt.Errorf("resolve: could not parse package specification %q: %w", target, err)
 		}
 		atoms = append(atoms, a)
 	}
@@ -532,19 +532,19 @@ func (r *resolver) resolveTargets(targetAtoms []*atom.Atom) error {
 
 func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) error {
 	if depth > 100 {
-		return fmt.Errorf("maximum dependency depth exceeded for %s", target.CP())
+		return fmt.Errorf("resolve: dependency chain is too deep for %s — there may be a circular dependency", target.CP())
 	}
 
 	cp := target.CP()
 
 	// check package mask
 	if r.isPackageMasked(cp) {
-		msg := fmt.Sprintf("package masked: %s", cp)
+		msg := fmt.Sprintf("package masked: %s (has been masked by the system administrator)", cp)
 		r.conflicts = append(r.conflicts, msg)
 		if r.config.KeepGoing {
 			return nil
 		}
-		return fmt.Errorf("resolve: %s", msg)
+		return fmt.Errorf("%s", msg)
 	}
 
 	node := r.graph.Packages[cp]
@@ -563,12 +563,12 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 		}
 	}
 	if node == nil {
-		msg := fmt.Sprintf("unknown package: %s", cp)
+		msg := fmt.Sprintf("package %s could not be found in the repository", cp)
 		r.conflicts = append(r.conflicts, msg)
 		if r.config.KeepGoing {
 			return nil
 		}
-		return fmt.Errorf("resolve: %s", msg)
+		return fmt.Errorf("%s", msg)
 	}
 
 	// find best version matching the target constraint
@@ -579,23 +579,23 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 		vi = r.findMatchingVersion(node, target)
 	}
 	if vi == nil {
-		msg := fmt.Sprintf("no version of %s matches constraint %s", cp, target.String())
+		msg := fmt.Sprintf("no installable version of %s satisfies the version constraint %s", cp, target.String())
 		r.conflicts = append(r.conflicts, msg)
 		if r.config.KeepGoing {
 			return nil
 		}
-		return fmt.Errorf("resolve: %s", msg)
+		return fmt.Errorf("%s", msg)
 	}
 
 	// Check REQUIRED_USE
 	if vi.RequiredUse != "" {
 		if err := CheckRequiredUse(vi.RequiredUse, vi.UseFlags); err != nil {
-			msg := fmt.Sprintf("REQUIRED_USE violation for %s: %v", cp, err)
+			msg := fmt.Sprintf("REQUIRED_USE constraint not satisfied for %s: %v", cp, err)
 			r.conflicts = append(r.conflicts, msg)
 			if r.config.KeepGoing {
 				return nil
 			}
-			return fmt.Errorf("resolve: %s", msg)
+			return fmt.Errorf("%s", msg)
 		}
 	}
 
@@ -611,7 +611,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			if r.config.KeepGoing {
 				return nil
 			}
-			return fmt.Errorf("resolve: %s", msg)
+			return fmt.Errorf("%s", msg)
 		}
 	}
 
@@ -821,12 +821,12 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 			}
 		}
 		if toNode == nil {
-			msg := fmt.Sprintf("unsatisfied dependency: %s (dep of %s)", depAtom.String(), edge.From.Atom.CP())
+			msg := fmt.Sprintf("dependency %s required by %s could not be satisfied", depAtom.String(), edge.From.Atom.CP())
 			r.conflicts = append(r.conflicts, msg)
 			if r.config.KeepGoing {
 				return nil
 			}
-			return fmt.Errorf("resolve: %s", msg)
+			return fmt.Errorf("%s", msg)
 		}
 	}
 
@@ -877,12 +877,12 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 	}
 
 	if best == nil {
-		msg := fmt.Sprintf("no version of %s satisfies constraint %s (dep of %s)", toNode.Atom.CP(), depAtom.String(), edge.From.Atom.CP())
+		msg := fmt.Sprintf("no installable version of %s satisfies constraint %s (required by %s)", toNode.Atom.CP(), depAtom.String(), edge.From.Atom.CP())
 		r.conflicts = append(r.conflicts, msg)
 		if r.config.KeepGoing {
 			return nil
 		}
-		return fmt.Errorf("resolve: %s", msg)
+		return fmt.Errorf("%s", msg)
 	}
 
 	// install dependency
@@ -935,12 +935,12 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 				opts = append(opts, o.Atom.String())
 			}
 		}
-		msg := fmt.Sprintf("no satisfiable option in any-of group (||) for dep of %s: %s", node.Atom.CP(), strings.Join(opts, ", "))
+		msg := fmt.Sprintf("none of the alternative dependencies required by %s could be satisfied: %s", node.Atom.CP(), strings.Join(opts, ", "))
 		r.conflicts = append(r.conflicts, msg)
 		if r.config.KeepGoing {
 			return nil
 		}
-		return fmt.Errorf("resolve: %s", msg)
+		return fmt.Errorf("%s", msg)
 	}
 
 	// sort: installed first, then by version
@@ -978,12 +978,12 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 	toNode := r.graph.Packages[chosen.depAtom.Atom.CP()]
 	best := r.findMatchingVersion(toNode, chosen.depAtom.Atom)
 	if best == nil {
-		msg := fmt.Sprintf("no satisfiable version in any-of for %s", chosen.depAtom.Atom.CP())
+		msg := fmt.Sprintf("no installable version found for any-of dependency %s", chosen.depAtom.Atom.CP())
 		r.conflicts = append(r.conflicts, msg)
 		if r.config.KeepGoing {
 			return nil
 		}
-		return fmt.Errorf("resolve: %s", msg)
+		return fmt.Errorf("%s", msg)
 	}
 	return r.planPackage(bestVersionAtom(toNode.Atom, best), reason, depth)
 }
@@ -1031,12 +1031,12 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 	blocker := edge.From.Atom.CP()
 
 	if isWorldPkg {
-		msg := fmt.Sprintf("%s (%s) blocks %s which is in world set", blocker, edge.DepAtom.String(), cp)
+		msg := fmt.Sprintf("%s (%s) prevents %s from being installed, but %s is in the world set", blocker, edge.DepAtom.String(), cp, cp)
 		r.conflicts = append(r.conflicts, msg)
 		if r.config.KeepGoing {
 			return nil
 		}
-		return fmt.Errorf("resolve: %s", msg)
+		return fmt.Errorf("%s", msg)
 	}
 
 	// uninstall the blocked package
@@ -1561,7 +1561,7 @@ func mapToSlice(m map[string]*PkgAction) []PkgAction {
 // in the world set or the dependency tree of world packages.
 func Depclean(g *DepGraph, worldSet *WorldSet) ([]PkgAction, error) {
 	if g == nil {
-		return nil, fmt.Errorf("depclean: nil graph")
+		return nil, fmt.Errorf("resolve: no package list provided for dependency cleanup (internal error)")
 	}
 
 	keepers := make(map[string]bool)
@@ -1649,7 +1649,7 @@ func Depclean(g *DepGraph, worldSet *WorldSet) ([]PkgAction, error) {
 // keeping only the newest version in each slot.
 func Prune(g *DepGraph) ([]PkgAction, error) {
 	if g == nil {
-		return nil, fmt.Errorf("prune: nil graph")
+		return nil, fmt.Errorf("resolve: no package list provided for pruning (internal error)")
 	}
 
 	var removals []PkgAction
@@ -1704,7 +1704,7 @@ func CheckRequiredUse(requiredUse string, useFlags map[string]bool) error {
 
 	node, err := depstring.Parse(requiredUse)
 	if err != nil {
-		return fmt.Errorf("parse REQUIRED_USE: %w", err)
+		return fmt.Errorf("resolve: invalid REQUIRED_USE constraint in package: %w", err)
 	}
 	if node == nil {
 		return nil
@@ -1718,10 +1718,10 @@ func checkRequiredUseNode(node depstring.DepNode, useFlags map[string]bool) erro
 	case *depstring.AtomDep:
 		enabled, ok := useFlags[n.Atom]
 		if !ok {
-			return fmt.Errorf("required USE flag %q is not set", n.Atom)
+			return fmt.Errorf("resolve: this package requires the USE flag %q to be enabled", n.Atom)
 		}
 		if !enabled {
-			return fmt.Errorf("required USE flag %q is disabled", n.Atom)
+			return fmt.Errorf("resolve: this package requires the USE flag %q to be enabled, but it is currently disabled", n.Atom)
 		}
 		return nil
 
@@ -1739,7 +1739,7 @@ func checkRequiredUseNode(node depstring.DepNode, useFlags map[string]bool) erro
 				return nil
 			}
 		}
-		return fmt.Errorf("none of the options in any-of group are satisfied")
+		return fmt.Errorf("resolve: none of the alternative dependencies could be satisfied — at least one must be installed")
 
 	case *depstring.XorOfGroup:
 		satisfied := 0
@@ -1749,7 +1749,7 @@ func checkRequiredUseNode(node depstring.DepNode, useFlags map[string]bool) erro
 			}
 		}
 		if satisfied != 1 {
-			return fmt.Errorf("exactly-one-of group requires exactly 1 match, got %d", satisfied)
+			return fmt.Errorf("resolve: exactly one of the alternative dependencies must be selected, but %d were found", satisfied)
 		}
 		return nil
 
@@ -1878,7 +1878,7 @@ func SaveResume(path string, result *ResolveResult) error {
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("save resume: %w", err)
+		return fmt.Errorf("resolve: could not save build progress for --resume: %w", err)
 	}
 	state := ResumeState{
 		Packages: make([]ResumePackage, 0, len(result.Install)),
@@ -1898,13 +1898,13 @@ func SaveResume(path string, result *ResolveResult) error {
 	}
 	f, err := os.Create(path)
 	if err != nil {
-		return fmt.Errorf("save resume: %w", err)
+		return fmt.Errorf("resolve: could not save build progress for --resume: %w", err)
 	}
-	defer f.Close()
+	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(state); err != nil {
-		return fmt.Errorf("save resume: %w", err)
+		return fmt.Errorf("resolve: could not save build progress for --resume: %w", err)
 	}
 	return nil
 }
@@ -1913,12 +1913,12 @@ func SaveResume(path string, result *ResolveResult) error {
 func LoadResume(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("load resume: %w", err)
+		return nil, fmt.Errorf("resolve: could not load saved build progress: %w", err)
 	}
-	defer f.Close()
+	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
 	var state ResumeState
 	if err := json.NewDecoder(f).Decode(&state); err != nil {
-		return nil, fmt.Errorf("load resume: %w", err)
+		return nil, fmt.Errorf("resolve: could not load saved build progress: %w", err)
 	}
 	var result []string
 	for _, p := range state.Packages {
@@ -1936,12 +1936,12 @@ func MarkResumeComplete(path string, completedAtom string) error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("mark resume: %w", err)
+		return fmt.Errorf("resolve: could not update build progress record: %w", err)
 	}
-	defer f.Close()
+	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
 	var state ResumeState
 	if err := json.NewDecoder(f).Decode(&state); err != nil {
-		return fmt.Errorf("mark resume: %w", err)
+		return fmt.Errorf("resolve: could not update build progress record: %w", err)
 	}
 	for i := range state.Packages {
 		if state.Packages[i].Atom == completedAtom {
@@ -1950,15 +1950,15 @@ func MarkResumeComplete(path string, completedAtom string) error {
 		}
 	}
 	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("mark resume: %w", err)
+		return fmt.Errorf("resolve: could not update build progress record: %w", err)
 	}
 	if _, err := f.Seek(0, 0); err != nil {
-		return fmt.Errorf("mark resume: %w", err)
+		return fmt.Errorf("resolve: could not update build progress record: %w", err)
 	}
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(state); err != nil {
-		return fmt.Errorf("mark resume: %w", err)
+		return fmt.Errorf("resolve: could not update build progress record: %w", err)
 	}
 	return nil
 }
@@ -1970,12 +1970,12 @@ func SkipFirstResume(path string) error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("skip first resume: %w", err)
+		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
 	}
-	defer f.Close()
+	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
 	var state ResumeState
 	if err := json.NewDecoder(f).Decode(&state); err != nil {
-		return fmt.Errorf("skip first resume: %w", err)
+		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
 	}
 	for i := range state.Packages {
 		if !state.Packages[i].Completed {
@@ -1986,10 +1986,10 @@ func SkipFirstResume(path string) error {
 	// Rewrite
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
-		return fmt.Errorf("skip first resume: %w", err)
+		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
 	}
 	if err := os.WriteFile(path, data, 0644); err != nil {
-		return fmt.Errorf("skip first resume: %w", err)
+		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
 	}
 	return nil
 }
@@ -2156,12 +2156,12 @@ func AutoUnmask(conflicts []string, portageConfigRoot string) error {
 		written[cp] = true
 
 		if err := os.MkdirAll(unmaskDir, 0755); err != nil {
-			return fmt.Errorf("auto-unmask: %w", err)
+			return fmt.Errorf("resolve: could not automatically unmask package: %w", err)
 		}
 		fileName := strings.ReplaceAll(cp, "/", "_")
 		path := filepath.Join(unmaskDir, fileName)
 		if err := os.WriteFile(path, []byte(cp+"\n"), 0644); err != nil {
-			return fmt.Errorf("auto-unmask: write %s: %w", path, err)
+			return fmt.Errorf("resolve: could not write auto-unmask entry to %s: %w", path, err)
 		}
 	}
 	return nil
@@ -2194,12 +2194,12 @@ func AutoAcceptLicense(conflicts []string, portageConfigRoot string) error {
 		written[cp] = true
 
 		if err := os.MkdirAll(licenseDir, 0755); err != nil {
-			return fmt.Errorf("auto-accept-license: %w", err)
+			return fmt.Errorf("resolve: could not automatically accept license: %w", err)
 		}
 		fileName := strings.ReplaceAll(cp, "/", "_")
 		path := filepath.Join(licenseDir, fileName)
 		if err := os.WriteFile(path, []byte(cp+" "+licenseName+"\n"), 0644); err != nil {
-			return fmt.Errorf("auto-accept-license: write %s: %w", path, err)
+			return fmt.Errorf("resolve: could not write auto-accept-license entry to %s: %w", path, err)
 		}
 	}
 	return nil

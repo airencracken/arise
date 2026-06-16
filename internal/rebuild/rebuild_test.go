@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -117,7 +118,7 @@ func TestRebuildPackage_MissingEbuild(t *testing.T) {
 		}
 	}
 
-	err := RebuildPackage(ctx, "nonexistent/pkg-1.0", cfg)
+	err := RebuildPackage(ctx, "nonexistent/pkg-1.0", &cfg)
 	if err == nil {
 		t.Error("expected error for missing ebuild, got nil")
 	}
@@ -143,7 +144,7 @@ func TestRebuildPackage_InvalidAtom(t *testing.T) {
 
 	for _, a := range invalidAtoms {
 		t.Run("atom="+a, func(t *testing.T) {
-			err := RebuildPackage(ctx, a, cfg)
+			err := RebuildPackage(ctx, a, &cfg)
 			if err == nil {
 				t.Errorf("expected error for invalid atom %q, got nil", a)
 			}
@@ -162,7 +163,7 @@ func TestRebuildPackage_NoVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := RebuildPackage(ctx, "sys-apps/hello", cfg)
+	err := RebuildPackage(ctx, "sys-apps/hello", &cfg)
 	if err == nil {
 		t.Error("expected error for atom without version, got nil")
 	}
@@ -199,7 +200,7 @@ func TestRebuildPackage_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := RebuildPackage(ctx, "sys-apps/hello-1.0", cfg)
+	err := RebuildPackage(ctx, "sys-apps/hello-1.0", &cfg)
 	if err == nil {
 		t.Error("expected error from cancelled context, got nil")
 	}
@@ -239,7 +240,7 @@ func TestRebuildPackages(t *testing.T) {
 		"sys-apps/nonexistent-1.0",
 	}
 
-	err := RebuildPackages(ctx, atoms, cfg)
+	err := RebuildPackages(ctx, atoms, &cfg)
 	if err == nil {
 		t.Error("expected error due to nonexistent package, got nil")
 	}
@@ -249,7 +250,7 @@ func TestRebuildPackages(t *testing.T) {
 }
 
 func TestRebuildPackages_Empty(t *testing.T) {
-	err := RebuildPackages(context.Background(), nil, RebuildConfig{})
+	err := RebuildPackages(context.Background(), nil, &RebuildConfig{})
 	if err != nil {
 		t.Errorf("expected nil for empty atoms, got %v", err)
 	}
@@ -290,7 +291,7 @@ func TestRebuildPackagesParallel_Basic(t *testing.T) {
 			"sys-apps/nonexistent-1.0",
 		}
 
-		err := RebuildPackagesParallel(ctx, atoms, cfg, jobs)
+		err := RebuildPackagesParallel(ctx, atoms, &cfg, jobs)
 		if err == nil {
 			t.Error("expected error due to nonexistent package, got nil")
 		}
@@ -305,11 +306,11 @@ func TestRebuildPackagesParallel_Basic(t *testing.T) {
 }
 
 func TestRebuildPackagesParallel_Empty(t *testing.T) {
-	err := RebuildPackagesParallel(context.Background(), nil, RebuildConfig{}, 4)
+	err := RebuildPackagesParallel(context.Background(), nil, &RebuildConfig{}, 4)
 	if err != nil {
 		t.Errorf("expected nil for empty atoms, got %v", err)
 	}
-	err = RebuildPackagesParallel(context.Background(), []string{}, RebuildConfig{}, 4)
+	err = RebuildPackagesParallel(context.Background(), []string{}, &RebuildConfig{}, 4)
 	if err != nil {
 		t.Errorf("expected nil for empty atoms, got %v", err)
 	}
@@ -344,7 +345,7 @@ func TestRebuildPackagesParallel_ContextCancellation(t *testing.T) {
 	cancel()
 
 	atoms := []string{"sys-apps/hello-1.0", "sys-apps/hello-1.1"}
-	err := RebuildPackagesParallel(ctx, atoms, cfg, 4)
+	err := RebuildPackagesParallel(ctx, atoms, &cfg, 4)
 	if err == nil {
 		t.Error("expected error from cancelled context, got nil")
 	}
@@ -426,6 +427,7 @@ func TestRebuildPackagesParallel_ContinuesOnError(t *testing.T) {
 	}
 
 	var erroredPkgs []string
+	var mu sync.Mutex
 	cfg := RebuildConfig{
 		RepoDir:      repoDir,
 		DistfilesDir: distDir,
@@ -433,7 +435,9 @@ func TestRebuildPackagesParallel_ContinuesOnError(t *testing.T) {
 		VdbDir:       vdbDir,
 		WorkDirBase:  workDir,
 		OnError: func(pkg string, err error) {
+			mu.Lock()
 			erroredPkgs = append(erroredPkgs, pkg)
+			mu.Unlock()
 		},
 	}
 
@@ -443,13 +447,16 @@ func TestRebuildPackagesParallel_ContinuesOnError(t *testing.T) {
 		"app-bad/missing-1.0",
 	}
 
-	err := RebuildPackagesParallel(ctx, atoms, cfg, 4)
+	err := RebuildPackagesParallel(ctx, atoms, &cfg, 4)
 	if err == nil {
 		t.Error("expected error from RebuildPackagesParallel with failing atoms")
 	}
 
-	if len(erroredPkgs) < 2 {
-		t.Errorf("expected at least 2 errored packages, got %d: %v", len(erroredPkgs), erroredPkgs)
+	mu.Lock()
+	count := len(erroredPkgs)
+	mu.Unlock()
+	if count < 2 {
+		t.Errorf("expected at least 2 errored packages, got %d: %v", count, erroredPkgs)
 	}
 
 	contentsPath := filepath.Join(vdbDir, "app-good", "good-1.0", "CONTENTS")
@@ -484,7 +491,7 @@ func TestRebuildPackagesParallel_SingleWorker(t *testing.T) {
 	}
 
 	atoms := []string{"sys-apps/hello-1.0"}
-	err := RebuildPackagesParallel(context.Background(), atoms, cfg, 1)
+	err := RebuildPackagesParallel(context.Background(), atoms, &cfg, 1)
 	if err != nil {
 		t.Errorf("RebuildPackagesParallel with 1 worker failed: %v", err)
 	}
@@ -529,7 +536,7 @@ func TestProgressCallbacks(t *testing.T) {
 		}
 	}
 
-	err := RebuildPackage(context.Background(), "sys-apps/hello-1.0", cfg)
+	err := RebuildPackage(context.Background(), "sys-apps/hello-1.0", &cfg)
 	if err != nil {
 		t.Fatalf("RebuildPackage: %v", err)
 	}
@@ -593,7 +600,7 @@ DESCRIPTION="GM test package"
 		OnError:      func(pkg string, err error) {},
 	}
 
-	err := RebuildPackage(ctx, "app-misc/gmtest-1.0", cfg)
+	err := RebuildPackage(ctx, "app-misc/gmtest-1.0", &cfg)
 	if err != nil {
 		t.Fatalf("RebuildPackage failed: %v", err)
 	}
@@ -647,7 +654,7 @@ func TestRebuildPackages_ContinuesOnError(t *testing.T) {
 		"app-bad/missing-1.0",
 	}
 
-	err := RebuildPackages(ctx, atoms, cfg)
+	err := RebuildPackages(ctx, atoms, &cfg)
 	if err == nil {
 		t.Error("expected error from RebuildPackages with failing atoms")
 	}
@@ -682,7 +689,7 @@ func TestRebuildPackage_AdversarialAtom(t *testing.T) {
 	}
 
 	for _, a := range adversarial {
-		err := RebuildPackage(ctx, a, cfg)
+		err := RebuildPackage(ctx, a, &cfg)
 		_ = err
 	}
 }
@@ -694,12 +701,12 @@ func createTestTar(t *testing.T, tarPath string, files map[string]string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fh.Close()
+	defer func() { _ = fh.Close() }()
 
 	gw := gzip.NewWriter(fh)
-	defer gw.Close()
+	defer func() { _ = gw.Close() }()
 	tw := tar.NewWriter(gw)
-	defer tw.Close()
+	defer func() { _ = tw.Close() }()
 
 	for name, content := range files {
 		hdr := &tar.Header{

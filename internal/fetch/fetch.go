@@ -48,11 +48,11 @@ func Fetch(ctx context.Context, uris []string, cfg FetchConfig) ([]string, error
 	cfg.defaults()
 
 	if cfg.Destination == "" {
-		return nil, fmt.Errorf("fetch: Destination is required")
+		return nil, fmt.Errorf("fetch: a download location must be specified")
 	}
 
 	if err := os.MkdirAll(cfg.Destination, 0755); err != nil {
-		return nil, fmt.Errorf("fetch: create destination dir: %w", err)
+		return nil, fmt.Errorf("fetch: could not create download directory: %w", err)
 	}
 
 	var firstErr error
@@ -69,7 +69,7 @@ func Fetch(ctx context.Context, uris []string, cfg FetchConfig) ([]string, error
 		u, err := url.Parse(srcURI)
 		if err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("fetch: invalid URI %q: %w", srcURI, err)
+				firstErr = fmt.Errorf("fetch: invalid download address %q: %w", srcURI, err)
 			}
 			continue
 		}
@@ -91,12 +91,12 @@ func Fetch(ctx context.Context, uris []string, cfg FetchConfig) ([]string, error
 			}
 			paths = append(paths, destPath)
 		case "ftp":
-			return paths, fmt.Errorf("fetch: FTP not yet supported (uri: %s)", rawURI)
+			return paths, fmt.Errorf("fetch: FTP downloads are not supported yet (address: %s)", rawURI)
 		case "mirror":
-			return paths, fmt.Errorf("fetch: mirror expansion not yet implemented (uri: %s)", rawURI)
+			return paths, fmt.Errorf("fetch: mirror:// expansion is not implemented yet (address: %s)", rawURI)
 		default:
 			if firstErr == nil {
-				firstErr = fmt.Errorf("fetch: unsupported URI scheme %q (uri: %s)", u.Scheme, rawURI)
+				firstErr = fmt.Errorf("fetch: unsupported download protocol %q in address %s", u.Scheme, rawURI)
 			}
 		}
 	}
@@ -120,7 +120,7 @@ func FetchFile(ctx context.Context, uri string, destPath string, cfg *FetchConfi
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
-		return fmt.Errorf("fetch: create request: %w", err)
+		return fmt.Errorf("fetch: could not prepare download request: %w", err)
 	}
 
 	resp, err := httpClient.Do(req)
@@ -128,30 +128,33 @@ func FetchFile(ctx context.Context, uri string, destPath string, cfg *FetchConfi
 		if errors.Is(err, context.Canceled) {
 			return err
 		}
-		return fmt.Errorf("fetch: request %s: %w", uri, err)
+		return fmt.Errorf("fetch: could not download from %s: %w", uri, err)
 	}
-	defer resp.Body.Close()
+	defer func() { if cerr := resp.Body.Close(); cerr != nil { /* Best effort */ } }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("fetch: HTTP %d for %s", resp.StatusCode, uri)
+		return fmt.Errorf("fetch: server returned error %d when downloading %s", resp.StatusCode, uri)
 	}
 
 	tmpPath := destPath + ".part"
 	fh, err := os.Create(tmpPath)
 	if err != nil {
-		return fmt.Errorf("fetch: create temp file: %w", err)
+		return fmt.Errorf("fetch: could not create temporary download file: %w", err)
 	}
 
 	if _, err := io.Copy(fh, resp.Body); err != nil {
 		fh.Close()
 		os.Remove(tmpPath)
-		return fmt.Errorf("fetch: download %s: %w", uri, err)
+		return fmt.Errorf("fetch: download of %s failed: %w", uri, err)
 	}
-	fh.Close()
+	if err := fh.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("fetch: could not finalize downloaded file: %w", err)
+	}
 
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("fetch: rename temp file: %w", err)
+		return fmt.Errorf("fetch: could not save downloaded file: %w", err)
 	}
 
 	return nil

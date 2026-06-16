@@ -37,13 +37,13 @@ type Runner struct {
 
 func NewRunner(cfg PhaseConfig) (*Runner, error) {
 	if cfg.WorkDir == "" {
-		return nil, fmt.Errorf("phase: WorkDir is required")
+		return nil, fmt.Errorf("phase: WorkDir must not be empty")
 	}
 	if cfg.Sourcedir == "" {
-		return nil, fmt.Errorf("phase: Sourcedir is required")
+		return nil, fmt.Errorf("phase: Sourcedir must not be empty")
 	}
 	if cfg.DESTDIR == "" {
-		return nil, fmt.Errorf("phase: DESTDIR is required")
+		return nil, fmt.Errorf("phase: DESTDIR must not be empty")
 	}
 	return &Runner{cfg: cfg}, nil
 }

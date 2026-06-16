@@ -38,7 +38,7 @@ func (c MergeConfig) vdbPath() string {
 func Merge(ctx context.Context, destDir string, cfg MergeConfig) error {
 	vdbDir := cfg.vdbPath()
 	if err := os.MkdirAll(vdbDir, 0755); err != nil {
-		return fmt.Errorf("merge: create vdb dir %s: %w", vdbDir, err)
+		return fmt.Errorf("merge: could not create package database directory %s: %w", vdbDir, err)
 	}
 
 	var lines []string
@@ -71,7 +71,7 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) error {
 		switch {
 		case d.IsDir():
 			if err := os.MkdirAll(targetPath, info.Mode()); err != nil {
-				return fmt.Errorf("merge: mkdir %s: %w", targetPath, err)
+				return fmt.Errorf("merge: could not create directory %s: %w", targetPath, err)
 			}
 			lines = append(lines, formatContentsDir(targetPath))
 			return nil
@@ -79,13 +79,13 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) error {
 		case d.Type()&os.ModeSymlink != 0:
 			linkTarget, err := os.Readlink(srcPath)
 			if err != nil {
-				return fmt.Errorf("merge: readlink %s: %w", srcPath, err)
+				return fmt.Errorf("merge: could not read symlink %s: %w", srcPath, err)
 			}
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				return fmt.Errorf("merge: mkdir parent for symlink %s: %w", targetPath, err)
+				return fmt.Errorf("merge: could not create parent directory for symlink %s: %w", targetPath, err)
 			}
 			if err := os.Symlink(linkTarget, targetPath); err != nil {
-				return fmt.Errorf("merge: symlink %s: %w", targetPath, err)
+				return fmt.Errorf("merge: could not create symlink %s: %w", targetPath, err)
 			}
 			md5sum, _ := md5Bytes([]byte(linkTarget))
 			lines = append(lines, formatContentsSym(targetPath, linkTarget, md5sum, info.ModTime().Unix()))
@@ -93,11 +93,11 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) error {
 
 		default:
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				return fmt.Errorf("merge: mkdir parent for %s: %w", targetPath, err)
+				return fmt.Errorf("merge: could not create parent directory for %s: %w", targetPath, err)
 			}
 			md5sum, err := copyFile(srcPath, targetPath, info.Mode())
 			if err != nil {
-				return fmt.Errorf("merge: copy %s -> %s: %w", srcPath, targetPath, err)
+				return fmt.Errorf("merge: could not copy %s into the filesystem: %w", srcPath, err)
 			}
 			lines = append(lines, formatContentsObj(targetPath, md5sum, info.ModTime().Unix()))
 			return nil
@@ -109,12 +109,12 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) error {
 	}
 
 	if err := os.WriteFile(filepath.Join(vdbDir, "CONTENTS"), []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
-		return fmt.Errorf("merge: write CONTENTS: %w", err)
+		return fmt.Errorf("merge: could not write package file list: %w", err)
 	}
 
 	envContent := fmt.Sprintf("MERGE_DATE=%d\n", time.Now().Unix())
 	if err := os.WriteFile(filepath.Join(vdbDir, envSuffix), []byte(envContent), 0644); err != nil {
-		return fmt.Errorf("merge: write environment: %w", err)
+		return fmt.Errorf("merge: could not write package environment data: %w", err)
 	}
 
 	return nil
@@ -128,14 +128,14 @@ func Unmerge(ctx context.Context, pkgPath string) error {
 	data, err := os.ReadFile(contentsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("unmerge: CONTENTS not found in %s", pkgPath)
+			return fmt.Errorf("unmerge: no file list found for package at %s — it may already be removed", pkgPath)
 		}
-		return fmt.Errorf("unmerge: read CONTENTS: %w", err)
+		return fmt.Errorf("unmerge: could not read the file list for removal: %w", err)
 	}
 
 	entries, err := parseContents(string(data))
 	if err != nil {
-		return fmt.Errorf("unmerge: parse CONTENTS: %w", err)
+		return fmt.Errorf("unmerge: could not parse the file list for removal: %w", err)
 	}
 
 	var filePaths []string
@@ -160,38 +160,38 @@ func Unmerge(ctx context.Context, pkgPath string) error {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return fmt.Errorf("unmerge: lstat %s: %w", path, err)
+			return fmt.Errorf("unmerge: could not check file %s: %w", path, err)
 		}
 		if info.IsDir() {
 			if isEmptyDir(path) {
 				if err := os.Remove(path); err != nil {
-					return fmt.Errorf("unmerge: rmdir %s: %w", path, err)
+					return fmt.Errorf("unmerge: could not remove empty directory %s: %w", path, err)
 				}
 			}
 			continue
 		}
 		if err := os.Remove(path); err != nil {
 			if !os.IsNotExist(err) {
-				return fmt.Errorf("unmerge: remove %s: %w", path, err)
+				return fmt.Errorf("unmerge: could not remove file %s: %w", path, err)
 			}
 		}
 	}
 
 	if err := removeEmptyParents(filePaths); err != nil {
-		return fmt.Errorf("unmerge: remove empty parents: %w", err)
+		return fmt.Errorf("unmerge: could not clean up empty parent directories: %w", err)
 	}
 
 	if err := os.Remove(contentsPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("unmerge: remove CONTENTS: %w", err)
+		return fmt.Errorf("unmerge: could not remove the file list: %w", err)
 	}
 
 	envPath := filepath.Join(pkgPath, envSuffix)
 	if err := os.Remove(envPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("unmerge: remove environment: %w", err)
+		return fmt.Errorf("unmerge: could not remove the environment file: %w", err)
 	}
 
 	if err := os.Remove(pkgPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("unmerge: remove pkg dir: %w", err)
+		return fmt.Errorf("unmerge: could not remove the package database directory: %w", err)
 	}
 
 	return nil
@@ -250,13 +250,13 @@ func copyFile(src, dst string, mode os.FileMode) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer in.Close()
+	defer func() { if cerr := in.Close(); cerr != nil { /* Best effort */ } }()
 
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return "", err
 	}
-	defer out.Close()
+	defer func() { if cerr := out.Close(); cerr != nil { /* Best effort */ } }()
 
 	h := md5.New()
 	w := io.MultiWriter(out, h)
@@ -281,7 +281,7 @@ func isEmptyDir(path string) bool {
 	if err != nil {
 		return false
 	}
-	defer dh.Close()
+	defer func() { if cerr := dh.Close(); cerr != nil { /* Best effort */ } }()
 	names, err := dh.Readdirnames(1)
 	return err == io.EOF && len(names) == 0
 }

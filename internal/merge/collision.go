@@ -15,12 +15,12 @@ func CheckCollisions(destDir, vdbRoot string, excludeCPs []string) ([]string, er
 
 	destFiles, err := gatherDestFiles(destDir)
 	if err != nil {
-		return nil, fmt.Errorf("collision: walk dest %s: %w", destDir, err)
+		return nil, fmt.Errorf("collision: could not scan %s for file conflicts: %w", destDir, err)
 	}
 
 	vdbOwners, err := buildVDBOwners(vdbRoot)
 	if err != nil {
-		return nil, fmt.Errorf("collision: read vdb: %w", err)
+		return nil, fmt.Errorf("collision: could not read installed package database: %w", err)
 	}
 
 	var collisions []string

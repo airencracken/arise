@@ -23,17 +23,17 @@ func UpdateEnv(envDir string, outputDir string) error {
 
 	entries, err := ReadEnvDir(envDir)
 	if err != nil {
-		return fmt.Errorf("env-update: read %s: %w", envDir, err)
+		return fmt.Errorf("env-update: could not read environment directory %s: %w", envDir, err)
 	}
 
 	merged := mergeEnvEntries(entries)
 
 	if err := writeProfileEnv(filepath.Join(outputDir, "profile.env"), merged); err != nil {
-		return fmt.Errorf("env-update: write profile.env: %w", err)
+		return fmt.Errorf("env-update: could not write profile.env: %w", err)
 	}
 
 	if err := writeCshEnv(filepath.Join(outputDir, "csh.env"), merged); err != nil {
-		return fmt.Errorf("env-update: write csh.env: %w", err)
+		return fmt.Errorf("env-update: could not write csh.env: %w", err)
 	}
 
 	return nil
@@ -66,7 +66,7 @@ func ReadEnvDir(envDir string) ([]EnvEntry, error) {
 		path := filepath.Join(envDir, name)
 		fileEntries, err := parseEnvFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", name, err)
+			return nil, fmt.Errorf("env-update: could not read environment file %s: %w", name, err)
 		}
 		result = append(result, fileEntries...)
 	}

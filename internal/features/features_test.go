@@ -150,8 +150,8 @@ func TestApplyToEnv_Ccache(t *testing.T) {
 }
 
 func TestApplyToEnv_Distcc(t *testing.T) {
-	os.Setenv("DISTCC_HOSTS", "localhost/4")
-	defer os.Unsetenv("DISTCC_HOSTS")
+	_ = os.Setenv("DISTCC_HOSTS", "localhost/4")
+	defer func() { _ = os.Unsetenv("DISTCC_HOSTS") }()
 
 	cfg := ParseFeatures("distcc")
 	cmd := exec.Command("true")

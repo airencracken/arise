@@ -281,7 +281,7 @@ func TestUses_FromBadgerDB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	m := &metadata.PackageMetadata{
 		Category:    "app-misc",

@@ -69,7 +69,7 @@ func TestParseArrowURI(t *testing.T) {
 
 func TestFetch_HTTP(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("hello world"))
+		_, _ = w.Write([]byte("hello world"))
 	}))
 	defer srv.Close()
 
@@ -97,7 +97,7 @@ func TestFetch_HTTP(t *testing.T) {
 
 func TestFetch_ArrowRename(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("renamed content"))
+		_, _ = w.Write([]byte("renamed content"))
 	}))
 	defer srv.Close()
 
@@ -131,7 +131,7 @@ func TestFetch_ArrowRename(t *testing.T) {
 func TestFetch_ContextCancellation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
-		w.Write([]byte("too late"))
+		_, _ = w.Write([]byte("too late"))
 	}))
 	defer srv.Close()
 
@@ -199,8 +199,8 @@ func TestFetch_MirrorStub(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for mirror URI, got nil")
 	}
-	if !strings.Contains(err.Error(), "mirror expansion not yet implemented") {
-		t.Errorf("expected 'mirror expansion not yet implemented', got %q", err.Error())
+	if !strings.Contains(err.Error(), "is not implemented yet") {
+		t.Errorf("expected 'is not implemented yet', got %q", err.Error())
 	}
 }
 
@@ -212,7 +212,7 @@ func TestFetch_FTPStub(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for FTP URI, got nil")
 	}
-	if !strings.Contains(err.Error(), "FTP not yet supported") {
+	if !strings.Contains(err.Error(), "not supported") {
 		t.Errorf("expected FTP not supported message, got %q", err.Error())
 	}
 }
@@ -225,7 +225,7 @@ func TestFetch_UnsupportedScheme(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for unsupported scheme, got nil")
 	}
-	if !strings.Contains(err.Error(), "unsupported URI scheme") {
+	if !strings.Contains(err.Error(), "unsupported download protocol") {
 		t.Errorf("expected unsupported scheme error, got %q", err.Error())
 	}
 }

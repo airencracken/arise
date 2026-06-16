@@ -88,7 +88,7 @@ func BenchmarkSearchByName(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	cfg := search.SearchConfig{Query: "pkg-500", Exact: true}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -101,7 +101,7 @@ func BenchmarkSearchByCategory(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	cfg := search.SearchConfig{Category: "dev-libs", Exact: true}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -114,7 +114,7 @@ func BenchmarkSearchWithFilters(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	cfg := search.SearchConfig{
 		Query:     "pkg",
 		Installed: false,
@@ -132,7 +132,7 @@ func BenchmarkSearchJSON(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	cfg := search.SearchConfig{JSON: true}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -145,7 +145,7 @@ func BenchmarkSearchAll(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = search.Search(db, search.SearchConfig{})
@@ -159,7 +159,7 @@ func BenchmarkResolveSimple(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	rg := buildResolveGraph(b, db)
 	cfg := resolve.DefaultResolveConfig()
 	cfg.NoDeps = true
@@ -175,7 +175,7 @@ func BenchmarkResolveDeep(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	rg := buildResolveGraph(b, db)
 	cfg := resolve.DefaultResolveConfig()
 	cfg.Deep = true
@@ -191,7 +191,7 @@ func BenchmarkResolveWorld(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	rg := buildResolveGraph(b, db)
 	cfg := resolve.DefaultResolveConfig()
 	cfg.Deep = true
@@ -217,7 +217,7 @@ func BenchmarkResolveWithBacktrack(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	rg := buildResolveGraph(b, db)
 	cfg := resolve.DefaultResolveConfig()
 	cfg.Deep = true
@@ -237,7 +237,7 @@ func BenchmarkGraphBuild(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	pkgs, err := ExtractAllFromDB(db)
 	if err != nil {
 		b.Fatalf("extract: %v", err)
@@ -256,7 +256,7 @@ func BenchmarkGraphParallel(b *testing.B) {
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	repoDir := "/var/db/repos/gentoo"
 	if _, err := os.Stat(repoDir); os.IsNotExist(err) {
 		pkgs, err := ExtractAllFromDB(db)
@@ -522,7 +522,7 @@ func TestCompareSearchSpeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	Comparison := RunComparison(t, "search-pkg",
 		func() error {
@@ -557,7 +557,7 @@ func TestCompareResolveSpeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create test db: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	rg := buildResolveGraph(t, db)
 	cfg := resolve.DefaultResolveConfig()
 	cfg.Quiet = true

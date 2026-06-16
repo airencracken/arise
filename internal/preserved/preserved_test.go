@@ -59,12 +59,12 @@ func copyBinary(t *testing.T, src, dst string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srcF.Close()
+	defer func() { _ = srcF.Close() }()
 	dstF, err := os.Create(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer dstF.Close()
+	defer func() { _ = dstF.Close() }()
 	if _, err := io.Copy(dstF, srcF); err != nil {
 		t.Fatal(err)
 	}

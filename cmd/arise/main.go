@@ -276,7 +276,7 @@ func runResolveAndRebuild(targets []string, dbPath, repoDir string, update bool,
 	runResolve(targets, dbPath, repoDir, cfg)
 }
 
-func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phaseEnd func(string, error)) rebuild.RebuildConfig {
+func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phaseEnd func(string, error)) *rebuild.RebuildConfig {
 	portageCfg, _ := portage.LoadConfig("/etc/portage")
 	var featConfig *features.Config
 	if portageCfg != nil {
@@ -290,7 +290,7 @@ func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phase
 		makeOpts = os.Getenv("MAKEOPTS")
 	}
 
-	cfg := rebuild.RebuildConfig{
+	cfg := &rebuild.RebuildConfig{
 		RepoDir:      repoDir,
 		DistfilesDir: "/var/cache/distfiles",
 		RootDir:      "/",
@@ -319,7 +319,7 @@ func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phase
 	return cfg
 }
 
-func runRebuild(ctx context.Context, atoms []string, cfg rebuild.RebuildConfig, jobs int, loadAvg float64) error {
+func runRebuild(ctx context.Context, atoms []string, cfg *rebuild.RebuildConfig, jobs int, loadAvg float64) error {
 	buildCtx := ctx
 	if loadAvg > 0 {
 		buildCtx = rebuild.WithLoadControl(ctx, loadAvg)

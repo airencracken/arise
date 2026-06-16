@@ -21,7 +21,7 @@ type ProfileInfo struct {
 func LoadProfile(profileSymlink string, profilesRoot string) (*ProfileInfo, error) {
 	target, err := os.Readlink(profileSymlink)
 	if err != nil {
-		return nil, fmt.Errorf("profile: readlink %s: %w", profileSymlink, err)
+		return nil, fmt.Errorf("profile: could not read symlink %s: %w", profileSymlink, err)
 	}
 
 	profilePath := target
@@ -35,7 +35,7 @@ func LoadProfile(profileSymlink string, profilesRoot string) (*ProfileInfo, erro
 func ResolveParent(profilePath string, parentLine string, profilesRoot string) (string, error) {
 	parentLine = strings.TrimSpace(parentLine)
 	if parentLine == "" {
-		return "", fmt.Errorf("profile: empty parent line in %s", profilePath)
+		return "", fmt.Errorf("profile: empty parent reference in %s", profilePath)
 	}
 
 	if filepath.IsAbs(parentLine) {
@@ -95,7 +95,7 @@ func mergeParentsRecursive(profilePath string, profilesRoot string, visited map[
 func statProfileDir(profilePath string) (*ProfileInfo, error) {
 	st, err := os.Stat(profilePath)
 	if err != nil {
-		return nil, fmt.Errorf("profile: %s: %w", profilePath, err)
+		return nil, fmt.Errorf("profile: could not read profile directory %s: %w", profilePath, err)
 	}
 	if !st.IsDir() {
 		return nil, fmt.Errorf("profile: %s is not a directory", profilePath)

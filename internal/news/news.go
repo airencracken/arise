@@ -31,7 +31,7 @@ func ReadNews(newsDir string) ([]NewsItem, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("news: read dir %s: %w", newsDir, err)
+		return nil, fmt.Errorf("news: could not read news directory %s: %w", newsDir, err)
 	}
 
 	var items []NewsItem
@@ -193,7 +193,7 @@ func ReadUnreadNews(newsDir string, readMarkerDir string) ([]NewsItem, error) {
 
 	readNames, err := readMarkerNames(readMarkerDir)
 	if err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("news: read markers: %w", err)
+		return nil, fmt.Errorf("news: could not read news markers: %w", err)
 	}
 
 	readSet := make(map[string]bool, len(readNames))
@@ -230,7 +230,7 @@ func readMarkerNames(markerDir string) ([]string, error) {
 
 func MarkRead(readMarkerDir string, item NewsItem) error {
 	if err := os.MkdirAll(readMarkerDir, 0755); err != nil {
-		return fmt.Errorf("news: create marker dir %s: %w", readMarkerDir, err)
+		return fmt.Errorf("news: could not create marker directory %s: %w", readMarkerDir, err)
 	}
 
 	markerName := filepath.Base(item.Path)
@@ -241,9 +241,9 @@ func MarkRead(readMarkerDir string, item NewsItem) error {
 		if os.IsExist(err) {
 			return nil
 		}
-		return fmt.Errorf("news: mark read %s: %w", markerName, err)
+		return fmt.Errorf("news: could not mark news item %s as read: %w", markerName, err)
 	}
-	defer f.Close()
+	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
 
 	_, err = f.WriteString(fmt.Sprintf("%s\n", item.Title))
 	return err

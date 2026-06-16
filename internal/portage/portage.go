@@ -47,7 +47,7 @@ func LoadConfig(portageConfigRoot string) (*Config, error) {
 
 	mc, err := ParseMakeConf(filepath.Join(portageConfigRoot, "make.conf"))
 	if err != nil {
-		return nil, fmt.Errorf("portage: %w", err)
+		return nil, fmt.Errorf("portage: could not parse make.conf: %w", err)
 	}
 	if mc != nil {
 		cfg.MakeConf = mc
@@ -92,37 +92,37 @@ func (cfg *Config) loadPackageFiles(root string) error {
 
 	cfg.PackageUse, err = ParsePackageUse(filepath.Join(root, "package.use"))
 	if err != nil {
-		return fmt.Errorf("package.use: %w", err)
+		return fmt.Errorf("portage: could not parse package.use: %w", err)
 	}
 
 	cfg.PackageAcceptKeywords, err = ParsePackageAcceptKeywords(filepath.Join(root, "package.accept_keywords"))
 	if err != nil {
-		return fmt.Errorf("package.accept_keywords: %w", err)
+		return fmt.Errorf("portage: could not parse package.accept_keywords: %w", err)
 	}
 
 	cfg.PackageLicense, err = ParsePackageLicense(filepath.Join(root, "package.license"))
 	if err != nil {
-		return fmt.Errorf("package.license: %w", err)
+		return fmt.Errorf("portage: could not parse package.license: %w", err)
 	}
 
 	cfg.PackageMask, err = ParsePackageMask(filepath.Join(root, "package.mask"))
 	if err != nil {
-		return fmt.Errorf("package.mask: %w", err)
+		return fmt.Errorf("portage: could not parse package.mask: %w", err)
 	}
 
 	cfg.PackageUnmask, err = ParsePackageUnmask(filepath.Join(root, "package.unmask"))
 	if err != nil {
-		return fmt.Errorf("package.unmask: %w", err)
+		return fmt.Errorf("portage: could not parse package.unmask: %w", err)
 	}
 
 	cfg.PackageEnv, err = ParsePackageEnv(filepath.Join(root, "package.env"))
 	if err != nil {
-		return fmt.Errorf("package.env: %w", err)
+		return fmt.Errorf("portage: could not parse package.env: %w", err)
 	}
 
 	cfg.PackageProvided, err = ParsePackageProvided(filepath.Join(root, "profile", "package.provided"))
 	if err != nil {
-		return fmt.Errorf("profile/package.provided: %w", err)
+		return fmt.Errorf("portage: could not parse profile/package.provided: %w", err)
 	}
 
 	return nil
@@ -162,7 +162,11 @@ func readMakeConfLines(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			/* Best effort */
+		}
+	}()
 
 	var lines []string
 	scanner := bufio.NewScanner(f)
@@ -190,7 +194,7 @@ func readMakeConfLines(path string) ([]string, error) {
 		lines = append(lines, buf.String())
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, fmt.Errorf("portage: could not read %s: %w", path, err)
 	}
 	return lines, nil
 }
@@ -400,7 +404,11 @@ func readFileLines(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			/* Best effort */
+		}
+	}()
 
 	var lines []string
 	scanner := bufio.NewScanner(f)
@@ -413,7 +421,7 @@ func readFileLines(path string) ([]string, error) {
 		lines = append(lines, line)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, fmt.Errorf("portage: could not read %s: %w", path, err)
 	}
 	return lines, nil
 }

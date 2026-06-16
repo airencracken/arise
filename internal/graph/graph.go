@@ -105,7 +105,7 @@ func Build(db *badger.DB, repoDir string) (*DepGraph, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("graph: query installed: %w", err)
+		return nil, fmt.Errorf("graph: could not read installed package data: %w", err)
 	}
 
 	available := make(map[string]*metadata.PackageMetadata)
@@ -599,7 +599,7 @@ func BuildParallel(db *badger.DB, repoDir string, workers int) (*DepGraph, error
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("graph: scan installed: %w", err)
+		return nil, fmt.Errorf("graph: could not scan installed packages: %w", err)
 	}
 
 	var mu sync.Mutex

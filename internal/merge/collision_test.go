@@ -188,12 +188,12 @@ func TestCheckCollisions_MultipleExistingPackages(t *testing.T) {
 	}
 
 	pkg1 := filepath.Join(vdbDir, "cat-a", "pkg1-1.0")
-	os.MkdirAll(pkg1, 0755)
-	os.WriteFile(filepath.Join(pkg1, "CONTENTS"), []byte("obj /usr/bin/a md5 1\n"), 0644)
+	_ = os.MkdirAll(pkg1, 0755)
+	_ = os.WriteFile(filepath.Join(pkg1, "CONTENTS"), []byte("obj /usr/bin/a md5 1\n"), 0644)
 
 	pkg2 := filepath.Join(vdbDir, "cat-b", "pkg2-1.0")
-	os.MkdirAll(pkg2, 0755)
-	os.WriteFile(filepath.Join(pkg2, "CONTENTS"), []byte("obj /usr/bin/b md5 2\n"), 0644)
+	_ = os.MkdirAll(pkg2, 0755)
+	_ = os.WriteFile(filepath.Join(pkg2, "CONTENTS"), []byte("obj /usr/bin/b md5 2\n"), 0644)
 
 	collisions, err := CheckCollisions(destDir, vdbDir, nil)
 	if err != nil {
@@ -245,9 +245,9 @@ func TestCheckCollisions_SymlinkCollision(t *testing.T) {
 	}
 
 	existingPkgDir := filepath.Join(vdbDir, "sys-libs", "oldfoo-1.0")
-	os.MkdirAll(existingPkgDir, 0755)
+	_ = os.MkdirAll(existingPkgDir, 0755)
 	contents := "sym /usr/lib/libfoo.so -> libfoo.so.1 abcd 1234567890\n"
-	os.WriteFile(filepath.Join(existingPkgDir, "CONTENTS"), []byte(contents), 0644)
+	_ = os.WriteFile(filepath.Join(existingPkgDir, "CONTENTS"), []byte(contents), 0644)
 
 	collisions, err := CheckCollisions(destDir, vdbDir, nil)
 	if err != nil {

@@ -266,8 +266,8 @@ func TestExtractTarGz(t *testing.T) {
 	if _, err := tw.Write(content); err != nil {
 		t.Fatal(err)
 	}
-	tw.Close()
-	gw.Close()
+	_ = tw.Close()
+	_ = gw.Close()
 
 	archivePath := filepath.Join(dir, "test.tar.gz")
 	if err := os.WriteFile(archivePath, buf.Bytes(), 0644); err != nil {
@@ -330,8 +330,8 @@ func TestExtractTarGz_DirectoryEntries(t *testing.T) {
 	if _, err := tw.Write(content); err != nil {
 		t.Fatal(err)
 	}
-	tw.Close()
-	gw.Close()
+	_ = tw.Close()
+	_ = gw.Close()
 
 	archivePath := filepath.Join(dir, "dirs.tar.gz")
 	if err := os.WriteFile(archivePath, buf.Bytes(), 0644); err != nil {

@@ -108,7 +108,7 @@ func ScanBrokenLinks(root string) ([]BrokenLink, error) {
 // checkLDD verifies that ldd is available on the system.
 func checkLDD() error {
 	if _, err := exec.LookPath(lddPath); err != nil {
-		return fmt.Errorf("ldd not available: %w", err)
+		return fmt.Errorf("could not run ldd to check library dependencies: %w", err)
 	}
 	return nil
 }
@@ -201,15 +201,19 @@ func elfSoname(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			/* Best effort */
+		}
+	}()
 
 	if f.Type != elf.ET_DYN {
-		return "", fmt.Errorf("not a shared library")
+		return "", fmt.Errorf("file is not a shared library")
 	}
 
 	dynStrings, err := f.DynString(elf.DT_SONAME)
 	if err != nil || len(dynStrings) == 0 || dynStrings[0] == "" {
-		return "", fmt.Errorf("no SONAME")
+		return "", fmt.Errorf("shared library has no SONAME field")
 	}
 	return dynStrings[0], nil
 }
@@ -256,7 +260,7 @@ func FindOwningPackages(vdbRoot string, files []string) (map[string]string, erro
 
 	entries, err := os.ReadDir(vdbRoot)
 	if err != nil {
-		return nil, fmt.Errorf("reading vdb root %q: %w", vdbRoot, err)
+		return nil, fmt.Errorf("could not read installed package database at %q: %w", vdbRoot, err)
 	}
 
 	for _, entry := range entries {
@@ -309,7 +313,7 @@ func vdbContentsMap(vdbRoot string) (map[string]string, error) {
 
 	entries, err := os.ReadDir(vdbRoot)
 	if err != nil {
-		return nil, fmt.Errorf("reading vdb root %q: %w", vdbRoot, err)
+		return nil, fmt.Errorf("could not read installed package database at %q: %w", vdbRoot, err)
 	}
 
 	for _, entry := range entries {
@@ -363,12 +367,12 @@ func vdbContentsMap(vdbRoot string) (map[string]string, error) {
 func RebuildNeeded(root, vdbRoot string) ([]string, error) {
 	broken, err := ScanBrokenLinks(root)
 	if err != nil {
-		return nil, fmt.Errorf("scanning broken links: %w", err)
+		return nil, fmt.Errorf("could not scan for broken library links: %w", err)
 	}
 
 	preserved, err := ScanPreservedLibs(root)
 	if err != nil {
-		return nil, fmt.Errorf("scanning preserved libs: %w", err)
+		return nil, fmt.Errorf("could not scan for preserved libraries: %w", err)
 	}
 
 	seen := make(map[string]bool)
@@ -382,7 +386,7 @@ func RebuildNeeded(root, vdbRoot string) ([]string, error) {
 	if len(binaryFiles) > 0 {
 		owning, ferr := FindOwningPackages(vdbRoot, binaryFiles)
 		if ferr != nil {
-			return nil, fmt.Errorf("finding owning packages: %w", ferr)
+			return nil, fmt.Errorf("could not find owning packages for broken binaries: %w", ferr)
 		}
 		for _, bl := range broken {
 			if pkg, ok := owning[bl.Binary]; ok {
@@ -406,7 +410,7 @@ func RebuildNeeded(root, vdbRoot string) ([]string, error) {
 	if len(preserved) > 0 {
 		contentsMap, cerr := vdbContentsMap(vdbRoot)
 		if cerr != nil {
-			return nil, fmt.Errorf("reading vdb contents: %w", cerr)
+			return nil, fmt.Errorf("could not read installed package database contents: %w", cerr)
 		}
 		preservedPaths := make(map[string]bool)
 		for _, pl := range preserved {
@@ -455,7 +459,7 @@ func RevdepRebuild(root, vdbRoot string) ([]string, error) {
 
 	contentsMap, err := vdbContentsMap(vdbRoot)
 	if err != nil {
-		return nil, fmt.Errorf("reading vdb contents: %w", err)
+		return nil, fmt.Errorf("could not read installed package database contents: %w", err)
 	}
 
 	needRebuild := make(map[string]bool)
@@ -492,7 +496,11 @@ func isELF(path string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			/* Best effort */
+		}
+	}()
 
 	var magic [4]byte
 	if _, err := io.ReadFull(f, magic[:]); err != nil {
@@ -508,7 +516,11 @@ func elfNeededLibraries(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			/* Best effort */
+		}
+	}()
 
 	needed, err := f.ImportedLibraries()
 	if err != nil {
