@@ -118,6 +118,30 @@ func TestParseCacheEntry_Basic(t *testing.T) {
 	}
 }
 
+func TestFingerprintDeterministicMapOrder(t *testing.T) {
+	a := &PackageMetadata{Category: "app-editors", Package: "vim", Unknown: map[string]string{"B": "2", "A": "1"}}
+	b := &PackageMetadata{Category: "app-editors", Package: "vim", Unknown: map[string]string{"A": "1", "B": "2"}}
+	aDigest, err := Fingerprint(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bDigest, err := Fingerprint(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aDigest != bDigest {
+		t.Fatal("map insertion order changed metadata fingerprint")
+	}
+	b.Version = "9.1"
+	bDigest, err = Fingerprint(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aDigest == bDigest {
+		t.Fatal("metadata change did not change fingerprint")
+	}
+}
+
 func TestParseCacheEntry_EmptyFields(t *testing.T) {
 	data := []byte("DESCRIPTION=\nEAPI=0\n")
 	m, err := ParseCacheEntry("cat/pkg-1", data)
@@ -163,16 +187,20 @@ func TestParseCacheEntry_SubslotParsing(t *testing.T) {
 
 func TestParseCacheEntry_CPVParsing(t *testing.T) {
 	tests := []struct {
-		cpv  string
-		cat  string
-		pkg  string
-		ver  string
+		cpv string
+		cat string
+		pkg string
+		ver string
 	}{
 		{"sys-devel/gcc-12.2.0", "sys-devel", "gcc", "12.2.0"},
 		{"dev-lang/python-3.12.0_alpha1", "dev-lang", "python", "3.12.0_alpha1"},
 		{"virtual/rust-1.75.0", "virtual", "rust", "1.75.0"},
 		{"x11-libs/gtk+-3.24.39", "x11-libs", "gtk+", "3.24.39"},
 		{"cat/pkg-1.2.3-r4", "cat", "pkg", "1.2.3-r4"},
+		{"www-client/firefox-l10n-152.0.6", "www-client", "firefox-l10n", "152.0.6"},
+		{"dev-go/go-git-5.19.1", "dev-go", "go-git", "5.19.1"},
+		{"media-fonts/font-adobe-100dpi-1.0.4", "media-fonts", "font-adobe-100dpi", "1.0.4"},
+		{"sys-apps/intel-sa-00075-tools-1.0.0", "sys-apps", "intel-sa-00075-tools", "1.0.0"},
 		{"cat/pkg", "cat", "pkg", ""},
 	}
 

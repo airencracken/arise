@@ -16,5 +16,6 @@
 Thumbs.db
 arise-*.tar.gz
 
-# Go vendor directory (use go mod download for reproducible builds)
+# Go dependencies are packaged as a release-time module-cache archive.
 vendor/
+dist/

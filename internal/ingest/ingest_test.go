@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/airencracken/arise/internal/metadata"
@@ -38,6 +39,24 @@ func TestOpenDB(t *testing.T) {
 	db := openTestDB(t)
 	if db == nil {
 		t.Fatal("expected non-nil db")
+	}
+}
+
+func TestResetPackageIndex(t *testing.T) {
+	db := openTestDB(t)
+	entry := &metadata.PackageMetadata{Category: "sys-apps", Package: "portage", Version: "3.0"}
+	if _, err := Ingest(db, sendEntries(t, entry)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResetPackageIndex(db); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Query(db, "sys-apps/portage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("package remained after reset: %+v", got)
 	}
 }
 
@@ -125,6 +144,43 @@ func TestQueryEmptyDB(t *testing.T) {
 	}
 }
 
+func TestReconcileNoChangeAndRemoveMissing(t *testing.T) {
+	db := openTestDB(t)
+	first := sendEntries(t,
+		&metadata.PackageMetadata{Category: "app-editors", Package: "vim", Version: "9.0"},
+		&metadata.PackageMetadata{Category: "app-editors", Package: "vim", Version: "9.1"},
+		&metadata.PackageMetadata{Category: "sys-apps", Package: "portage", Version: "3.0"},
+	)
+	stats, seen, err := ReconcileWithProgress(db, first, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Changed != 2 || len(seen) != 2 {
+		t.Fatalf("first reconcile stats = %+v, seen=%d", stats, len(seen))
+	}
+	vim, err := Query(db, "app-editors/vim")
+	if err != nil || vim.Version != "9.1" {
+		t.Fatalf("selected vim = %+v, err=%v", vim, err)
+	}
+
+	second := sendEntries(t, &metadata.PackageMetadata{Category: "app-editors", Package: "vim", Version: "9.1"})
+	stats, seen, err = ReconcileWithProgress(db, second, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Changed != 0 || stats.Unchanged != 1 {
+		t.Fatalf("no-change reconcile stats = %+v", stats)
+	}
+	removed, err := RemoveMissing(db, seen)
+	if err != nil || removed != 1 {
+		t.Fatalf("RemoveMissing = %d, %v", removed, err)
+	}
+	portage, err := Query(db, "sys-apps/portage")
+	if err != nil || portage != nil {
+		t.Fatalf("stale package remains: %+v, %v", portage, err)
+	}
+}
+
 func TestQueryRange(t *testing.T) {
 	db := openTestDB(t)
 
@@ -174,6 +230,21 @@ func TestQueryRange(t *testing.T) {
 		}
 		if len(found) != 3 {
 			t.Errorf("expected 3 sys-devel entries, got %d: %v", len(found), found)
+		}
+	})
+
+	t.Run("keys without values", func(t *testing.T) {
+		var found []string
+		err := QueryKeys(db, "pkg:sys-devel/", func(cp string) error {
+			found = append(found, cp)
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("QueryKeys: %v", err)
+		}
+		want := []string{"sys-devel/binutils", "sys-devel/gcc", "sys-devel/make"}
+		if !reflect.DeepEqual(found, want) {
+			t.Fatalf("QueryKeys = %v, want %v", found, want)
 		}
 	})
 
@@ -275,19 +346,19 @@ func TestIngestSliceFields(t *testing.T) {
 	db := openTestDB(t)
 
 	m := &metadata.PackageMetadata{
-		Category:  "sys-devel",
-		Package:   "gcc",
-		KEYWORDS:  "",
-		IUSE:      "",
+		Category: "sys-devel",
+		Package:  "gcc",
+		KEYWORDS: "",
+		IUSE:     "",
 	}
 
 	// Set through Unknown map to test gob round-trip
 	m.Unknown = map[string]string{
-		"KEYWORDS":  "amd64 x86 ~arm64",
-		"IUSE":      "fortran openmp lto",
-		"DEPEND":    ">=dev-libs/gmp-6.2 >=dev-libs/mpfr-4.1",
-		"RDEPEND":   "dev-libs/mpc",
-		"BDEPEND":   "sys-devel/bison sys-devel/flex",
+		"KEYWORDS": "amd64 x86 ~arm64",
+		"IUSE":     "fortran openmp lto",
+		"DEPEND":   ">=dev-libs/gmp-6.2 >=dev-libs/mpfr-4.1",
+		"RDEPEND":  "dev-libs/mpc",
+		"BDEPEND":  "sys-devel/bison sys-devel/flex",
 	}
 
 	count, err := Ingest(db, sendEntries(t, m))

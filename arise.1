@@ -139,7 +139,7 @@ Enable or disable colored output (default: terminal auto-detect).
 \fB\-unordered-display\fR
 Display results in resolution order rather than sorted.
 .TP
-\fB\-load-average\fR \fILOAD\fR
+\fB\-l\fR \fILOAD\fR, \fB\-load-average\fR \fILOAD\fR
 Pause when system load average exceeds the given value.
 .TP
 \fB\-getbinpkg\fR
@@ -300,6 +300,18 @@ Remove a package from the @world set without uninstalling it.
 \fBsearch\fR [\fIflags\fR] [\fIquery\fR]
 Search the package database. Accepts all search flags listed above.
 Replaces \fBeix\fR and \fBemerge \-\-search\fR.
+
+.TP
+\fBinstalled\fR [\fIall|repo|no-repo|buildtime|no-buildtime\fR]
+[\fB\-\-versions\fR|\fB\-\-cpv\fR] [\fB\-\-null\fR]
+[\fB\-=\fR] [\fB\-q\fR] [\fB\-a\fR]
+List installed package atoms. The default output is one versionless
+\fIcategory/package\fR atom per line. Use \fB\-\-versions\fR (or
+\fB\-\-cpv\fR) for \fIcategory/package-version\fR; use \fB\-\-null\fR
+for NUL-delimited scripting output. Replaces \fBeix-installed\fR.
+The compatibility selectors filter packages by VDB metadata. \fB\-=\fR prefixes
+atoms with an equals sign, \fB\-q\fR suppresses explanatory text, and
+\fB\-a\fR is shorthand for quiet \fBall\fR output.
 
 .TP
 \fBquery\fR \fIatom\fR

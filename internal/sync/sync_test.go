@@ -10,8 +10,30 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
 )
+
+func TestRemoteURL(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "https://github.com/gentoo-mirror/gentoo"
+	if _, err := repo.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{want}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := RemoteURL(dir); got != want {
+		t.Fatalf("RemoteURL() = %q, want %q", got, want)
+	}
+}
+
+func TestRemoteURLMissing(t *testing.T) {
+	if got := RemoteURL(t.TempDir()); got != "" {
+		t.Fatalf("RemoteURL() = %q, want empty", got)
+	}
+}
 
 func TestSyncConfig_Validate(t *testing.T) {
 	tests := []struct {

@@ -6,7 +6,7 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install update uninstall query search info audit dispatch-conf quickpkg depclean prune env-update ldconfig config news deselect preserved-rebuild revdep-rebuild equery bench"
+    local commands="sync index install update uninstall query search installed info audit dispatch-conf quickpkg depclean prune env-update ldconfig config news deselect preserved-rebuild revdep-rebuild equery bench"
 
     local audit_sub="python perl"
     local news_sub="list read display"
@@ -59,6 +59,9 @@ _arise() {
                 _arise_pkg_atoms "$cur"
             fi
             ;;
+        installed)
+            COMPREPLY=($(compgen -W "all repo no-repo buildtime no-buildtime --versions --cpv --null -0 -= -q -a" -- "$cur"))
+            ;;
         sync|index|info|dispatch-conf|depclean|prune|env-update|ldconfig|preserved-rebuild|revdep-rebuild|bench)
             _arise_flags
             ;;
@@ -67,6 +70,11 @@ _arise() {
 
 _arise_flags() {
     local flags=(
+        -1 -O -o -e -N -D -p -a -q -v -t -b -B -k -K -f -n -g -G -j -l
+        --oneshot --nodeps --onlydeps --emptytree --newuse --deep --pretend
+        --ask --quiet --verbose --tree --buildpkg --buildpkgonly --usepkg
+        --usepkgonly --fetchonly --noreplace --getbinpkg --getbinpkgonly
+        --jobs --load-average
         -ask -autounmask-write -backtrack -binpkg-respect-use -buildpkg
         -buildpkgonly -changed-deps -changed-use -color -compact
         -complete-graph -db -deep -desc -deselect -emptytree -exact

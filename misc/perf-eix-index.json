@@ -1,0 +1,35 @@
+{
+  "name": "full-package-index",
+  "warmups": 1,
+  "runs": 5,
+  "cases": [
+    {
+      "name": "full-gentoo-and-cached-overlays",
+      "normalize": "package-names",
+      "arise": {
+        "tool": "arise index",
+        "path": "./arise",
+        "args": ["--db", "/tmp/arise-index-bench", "--repo", "/var/db/repos/gentoo", "index"],
+        "version_args": ["--version"],
+        "cache_paths": ["/tmp/arise-index-bench"],
+        "reset_paths": ["/tmp/arise-index-bench"]
+      },
+      "reference": {
+        "tool": "eix-update",
+        "path": "eix-update",
+        "args": ["-q", "-o", "/tmp/eix-index-bench.eix", "-x", "/usr/portage"],
+        "version_args": ["--version"],
+        "cache_paths": ["/tmp/eix-index-bench.eix"],
+        "reset_paths": ["/tmp/eix-index-bench.eix"]
+      },
+      "arise_validate": {
+        "path": "./arise",
+        "args": ["--search-only-names", "--db", "/tmp/arise-index-bench", "search"]
+      },
+      "reference_validate": {
+        "path": "eix",
+        "args": ["--cache-file", "/tmp/eix-index-bench.eix", "--only-names"]
+      }
+    }
+  ]
+}

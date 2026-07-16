@@ -12,10 +12,14 @@ import (
 	"github.com/airencracken/arise/internal/search"
 )
 
+// version is replaced by release builds with -ldflags "-X main.version=...".
+var version = "devel"
+
 var (
-	dbPath   = flag.String("db", "/var/lib/arise/data", "database path")
-	repoPath = flag.String("repo", "/var/db/repos/gentoo", "repository path")
-	repoURL  = flag.String("repo-url", "", "remote repository URL for sync")
+	showVersion = flag.Bool("version", false, "print version and exit")
+	dbPath      = flag.String("db", "/var/lib/arise/data", "database path")
+	repoPath    = flag.String("repo", "/var/db/repos/gentoo", "repository path")
+	repoURL     = flag.String("repo-url", "", "remote repository URL for sync")
 
 	// Filesystem path configuration
 	distfilesDir      = flag.String("distfiles-dir", "/var/cache/distfiles", "path to distfiles directory")
@@ -105,8 +109,47 @@ var (
 	searchDump       = flag.Bool("search-dump", false, "--dump, dump as eix-compatible format")
 )
 
+func init() {
+	boolAliases := []struct {
+		name string
+		ptr  *bool
+		use  string
+	}{
+		{"1", oneshot, "alias for --oneshot"},
+		{"O", nodeps, "alias for --nodeps"},
+		{"o", onlydeps, "alias for --onlydeps"},
+		{"e", emptytree, "alias for --emptytree"},
+		{"N", newuse, "alias for --newuse"},
+		{"D", deep, "alias for --deep"},
+		{"p", pretend, "alias for --pretend"},
+		{"a", ask, "alias for --ask"},
+		{"q", quiet, "alias for --quiet"},
+		{"v", verbose, "alias for --verbose"},
+		{"t", tree, "alias for --tree"},
+		{"b", buildPkg, "alias for --buildpkg"},
+		{"B", buildPkgOnly, "alias for --buildpkgonly"},
+		{"k", usePkg, "alias for --usepkg"},
+		{"K", usePkgOnly, "alias for --usepkgonly"},
+		{"f", fetchOnly, "alias for --fetchonly"},
+		{"n", noreplace, "alias for --noreplace"},
+		{"g", getbinpkg, "alias for --getbinpkg"},
+		{"G", getbinpkgOnly, "alias for --getbinpkgonly"},
+	}
+	for _, alias := range boolAliases {
+		flag.BoolVar(alias.ptr, alias.name, false, alias.use)
+	}
+	flag.IntVar(jobsVal, "j", 0, "alias for --jobs")
+	flag.Float64Var(loadAverage, "l", 0, "alias for --load-average")
+}
+
 func main() {
+	os.Args = normalizeEmergeArgs(os.Args)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("arise %s\n", version)
+		return
+	}
 
 	log.SetLevelString(*logLevel)
 
@@ -117,7 +160,7 @@ func main() {
 	args := flag.Args()
 	if len(args) == 0 && *deselectArg == "" {
 		fmt.Fprintf(os.Stderr, "Usage: arise [flags] <command> [args...]\n")
-		fmt.Fprintf(os.Stderr, "Commands: sync, index, install, update, uninstall, query, search, info, audit, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench\n")
+		fmt.Fprintf(os.Stderr, "Commands: sync, index, install, update, uninstall, query, search, installed, info, audit, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 		os.Exit(1)
@@ -158,7 +201,11 @@ func main() {
 	case "prune":
 		runPrune(*dbPath, *repoPath)
 	case "search":
-		runSearch(cmdArgs, *dbPath)
+		if code := runSearch(cmdArgs, *dbPath); code != 0 {
+			os.Exit(code)
+		}
+	case "installed":
+		runInstalled(cmdArgs, *vdbDir)
 	case "info":
 		runInfo()
 	case "preserved-rebuild":
@@ -188,6 +235,76 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: arise [flags] <command> [args...]\n")
 		os.Exit(1)
 	}
+}
+
+func normalizeEmergeArgs(args []string) []string {
+	if len(args) < 2 {
+		return args
+	}
+	expanded := []string{args[0]}
+	boolShort := map[byte]bool{'1': true, 'O': true, 'o': true, 'e': true, 'N': true, 'D': true, 'p': true, 'a': true, 'q': true, 'v': true, 't': true, 'b': true, 'B': true, 'k': true, 'K': true, 'f': true, 'n': true, 'g': true, 'G': true}
+	for _, arg := range args[1:] {
+		if len(arg) > 2 && arg[0] == '-' && arg[1] != '-' {
+			allBool := true
+			for i := 1; i < len(arg); i++ {
+				if !boolShort[arg[i]] {
+					allBool = false
+					break
+				}
+			}
+			if allBool {
+				for i := 1; i < len(arg); i++ {
+					expanded = append(expanded, "-"+string(arg[i]))
+				}
+				continue
+			}
+			if (arg[1] == 'j' || arg[1] == 'l') && len(arg) > 2 {
+				expanded = append(expanded, "-"+string(arg[1]), arg[2:])
+				continue
+			}
+		}
+		expanded = append(expanded, arg)
+	}
+
+	commandAt := -1
+	commands := map[string]bool{"install": true, "update": true, "uninstall": true}
+	for i := 1; i < len(expanded); i++ {
+		if commands[expanded[i]] {
+			commandAt = i
+			break
+		}
+	}
+	if commandAt < 0 {
+		return expanded
+	}
+
+	prefix := append([]string{}, expanded[:commandAt]...)
+	command := expanded[commandAt]
+	var operands []string
+	for i := commandAt + 1; i < len(expanded); i++ {
+		arg := expanded[i]
+		if !strings.HasPrefix(arg, "-") {
+			operands = append(operands, arg)
+			continue
+		}
+		name := strings.TrimLeft(arg, "-")
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			name = name[:eq]
+		}
+		f := flag.Lookup(name)
+		if f == nil {
+			operands = append(operands, arg)
+			continue
+		}
+		prefix = append(prefix, arg)
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); !ok || !bf.IsBoolFlag() {
+			if !strings.Contains(arg, "=") && i+1 < len(expanded) {
+				i++
+				prefix = append(prefix, expanded[i])
+			}
+		}
+	}
+	return append(append(prefix, command), operands...)
 }
 
 func vdbPathToAtoms(vdbPath string) []string {

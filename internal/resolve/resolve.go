@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -1538,9 +1539,17 @@ func (r *resolver) keywordAccepted(keywords string) bool {
 		}
 	}
 
+	arch := r.portageConfig.MakeConf["ARCH"]
+	if arch == "" {
+		arch = gentooRuntimeArch(runtime.GOARCH)
+	}
+
 	for _, kw := range strings.Fields(keywords) {
 		if strings.HasPrefix(kw, "-") {
 			continue
+		}
+		if kw == arch {
+			return true
 		}
 		for _, ak := range r.portageConfig.ACCEPT_KEYWORDS {
 			if ak == kw {
@@ -1553,6 +1562,13 @@ func (r *resolver) keywordAccepted(keywords string) bool {
 	}
 
 	return false
+}
+
+func gentooRuntimeArch(goarch string) string {
+	if goarch == "386" {
+		return "x86"
+	}
+	return goarch
 }
 
 func (r *resolver) findMatchingVersion(node *PkgNode, constraint *atom.Atom) *VersionInfo {
@@ -1938,7 +1954,10 @@ func SaveResume(path string, result *ResolveResult) error {
 	if err != nil {
 		return fmt.Errorf("resolve: could not save build progress for --resume: %w", err)
 	}
-	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil { /* Best effort */
+		}
+	}()
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(state); err != nil {
@@ -1953,7 +1972,10 @@ func LoadResume(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve: could not load saved build progress: %w", err)
 	}
-	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil { /* Best effort */
+		}
+	}()
 	var state ResumeState
 	if err := json.NewDecoder(f).Decode(&state); err != nil {
 		return nil, fmt.Errorf("resolve: could not load saved build progress: %w", err)
@@ -1976,7 +1998,10 @@ func MarkResumeComplete(path string, completedAtom string) error {
 		}
 		return fmt.Errorf("resolve: could not update build progress record: %w", err)
 	}
-	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil { /* Best effort */
+		}
+	}()
 	var state ResumeState
 	if err := json.NewDecoder(f).Decode(&state); err != nil {
 		return fmt.Errorf("resolve: could not update build progress record: %w", err)
@@ -2010,7 +2035,10 @@ func SkipFirstResume(path string) error {
 		}
 		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
 	}
-	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil { /* Best effort */
+		}
+	}()
 	var state ResumeState
 	if err := json.NewDecoder(f).Decode(&state); err != nil {
 		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)

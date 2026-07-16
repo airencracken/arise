@@ -504,6 +504,12 @@ type RepoEntry struct {
 	SyncType string
 }
 
+// ReadReposConf returns all repository entries from a repos.conf file or
+// directory in deterministic file order.
+func ReadReposConf(path string) ([]RepoEntry, error) {
+	return parseReposConfDir(path)
+}
+
 // ParseReposConf reads repos.conf from the given path (file or directory)
 // and returns the sync-uri for the repo whose location matches targetDir.
 // If targetDir is empty, returns the sync-uri for the first repo found.
@@ -514,9 +520,23 @@ func ParseReposConf(reposConfPath, targetDir string) string {
 	}
 
 	if targetDir != "" {
+		cleanTarget := filepath.Clean(targetDir)
 		for _, e := range entries {
-			if e.Location == targetDir {
+			if e.Location != "" && filepath.Clean(e.Location) == cleanTarget {
 				return e.SyncURI
+			}
+		}
+
+		// Portage installations are sometimes migrated from /usr/portage to
+		// /var/db/repos/gentoo without updating repos.conf. The repository
+		// section name remains stable and is the next-best identity.
+		targetName := filepath.Base(cleanTarget)
+		for _, preferredType := range []string{"git", ""} {
+			for _, e := range entries {
+				if e.Name == targetName && e.SyncURI != "" &&
+					(preferredType == "" || e.SyncType == preferredType) {
+					return e.SyncURI
+				}
 			}
 		}
 		return ""

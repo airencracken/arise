@@ -194,7 +194,7 @@ func (r *Runner) srcTest(ctx context.Context) error {
 	var target string
 	for _, t := range testTargets {
 		// attempt to run make check first, then make test
-		args := append([]string{"-C", srcDir, "--question", t})
+		args := []string{"-C", srcDir, "--question", t}
 		cmd := exec.CommandContext(ctx, "make", args...)
 		if err := cmd.Run(); err == nil {
 			target = t
@@ -209,7 +209,7 @@ func (r *Runner) srcTest(ctx context.Context) error {
 	if runtime.GOOS != "linux" {
 		makeBinary = "gmake"
 	}
-	args := append([]string{"-C", srcDir, target})
+	args := []string{"-C", srcDir, target}
 	cmd := exec.CommandContext(ctx, makeBinary, args...)
 	cmd.Env = r.buildEnv()
 	cmd.Stdout = os.Stdout

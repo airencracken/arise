@@ -2,7 +2,9 @@ package metadata
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -11,6 +13,9 @@ import (
 
 // PackageMetadata holds the parsed metadata for a single Gentoo package.
 type PackageMetadata struct {
+	Repository     string
+	RepositoryPath string
+	OverlayIndex   int
 	Category       string
 	Package        string
 	Version        string
@@ -36,6 +41,19 @@ type PackageMetadata struct {
 	_md5_          string
 	_mtime_        string
 	Unknown        map[string]string
+}
+
+// Fingerprint returns a deterministic digest of the fields persisted by gob.
+// encoding/json sorts string map keys, making Unknown stable across processes.
+func Fingerprint(m *PackageMetadata) ([sha256.Size]byte, error) {
+	if m == nil {
+		return [sha256.Size]byte{}, fmt.Errorf("metadata: fingerprint nil record")
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return [sha256.Size]byte{}, fmt.Errorf("metadata: fingerprint: %w", err)
+	}
+	return sha256.Sum256(data), nil
 }
 
 // Key returns the canonical category/package key (CP).
@@ -234,8 +252,23 @@ func parseCPV(cpv string) (cat, pkg, ver string, err error) {
 	if rest == "" {
 		return "", "", "", fmt.Errorf("metadata: invalid cpv %q: empty package name", cpv)
 	}
+	if rest[0] == '-' {
+		return "", "", "", fmt.Errorf("metadata: invalid cpv %q: dash after slash", cpv)
+	}
 
-	dash := strings.IndexByte(rest, '-')
+	// A package-name component may itself begin with digits (font-100dpi), so
+	// the boundary is the first hyphen whose complete suffix is a valid Gentoo
+	// version, not merely the first hyphen followed by a digit.
+	dash := -1
+	for i := 1; i+1 < len(rest); i++ {
+		if rest[i] == '-' && rest[i+1] >= '0' && rest[i+1] <= '9' {
+			if parsed, _ := atom.ParseVersion(rest[i+1:]); parsed == nil {
+				continue
+			}
+			dash = i
+			break
+		}
+	}
 	if dash < 0 {
 		pkg = rest
 		ver = ""

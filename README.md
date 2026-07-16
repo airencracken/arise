@@ -1,7 +1,13 @@
-# arise — Gentoo Package Manager
+# Arise — Gentoo Package Manager
 
 A high-performance, self-healing package manager for Gentoo Linux, written in
 Go. Statically linked, no Python or Bash dependency for core operations.
+
+> **Development status:** repository sync, indexing, search, and installed
+> package queries are usable foundations. The emerge-compatible resolver,
+> ebuild executor, transactional merge/unmerge, and maintenance operations are
+> experimental and are not yet safe replacements for Portage on a live system.
+> See [the current audit](AUDIT_2026-07-16.md) and [punch list](PUNCHLIST.md).
 
 ## Why
 
@@ -14,7 +20,7 @@ Portage has also accumulated decades of technical debt: recursive dependency
 resolution through a Python interpreter, linear metadata scans, and emergent
 complexity from maintaining backwards compatibility across 20+ years of EAPIs.
 
-arise solves both problems:
+Arise solves both problems:
 
 - **Survives system breakage**: a single statically-linked Go binary. No Python,
   no Bash, no shared libraries. If your kernel boots, arise works.
@@ -25,13 +31,18 @@ arise solves both problems:
   perl-cleaner, python-updater, dispatch-conf, env-update, revdep-rebuild,
   and eselect-news. Learn one CLI, carry one binary.
 - **Correctness**: every component has adversarial input tests, mutation tests,
-  and an integration framework that compares arise output against portageq and
+  and an integration framework that compares Arise output against portageq and
   emerge --info to verify 1:1 parity.
 
-- **Pure Go, static binary** — `CGO_ENABLED=0`, no dynamic linking
-- **Filesystem is sovereign** — BadgerDB is an acceleration layer, not the source of truth
-- **Pragmatic fallback** — build phases that need bash/make run via `os/exec`
-- **Self-healing** — survives system Python breakage
+The core design rules are:
+
+- **Pure Go, static binary** — `CGO_ENABLED=0`, no dynamic linking.
+- **Filesystem is sovereign** — BadgerDB and immutable sidecars accelerate
+  queries; they are never the source of truth.
+- **Pragmatic fallback** — build phases that require Bash or Make run through
+  `os/exec` without making Arise itself dependent on Python.
+- **Self-healing** — core inspection and recovery survive system Python
+  breakage.
 
 ## Quick Start
 
@@ -49,6 +60,14 @@ arise index
 arise search gcc
 arise search --installed --category dev-lang
 arise search --versions --json python
+
+# List installed atoms (versionless by default)
+arise installed
+arise installed --versions
+arise installed --null
+arise installed repo
+arise installed no-buildtime
+arise installed -= -q all
 
 # Package queries (replaces equery)
 arise equery belongs /usr/bin/gcc
@@ -82,7 +101,7 @@ arise env-update
 
 ## Usage
 
-```
+```text
 arise [global-flags] <command> [args...]
 
 Commands:
@@ -95,6 +114,7 @@ Commands:
   prune           Remove old package versions
   deselect        Remove from @world set
   search          Search packages (replaces eix)
+  installed       List installed CP atoms or CPVs (replaces eix-installed)
   query           Look up package metadata
   info            System information (replaces emerge --info)
   equery          Package queries (replaces equery)
@@ -111,7 +131,47 @@ Commands:
 
 ## Features
 
-### emerge feature parity
+### Performance against Gentoo tools
+
+`emerge` is the behavioral reference. `eix`, `eix-installed`, `equery`, and
+related tools are performance references where they provide an equivalent
+operation. Correctness-equivalent but slower results fail Arise's benchmark
+gate; matching speed is the floor, and the goal is to win decisively.
+
+Initial same-snapshot, correctness-gated results on the development laptop:
+
+| Task | Reference | Equivalent | Arise median | Reference median | Speedup |
+|---|---|---:|---:|---:|---:|
+| List all installed CPVs | eix-installed | yes | 8.14 ms | 36.86 ms | **4.53x** |
+| Firefox substring search | eix | yes | 11.07 ms | 33.01 ms | **2.98x — pass** |
+| Firefox substring search | emerge | yes | 11.62 ms | 862.26 ms | **74.22x — pass** |
+| Full package index | eix-update | yes | 1.29 s | 4.22 s | **3.27x — pass** |
+| No-change package index | eix-update | yes | 713 ms | 4.22 s | **5.92x — pass** |
+
+For that indexed search, Arise uses 32.28 MiB total cache storage versus
+eix's 25.80 MiB. Arise's dedicated immutable name index is 451 KiB; the rest
+is the richer canonical metadata database used by resolution and queries.
+The index comparison uses 30.82 MiB for Arise and 25.77 MiB for eix. Arise's
+extra transactional fingerprints make no-change indexing faster than a full
+build while preserving package-record/database consistency.
+
+Not yet claimed:
+
+- The isolated `emerge --metadata` workload is ready but still needs a
+  privileged run because Portage enforces root/portage-group access.
+- Signal Desktop planning remains correctness-blocked; its timing is invalid
+  until Arise and emerge produce equivalent plans.
+
+The complete current and planned task matrix is in
+[BENCHMARK_MATRIX.md](BENCHMARK_MATRIX.md), with methodology in
+[misc/PERFORMANCE.md](misc/PERFORMANCE.md). These values are development
+baselines, not cherry-picked release claims.
+
+### emerge compatibility surface (experimental)
+
+The following options and subsystems exist in partial form. This list describes
+the intended compatibility surface, not completed behavioral parity.
+
 - Dependency resolution with backtracking (`--backtrack`, `--deep`, `--complete-graph`)
 - USE, keyword, license, mask handling from `/etc/portage/`
 - Binary packages (XPAK format): create, install, remote binhosts
@@ -121,6 +181,7 @@ Commands:
 - Collision detection, `--noreplace`, `package.provided`
 
 ### eix (search) feature parity
+
 - 30+ search filters: category, name, slot, use, keywords, license, regex
 - `--versions`, `--json`, `--format`, `--brief`, `--and`/`--not`
 - `--depends-on`, `--required-by`, `--has-use`, `--has-version`
@@ -128,6 +189,7 @@ Commands:
 - Output modes: JSON, brief, custom format strings, eix-compatible dump
 
 ### equery feature parity
+
 - `belongs` — find owning package for a file
 - `files` — list installed files
 - `uses` — show IUSE and active USE flags
@@ -149,11 +211,11 @@ make install        # install to /usr/local
 make clean          # remove artifacts
 ```
 
-Requirements: Go 1.21+, Linux (primary target).
+Requirements: Go 1.26.3+, Linux (primary target).
 
 ## Architecture
 
-```
+```text
 cmd/arise/           CLI entry point
 internal/
   atom/             Gentoo atom parser (>=cat/pkg-1.0:slot=[use])
@@ -172,8 +234,10 @@ internal/
   integration/      portageq comparison test framework
   merge/            DESTDIR merge + VDB writing + collision detection
   metadata/         md5-cache parser and PackageMetadata struct
+  nameindex/        Immutable, checksummed package-name sidecar
   news/             GLEP 42 news reader
   phase/            Build phase executor (unpack, configure, compile, install)
+  perf/             Correctness-gated benchmark harness and reports
   portage/          /etc/portage config parser
   preserved/        @preserved-rebuild and revdep-rebuild scanner
   profile/          Profile inheritance chain parser

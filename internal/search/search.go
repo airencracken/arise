@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
@@ -32,13 +33,37 @@ type SearchResult struct {
 	Stable      bool
 	Testing     bool
 
-	AllVersions  []string `json:",omitempty"`
-	IsMasked     bool     `json:",omitempty"`
-	IsOverflow   bool     `json:",omitempty"`
-	DependsOn    []string `json:",omitempty"`
-	RequiredBy   []string `json:",omitempty"`
-	BestVersion  string   `json:",omitempty"`
-	InstalledVer string   `json:",omitempty"`
+	AllVersions       []string           `json:",omitempty"`
+	IsMasked          bool               `json:",omitempty"`
+	IsOverflow        bool               `json:",omitempty"`
+	DependsOn         []string           `json:",omitempty"`
+	RequiredBy        []string           `json:",omitempty"`
+	BestVersion       string             `json:",omitempty"`
+	InstalledVer      string             `json:",omitempty"`
+	VersionInfo       []VersionInfo      `json:",omitempty"`
+	Repository        string             `json:",omitempty"`
+	RepoPath          string             `json:",omitempty"`
+	OverlayIndex      int                `json:",omitempty"`
+	InstalledVersions []InstalledVersion `json:",omitempty"`
+}
+
+type VersionInfo struct {
+	Version  string
+	Slot     string
+	Stable   bool
+	Testing  bool
+	Masked   bool
+	Restrict string
+}
+
+type InstalledVersion struct {
+	Version     string
+	Slot        string
+	Repository  string
+	BuildTime   int64
+	EnabledUSE  []string
+	DisabledUSE []string
+	Restrict    string
 }
 
 type SortField int
@@ -163,9 +188,15 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 	if vdbPath == "" {
 		vdbPath = "/var/db/pkg"
 	}
+	var installed map[string][]InstalledVersion
+	// Package-name-only output cannot expose installation metadata. Avoid a VDB
+	// scan unless installation state is itself part of the requested filter.
+	if !cfg.OnlyNames || cfg.Installed {
+		installed = loadInstalledIndex(vdbPath)
+	}
 
 	if cfg.RequiredBy != "" {
-		return searchRequiredBy(db, cfg, vdbPath)
+		return searchRequiredBy(db, cfg, installed)
 	}
 
 	rx, err := compileRegex(cfg)
@@ -188,8 +219,8 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 
 	var allEntries []collectedEntry
 
-	err = ingest.QueryRange(db, "pkg:", func(m *metadata.PackageMetadata) error {
-		res := toSearchResult(m, vdbPath)
+	collect := func(m *metadata.PackageMetadata) error {
+		res := toSearchResult(m, installed[m.Key()])
 
 		if !matchesSearchResult(res, cfg, rx, queryLower, parsedUse) {
 			return nil
@@ -213,11 +244,11 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 			} else if !cfg.Exact {
 				nameMatch = strings.Contains(strings.ToLower(m.Category), queryLower) ||
 					strings.Contains(strings.ToLower(m.Package), queryLower)
-				descMatch = strings.Contains(strings.ToLower(m.DESCRIPTION), queryLower)
+				descMatch = cfg.Description && strings.Contains(strings.ToLower(m.DESCRIPTION), queryLower)
 			} else {
 				nameMatch = strings.EqualFold(m.Category, cfg.Query) ||
 					strings.EqualFold(m.Package, cfg.Query)
-				descMatch = strings.EqualFold(m.DESCRIPTION, cfg.Query)
+				descMatch = cfg.Description && strings.EqualFold(m.DESCRIPTION, cfg.Query)
 			}
 
 			if !nameMatch && !descMatch {
@@ -229,12 +260,52 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 
 		allEntries = append(allEntries, collectedEntry{m: m, nameMatch: true, descMatch: false})
 		return nil
-	})
+	}
+
+	if cfg.Query != "" && !cfg.Description && !cfg.And {
+		var candidates []string
+		err = ingest.QueryKeys(db, "pkg:", func(cp string) error {
+			parts := strings.SplitN(cp, "/", 2)
+			if len(parts) != 2 {
+				return nil
+			}
+			category, pkg := strings.ToLower(parts[0]), strings.ToLower(parts[1])
+			matches := false
+			if cfg.And {
+				matches = matchAllTokens(category, pkg, queryTokens, cfg.Exact)
+			} else if cfg.Exact {
+				matches = strings.EqualFold(parts[0], cfg.Query) || strings.EqualFold(parts[1], cfg.Query)
+			} else {
+				matches = strings.Contains(category, queryLower) || strings.Contains(pkg, queryLower)
+			}
+			if matches {
+				candidates = append(candidates, cp)
+			}
+			return nil
+		})
+		if err == nil {
+			for _, cp := range candidates {
+				m, queryErr := ingest.Query(db, cp)
+				if queryErr != nil {
+					err = queryErr
+					break
+				}
+				if m != nil {
+					err = collect(m)
+					if err != nil {
+						break
+					}
+				}
+			}
+		}
+	} else {
+		err = ingest.QueryRange(db, "pkg:", collect)
+	}
 	if err != nil {
 		return nil, err
 	}
 
-	results := mergeCollectedResults(allEntries, cfg, vdbPath)
+	results := mergeCollectedResults(allEntries, cfg, installed)
 
 	if cfg.World && ws != nil {
 		results = filterByWorldSet(results, ws)
@@ -259,7 +330,7 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 	results = applyStatusFilters(results, cfg)
 
 	if cfg.Versions || cfg.Duplicates {
-		results = expandAllVersions(results, cfg)
+		results = expandAllVersions(results, cfg, installed)
 	}
 
 	sortResults(results, cfg.Sort)
@@ -277,7 +348,7 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 	return results, nil
 }
 
-func searchRequiredBy(db *badger.DB, cfg SearchConfig, vdbPath string) ([]SearchResult, error) {
+func searchRequiredBy(db *badger.DB, cfg SearchConfig, installed map[string][]InstalledVersion) ([]SearchResult, error) {
 	var target *metadata.PackageMetadata
 	err := ingest.QueryRange(db, "pkg:", func(m *metadata.PackageMetadata) error {
 		targetName := strings.ToLower(cfg.RequiredBy)
@@ -314,7 +385,7 @@ func searchRequiredBy(db *badger.DB, cfg SearchConfig, vdbPath string) ([]Search
 		if qErr != nil || m == nil {
 			continue
 		}
-		res := toSearchResult(m, vdbPath)
+		res := toSearchResult(m, installed[m.Key()])
 		results = append(results, res)
 	}
 
@@ -471,7 +542,7 @@ func postFilter(results []SearchResult, cfg SearchConfig) []SearchResult {
 	return results
 }
 
-func mergeCollectedResults(entries []collectedEntry, cfg SearchConfig, vdbPath string) []SearchResult {
+func mergeCollectedResults(entries []collectedEntry, cfg SearchConfig, installed map[string][]InstalledVersion) []SearchResult {
 	seen := make(map[string]bool)
 	var results []SearchResult
 	for _, e := range entries {
@@ -480,7 +551,7 @@ func mergeCollectedResults(entries []collectedEntry, cfg SearchConfig, vdbPath s
 			continue
 		}
 		seen[key] = true
-		r := toSearchResult(e.m, vdbPath)
+		r := toSearchResult(e.m, installed[e.m.Key()])
 		results = append(results, r)
 	}
 	return results
@@ -622,14 +693,18 @@ func applyStatusFilters(results []SearchResult, cfg SearchConfig) []SearchResult
 	return filtered
 }
 
-func expandAllVersions(results []SearchResult, cfg SearchConfig) []SearchResult {
+func expandAllVersions(results []SearchResult, cfg SearchConfig, installed map[string][]InstalledVersion) []SearchResult {
 	if cfg.RepoPath == "" {
 		return results
 	}
 
 	var expanded []SearchResult
 	for _, r := range results {
-		cpDir := filepath.Join(cfg.RepoPath, r.Category, r.Package)
+		repoRoot := r.RepoPath
+		if repoRoot == "" {
+			repoRoot = cfg.RepoPath
+		}
+		cpDir := filepath.Join(repoRoot, r.Category, r.Package)
 		ebuilds, err := filepath.Glob(filepath.Join(cpDir, r.Package+"-*.ebuild"))
 		if err != nil || len(ebuilds) == 0 {
 			expanded = append(expanded, r)
@@ -637,13 +712,45 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig) []SearchResult 
 		}
 		if cfg.Versions && !cfg.Duplicates {
 			var versions []string
+			var versionInfo []VersionInfo
+			var bestMetadata *metadata.PackageMetadata
 			for _, eb := range ebuilds {
 				ver := versionFromEbuild(eb, r.Package)
 				if ver != "" {
 					versions = append(versions, ver)
+					repoRoot := r.RepoPath
+					if repoRoot == "" {
+						repoRoot = cfg.RepoPath
+					}
+					cachePath := filepath.Join(repoRoot, "metadata", "md5-cache", r.Category, r.Package+"-"+ver)
+					if data, readErr := os.ReadFile(cachePath); readErr == nil {
+						if m, parseErr := metadata.ParseCacheEntry(r.Category+"/"+r.Package+"-"+ver, data); parseErr == nil {
+							status := toSearchResult(m, installed[m.Key()])
+							versionInfo = append(versionInfo, VersionInfo{Version: ver, Slot: m.SLOT, Stable: status.Stable, Testing: status.Testing, Masked: status.IsMasked, Restrict: m.RESTRICT})
+							if bestMetadata == nil || compareVersionStrings(ver, bestMetadata.Version) > 0 {
+								bestMetadata = m
+							}
+						}
+					}
 				}
 			}
+			sort.Slice(versions, func(i, j int) bool {
+				a, _ := atom.ParseVersion(versions[i])
+				b, _ := atom.ParseVersion(versions[j])
+				if a == nil || b == nil {
+					return versions[i] < versions[j]
+				}
+				return a.Compare(b) < 0
+			})
 			r.AllVersions = versions
+			sort.Slice(versionInfo, func(i, j int) bool { return compareVersionStrings(versionInfo[i].Version, versionInfo[j].Version) < 0 })
+			r.VersionInfo = versionInfo
+			if bestMetadata != nil {
+				r.Description = bestMetadata.DESCRIPTION
+				r.Homepage = bestMetadata.HOMEPAGE
+				r.IUSE = bestMetadata.IUSE
+				r.Keywords = bestMetadata.KEYWORDS
+			}
 			if len(versions) > 0 {
 				r.BestVersion = bestVersionString(versions)
 			}
@@ -662,6 +769,15 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig) []SearchResult 
 		}
 	}
 	return expanded
+}
+
+func compareVersionStrings(a, b string) int {
+	av, _ := atom.ParseVersion(a)
+	bv, _ := atom.ParseVersion(b)
+	if av == nil || bv == nil {
+		return strings.Compare(a, b)
+	}
+	return av.Compare(bv)
 }
 
 func versionFromEbuild(ebuildPath, pkg string) string {
@@ -740,13 +856,13 @@ func populateDepFields(db *badger.DB, results []SearchResult) {
 	}
 }
 
-func toSearchResult(m *metadata.PackageMetadata, vdbPath string) SearchResult {
-	installed := false
-	var installedVer string
-	cpPath := filepath.Join(vdbPath, m.Category, m.Package)
-	if info, err := os.Stat(cpPath); err == nil && info.IsDir() {
-		installed = true
-		installedVer = findInstalledVersion(cpPath, m.Package)
+func toSearchResult(m *metadata.PackageMetadata, installedVersions []InstalledVersion) SearchResult {
+	installed := len(installedVersions) > 0
+	installedVer := ""
+	for _, installedVersion := range installedVersions {
+		if installedVer == "" || compareVersionStrings(installedVersion.Version, installedVer) > 0 {
+			installedVer = installedVersion.Version
+		}
 	}
 
 	stable := false
@@ -772,24 +888,129 @@ func toSearchResult(m *metadata.PackageMetadata, vdbPath string) SearchResult {
 	isOverflow := hasKeywords && allTesting && !stable
 
 	return SearchResult{
-		Category:     m.Category,
-		Package:      m.Package,
-		Version:      m.Version,
-		Slot:         m.SLOT,
-		Subslot:      m.Subslot,
-		Description:  m.DESCRIPTION,
-		Homepage:     m.HOMEPAGE,
-		Keywords:     m.KEYWORDS,
-		IUSE:         m.IUSE,
-		License:      m.LICENSE,
-		Installed:    installed,
-		Stable:       stable,
-		Testing:      testing,
-		IsMasked:     isMasked,
-		IsOverflow:   isOverflow,
-		BestVersion:  m.Version,
-		InstalledVer: installedVer,
+		Category:          m.Category,
+		Package:           m.Package,
+		Version:           m.Version,
+		Slot:              m.SLOT,
+		Subslot:           m.Subslot,
+		Description:       m.DESCRIPTION,
+		Homepage:          m.HOMEPAGE,
+		Keywords:          m.KEYWORDS,
+		IUSE:              m.IUSE,
+		License:           m.LICENSE,
+		Installed:         installed,
+		Stable:            stable,
+		Testing:           testing,
+		IsMasked:          isMasked,
+		IsOverflow:        isOverflow,
+		BestVersion:       m.Version,
+		InstalledVer:      installedVer,
+		InstalledVersions: installedVersions,
+		Repository:        m.Repository,
+		RepoPath:          m.RepositoryPath,
+		OverlayIndex:      m.OverlayIndex,
 	}
+}
+
+func loadInstalledVersions(vdbPath, category, pkg string) []InstalledVersion {
+	return loadInstalledIndex(vdbPath)[category+"/"+pkg]
+}
+
+func loadInstalledIndex(vdbPath string) map[string][]InstalledVersion {
+	installed := make(map[string][]InstalledVersion)
+	categories, err := os.ReadDir(vdbPath)
+	if err != nil {
+		return installed
+	}
+
+	for _, category := range categories {
+		if !category.IsDir() {
+			continue
+		}
+		categoryPath := filepath.Join(vdbPath, category.Name())
+		entries, err := os.ReadDir(categoryPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+
+			cpv, err := atom.Parse(category.Name() + "/" + entry.Name())
+			if err == nil && cpv.Version != nil {
+				key := cpv.Category + "/" + cpv.Package
+				if version, ok := readInstalledVersion(filepath.Join(categoryPath, entry.Name()), cpv.Version.Raw); ok {
+					installed[key] = append(installed[key], version)
+				}
+				continue
+			}
+
+			// Retain support for the older category/package/package-version
+			// layout used by fixtures and some external VDB producers.
+			legacyDir := filepath.Join(categoryPath, entry.Name())
+			legacyVersions, err := os.ReadDir(legacyDir)
+			if err != nil {
+				continue
+			}
+			foundLegacyVersion := false
+			for _, legacyVersion := range legacyVersions {
+				if !legacyVersion.IsDir() {
+					continue
+				}
+				cpv, err := atom.Parse(category.Name() + "/" + legacyVersion.Name())
+				if err != nil || cpv.Version == nil || cpv.Package != entry.Name() {
+					continue
+				}
+				key := cpv.Category + "/" + cpv.Package
+				if version, ok := readInstalledVersion(filepath.Join(legacyDir, legacyVersion.Name()), cpv.Version.Raw); ok {
+					installed[key] = append(installed[key], version)
+					foundLegacyVersion = true
+				}
+			}
+			if !foundLegacyVersion {
+				installed[category.Name()+"/"+entry.Name()] = []InstalledVersion{{}}
+			}
+		}
+	}
+
+	for key := range installed {
+		versions := installed[key]
+		sort.Slice(versions, func(i, j int) bool {
+			return compareVersionStrings(versions[i].Version, versions[j].Version) < 0
+		})
+		installed[key] = versions
+	}
+	return installed
+}
+
+func readInstalledVersion(dir, version string) (InstalledVersion, bool) {
+	if atomVersion, _ := atom.ParseVersion(version); atomVersion == nil {
+		return InstalledVersion{}, false
+	}
+	read := func(name string) string {
+		data, _ := os.ReadFile(filepath.Join(dir, name))
+		return strings.TrimSpace(string(data))
+	}
+	enabledSet := make(map[string]bool)
+	for _, flag := range strings.Fields(read("USE")) {
+		enabledSet[flag] = true
+	}
+	var enabled, disabled []string
+	for _, raw := range strings.Fields(read("IUSE")) {
+		flag := strings.TrimLeft(raw, "+-")
+		if enabledSet[flag] {
+			enabled = append(enabled, flag)
+		} else {
+			disabled = append(disabled, "-"+flag)
+		}
+	}
+	buildTime, _ := strconv.ParseInt(read("BUILD_TIME"), 10, 64)
+	return InstalledVersion{
+		Version: version, Slot: read("SLOT"), Repository: read("repository"),
+		BuildTime: buildTime, EnabledUSE: enabled, DisabledUSE: disabled,
+		Restrict: read("RESTRICT"),
+	}, true
 }
 
 func findInstalledVersion(vdbCPPath, pkg string) string {
@@ -797,6 +1018,7 @@ func findInstalledVersion(vdbCPPath, pkg string) string {
 	if err != nil {
 		return ""
 	}
+	best := ""
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -804,12 +1026,12 @@ func findInstalledVersion(vdbCPPath, pkg string) string {
 		name := e.Name()
 		if strings.HasPrefix(name, pkg+"-") {
 			ver := name[len(pkg)+1:]
-			if ver != "" {
-				return ver
+			if ver != "" && (best == "" || compareVersionStrings(ver, best) > 0) {
+				best = ver
 			}
 		}
 	}
-	return ""
+	return best
 }
 
 func sortResults(results []SearchResult, s SortField) {

@@ -243,7 +243,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 
 	result, err := resolve.Resolve(rg, targets, cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolve: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 
 		// --autounmask-write: generate unmask/license entries on failure
 		if cfg.AutoUnmaskWrite {

@@ -1289,6 +1289,16 @@ func TestDepGraph_AddVersion(t *testing.T) {
 	}
 }
 
+func TestKeywordAcceptedUsesStableHostArch(t *testing.T) {
+	r := &resolver{portageConfig: &portage.Config{MakeConf: map[string]string{"ARCH": "amd64"}}}
+	if !r.keywordAccepted("-* amd64") {
+		t.Fatal("stable host keyword should be accepted without explicit ACCEPT_KEYWORDS")
+	}
+	if r.keywordAccepted("-* arm64") {
+		t.Fatal("a different architecture should not be accepted")
+	}
+}
+
 func TestDepGraph_AddDep(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "pkg/a", "1.0", "0", "0", false, nil)

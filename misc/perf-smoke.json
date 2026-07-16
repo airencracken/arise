@@ -1,0 +1,14 @@
+{
+  "name": "harness-smoke",
+  "warmups": 1,
+  "runs": 3,
+  "cases": [
+    {
+      "name": "successful-command-overhead",
+      "normalize": "exit-code",
+      "min_speedup": 0,
+      "arise": { "tool": "arise-smoke", "path": "/bin/true" },
+      "reference": { "tool": "reference-smoke", "path": "/bin/true" }
+    }
+  ]
+}

@@ -1,13 +1,177 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/airencracken/arise/internal/search"
 )
+
+func TestVersionFlagRegistered(t *testing.T) {
+	f := flag.Lookup("version")
+	if f == nil {
+		t.Fatal("version flag is not registered")
+	}
+	if f.Usage != "print version and exit" {
+		t.Fatalf("version flag usage = %q", f.Usage)
+	}
+}
+
+func TestDevelopmentVersionIsNotEmpty(t *testing.T) {
+	if strings.TrimSpace(version) == "" {
+		t.Fatal("version must not be empty")
+	}
+}
+
+func TestEmergeShortAliasesRegistered(t *testing.T) {
+	for short, long := range map[string]string{
+		"1": "oneshot", "O": "nodeps", "o": "onlydeps", "e": "emptytree",
+		"N": "newuse", "D": "deep", "p": "pretend", "a": "ask",
+		"q": "quiet", "v": "verbose", "t": "tree", "b": "buildpkg",
+		"B": "buildpkgonly", "k": "usepkg", "K": "usepkgonly",
+		"f": "fetchonly", "n": "noreplace", "g": "getbinpkg",
+		"G": "getbinpkgonly", "j": "jobs", "l": "load-average",
+	} {
+		if flag.Lookup(short) == nil {
+			t.Errorf("emerge short option -%s (for --%s) is not registered", short, long)
+		}
+		if flag.Lookup(long) == nil {
+			t.Errorf("emerge long option --%s is not registered", long)
+		}
+	}
+}
+
+func TestNormalizeEmergeArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "cluster before command",
+			in:   []string{"arise", "-avp", "install", "net-im/signal-desktop-bin"},
+			want: []string{"arise", "-a", "-v", "-p", "install", "net-im/signal-desktop-bin"},
+		},
+		{
+			name: "options after command",
+			in:   []string{"arise", "install", "--pretend", "-j4", "net-im/signal-desktop-bin"},
+			want: []string{"arise", "--pretend", "-j", "4", "install", "net-im/signal-desktop-bin"},
+		},
+		{
+			name: "long option value after command",
+			in:   []string{"arise", "update", "--backtrack", "20", "@world"},
+			want: []string{"arise", "--backtrack", "20", "update", "@world"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeEmergeArgs(tt.in)
+			if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
+				t.Fatalf("normalizeEmergeArgs() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIndexPrivilegeError(t *testing.T) {
+	if err := indexPrivilegeError(1000, "/var/lib/arise/data"); err == nil {
+		t.Fatal("non-root system database should require root")
+	}
+	if err := indexPrivilegeError(0, "/var/lib/arise/data"); err != nil {
+		t.Fatalf("root rejected: %v", err)
+	}
+	if err := indexPrivilegeError(1000, "/tmp/arise-data"); err != nil {
+		t.Fatalf("user-owned database rejected: %v", err)
+	}
+}
+
+func TestSyncPrivilegeError(t *testing.T) {
+	if err := syncPrivilegeError(1000, "/var/db/repos/gentoo"); err == nil {
+		t.Fatal("non-root system repository should require root")
+	}
+	if err := syncPrivilegeError(0, "/var/db/repos/gentoo"); err != nil {
+		t.Fatalf("root rejected: %v", err)
+	}
+	if err := syncPrivilegeError(1000, "/tmp/gentoo"); err != nil {
+		t.Fatalf("user-owned repository rejected: %v", err)
+	}
+}
+
+func TestFormatIndexProgress(t *testing.T) {
+	got := formatIndexProgress(12345, 5*time.Second)
+	if !strings.Contains(got, "12,345 packages") || !strings.Contains(got, "2,469 pkg/s") {
+		t.Fatalf("formatIndexProgress() = %q", got)
+	}
+}
+
+func TestSearchUpgradeAvailable(t *testing.T) {
+	if !searchUpgradeAvailable("140.10.2", "152.0.6") {
+		t.Fatal("expected upgrade to be detected")
+	}
+	if searchUpgradeAvailable("152.0.6", "152.0.6") {
+		t.Fatal("equal versions are not an upgrade")
+	}
+}
+
+func TestInstalledAtoms(t *testing.T) {
+	vdb := t.TempDir()
+	for _, path := range []string{
+		"www-client/firefox-140.10.2",
+		"www-client/firefox-128.0",
+		"dev-go/go-git-5.19.1",
+	} {
+		if err := os.MkdirAll(filepath.Join(vdb, path), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cp, err := installedAtoms(vdb, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCP := []string{"dev-go/go-git", "www-client/firefox"}
+	if strings.Join(cp, " ") != strings.Join(wantCP, " ") {
+		t.Fatalf("installed CP = %v, want %v", cp, wantCP)
+	}
+	cpv, err := installedAtoms(vdb, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cpv) != 3 {
+		t.Fatalf("installed CPV count = %d, want 3: %v", len(cpv), cpv)
+	}
+	if err := os.WriteFile(filepath.Join(vdb, "www-client/firefox-140.10.2", "repository"), []byte("gentoo\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vdb, "www-client/firefox-140.10.2", "BUILD_TIME"), []byte("1778751269\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	records, err := scanInstalled(vdb, "repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	matched := 0
+	for _, record := range records {
+		if installedSelectorMatches(record, "repo") {
+			matched++
+		}
+	}
+	if matched != 1 {
+		t.Fatalf("repo selector matched %d records, want 1", matched)
+	}
+}
+
+func TestRestrictionSuffix(t *testing.T) {
+	if got := restrictionSuffix("strip !test? ( test )"); got != "^st" {
+		t.Fatalf("restrictionSuffix() = %q, want ^st", got)
+	}
+	if got := restrictionSuffix(""); got != "" {
+		t.Fatalf("empty restriction suffix = %q", got)
+	}
+}
 
 func snapshotFlags() struct {
 	backtrackVal       int
@@ -576,5 +740,14 @@ func TestBuildRebuildConfig_NilCallbacks(t *testing.T) {
 	}
 	if cfg.OnPhaseEnd != nil {
 		t.Error("OnPhaseEnd should be nil")
+	}
+}
+
+func TestSearchExitCode(t *testing.T) {
+	if got := searchExitCode(0); got != 1 {
+		t.Fatalf("searchExitCode(0) = %d, want 1", got)
+	}
+	if got := searchExitCode(1); got != 0 {
+		t.Fatalf("searchExitCode(1) = %d, want 0", got)
 	}
 }

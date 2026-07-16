@@ -1,0 +1,24 @@
+{
+  "name": "emerge-search",
+  "warmups": 1,
+  "runs": 3,
+  "cases": [
+    {
+      "name": "firefox-substring-package-names",
+      "normalize": "search-package-names",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["--search-only-names", "--db", "/tmp/arise-perf-data", "--repo", "/var/db/repos/gentoo", "search", "firefox"],
+        "version_args": ["--version"],
+        "cache_paths": ["/tmp/arise-perf-data"]
+      },
+      "reference": {
+        "tool": "emerge",
+        "path": "emerge",
+        "args": ["--search", "--quiet", "firefox"],
+        "version_args": ["--version"]
+      }
+    }
+  ]
+}

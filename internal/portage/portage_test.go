@@ -9,6 +9,30 @@ import (
 	"testing"
 )
 
+func TestParseReposConfExactLocation(t *testing.T) {
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "repos.conf")
+	content := "[gentoo]\nlocation = /var/db/repos/gentoo\nsync-type = git\nsync-uri = https://example.test/gentoo.git\n"
+	if err := os.WriteFile(conf, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := ParseReposConf(conf, "/var/db/repos/gentoo"); got != "https://example.test/gentoo.git" {
+		t.Fatalf("ParseReposConf() = %q", got)
+	}
+}
+
+func TestParseReposConfMatchesRepositoryNameAfterLocationMigration(t *testing.T) {
+	dir := t.TempDir()
+	conf := filepath.Join(dir, "repos.conf")
+	content := "[gentoo]\nlocation = /usr/portage\nsync-type = git\nsync-uri = https://example.test/gentoo.git\n"
+	if err := os.WriteFile(conf, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if got := ParseReposConf(conf, "/var/db/repos/gentoo"); got != "https://example.test/gentoo.git" {
+		t.Fatalf("ParseReposConf() = %q, want migrated gentoo URI", got)
+	}
+}
+
 func TestParseMakeConf_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "make.conf")
@@ -193,8 +217,8 @@ func TestResolveMakeConfRefs_MultiLevel(t *testing.T) {
 
 func TestResolveMakeConfRefs_PartialReference(t *testing.T) {
 	m := map[string]string{
-		"ARCH":    "x86_64",
-		"CFLAGS":  "-march=${ARCH} -pipe",
+		"ARCH":   "x86_64",
+		"CFLAGS": "-march=${ARCH} -pipe",
 	}
 
 	ResolveMakeConfRefs(m)
@@ -530,9 +554,9 @@ func TestParsePackageAcceptKeywords_Basic(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"dev-lang/python":       "~amd64",
-		"=app-editors/vim-9.0":  "**",
-		"*/*":                   "~amd64",
+		"dev-lang/python":      "~amd64",
+		"=app-editors/vim-9.0": "**",
+		"*/*":                  "~amd64",
 	}
 
 	if !reflect.DeepEqual(m, want) {
@@ -581,8 +605,8 @@ func TestParsePackageLicense_Basic(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"dev-lang/oracle-jdk-bin":               "Oracle-BCLA-JavaSE",
-		">=dev-util/nvidia-cuda-toolkit-11":       "NVIDIA-r2",
+		"dev-lang/oracle-jdk-bin":           "Oracle-BCLA-JavaSE",
+		">=dev-util/nvidia-cuda-toolkit-11": "NVIDIA-r2",
 	}
 
 	if !reflect.DeepEqual(m, want) {

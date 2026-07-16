@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/airencracken/arise/internal/atom"
@@ -514,7 +515,7 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 				}
 			}
 			installed := node.State != StateMissing
-			rg.AddVersion(cp, verStr, slot, subslot, installed, nil, "")
+			rg.AddVersion(cp, verStr, slot, subslot, installed, iuseDefaults(node.Metadata.IUSE), node.Metadata.KEYWORDS)
 		}
 
 		if node.Atom != nil {
@@ -558,6 +559,22 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 	}
 
 	return rg
+}
+
+// iuseDefaults converts the profile-independent defaults encoded in IUSE into
+// the state expected by the resolver. A leading '+' enables a flag by default;
+// a leading '-' (or no prefix) leaves it disabled until USE/package.use
+// overrides it.
+func iuseDefaults(iuse string) map[string]bool {
+	flags := make(map[string]bool)
+	for _, raw := range strings.Fields(iuse) {
+		enabled := strings.HasPrefix(raw, "+")
+		name := strings.TrimLeft(raw, "+-")
+		if name != "" {
+			flags[name] = enabled
+		}
+	}
+	return flags
 }
 
 func versionOrEmpty(a *atom.Atom) string {

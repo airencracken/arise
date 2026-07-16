@@ -22,9 +22,49 @@ func WalkCache(root string) (<-chan *metadata.PackageMetadata, <-chan error) {
 	return WalkCacheDir(root, 0)
 }
 
+// WalkCacheRoots combines metadata-cache walks from multiple repositories.
+func WalkCacheRoots(roots []string) (<-chan *metadata.PackageMetadata, <-chan error) {
+	results := make(chan *metadata.PackageMetadata)
+	errs := make(chan error, errBufSize)
+	var wg sync.WaitGroup
+	for overlayIndex, root := range roots {
+		root := root
+		overlayIndex := overlayIndex
+		wg.Add(2)
+		repositoryPath := filepath.Dir(filepath.Dir(root))
+		repository := filepath.Base(repositoryPath)
+		if data, err := os.ReadFile(filepath.Join(repositoryPath, "profiles", "repo_name")); err == nil && strings.TrimSpace(string(data)) != "" {
+			repository = strings.TrimSpace(string(data))
+		}
+		rootResults, rootErrs := walkCacheDir(root, 0, repository, repositoryPath, overlayIndex)
+		go func() {
+			defer wg.Done()
+			for result := range rootResults {
+				results <- result
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for err := range rootErrs {
+				errs <- err
+			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+		close(errs)
+	}()
+	return results, errs
+}
+
 // WalkCacheDir is like WalkCache but accepts an explicit number of worker
 // goroutines. Values <= 0 default to runtime.NumCPU().
 func WalkCacheDir(root string, workers int) (<-chan *metadata.PackageMetadata, <-chan error) {
+	return walkCacheDir(root, workers, "", "", 0)
+}
+
+func walkCacheDir(root string, workers int, repository, repositoryPath string, overlayIndex int) (<-chan *metadata.PackageMetadata, <-chan error) {
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
@@ -56,6 +96,9 @@ func WalkCacheDir(root string, workers int) (<-chan *metadata.PackageMetadata, <
 					errs <- err
 					continue
 				}
+				pkg.Repository = repository
+				pkg.RepositoryPath = repositoryPath
+				pkg.OverlayIndex = overlayIndex
 				results <- pkg
 			}
 		}()

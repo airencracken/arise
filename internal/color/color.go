@@ -3,6 +3,7 @@ package color
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 )
@@ -19,12 +20,16 @@ func init() {
 }
 
 const (
-	ansiReset  = "\033[0m"
-	ansiBold   = "\033[1m"
-	ansiRed    = "\033[31m"
-	ansiGreen  = "\033[32m"
-	ansiYellow = "\033[33m"
-	ansiCyan   = "\033[36m"
+	ansiReset          = "\033[0m"
+	ansiBold           = "\033[1m"
+	ansiRed            = "\033[31m"
+	ansiGreen          = "\033[32m"
+	ansiYellow         = "\033[33m"
+	ansiCyan           = "\033[36m"
+	ansiBlue           = "\033[34m"
+	ansiMagenta        = "\033[35m"
+	ansiReverse        = "\033[7m"
+	ansiBlueBackground = "\033[44m"
 )
 
 func Green(s string) string {
@@ -35,6 +40,21 @@ func Green(s string) string {
 		return s
 	}
 	return fmt.Sprintf("%s%s%s", ansiGreen, s, ansiReset)
+}
+
+func BoldGreen(s string) string        { return styled(s, ansiBold, ansiGreen) }
+func BoldRed(s string) string          { return styled(s, ansiBold, ansiRed) }
+func BoldYellow(s string) string       { return styled(s, ansiBold, ansiYellow) }
+func BoldBlue(s string) string         { return styled(s, ansiBold, ansiBlue) }
+func BoldMagenta(s string) string      { return styled(s, ansiBold, ansiMagenta) }
+func ReverseBoldCyan(s string) string  { return styled(s, ansiBold, ansiReverse, ansiCyan) }
+func InstalledVersion(s string) string { return styled(s, ansiBlueBackground) }
+
+func styled(s string, codes ...string) string {
+	if s == "" || !UseColor {
+		return s
+	}
+	return strings.Join(codes, "") + s + ansiReset
 }
 
 func Red(s string) string {

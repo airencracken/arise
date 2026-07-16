@@ -542,6 +542,24 @@ func TestToResolveGraph_Basic(t *testing.T) {
 	}
 }
 
+func TestToResolveGraph_IUSEDefaults(t *testing.T) {
+	m := makeMeta("media-libs", "mesa", "26.0.8", "", "", "")
+	m.IUSE = "+opengl -test vulkan"
+	g := NewFromInstalled([]*metadata.PackageMetadata{m})
+	rg := g.ToResolveGraph()
+
+	vi := rg.Packages["media-libs/mesa"].GetBestVersion()
+	if vi == nil {
+		t.Fatal("mesa has no resolver version")
+	}
+	if !vi.UseFlags["opengl"] {
+		t.Error("+opengl should be enabled by default")
+	}
+	if vi.UseFlags["test"] || vi.UseFlags["vulkan"] {
+		t.Errorf("disabled IUSE defaults were enabled: %#v", vi.UseFlags)
+	}
+}
+
 func TestToResolveGraph_DepTypeTranslation(t *testing.T) {
 	m := makeMeta(
 		"sys-apps", "foo", "1.0",

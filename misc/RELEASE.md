@@ -41,11 +41,12 @@ Untracked files and uncommitted changes must be committed or removed.
 ```sh
 go mod download
 go mod verify
+make deps VERSION=$V
 ```
 
-> Dependencies are fetched from the Go module proxy. The ebuild uses
-> `go-module.eclass` with `EGO_SUM` to pre-download modules for offline
-> builds. No `vendor/` directory is committed to git.
+> `make deps` creates `dist/arise-$V-deps.tar.xz`, a locked Go module-cache
+> archive. Attach it to the GitHub release so Portage can build without network
+> access while the source repository remains unvendored.
 
 ### 2.3. Run the full test suite
 
@@ -94,6 +95,14 @@ git push origin master --tags
 Verify the tag appears on GitHub:
 https://github.com/airencracken/arise/releases
 
+Create the GitHub release and attach the dependency archive before generating
+the overlay Manifest:
+
+```sh
+gh release create "v$V" "dist/arise-$V-deps.tar.xz" \
+  --title "arise v$V" --generate-notes
+```
+
 ---
 
 ## 3. arise-overlay repo — publish the ebuild
@@ -138,8 +147,8 @@ This does:
 cat sys-apps/arise/Manifest
 ```
 
-Should contain three lines: one `DIST` for the tarball, one `EBUILD` for
-the versioned ebuild, and one `EBUILD` for `arise-9999.ebuild`.
+Should contain four lines: two `DIST` entries (source and dependencies), one
+`EBUILD` for the versioned ebuild, and one `EBUILD` for `arise-9999.ebuild`.
 
 ### 3.4. Commit and push
 

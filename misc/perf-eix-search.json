@@ -1,0 +1,79 @@
+{
+  "name": "indexed-package-search",
+  "warmups": 2,
+  "runs": 11,
+  "cases": [
+    {
+      "name": "firefox-substring-package-names",
+      "normalize": "package-names",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["--search-only-names", "--db", "/tmp/arise-perf-data", "--repo", "/var/db/repos/gentoo", "search", "firefox"],
+        "version_args": ["--version"],
+        "cache_paths": ["/tmp/arise-perf-data"]
+      },
+      "reference": {
+        "tool": "eix",
+        "path": "eix",
+        "args": ["--only-names", "firefox"],
+        "version_args": ["--version"],
+        "cache_paths": ["/var/cache/eix/portage.eix"]
+      }
+    },
+    {
+      "name": "firefox-exact-package-name",
+      "normalize": "package-names",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["--search-only-names", "--exact", "--db", "/tmp/arise-perf-data", "search", "firefox"],
+        "version_args": ["--version"],
+        "cache_paths": ["/tmp/arise-perf-data"]
+      },
+      "reference": {
+        "tool": "eix",
+        "path": "eix",
+        "args": ["--only-names", "--exact", "firefox"],
+        "version_args": ["--version"],
+        "cache_paths": ["/var/cache/eix/portage.eix"]
+      }
+    },
+    {
+      "name": "python-broad-category-name",
+      "normalize": "package-names",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["--search-only-names", "--db", "/tmp/arise-perf-data", "search", "python"],
+        "version_args": ["--version"],
+        "cache_paths": ["/tmp/arise-perf-data"]
+      },
+      "reference": {
+        "tool": "eix",
+        "path": "eix",
+        "args": ["--only-names", "--category-name", "python"],
+        "version_args": ["--version"],
+        "cache_paths": ["/var/cache/eix/portage.eix"]
+      }
+    },
+    {
+      "name": "no-result-category-name",
+      "normalize": "package-names",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["--search-only-names", "--db", "/tmp/arise-perf-data", "search", "zzz_arise_no_match"],
+        "version_args": ["--version"],
+        "cache_paths": ["/tmp/arise-perf-data"]
+      },
+      "reference": {
+        "tool": "eix",
+        "path": "eix",
+        "args": ["--only-names", "--category-name", "zzz_arise_no_match"],
+        "version_args": ["--version"],
+        "cache_paths": ["/var/cache/eix/portage.eix"]
+      }
+    }
+  ]
+}

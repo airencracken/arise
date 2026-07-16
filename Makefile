@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-unit test-adversarial test-mutation test-race test-bench test-integration test-coverage vet lint clean install uninstall man info bench bench-quick bench-compare bench-json release
+.PHONY: all build static test test-v test-unit test-adversarial test-mutation test-race test-bench test-integration test-coverage vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -77,6 +77,21 @@ bench-json:
 
 bench-all: bench bench-compare
 
+perf-harness:
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -o arise-perf ./cmd/arise-perf/
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -o arise-perf-table ./cmd/arise-perf-table/
+
+perf-table: perf-harness
+	@test -n "$(REPORTS)" || { echo "REPORTS='/tmp/report1.json /tmp/report2.json' is required"; exit 1; }
+	./arise-perf-table $(REPORTS)
+
+perf-prepare: build
+	./arise --db /tmp/arise-perf-data --repo /var/db/repos/gentoo index
+
+perf-smoke: build perf-harness
+	./arise-perf -workload misc/perf-smoke.json -snapshot smoke -output /tmp/arise-perf-smoke.json
+	@echo "Performance report: /tmp/arise-perf-smoke.json"
+
 #
 # Quality
 #
@@ -92,7 +107,7 @@ lint:
 #
 
 clean:
-	rm -f $(BINARY)
+	rm -f $(BINARY) arise-perf arise-perf-table
 	rm -f /tmp/arise-coverage.out /tmp/arise-coverage.html
 	$(GO) clean -testcache
 
@@ -162,13 +177,10 @@ release: download static test
 	@echo "  emerge -av arise"
 
 #
-# Go module management (no vendor/ committed; use go mod download)
+# Go module management. Release builds use a module-cache archive so the
+# repository stays unvendored while Portage builds remain network-free.
 #
-# For emerge builds:
-#   export GOPROXY=off
-#   export GOMODCACHE=$(pwd)/modcache
-#   make download          # pre-fetch all deps offline
-#   make build
+# For emerge builds, publish the archive produced by `make deps VERSION=x.y.z`.
 #
 # For development:
 #   go mod download        # fetch deps from proxy
@@ -180,5 +192,17 @@ download:
 	@echo "All module dependencies downloaded and verified."
 
 vendor:
-	$(GO) mod download
-	$(GO) mod verify
+	@echo "Arise does not commit vendored dependencies; use 'make deps VERSION=x.y.z'."
+	@exit 1
+
+deps:
+	@test -n "$(VERSION)" || { echo "VERSION is required"; exit 1; }
+	rm -rf dist/go-mod
+	mkdir -p dist/go-mod
+	GOMODCACHE="$(CURDIR)/dist/go-mod" $(GO) mod download -modcacherw all
+	GOMODCACHE="$(CURDIR)/dist/go-mod" GOPROXY=off $(GO) mod verify
+	# Keep proxy artifacts only; Go extracts them into GOMODCACHE during build.
+	find dist/go-mod -mindepth 1 -maxdepth 1 ! -name cache -exec rm -rf {} +
+	tar -C dist -cJf "dist/arise-$(VERSION)-deps.tar.xz" go-mod
+	rm -rf dist/go-mod
+	@echo "Created dist/arise-$(VERSION)-deps.tar.xz"

@@ -1,0 +1,37 @@
+{
+  "name": "full-package-index-portage",
+  "warmups": 1,
+  "runs": 5,
+  "cases": [
+    {
+      "name": "full-metadata-cache",
+      "normalize": "search-package-names",
+      "arise": {
+        "tool": "arise index",
+        "path": "./arise",
+        "args": ["--db", "/tmp/arise-index-bench", "--repo", "/var/db/repos/gentoo", "index"],
+        "version_args": ["--version"],
+        "cache_paths": ["/tmp/arise-index-bench"],
+        "reset_paths": ["/tmp/arise-index-bench"]
+      },
+      "reference": {
+        "tool": "emerge --metadata",
+        "path": "emerge",
+        "args": ["--metadata", "--quiet"],
+        "env": ["PORTAGE_DEPCACHEDIR=/tmp/emerge-index-bench"],
+        "version_args": ["--version"],
+        "cache_paths": ["/tmp/emerge-index-bench"],
+        "reset_paths": ["/tmp/emerge-index-bench"]
+      },
+      "arise_validate": {
+        "path": "./arise",
+        "args": ["--search-only-names", "--db", "/tmp/arise-index-bench", "search", "firefox"]
+      },
+      "reference_validate": {
+        "path": "emerge",
+        "args": ["--search", "firefox"],
+        "env": ["PORTAGE_DEPCACHEDIR=/tmp/emerge-index-bench"]
+      }
+    }
+  ]
+}

@@ -16,6 +16,18 @@ func TestParse_Basic(t *testing.T) {
 			want:  &Atom{Category: "sys-devel", Package: "gcc"},
 		},
 		{
+			input: "net-im/signal-desktop-bin",
+			want:  &Atom{Category: "net-im", Package: "signal-desktop-bin"},
+		},
+		{
+			input: "=net-im/signal-desktop-bin-7.61.0",
+			want:  &Atom{Op: OpEq, Category: "net-im", Package: "signal-desktop-bin", Version: &Version{Raw: "7.61.0", Numbers: []int{7, 61, 0}, Revision: -1}},
+		},
+		{
+			input: "dev-go/go-git:5",
+			want:  &Atom{Category: "dev-go", Package: "go-git", Slot: "5"},
+		},
+		{
 			input: "sys-devel/gcc-12.2.0",
 			want:  &Atom{Category: "sys-devel", Package: "gcc", Version: &Version{Raw: "12.2.0", Numbers: []int{12, 2, 0}, Revision: -1}},
 		},

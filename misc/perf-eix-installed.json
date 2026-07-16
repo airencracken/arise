@@ -1,0 +1,22 @@
+{
+  "name": "installed-package-listing",
+  "warmups": 2,
+  "runs": 11,
+  "cases": [
+    {
+      "name": "all-installed-cpvs",
+      "normalize": "sorted-lines",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["--vdb-dir", "/var/db/pkg", "installed", "--versions"],
+        "version_args": ["--version"]
+      },
+      "reference": {
+        "tool": "eix-installed",
+        "path": "eix-installed",
+        "args": ["-q", "all"]
+      }
+    }
+  ]
+}

@@ -141,10 +141,13 @@ func (p *parser) parseCP() (*cp, error) {
 	pkgStart := p.pos
 	for p.pos < len(p.input) {
 		b := p.input[p.pos]
-		if b == '-' || b == ':' || b == '[' || b == 0 {
+		if b == ':' || b == '[' || b == 0 {
 			break
 		}
-		if !isAtomChar(b) {
+		if b == '-' && p.pos+1 < len(p.input) && p.input[p.pos+1] >= '0' && p.input[p.pos+1] <= '9' {
+			break
+		}
+		if !isAtomChar(b) && b != '-' {
 			return nil, fmt.Errorf("invalid character %q in package name at position %d", b, p.pos+1)
 		}
 		p.pos++
@@ -152,6 +155,9 @@ func (p *parser) parseCP() (*cp, error) {
 	pkg := p.input[pkgStart:p.pos]
 	if pkg == "" {
 		return nil, fmt.Errorf("empty package name")
+	}
+	if strings.HasSuffix(pkg, "-") {
+		return nil, fmt.Errorf("package name must not end with '-'")
 	}
 
 	return &cp{cat: cat, pkg: pkg}, nil
@@ -203,12 +209,8 @@ func parseVersionString(raw string) (*Version, error) {
 	}
 
 	if len(remain) > 0 && unicode.IsLetter(rune(remain[0])) && remain[0] != 'p' {
-		end := 0
-		for end < len(remain) && unicode.IsLetter(rune(remain[end])) {
-			end++
-		}
-		v.Letter = remain[:end]
-		remain = remain[end:]
+		v.Letter = remain[:1]
+		remain = remain[1:]
 	}
 
 	for len(remain) > 0 {
@@ -285,6 +287,9 @@ func parseVersionString(raw string) (*Version, error) {
 		} else {
 			break
 		}
+	}
+	if remain != "" && remain != "*" {
+		return nil, fmt.Errorf("unexpected %q in version %q", remain, raw)
 	}
 
 	return v, nil
