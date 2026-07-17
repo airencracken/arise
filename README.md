@@ -15,27 +15,29 @@ Bash and remains experimental.
 
 ## Why
 
-Gentoo's package manager (Portage) is written in Python and Bash. When either
-of those breaks — a bad Python upgrade, a corrupted libc, a glibc ABI change —
-you lose the ability to install, update, or fix packages. At that point you're
-staring at a rescue shell with no package manager.
+Portage is the authoritative package manager for Gentoo and the source of much
+of what Arise knows about package-management semantics. Its long compatibility
+history, broad EAPI support, and integration with the rest of Gentoo are
+formidable engineering achievements.
 
-Portage has also accumulated decades of technical debt: recursive dependency
-resolution through a Python interpreter, linear metadata scans, and emergent
-complexity from maintaining backwards compatibility across 20+ years of EAPIs.
+Arise explores a complementary architecture with two narrower goals. First, a
+static control plane may remain available when Python or other parts of the
+normal package-management environment need repair. Second, indexed immutable
+state and in-process resolution may reduce latency for read-heavy operations.
+Neither goal relaxes compatibility or safety requirements.
 
-Arise is being built around both problems:
+Arise is therefore being built around these priorities:
 
 - **Recovery-oriented control plane**: one statically linked Go binary can
   inspect package state and construct verified plans when Portage's Python
   environment is damaged. Safe live repair still requires the unfinished
   execution and transaction milestones.
-- **Performance**: BadgerDB-backed metadata queries replace filesystem scans and
-  shell invocations. Dependency resolution runs in-process instead of spawning
-  Python for every decision.
-- **Unified direction**: one tool is intended to cover emerge, eix, equery, quickpkg,
-  perl-cleaner, python-updater, dispatch-conf, env-update, revdep-rebuild,
-  and eselect-news. Learn one CLI, carry one binary.
+- **Performance**: BadgerDB-backed metadata queries can avoid repeated
+  filesystem scans and shell invocations. Dependency resolution runs in one
+  process over an immutable snapshot.
+- **Unified direction**: one static tool is intended to offer familiar
+  workflows from emerge, eix, equery, quickpkg, perl-cleaner, python-updater,
+  dispatch-conf, env-update, revdep-rebuild, and eselect-news.
 - **Correctness gates**: deterministic tests and live differential corpora
   compare package state, policy, plans and benchmarks with Portage. Unsupported
   execution fails closed rather than reporting success.
@@ -47,8 +49,24 @@ The core design rules are:
   queries; they are never the source of truth.
 - **Pragmatic fallback** — build phases that require Bash or Make run through
   `os/exec` without making Arise itself dependent on Python.
-- **Self-healing** — core inspection and recovery survive system Python
-  breakage.
+- **Recovery-oriented** — core inspection and planning remain available when
+  the system Python environment is unavailable.
+
+## Foundations and acknowledgements
+
+Arise stands on the work of Gentoo, Portage, and the wider Gentoo tooling
+ecosystem. Portage defines the behavioral reference; eix, Gentoolkit,
+portage-utils, pkgcore/pkgcheck, and other projects provide both inspiration
+and valuable comparison points. Their maintainers have solved difficult
+package-management, compatibility, migration, and recovery problems over many
+years.
+
+This is a small experimental project maintained by one developer with AI
+assistance. Where Arise differs architecturally, that is an experiment to
+measure and validate—not a dismissal of the tradeoffs made by the engineers
+whose work made Gentoo and this project possible. Compatibility claims should
+be supported by differential tests, and performance claims by equivalent
+same-snapshot workloads.
 
 ## Quick Start
 
@@ -62,7 +80,7 @@ arise -repo-url https://... sync
 # Index the repo for fast queries
 arise index
 
-# Search (replaces eix)
+# Indexed search with eix-familiar workflows
 arise search gcc
 arise search --installed --category dev-lang
 arise search --versions --json python
@@ -83,7 +101,7 @@ arise state json
 arise state available-cpv
 arise state installed-cpv
 
-# Package queries (replaces equery)
+# Package queries with equery-familiar workflows
 arise equery belongs /usr/bin/gcc
 arise equery files sys-devel/gcc
 arise equery size sys-devel/gcc
@@ -132,11 +150,11 @@ Commands:
   depclean        Propose orphan removal (execution gated)
   prune           Propose old-version removal (execution gated)
   deselect        Remove from @world set
-  search          Search packages (replaces eix)
-  installed       List installed CP atoms or CPVs (replaces eix-installed)
+  search          Search packages (eix-familiar surface)
+  installed       List installed CP atoms or CPVs
   query           Look up package metadata
   info            Partial system information
-  equery          Package queries (replaces equery)
+  equery          Package queries (equery-familiar surface)
   audit           Audit Python/Perl site-packages
   preserved-rebuild  Rebuild after soname changes
   revdep-rebuild  Full reverse dependency scan
@@ -150,12 +168,14 @@ Commands:
 
 ## Features
 
-### Performance against Gentoo tools
+### Performance comparisons with Gentoo tools
 
 `emerge` is the behavioral reference. `eix`, `eix-installed`, `equery`, and
 related tools are performance references where they provide an equivalent
-operation. Correctness-equivalent but slower results fail Arise's benchmark
-gate; matching speed is the floor, and the goal is to win decisively.
+operation. These comparisons are intended to validate Arise's architectural
+choices, not to diminish mature tools with broader responsibilities. Arise's
+own benchmark gate rejects correctness-equivalent regressions and requires a
+material measured benefit before making a performance claim.
 
 Same-snapshot, correctness-gated checkpoint results from 2026-07-17:
 
