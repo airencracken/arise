@@ -3,6 +3,7 @@ package walker
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"sync"
@@ -954,6 +955,75 @@ func TestWalkCacheDir_CachesCanBeWalkedConcurrently(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestReadRepositoryMasters(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "metadata"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# repository inheritance\nmasters = gentoo science # ordered\n"
+	if err := os.WriteFile(filepath.Join(repo, "metadata", "layout.conf"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := readRepositoryMasters(repo)
+	want := []string{"gentoo", "science"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("masters = %v, want %v", got, want)
+	}
+}
+
+func TestWalkUncachedEbuildRootsMarksStaticMetadataIncomplete(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "profiles"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "profiles", "repo_name"), []byte("local\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ebuildDir := filepath.Join(repo, "app-misc", "uncached")
+	if err := os.MkdirAll(ebuildDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "EAPI=8\nDESCRIPTION=\"uncached package\"\nSLOT=0\nRDEPEND=dev-libs/foo\n"
+	if err := os.WriteFile(filepath.Join(ebuildDir, "uncached-1.0.ebuild"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	filesDir := filepath.Join(ebuildDir, "files")
+	if err := os.MkdirAll(filesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filesDir, "uncached-fix.ebuild"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "skel.ebuild"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot := filepath.Join(repo, "metadata", "md5-cache")
+	results, errs := WalkUncachedEbuildRoots([]string{cacheRoot})
+	var records []*metadata.PackageMetadata
+	for results != nil || errs != nil {
+		select {
+		case record, ok := <-results:
+			if !ok {
+				results = nil
+			} else {
+				records = append(records, record)
+			}
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if len(records) != 1 {
+		t.Fatalf("got %d fallback records", len(records))
+	}
+	if records[0].CPV() != "app-misc/uncached-1.0" || records[0].Repository != "local" || records[0].Complete() {
+		t.Fatalf("fallback record = %+v", records[0])
+	}
 }
 
 func TestWalkCacheDir_ImmutabilityDuringWalk(t *testing.T) {

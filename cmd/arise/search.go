@@ -29,7 +29,7 @@ func runSearch(args []string, dbPath string) int {
 		}
 	}
 
-	db, err := ingest.OpenDB(dbPath)
+	db, err := ingest.OpenReadOnlyDB(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "search: open db: %v\n", err)
 		os.Exit(1)

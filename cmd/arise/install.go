@@ -4,16 +4,22 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/pprof"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/airencracken/arise/internal/binpkg"
 	"github.com/airencracken/arise/internal/color"
+	"github.com/airencracken/arise/internal/distfiles"
 	"github.com/airencracken/arise/internal/features"
 	"github.com/airencracken/arise/internal/graph"
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/rebuild"
 	"github.com/airencracken/arise/internal/resolve"
+	"github.com/airencracken/arise/internal/world"
 )
 
 func runInstall(args []string, dbPath, repoDir string) {
@@ -21,7 +27,36 @@ func runInstall(args []string, dbPath, repoDir string) {
 		fmt.Fprintf(os.Stderr, "install: missing package atom arguments\n")
 		os.Exit(1)
 	}
-	runResolveAndRebuild(args, dbPath, repoDir, false, true)
+	runResolveAndRebuild(args, dbPath, repoDir, false, false)
+}
+
+func colorActionAtom(action resolve.PkgAction) string {
+	if action.Atom == nil {
+		return ""
+	}
+	cp := action.Atom.Category + "/" + action.Atom.Package
+	version := ""
+	if action.Atom.Version != nil {
+		version = "-" + action.Atom.Version.Raw
+	}
+	atomText := cp + version
+	switch action.Action {
+	case "install":
+		atomText = color.BoldGreen(atomText)
+	case "update":
+		atomText = color.BoldCyan(atomText)
+	case "reinstall":
+		atomText = color.BoldYellow(atomText)
+	default:
+		atomText = color.Bold(atomText)
+	}
+	if action.Slot != "" {
+		atomText += color.Yellow(":" + action.Slot)
+	}
+	if action.Repository != "" {
+		atomText += color.Magenta("::" + action.Repository)
+	}
+	return atomText
 }
 
 func runResolveAndRebuild(targets []string, dbPath, repoDir string, update bool, deep bool) {
@@ -30,7 +65,7 @@ func runResolveAndRebuild(targets []string, dbPath, repoDir string, update bool,
 }
 
 func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phaseEnd func(string, error)) *rebuild.RebuildConfig {
-	portageCfg, _ := portage.LoadConfig(*portageConfigRoot)
+	portageCfg, _ := portage.LoadEffectiveConfig(*portageConfigRoot)
 	var featConfig *features.Config
 	if portageCfg != nil {
 		if rawFeatures, ok := portageCfg.MakeConf["FEATURES"]; ok {
@@ -126,12 +161,20 @@ func resolveFlagsToConfig(update, deepParam bool) resolve.ResolveConfig {
 }
 
 func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveConfig) {
-	if *pretend {
+	jsonMode := *jsonOutput
+	if jsonMode {
+		cfg.Quiet = true
+	}
+	if *pretend && !jsonMode {
 		fmt.Println("(pretend mode: no actions will be performed)")
 	}
 
 	// Parse PORTAGE_BINHOST from portage config
-	portageCfg, _ := portage.LoadConfig(*portageConfigRoot)
+	portageCfg, configErr := portage.LoadEffectiveConfig(*portageConfigRoot)
+	if configErr != nil {
+		fmt.Fprintf(os.Stderr, "resolve: load effective Portage configuration: %v\n", configErr)
+		os.Exit(1)
+	}
 	if portageCfg != nil {
 		if cfg.PortageConfig == nil {
 			cfg.PortageConfig = portageCfg
@@ -140,6 +183,19 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if len(binhostURLs) > 0 {
 			cfg.BinhostURLs = binhostURLs
 		}
+		cfg.SystemSet = &resolve.WorldSet{Entries: append([]string(nil), portageCfg.SystemSet...)}
+	}
+	for _, target := range targets {
+		if target != "@world" {
+			continue
+		}
+		worldState, err := world.LoadWorld(*worldFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "resolve: load world set: %v\n", err)
+			os.Exit(1)
+		}
+		cfg.WorldSet = &resolve.WorldSet{Entries: worldState.Atoms}
+		break
 	}
 
 	// --getbinpkg / --getbinpkgonly: download from binhost
@@ -157,7 +213,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 					if cfg.GetBinPkgOnly {
 						os.Exit(1)
 					}
-				} else if !*quiet {
+				} else if !cfg.Quiet {
 					fmt.Printf("Downloaded %d binary packages from %s\n", len(downloaded), url)
 				}
 			}
@@ -182,12 +238,12 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			return
 		}
 		targets = remaining
-		if !*quiet {
+		if !cfg.Quiet {
 			fmt.Printf("Resuming %d packages...\n", len(targets))
 		}
 	}
 
-	if !*quiet {
+	if !cfg.Quiet {
 		flags := []string{}
 		if cfg.Deep {
 			flags = append(flags, "-D")
@@ -226,22 +282,72 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		fmt.Printf("Resolving dependencies for: %s%s\n", strings.Join(targets, ", "), flagStr)
 	}
 
-	db, err := ingest.OpenDB(dbPath)
+	resolutionStarted := time.Now()
+	progress := startTerminalProgress("Calculating dependencies...", !cfg.Quiet && !jsonMode)
+	stageStarted := time.Now()
+	db, err := ingest.OpenReadOnlyDB(dbPath)
 	if err != nil {
+		progress.stop()
 		fmt.Fprintf(os.Stderr, "resolve: open db: %v\n", err)
 		os.Exit(1)
 	}
 	defer db.Close()
+	openDuration := time.Since(stageStarted)
 
-	g, err := graph.BuildParallel(db, repoDir, 0)
+	stageStarted = time.Now()
+	g, err := graph.BuildFromState(db, *vdbDir, 0)
 	if err != nil {
+		progress.stop()
 		fmt.Fprintf(os.Stderr, "resolve: build graph: %v\n", err)
 		os.Exit(1)
 	}
+	stateDuration := time.Since(stageStarted)
 
+	stageStarted = time.Now()
 	rg := g.ToResolveGraph()
+	graphDuration := time.Since(stageStarted)
 
+	stageStarted = time.Now()
+	var cpuProfile *os.File
+	if path := os.Getenv("ARISE_CPU_PROFILE"); path != "" {
+		cpuProfile, err = os.Create(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "resolve: create CPU profile: %v\n", err)
+		} else if err = pprof.StartCPUProfile(cpuProfile); err != nil {
+			fmt.Fprintf(os.Stderr, "resolve: start CPU profile: %v\n", err)
+			cpuProfile.Close()
+			cpuProfile = nil
+		}
+	}
 	result, err := resolve.Resolve(rg, targets, cfg)
+	if cpuProfile != nil {
+		pprof.StopCPUProfile()
+		cpuProfile.Close()
+	}
+	solverDuration := time.Since(stageStarted)
+	progress.stop()
+	if result == nil {
+		result = &resolve.ResolveResult{}
+	}
+	resolutionDuration := time.Since(resolutionStarted)
+	if jsonMode {
+		if jsonErr := writePlanJSON(os.Stdout, targets, cfg, result, err, planTimings{
+			Total: resolutionDuration, Index: openDuration, State: stateDuration, Graph: graphDuration, Solver: solverDuration,
+		}); jsonErr != nil {
+			fmt.Fprintf(os.Stderr, "encode JSON plan: %v\n", jsonErr)
+			os.Exit(1)
+		}
+	}
+	if !cfg.Quiet {
+		fmt.Printf("Dependency resolution took %.3f s (backtrack: %d/%d).\n",
+			resolutionDuration.Seconds(), result.BacktrackLevel, cfg.Backtrack)
+		if cfg.Verbose {
+			fmt.Printf("  Stages: index %.3f s, state %.3f s, graph %.3f s, solver %.3f s\n",
+				openDuration.Seconds(), stateDuration.Seconds(), graphDuration.Seconds(), solverDuration.Seconds())
+			fmt.Printf("  Solver: search %.3f s, complete-graph %.3f s, verification %.3f s, sort %.3f s\n",
+				result.Metrics.Search.Seconds(), result.Metrics.CompleteGraph.Seconds(), result.Metrics.Verification.Seconds(), result.Metrics.Sort.Seconds())
+		}
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 
@@ -258,6 +364,9 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				} else {
 					fmt.Printf("Auto-accept-license entries written to %s/package.license/\n", *portageConfigRoot)
 				}
+				if err := resolve.AutoUseChanges(result.Conflicts, *portageConfigRoot); err != nil {
+					fmt.Fprintf(os.Stderr, "autounmask-write USE: %v\n", err)
+				}
 			}
 		}
 		os.Exit(1)
@@ -267,6 +376,35 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		fmt.Println("\nConflicts:")
 		for _, c := range result.Conflicts {
 			fmt.Printf("  %s\n", c)
+			if cfg.Verbose {
+				for _, detail := range result.ConflictDetails {
+					if detail.Message != c {
+						continue
+					}
+					for _, requirement := range detail.Requirements {
+						if requirement.Reason != "" {
+							fmt.Printf("    %s — %s\n", requirement.Atom, requirement.Reason)
+						} else {
+							fmt.Printf("    %s\n", requirement.Atom)
+						}
+					}
+					for _, candidate := range detail.Candidates {
+						visibility := ""
+						if !candidate.Visible && candidate.Visibility != "" {
+							visibility = "; " + candidate.Visibility
+						}
+						fmt.Printf("    candidate %s (%s%s): satisfies [%s], rejects [%s]\n",
+							candidate.CPV, candidate.State, visibility,
+							strings.Join(candidate.Satisfies, ", "), strings.Join(candidate.Rejects, ", "))
+					}
+				}
+			}
+		}
+	}
+	if len(result.Warnings) > 0 && !cfg.Quiet {
+		fmt.Println("\nWarnings:")
+		for _, warning := range result.Warnings {
+			fmt.Printf("  %s\n", warning)
 		}
 	}
 
@@ -279,12 +417,22 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		} else {
 			for _, a := range result.Install {
 				actionLabel := actionLabel(a.Action)
-				fmt.Printf("  %s %s\n", colorIcon(a.Action, actionLabel), a.Atom)
+				fmt.Printf("  %s %s\n", colorIcon(a.Action, actionLabel), colorActionAtom(a))
+				if cfg.Verbose {
+					if a.Reason != "" {
+						fmt.Printf("           reason: %s\n", a.Reason)
+					}
+					enabled, disabled := sortedUseFlags(a.UseFlags)
+					if len(enabled) > 0 || len(disabled) > 0 {
+						fmt.Printf("           USE: %s\n", strings.Join(append(enabled, disabled...), " "))
+					}
+				}
 			}
 			for _, a := range result.Uninstall {
 				fmt.Printf("  [%s] %s\n", color.Red(a.Action), a.Atom)
 			}
 		}
+		printActionTotals(result.Install, *distfilesDir, cfg.Verbose)
 	}
 
 	if len(result.Conflicts) > 0 {
@@ -298,6 +446,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			if cfg.AutoUnmaskWrite {
 				resolve.AutoUnmask(result.Conflicts, *portageConfigRoot)
 				resolve.AutoAcceptLicense(result.Conflicts, *portageConfigRoot)
+				resolve.AutoUseChanges(result.Conflicts, *portageConfigRoot)
 				fmt.Printf("Auto-unmask entries written to %s/package.unmask/ and %s/package.license/\n", *portageConfigRoot, *portageConfigRoot)
 				fmt.Println("Re-run with the same command to continue.")
 			}
@@ -328,12 +477,73 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		return
 	}
 
+	// Pretend is a read-only operation and must work for unprivileged users.
+	if cfg.Pretend {
+		return
+	}
+
 	// Save resume state for --resume support
 	if err := resolve.SaveResume(*resumeFile, result); err != nil && !*quiet {
 		fmt.Fprintf(os.Stderr, "resume: save: %v\n", err)
 	}
 
-	if cfg.Pretend || cfg.FetchOnly {
+	if cfg.FetchOnly {
 		return
 	}
+}
+
+func sortedUseFlags(flags map[string]bool) ([]string, []string) {
+	var enabled, disabled []string
+	for flag, value := range flags {
+		if value {
+			enabled = append(enabled, "+"+flag)
+		} else {
+			disabled = append(disabled, "-"+flag)
+		}
+	}
+	sort.Strings(enabled)
+	sort.Strings(disabled)
+	return enabled, disabled
+}
+
+func printActionTotals(actions []resolve.PkgAction, distdir string, verbose bool) {
+	counts := make(map[string]int)
+	var downloadBytes int64
+	for _, action := range actions {
+		counts[action.Action]++
+		if action.Atom == nil {
+			continue
+		}
+		size, err := distfiles.ManifestDownloadSize(action.RepositoryPath, action.Atom.Category, action.Atom.Package, action.SrcURI, distdir, action.UseFlags)
+		if err != nil {
+			if verbose {
+				fmt.Fprintf(os.Stderr, "totals: %s: %v\n", action.Atom.CP(), err)
+			}
+			continue
+		}
+		downloadBytes += size
+	}
+	packageWord := "packages"
+	if len(actions) == 1 {
+		packageWord = "package"
+	}
+	var details []string
+	for _, entry := range []struct{ action, label string }{{"install", "new"}, {"update", "upgrade"}, {"reinstall", "reinstall"}} {
+		if count := counts[entry.action]; count > 0 {
+			details = append(details, fmt.Sprintf("%d %s", count, entry.label))
+		}
+	}
+	fmt.Printf("Total: %d %s", len(actions), packageWord)
+	if len(details) > 0 {
+		fmt.Printf(" (%s)", strings.Join(details, ", "))
+	}
+	fmt.Printf(", Size of downloads: %s KiB\n", formatInteger((downloadBytes+1023)/1024))
+}
+
+func formatInteger(value int64) string {
+	raw := strconv.FormatInt(value, 10)
+	for index := len(raw) - 3; index > 0; index -= 3 {
+		raw = raw[:index] + "," + raw[index:]
+	}
+	return raw
 }

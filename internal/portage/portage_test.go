@@ -427,6 +427,94 @@ func TestParsePackageUse_SimpleAtom(t *testing.T) {
 	}
 }
 
+func TestPackageUseForMatchesOrderedFullAtoms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.use")
+	content := strings.Join([]string{
+		"*/* global",
+		"www-client/firefox -global cp",
+		">=www-client/firefox-150 versioned",
+		"<www-client/firefox-150 old",
+		"www-client/firefox:rapid slot",
+		"www-client/firefox::gentoo repo",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, err := ParsePackageUseRules(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{PackageUseRules: rules}
+	got := cfg.PackageUseFor("www-client/firefox-152.0.6", "rapid", "gentoo")
+	want := []string{"global", "-global", "cp", "versioned", "slot", "repo"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("matching package.use = %v, want %v", got, want)
+	}
+
+	got = cfg.PackageUseFor("www-client/firefox-140.0", "esr", "local")
+	want = []string{"global", "-global", "cp", "old"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("older package.use = %v, want %v", got, want)
+	}
+}
+
+func TestPackageProfilePolicyMatchesAtomsAndRemovalSyntax(t *testing.T) {
+	cfg := &Config{PackageUseForceRules: []PackageUseRule{
+		{Atom: "www-client/firefox", Flags: []string{"inherited", "retained"}},
+		{Atom: ">=www-client/firefox-150", Flags: []string{"-inherited", "new"}},
+	}}
+	if got, want := cfg.PackageUseForceFor("www-client/firefox-152.0", "rapid", "gentoo"), []string{"retained", "new"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("new policy = %v, want %v", got, want)
+	}
+	if got, want := cfg.PackageUseForceFor("www-client/firefox-140.0", "esr", "gentoo"), []string{"inherited", "retained"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("old policy = %v, want %v", got, want)
+	}
+}
+
+func TestPackageMaskStatusUsesFullCandidateIdentity(t *testing.T) {
+	cfg := &Config{
+		PackageMask: []string{
+			">=www-client/firefox-150:rapid::gentoo",
+		},
+		PackageUnmask: []string{
+			"=www-client/firefox-152.0.6:rapid::gentoo",
+		},
+	}
+	if got := cfg.PackageMaskStatus("www-client/firefox-152.0.5", "rapid", "gentoo"); !got.Masked || got.Atom == "" {
+		t.Fatalf("masked status = %+v", got)
+	}
+	if got := cfg.PackageMaskStatus("www-client/firefox-152.0.6", "rapid", "gentoo"); got.Masked || got.Source != "package.unmask" {
+		t.Fatalf("unmasked status = %+v", got)
+	}
+	if got := cfg.PackageMaskStatus("www-client/firefox-152.0.5", "esr", "gentoo"); got.Masked {
+		t.Fatalf("wrong-slot status = %+v", got)
+	}
+	if got := cfg.PackageMaskStatus("www-client/firefox-152.0.5", "rapid", "local"); got.Masked {
+		t.Fatalf("wrong-repository status = %+v", got)
+	}
+}
+
+func TestEffectiveUseForLayerPrecedence(t *testing.T) {
+	cfg := &Config{
+		USE:                  []string{"global", "-disabled", "masked"},
+		PackageUseRules:      []PackageUseRule{{Atom: ">=app-editors/vim-9", Flags: []string{"disabled", "-global", "local"}}},
+		UseForce:             []string{"global"},
+		UseMask:              []string{"masked"},
+		PackageUseForceRules: []PackageUseRule{{Atom: "app-editors/vim", Flags: []string{"pkgforced"}}},
+		PackageUseMaskRules:  []PackageUseRule{{Atom: "app-editors/vim", Flags: []string{"local"}}},
+	}
+	got := cfg.EffectiveUseFor("app-editors/vim-9.1", "0", "gentoo")
+	want := map[string]bool{
+		"global": true, "disabled": true, "masked": false,
+		"local": false, "pkgforced": true,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("effective USE = %v, want %v", got, want)
+	}
+}
+
 func TestParsePackageUse_NegativeFlags(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "package.use")
@@ -1592,5 +1680,105 @@ func TestLoadConfig_WithPackageProvided(t *testing.T) {
 	want := []string{"dev-lang/python-3.11", "app-editors/vim-9.0"}
 	if !reflect.DeepEqual(cfg.PackageProvided, want) {
 		t.Errorf("PackageProvided = %v, want %v", cfg.PackageProvided, want)
+	}
+}
+
+func TestLoadEffectiveConfigMergesActiveProfileAndUserConfig(t *testing.T) {
+	root := t.TempDir()
+	profiles := filepath.Join(root, "profiles")
+	base := filepath.Join(profiles, "base")
+	leaf := filepath.Join(profiles, "leaf")
+	for _, dir := range []string{base, leaf} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(base, "make.defaults"), []byte("USE=\"profile ssl\"\nUSE_ORDER=\"env:pkg:conf:defaults:pkginternal:repo:env.d\"\nUSE_EXPAND=\"ABI_X86 L10N\"\nUSE_EXPAND_HIDDEN=\"ABI_X86\"\nCFLAGS=\"-O1\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "use.force"), []byte("forced\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "use.mask"), []byte("masked\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "package.use.force"), []byte("app-editors/vim python\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leaf, "parent"), []byte("../base\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	configRoot := filepath.Join(root, "etc-portage")
+	if err := os.MkdirAll(configRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(leaf, filepath.Join(configRoot, "make.profile")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "make.conf"), []byte("CFLAGS=\"-O2\"\nUSE=\"user\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadEffectiveConfig(configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProfilePath != leaf || cfg.CFLAGS != "-O2" || !reflect.DeepEqual(cfg.USE, []string{"profile", "ssl", "user", "forced", "-masked"}) {
+		t.Fatalf("effective config = %+v", cfg)
+	}
+	if !reflect.DeepEqual(cfg.UseForce, []string{"forced"}) || !reflect.DeepEqual(cfg.UseMask, []string{"masked"}) {
+		t.Fatalf("profile USE policy = %+v/%+v", cfg.UseForce, cfg.UseMask)
+	}
+	if !reflect.DeepEqual(cfg.PackageUseForce["app-editors/vim"], []string{"python"}) {
+		t.Fatalf("package force = %+v", cfg.PackageUseForce)
+	}
+	if !reflect.DeepEqual(cfg.UseExpand, []string{"ABI_X86", "L10N"}) || !reflect.DeepEqual(cfg.UseExpandHidden, []string{"ABI_X86"}) {
+		t.Fatalf("USE_EXPAND = %v hidden=%v", cfg.UseExpand, cfg.UseExpandHidden)
+	}
+}
+
+func TestLoadEffectiveConfigStacksRepositoryProfileAndUserMasks(t *testing.T) {
+	root := t.TempDir()
+	profiles := filepath.Join(root, "repo", "profiles")
+	base := filepath.Join(profiles, "base")
+	leaf := filepath.Join(profiles, "leaf")
+	for _, directory := range []string{base, leaf} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(profiles, "package.mask"), []byte("=cat/pkg-1\n=cat/pkg-2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "package.mask"), []byte("-=cat/pkg-1\n=cat/pkg-3\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(leaf, "parent"), []byte("../base\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	configRoot := filepath.Join(root, "etc-portage")
+	if err := os.MkdirAll(configRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(leaf, filepath.Join(configRoot, "make.profile")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "package.mask"), []byte("=cat/pkg-4\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "package.unmask"), []byte("=cat/pkg-2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadEffectiveConfig(configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantMasks := []string{"=cat/pkg-2", "=cat/pkg-3", "=cat/pkg-4"}
+	if !reflect.DeepEqual(cfg.PackageMask, wantMasks) {
+		t.Fatalf("PackageMask = %v, want %v", cfg.PackageMask, wantMasks)
+	}
+	if status := cfg.PackageMaskStatus("cat/pkg-2", "0", "gentoo"); status.Masked {
+		t.Fatalf("user unmask did not override profile mask: %+v", status)
 	}
 }

@@ -60,6 +60,9 @@ func (p *parser) parse() (*Atom, error) {
 			return nil, fmt.Errorf("version: %w", err)
 		}
 		a.Version = ver
+		if a.Op == OpEq && strings.HasSuffix(ver.Raw, "*") {
+			a.Op = OpEqGlob
+		}
 	}
 
 	if p.peek() == 0 {
@@ -145,9 +148,15 @@ func (p *parser) parseCP() (*cp, error) {
 			break
 		}
 		if b == '-' && p.pos+1 < len(p.input) && p.input[p.pos+1] >= '0' && p.input[p.pos+1] <= '9' {
-			break
+			end := p.pos + 1
+			for end < len(p.input) && p.input[end] != ':' && p.input[end] != '[' {
+				end++
+			}
+			if _, err := parseVersionString(p.input[p.pos+1 : end]); err == nil {
+				break
+			}
 		}
-		if !isAtomChar(b) && b != '-' {
+		if !isAtomChar(b) && b != '-' && b != '+' {
 			return nil, fmt.Errorf("invalid character %q in package name at position %d", b, p.pos+1)
 		}
 		p.pos++
@@ -243,14 +252,10 @@ func parseVersionString(raw string) (*Version, error) {
 			if suffixType != "" && numStart > 0 && numStart < len(token) {
 				// has a numeric suffix
 				numStr := token[numStart:]
-				n, err := strconv.Atoi(numStr)
+				_, err := strconv.Atoi(numStr)
 				if err == nil {
 					v.Suffixes = append(v.Suffixes, suffixType)
 					v.Suffixes = append(v.Suffixes, numStr)
-					// _p with number is revision
-					if suffixType == "_p" {
-						v.Revision = n
-					}
 					remain = remain[end:]
 					continue
 				}
@@ -408,28 +413,51 @@ func (p *parser) parseUseFlags() ([]UseFlag, error) {
 }
 
 func (p *parser) parseUseFlag() (UseFlag, error) {
-	enabled := true
-	if p.peek() == '-' {
-		enabled = false
-		p.advance()
-	}
-
 	start := p.pos
 	for p.pos < len(p.input) {
 		b := p.input[p.pos]
 		if b == ',' || b == ']' || b == 0 {
 			break
 		}
-		if !isAtomChar(b) && b != '-' && b != '_' && b != '@' {
-			return UseFlag{}, fmt.Errorf("invalid character %q in use flag at position %d", b, p.pos+1)
-		}
 		p.pos++
 	}
-	name := p.input[start:p.pos]
-	if name == "" {
+	raw := p.input[start:p.pos]
+	if raw == "" {
 		return UseFlag{}, fmt.Errorf("empty use flag")
 	}
-	return UseFlag{Name: name, Enabled: enabled}, nil
+	flag := UseFlag{Enabled: true}
+	if strings.HasPrefix(raw, "!") {
+		flag.Negated = true
+		raw = raw[1:]
+	} else if strings.HasPrefix(raw, "-") {
+		flag.Enabled = false
+		raw = raw[1:]
+	}
+	if strings.HasSuffix(raw, "?") {
+		flag.Conditional = true
+		raw = strings.TrimSuffix(raw, "?")
+	} else if strings.HasSuffix(raw, "=") {
+		flag.Equal = true
+		raw = strings.TrimSuffix(raw, "=")
+	}
+	if strings.HasSuffix(raw, "(+)") || strings.HasSuffix(raw, "(-)") {
+		value := strings.HasSuffix(raw, "(+)")
+		flag.Default = &value
+		raw = raw[:len(raw)-3]
+	}
+	if raw == "" {
+		return UseFlag{}, fmt.Errorf("empty use flag")
+	}
+	for i := 0; i < len(raw); i++ {
+		if !isAtomChar(raw[i]) && raw[i] != '-' && raw[i] != '_' && raw[i] != '@' {
+			return UseFlag{}, fmt.Errorf("invalid character %q in use flag at position %d", raw[i], start+i+1)
+		}
+	}
+	if flag.Negated && !flag.Conditional && !flag.Equal {
+		return UseFlag{}, fmt.Errorf("negated USE dependency %q requires ? or =", raw)
+	}
+	flag.Name = raw
+	return flag, nil
 }
 
 func parseOp(input string) (Op, int) {

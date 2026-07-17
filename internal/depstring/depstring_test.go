@@ -291,6 +291,18 @@ func TestUseConditionalPositive(t *testing.T) {
 	}
 }
 
+func TestAtomUseDefaultsDoNotSplitDependencyToken(t *testing.T) {
+	input := ">=sys-apps/dbus-1.5[abi_x86_32(-)?,abi_x86_64(-)?]"
+	root, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	atoms := root.Atoms()
+	if len(atoms) != 1 || atoms[0] != input {
+		t.Fatalf("atoms = %v, want %q", atoms, input)
+	}
+}
+
 func TestUseConditionalNegative(t *testing.T) {
 	input := "!other-package? ( dev-libs/optional )"
 

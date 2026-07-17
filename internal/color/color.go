@@ -45,6 +45,7 @@ func Green(s string) string {
 func BoldGreen(s string) string        { return styled(s, ansiBold, ansiGreen) }
 func BoldRed(s string) string          { return styled(s, ansiBold, ansiRed) }
 func BoldYellow(s string) string       { return styled(s, ansiBold, ansiYellow) }
+func BoldCyan(s string) string         { return styled(s, ansiBold, ansiCyan) }
 func BoldBlue(s string) string         { return styled(s, ansiBold, ansiBlue) }
 func BoldMagenta(s string) string      { return styled(s, ansiBold, ansiMagenta) }
 func ReverseBoldCyan(s string) string  { return styled(s, ansiBold, ansiReverse, ansiCyan) }
@@ -86,6 +87,8 @@ func Cyan(s string) string {
 	}
 	return fmt.Sprintf("%s%s%s", ansiCyan, s, ansiReset)
 }
+
+func Magenta(s string) string { return styled(s, ansiMagenta) }
 
 func Bold(s string) string {
 	if s == "" {

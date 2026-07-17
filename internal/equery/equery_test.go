@@ -296,7 +296,7 @@ func TestUses_FromBadgerDB(t *testing.T) {
 	}
 
 	err = db.Update(func(txn *badger.Txn) error {
-		return txn.Set([]byte("pkg:app-misc/withdb"), buf.Bytes())
+		return txn.Set([]byte("pkg:"+m.RepositoryCPVKey()), buf.Bytes())
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -563,9 +563,9 @@ func TestWhich_UnknownVersion(t *testing.T) {
 func TestList_ListsAllInstalled(t *testing.T) {
 	vdbDir := t.TempDir()
 	makeFlatVDB(t, vdbDir, map[string]map[string]string{
-		"app-misc/foo-1.0":  {"CONTENTS": "obj /usr/bin/foo abc 100\n"},
-		"app-misc/bar-2.0":  {"CONTENTS": "obj /usr/bin/bar def 200\n"},
-		"sys-apps/baz-3.0":  {"CONTENTS": "obj /usr/bin/baz ghi 300\n"},
+		"app-misc/foo-1.0": {"CONTENTS": "obj /usr/bin/foo abc 100\n"},
+		"app-misc/bar-2.0": {"CONTENTS": "obj /usr/bin/bar def 200\n"},
+		"sys-apps/baz-3.0": {"CONTENTS": "obj /usr/bin/baz ghi 300\n"},
 	})
 
 	packages, err := List(vdbDir, "")
@@ -766,9 +766,9 @@ func TestFindBestInstalledVersion_NoCandidates(t *testing.T) {
 func TestList_SortedOutput(t *testing.T) {
 	vdbDir := t.TempDir()
 	makeFlatVDB(t, vdbDir, map[string]map[string]string{
-		"sys-apps/z-1.0":  {"CONTENTS": "obj /usr/bin/z abc 100\n"},
-		"app-misc/a-1.0":  {"CONTENTS": "obj /usr/bin/a def 200\n"},
-		"app-misc/m-1.0":  {"CONTENTS": "obj /usr/bin/m ghi 300\n"},
+		"sys-apps/z-1.0": {"CONTENTS": "obj /usr/bin/z abc 100\n"},
+		"app-misc/a-1.0": {"CONTENTS": "obj /usr/bin/a def 200\n"},
+		"app-misc/m-1.0": {"CONTENTS": "obj /usr/bin/m ghi 300\n"},
 	})
 
 	packages, err := List(vdbDir, "")

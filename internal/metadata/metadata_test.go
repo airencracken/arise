@@ -663,3 +663,19 @@ func TestPackageMetadata_UnknownIncludesAll(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCacheEntryPreservesFutureEAPIAndFields(t *testing.T) {
+	data := []byte("EAPI=9999\nSLOT=0/9999\nDEPEND=dev-libs/libfuture\nFUTURE_DEPEND=sys-libs/new-abi\nFUTURE_MODE=parallel\n")
+	m, err := ParseCacheEntry("dev-util/future-tool-1.0", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.EAPI != "9999" || m.SLOT != "0" || m.Subslot != "9999" || m.DEPEND != "dev-libs/libfuture" {
+		t.Fatalf("known metadata was not preserved: %+v", m)
+	}
+	for key, want := range map[string]string{"FUTURE_DEPEND": "sys-libs/new-abi", "FUTURE_MODE": "parallel"} {
+		if got := m.Unknown[key]; got != want {
+			t.Fatalf("future field %s = %q, want %q", key, got, want)
+		}
+	}
+}

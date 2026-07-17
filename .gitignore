@@ -1,5 +1,6 @@
 # binaries
 /arise
+/arise-perf
 
 # test coverage
 *.out

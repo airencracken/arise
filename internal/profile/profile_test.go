@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -34,7 +35,7 @@ func TestMergeParentsSingleProfile(t *testing.T) {
 	writeTemp(t, prof, "make.defaults", `ARCH="amd64"
 CFLAGS="-O2 -pipe"
 `)
-	writeTemp(t, prof, "packages", "sys-apps/busybox\nsys-libs/glibc\n")
+	writeTemp(t, prof, "packages", "*sys-apps/busybox\n*sys-libs/glibc\n")
 
 	info, err := MergeParents(prof, profilesRoot)
 	if err != nil {
@@ -95,9 +96,8 @@ func TestSystemSetMerging(t *testing.T) {
 	base := makeProfileDir(t, profilesRoot, "default/linux")
 	child := makeProfileDir(t, profilesRoot, "default/linux/amd64")
 
-	writeTemp(t, base, "packages", "sys-apps/busybox\nsys-libs/glibc\n")
-	writeTemp(t, base, "packages.build", "sys-apps/baselayout\n")
-	writeTemp(t, child, "packages", "sys-apps/coreutils\nsys-libs/glibc\n")
+	writeTemp(t, base, "packages", "*sys-apps/busybox\n*sys-libs/glibc\n")
+	writeTemp(t, child, "packages", "*sys-apps/coreutils\n*sys-libs/glibc\n")
 	writeTemp(t, child, "parent", "..")
 
 	info, err := MergeParents(child, profilesRoot)
@@ -113,10 +113,27 @@ func TestSystemSetMerging(t *testing.T) {
 	for _, pkg := range info.SystemSet {
 		found[pkg] = true
 	}
-	for _, expected := range []string{"sys-apps/busybox", "sys-libs/glibc", "sys-apps/baselayout", "sys-apps/coreutils"} {
+	for _, expected := range []string{"sys-apps/busybox", "sys-libs/glibc", "sys-apps/coreutils"} {
 		if !found[expected] {
 			t.Errorf("SystemSet missing %q", expected)
 		}
+	}
+}
+
+func TestSystemSetIgnoresUnstarredAndAppliesRemoval(t *testing.T) {
+	profilesRoot := t.TempDir()
+	base := makeProfileDir(t, profilesRoot, "base")
+	child := makeProfileDir(t, profilesRoot, "child")
+	writeTemp(t, base, "packages", "*sys-apps/keep\n*sys-apps/remove\nsys-apps/not-system\n")
+	writeTemp(t, child, "parent", "../base\n")
+	writeTemp(t, child, "packages", "-*sys-apps/remove\n*sys-apps/add\n")
+	info, err := MergeParents(child, profilesRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"sys-apps/keep", "sys-apps/add"}
+	if !slices.Equal(info.SystemSet, want) {
+		t.Fatalf("system set = %v, want %v", info.SystemSet, want)
 	}
 }
 
@@ -158,6 +175,55 @@ func TestUseFlagsMerging(t *testing.T) {
 	}
 	if !hasFlag(info.UseMask, "qt4") {
 		t.Error("UseMask missing qt4")
+	}
+}
+
+func TestUsePolicyRemovalSyntax(t *testing.T) {
+	profilesRoot := t.TempDir()
+	base := makeProfileDir(t, profilesRoot, "base")
+	child := makeProfileDir(t, profilesRoot, "child")
+
+	writeTemp(t, base, "use.mask", "inherited\nretained\n")
+	writeTemp(t, base, "package.use.force", "app-editors/vim inherited retained\n")
+	writeTemp(t, child, "parent", "../base\n")
+	writeTemp(t, child, "use.mask", "-inherited\nchild\n")
+	writeTemp(t, child, "package.use.force", "app-editors/vim -inherited child\n")
+
+	info, err := MergeParents(child, profilesRoot)
+	if err != nil {
+		t.Fatalf("MergeParents: %v", err)
+	}
+	if got, want := info.UseMask, []string{"retained", "child"}; !slices.Equal(got, want) {
+		t.Fatalf("UseMask = %v, want %v", got, want)
+	}
+	if got, want := info.PkgUseForce["app-editors/vim"], []string{"retained", "child"}; !slices.Equal(got, want) {
+		t.Fatalf("PkgUseForce = %v, want %v", got, want)
+	}
+}
+
+func TestMergeParentsDiamondIsDeterministic(t *testing.T) {
+	profilesRoot := t.TempDir()
+	root := makeProfileDir(t, profilesRoot, "root")
+	left := makeProfileDir(t, profilesRoot, "left")
+	right := makeProfileDir(t, profilesRoot, "right")
+	leaf := makeProfileDir(t, profilesRoot, "leaf")
+
+	writeTemp(t, root, "use.force", "root\n")
+	writeTemp(t, left, "parent", "../root\n")
+	writeTemp(t, left, "use.force", "left\n")
+	writeTemp(t, right, "parent", "../root\n")
+	writeTemp(t, right, "use.force", "right\n")
+	writeTemp(t, leaf, "parent", "../left\n../right\n")
+	writeTemp(t, leaf, "use.force", "leaf\n")
+
+	for i := 0; i < 10; i++ {
+		info, err := MergeParents(leaf, profilesRoot)
+		if err != nil {
+			t.Fatalf("MergeParents: %v", err)
+		}
+		if got, want := info.UseForce, []string{"root", "left", "right", "leaf"}; !slices.Equal(got, want) {
+			t.Fatalf("UseForce = %v, want %v", got, want)
+		}
 	}
 }
 

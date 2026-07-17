@@ -36,6 +36,9 @@ type Case struct {
 	ReferenceValidate *Command `json:"reference_validate,omitempty"`
 	Normalize         string   `json:"normalize"`
 	MinSpeedup        *float64 `json:"min_speedup,omitempty"`
+	// ReportOnly records performance without allowing it to fail the workload.
+	// Correctness mismatches always remain fatal.
+	ReportOnly bool `json:"report_only,omitempty"`
 }
 
 type Workload struct {
@@ -59,6 +62,7 @@ type Result struct {
 	Normalize             string   `json:"normalize"`
 	Equivalent            bool     `json:"equivalent"`
 	PerformancePass       bool     `json:"performance_pass"`
+	PerformanceEnforced   bool     `json:"performance_enforced"`
 	MinSpeedup            float64  `json:"min_speedup"`
 	AriseExitCode         int      `json:"arise_exit_code"`
 	ReferenceTool         string   `json:"reference_tool"`
@@ -150,7 +154,7 @@ func Run(ctx context.Context, workload Workload, snapshot string) (Report, error
 		if !result.Equivalent {
 			report.AllEquivalent = false
 		}
-		if !result.Equivalent || !result.PerformancePass {
+		if !result.Equivalent || (result.PerformanceEnforced && !result.PerformancePass) {
 			report.AllPassed = false
 		}
 		report.Results = append(report.Results, result)
@@ -235,6 +239,7 @@ func runCase(ctx context.Context, c Case, warmups, runs int) (Result, error) {
 		r.MinSpeedup = *c.MinSpeedup
 	}
 	r.PerformancePass = r.Speedup >= r.MinSpeedup
+	r.PerformanceEnforced = !c.ReportOnly
 	return r, nil
 }
 

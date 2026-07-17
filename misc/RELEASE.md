@@ -48,6 +48,12 @@ make deps VERSION=$V
 > archive. Attach it to the GitHub release so Portage can build without network
 > access while the source repository remains unvendored.
 
+This archive is the current offline mechanism. The roadmap replaces it with
+generated, individually versioned Go module source packages maintained in the
+Arise overlay. Keep the archive path working until the overlay-managed module
+graph has reproducibility, license, security-update, and empty-cache/no-network
+coverage equivalent to or better than this fallback.
+
 ### 2.3. Run the full test suite
 
 ```sh

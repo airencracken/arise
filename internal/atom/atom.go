@@ -17,14 +17,14 @@ const (
 type Op string
 
 const (
-	OpNone    Op = ""
-	OpLess    Op = "<"
-	OpLessEq  Op = "<="
-	OpEq      Op = "="
-	OpEqGlob  Op = "=*"
-	OpTilde   Op = "~"
-	OpGtEq    Op = ">="
-	OpGt      Op = ">"
+	OpNone   Op = ""
+	OpLess   Op = "<"
+	OpLessEq Op = "<="
+	OpEq     Op = "="
+	OpEqGlob Op = "=*"
+	OpTilde  Op = "~"
+	OpGtEq   Op = ">="
+	OpGt     Op = ">"
 )
 
 type Version struct {
@@ -48,15 +48,23 @@ type Atom struct {
 }
 
 type UseFlag struct {
-	Name    string
-	Enabled bool
+	Name        string
+	Enabled     bool
+	Conditional bool  // flag? or !flag?
+	Equal       bool  // flag= or !flag=
+	Negated     bool  // leading ! for conditional/equality operators
+	Default     *bool // (+) or (-) when the target omits the flag from IUSE
 }
 
 func (a Atom) String() string {
 	var b strings.Builder
 
 	if a.Op != OpNone {
-		b.WriteString(string(a.Op))
+		if a.Op == OpEqGlob {
+			b.WriteByte('=')
+		} else {
+			b.WriteString(string(a.Op))
+		}
 	}
 	if a.Category != "" {
 		b.WriteString(a.Category)
@@ -96,10 +104,24 @@ func (a Atom) String() string {
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			if !f.Enabled {
+			if f.Negated {
+				b.WriteByte('!')
+			} else if !f.Enabled && !f.Conditional && !f.Equal {
 				b.WriteByte('-')
 			}
 			b.WriteString(f.Name)
+			if f.Default != nil {
+				if *f.Default {
+					b.WriteString("(+)")
+				} else {
+					b.WriteString("(-)")
+				}
+			}
+			if f.Conditional {
+				b.WriteByte('?')
+			} else if f.Equal {
+				b.WriteByte('=')
+			}
 		}
 		b.WriteByte(']')
 	}

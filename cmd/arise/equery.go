@@ -53,7 +53,7 @@ func runEquery(args []string, dbPath, repoDir, vdbPath string) {
 			fmt.Fprintf(os.Stderr, "equery uses: missing atom argument\n")
 			os.Exit(1)
 		}
-		db, err := ingest.OpenDB(dbPath)
+		db, err := ingest.OpenReadOnlyDB(dbPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "equery uses: open db: %v\n", err)
 			os.Exit(1)

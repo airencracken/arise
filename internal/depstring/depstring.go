@@ -143,41 +143,45 @@ type AtomMeta struct {
 	Atom       string
 	Condition  string
 	AnyOfGroup bool
+	AnyOfID    int // unique non-zero identifier within one CollectMeta call
 	Block      bool
 	WeakBlock  bool
 }
 
 func CollectMeta(node DepNode) []AtomMeta {
-	return collectMeta(node, "", false)
+	nextID := 0
+	return collectMeta(node, "", false, 0, &nextID)
 }
 
-func collectMeta(node DepNode, condition string, anyOf bool) []AtomMeta {
+func collectMeta(node DepNode, condition string, anyOf bool, anyOfID int, nextID *int) []AtomMeta {
 	if node == nil {
 		return nil
 	}
 	switch n := node.(type) {
 	case *AtomDep:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf}}
+		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID}}
 	case *Block:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, Block: true}}
+		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, Block: true}}
 	case *WeakBlock:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, WeakBlock: true}}
+		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, WeakBlock: true}}
 	case *AllOfGroup:
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf)...)
+			result = append(result, collectMeta(child, condition, anyOf, anyOfID, nextID)...)
 		}
 		return result
 	case *AnyOfGroup:
+		*nextID++
+		groupID := *nextID
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, true)...)
+			result = append(result, collectMeta(child, condition, true, groupID, nextID)...)
 		}
 		return result
 	case *XorOfGroup:
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf)...)
+			result = append(result, collectMeta(child, condition, anyOf, anyOfID, nextID)...)
 		}
 		return result
 	case *UseConditional:
@@ -187,7 +191,7 @@ func collectMeta(node DepNode, condition string, anyOf bool) []AtomMeta {
 		}
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, nextCond, anyOf)...)
+			result = append(result, collectMeta(child, nextCond, anyOf, anyOfID, nextID)...)
 		}
 		return result
 	default:
@@ -362,8 +366,16 @@ func (p *parser) readToken() string {
 	}
 
 	start := p.pos
-	for p.pos < len(p.input) && !isSpace(p.input[p.pos]) &&
-		p.input[p.pos] != '(' && p.input[p.pos] != ')' {
+	brackets := 0
+	for p.pos < len(p.input) {
+		ch := p.input[p.pos]
+		if ch == '[' {
+			brackets++
+		} else if ch == ']' && brackets > 0 {
+			brackets--
+		} else if brackets == 0 && (isSpace(ch) || ch == '(' || ch == ')') {
+			break
+		}
 		p.pos++
 	}
 	return p.input[start:p.pos]

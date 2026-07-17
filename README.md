@@ -8,6 +8,8 @@ Go. Statically linked, no Python or Bash dependency for core operations.
 > ebuild executor, transactional merge/unmerge, and maintenance operations are
 > experimental and are not yet safe replacements for Portage on a live system.
 > See [the current audit](AUDIT_2026-07-16.md) and [punch list](PUNCHLIST.md).
+> The moving-target test policy is documented in
+> [the compatibility contract](COMPATIBILITY.md).
 
 ## Why
 
@@ -68,6 +70,14 @@ arise installed --null
 arise installed repo
 arise installed no-buildtime
 arise installed -= -q all
+
+# Inspect every repository/version candidate for one package
+arise query --versions www-client/firefox
+
+# Deterministic state used for Portage differential checks
+arise state json
+arise state available-cpv
+arise state installed-cpv
 
 # Package queries (replaces equery)
 arise equery belongs /usr/bin/gcc
@@ -145,15 +155,20 @@ Initial same-snapshot, correctness-gated results on the development laptop:
 | List all installed CPVs | eix-installed | yes | 8.14 ms | 36.86 ms | **4.53x** |
 | Firefox substring search | eix | yes | 11.07 ms | 33.01 ms | **2.98x — pass** |
 | Firefox substring search | emerge | yes | 11.62 ms | 862.26 ms | **74.22x — pass** |
-| Full package index | eix-update | yes | 1.29 s | 4.22 s | **3.27x — pass** |
-| No-change package index | eix-update | yes | 713 ms | 4.22 s | **5.92x — pass** |
+| Crash-safe full package index | eix-update | yes | 3.81 s | 4.22 s | **1.11x — pass** |
+| Crash-safe no-change package index | eix-update | yes | 1.37 s | 4.22 s | **3.08x — pass** |
 
-For that indexed search, Arise uses 32.28 MiB total cache storage versus
-eix's 25.80 MiB. Arise's dedicated immutable name index is 451 KiB; the rest
-is the richer canonical metadata database used by resolution and queries.
-The index comparison uses 30.82 MiB for Arise and 25.77 MiB for eix. Arise's
-extra transactional fingerprints make no-change indexing faster than a full
-build while preserving package-record/database consistency.
+The current active immutable generation is about 74 MiB versus eix's 25.80 MiB;
+Arise's dedicated name index is 451 KiB. Immutable Badger tables are hard-linked
+between generations, so the active plus rollback generation currently consume
+about 83 MiB of physical storage rather than twice the active size.
+The older cache-only 713 ms result is intentionally retired: it omitted
+uncached overlay packages and mutated the live database in place. Current
+indexing builds and validates a complete immutable generation, atomically
+publishes it, and retains the prior generation for crash recovery. Delta
+Incremental generations recover most of the earlier speed without weakening
+this guarantee: immutable tables are shared, mutable files are copied, and only
+changed records are reconciled before atomic publication.
 
 Not yet claimed:
 

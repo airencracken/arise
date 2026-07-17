@@ -214,7 +214,7 @@ func CreateTestDB(n int) (*badger.DB, error) {
 			db.Close()
 			return nil, fmt.Errorf("encode: %w", err)
 		}
-		if err := wb.Set([]byte("pkg:"+cat+"/"+pkg), buf.Bytes()); err != nil {
+		if err := wb.Set([]byte("pkg:"+m.RepositoryCPVKey()), buf.Bytes()); err != nil {
 			wb.Cancel()
 			db.Close()
 			return nil, fmt.Errorf("set: %w", err)

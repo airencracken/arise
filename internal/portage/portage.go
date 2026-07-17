@@ -8,6 +8,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/profile"
 )
 
 var refPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
@@ -24,12 +27,40 @@ type Config struct {
 	FEATURES        []string
 
 	PackageUse            map[string][]string
+	PackageUseRules       []PackageUseRule
 	PackageAcceptKeywords map[string]string
 	PackageLicense        map[string]string
 	PackageMask           []string
 	PackageUnmask         []string
 	PackageEnv            map[string]string
 	PackageProvided       []string
+
+	ProfilePath          string
+	ProfileParents       []string
+	SystemSet            []string
+	UseForce             []string
+	UseMask              []string
+	PackageUseForce      map[string][]string
+	PackageUseMask       map[string][]string
+	PackageUseForceRules []PackageUseRule
+	PackageUseMaskRules  []PackageUseRule
+	UseOrder             []string
+	UseExpand            []string
+	UseExpandHidden      []string
+	UseExpandImplicit    []string
+}
+
+// PackageUseRule preserves package.use file order. A map is insufficient here:
+// multiple overlapping atoms may match one CPV and later entries must win.
+type PackageUseRule struct {
+	Atom  string
+	Flags []string
+}
+
+type MaskStatus struct {
+	Masked bool
+	Atom   string
+	Source string
 }
 
 func LoadConfig(portageConfigRoot string) (*Config, error) {
@@ -63,6 +94,358 @@ func LoadConfig(portageConfigRoot string) (*Config, error) {
 	return cfg, nil
 }
 
+// LoadEffectiveConfig overlays the active profile defaults and policy with
+// /etc/portage configuration. User make.conf values retain highest priority.
+func LoadEffectiveConfig(portageConfigRoot string) (*Config, error) {
+	cfg, err := LoadConfig(portageConfigRoot)
+	if err != nil {
+		return nil, err
+	}
+	profileLink := filepath.Join(portageConfigRoot, "make.profile")
+	if _, err := os.Lstat(profileLink); os.IsNotExist(err) {
+		return cfg, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("portage: inspect active profile: %w", err)
+	}
+	info, err := profile.LoadProfile(profileLink, "")
+	if err != nil {
+		return nil, fmt.Errorf("portage: load active profile: %w", err)
+	}
+	merged := make(map[string]string)
+	for _, directory := range info.Directories {
+		layer, err := parseMakeConfAssignments(filepath.Join(directory, "make.defaults"))
+		if err != nil {
+			return nil, fmt.Errorf("portage: parse profile defaults %s: %w", directory, err)
+		}
+		mergeConfigAssignments(merged, layer)
+	}
+	userLayer, err := parseMakeConfAssignments(filepath.Join(portageConfigRoot, "make.conf"))
+	if err != nil {
+		return nil, fmt.Errorf("portage: parse user make.conf: %w", err)
+	}
+	mergeConfigAssignments(merged, userLayer)
+	ResolveMakeConfRefs(merged)
+	cfg.MakeConf = merged
+	cfg.populateAccessors()
+	cfg.ProfilePath = info.Path
+	if len(info.Directories) > 1 {
+		cfg.ProfileParents = append([]string(nil), info.Directories[:len(info.Directories)-1]...)
+	}
+	cfg.SystemSet = append([]string(nil), info.SystemSet...)
+	cfg.UseForce = append([]string(nil), info.UseForce...)
+	cfg.UseMask = append([]string(nil), info.UseMask...)
+	cfg.PackageUseForce = cloneFlagMap(info.PkgUseForce)
+	cfg.PackageUseMask = cloneFlagMap(info.PkgUseMask)
+	cfg.PackageUseForceRules = profilePackageRules(info.PkgUseForceRules)
+	cfg.PackageUseMaskRules = profilePackageRules(info.PkgUseMaskRules)
+	profileUseRules := profilePackageRules(info.PkgUseRules)
+	cfg.PackageUseRules = append(profileUseRules, cfg.PackageUseRules...)
+	profileMasks, profileUnmasks, err := loadProfileMaskStack(info.Directories)
+	if err != nil {
+		return nil, err
+	}
+	cfg.PackageMask = applyAtomChanges(profileMasks, cfg.PackageMask)
+	cfg.PackageUnmask = applyAtomChanges(profileUnmasks, cfg.PackageUnmask)
+	cfg.UseOrder = splitShWords(merged["USE_ORDER"])
+	cfg.UseExpand = splitShWords(merged["USE_EXPAND"])
+	cfg.UseExpandHidden = splitShWords(merged["USE_EXPAND_HIDDEN"])
+	cfg.UseExpandImplicit = splitShWords(merged["USE_EXPAND_IMPLICIT"])
+	// USE_EXPAND_IMPLICIT controls IUSE declaration semantics; unlike
+	// USE_EXPAND it does not itself add the variable values to USE.
+	cfg.USE = appendUseExpand(cfg.USE, cfg.UseExpand, merged)
+	cfg.USE = applyEffectiveGlobalUse(cfg.USE, cfg.UseForce, cfg.UseMask)
+	return cfg, nil
+}
+
+func loadProfileMaskStack(directories []string) ([]string, []string, error) {
+	var masks, unmasks []string
+	if len(directories) == 0 {
+		return nil, nil, nil
+	}
+	// profiles/package.mask is repository-wide and is not necessarily an
+	// explicit parent of the selected profile.
+	profilesRoot := ""
+	marker := string(filepath.Separator) + "profiles" + string(filepath.Separator)
+	if index := strings.Index(filepath.Clean(directories[len(directories)-1]), marker); index >= 0 {
+		profilesRoot = filepath.Clean(directories[len(directories)-1])[:index+len(marker)-1]
+	}
+	layers := append([]string(nil), directories...)
+	if profilesRoot != "" {
+		layers = append([]string{profilesRoot}, layers...)
+	}
+	seen := make(map[string]bool)
+	for _, directory := range layers {
+		directory = filepath.Clean(directory)
+		if seen[directory] {
+			continue
+		}
+		seen[directory] = true
+		layerMasks, err := ParsePackageMask(filepath.Join(directory, "package.mask"))
+		if err != nil {
+			return nil, nil, fmt.Errorf("portage: parse profile package.mask %s: %w", directory, err)
+		}
+		layerUnmasks, err := ParsePackageUnmask(filepath.Join(directory, "package.unmask"))
+		if err != nil {
+			return nil, nil, fmt.Errorf("portage: parse profile package.unmask %s: %w", directory, err)
+		}
+		masks = applyAtomChanges(masks, layerMasks)
+		unmasks = applyAtomChanges(unmasks, layerUnmasks)
+	}
+	return masks, unmasks, nil
+}
+
+func applyAtomChanges(previous, changes []string) []string {
+	result := append([]string(nil), previous...)
+	for _, change := range changes {
+		if strings.HasPrefix(change, "-") {
+			remove := strings.TrimPrefix(change, "-")
+			filtered := result[:0]
+			for _, existing := range result {
+				if existing != remove {
+					filtered = append(filtered, existing)
+				}
+			}
+			result = filtered
+			continue
+		}
+		result = append(result, change)
+	}
+	return result
+}
+
+func applyEffectiveGlobalUse(use, force, mask []string) []string {
+	state := make(map[string]bool)
+	var order []string
+	set := func(raw string, enabled bool) {
+		name := strings.TrimPrefix(raw, "-")
+		if name == "" {
+			return
+		}
+		if _, exists := state[name]; !exists {
+			order = append(order, name)
+		}
+		state[name] = enabled
+	}
+	for _, raw := range use {
+		set(raw, !strings.HasPrefix(raw, "-"))
+	}
+	for _, raw := range force {
+		set(raw, true)
+	}
+	// A mask wins when a flag is present in both policy sets. This is how
+	// profiles express architecture constraints such as big-endian.
+	for _, raw := range mask {
+		set(raw, false)
+	}
+	result := make([]string, 0, len(order))
+	for _, name := range order {
+		if state[name] {
+			result = append(result, name)
+		} else {
+			result = append(result, "-"+name)
+		}
+	}
+	return result
+}
+
+var incrementalVariables = map[string]bool{
+	"USE": true, "USE_EXPAND": true, "USE_EXPAND_HIDDEN": true,
+	"USE_EXPAND_IMPLICIT": true, "FEATURES": true, "ACCEPT_LICENSE": true,
+	"CONFIG_PROTECT": true, "CONFIG_PROTECT_MASK": true,
+}
+
+type configAssignment struct{ key, value string }
+
+func parseMakeConfAssignments(path string) ([]configAssignment, error) {
+	lines, err := readMakeConfLines(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var assignments []configAssignment
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx < 1 {
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		value := unquote(strings.TrimSpace(line[idx+1:]))
+		assignments = append(assignments, configAssignment{key: key, value: value})
+	}
+	return assignments, nil
+}
+
+func mergeConfigAssignments(target map[string]string, assignments []configAssignment) {
+	for _, assignment := range assignments {
+		value := expandLayerValue(assignment.value, target)
+		if incrementalVariables[assignment.key] {
+			target[assignment.key] = mergeIncremental(target[assignment.key], value)
+		} else {
+			target[assignment.key] = value
+		}
+	}
+}
+
+func expandLayerValue(value string, current map[string]string) string {
+	return refPattern.ReplaceAllStringFunc(value, func(reference string) string {
+		name := strings.TrimSuffix(strings.TrimPrefix(reference, "${"), "}")
+		if previous, ok := current[name]; ok {
+			return previous
+		}
+		return reference
+	})
+}
+
+func mergeIncremental(previous, next string) string {
+	var order []string
+	values := make(map[string]string)
+	apply := func(raw string) {
+		for _, token := range splitShWords(raw) {
+			if token == "-*" {
+				order = nil
+				values = make(map[string]string)
+				continue
+			}
+			name := strings.TrimPrefix(token, "-")
+			if name == "" {
+				continue
+			}
+			if _, exists := values[name]; !exists {
+				order = append(order, name)
+			}
+			values[name] = token
+		}
+	}
+	apply(previous)
+	apply(next)
+	result := make([]string, 0, len(order))
+	for _, name := range order {
+		result = append(result, values[name])
+	}
+	return strings.Join(result, " ")
+}
+
+func appendUseExpand(use, groups []string, values map[string]string) []string {
+	result := append([]string(nil), use...)
+	for _, group := range groups {
+		prefix := strings.ToLower(group) + "_"
+		for _, value := range splitShWords(values[group]) {
+			negative := strings.HasPrefix(value, "-")
+			name := strings.TrimPrefix(value, "-")
+			if name == "" {
+				continue
+			}
+			flag := prefix + name
+			if negative {
+				flag = "-" + flag
+			}
+			result = append(result, flag)
+		}
+	}
+	return splitShWords(mergeIncremental("", strings.Join(result, " ")))
+}
+
+func cloneFlagMap(input map[string][]string) map[string][]string {
+	result := make(map[string][]string, len(input))
+	for key, values := range input {
+		result[key] = append([]string(nil), values...)
+	}
+	return result
+}
+
+func profilePackageRules(input []profile.PackageFlagRule) []PackageUseRule {
+	result := make([]PackageUseRule, 0, len(input))
+	for _, rule := range input {
+		result = append(result, PackageUseRule{Atom: rule.Atom, Flags: append([]string(nil), rule.Flags...)})
+	}
+	return result
+}
+
+func (cfg *Config) PackageUseForceFor(cpv, slot, repo string) []string {
+	return packagePolicyFlagsFor(cfg.PackageUseForceRules, cpv, slot, repo)
+}
+
+func (cfg *Config) PackageUseMaskFor(cpv, slot, repo string) []string {
+	return packagePolicyFlagsFor(cfg.PackageUseMaskRules, cpv, slot, repo)
+}
+
+// EffectiveUseFor reduces the configuration layers that apply to a selected
+// package version. IUSE filtering and defaults remain the caller's concern.
+func (cfg *Config) EffectiveUseFor(cpv, slot, repo string) map[string]bool {
+	result := make(map[string]bool)
+	if cfg == nil {
+		return result
+	}
+	applyChanges := func(changes []string) {
+		for _, change := range changes {
+			name := strings.TrimPrefix(change, "-")
+			if name != "" {
+				result[name] = !strings.HasPrefix(change, "-")
+			}
+		}
+	}
+	applyPolicy := func(changes []string, enabled bool) {
+		for _, change := range changes {
+			name := strings.TrimPrefix(change, "-")
+			if name != "" {
+				result[name] = enabled
+			}
+		}
+	}
+	applyChanges(cfg.USE)
+	applyChanges(cfg.PackageUseFor(cpv, slot, repo))
+	applyPolicy(cfg.UseForce, true)
+	applyPolicy(cfg.UseMask, false)
+
+	candidateCP := cpv
+	if candidate, err := atom.Parse(cpv); err == nil {
+		candidateCP = candidate.CP()
+	}
+	force := cfg.PackageUseForceFor(cpv, slot, repo)
+	if len(force) == 0 {
+		force = cfg.PackageUseForce[candidateCP]
+	}
+	mask := cfg.PackageUseMaskFor(cpv, slot, repo)
+	if len(mask) == 0 {
+		mask = cfg.PackageUseMask[candidateCP]
+	}
+	applyPolicy(force, true)
+	applyPolicy(mask, false)
+	return result
+}
+
+func packagePolicyFlagsFor(rules []PackageUseRule, cpv, slot, repo string) []string {
+	var result []string
+	for _, rule := range rules {
+		if !PackageAtomMatches(rule.Atom, cpv, slot, repo) {
+			continue
+		}
+		for _, change := range rule.Flags {
+			name := strings.TrimPrefix(change, "-")
+			if name == "" {
+				continue
+			}
+			filtered := result[:0]
+			for _, current := range result {
+				if current != name {
+					filtered = append(filtered, current)
+				}
+			}
+			result = filtered
+			if !strings.HasPrefix(change, "-") {
+				result = append(result, name)
+			}
+		}
+	}
+	return result
+}
+
 func (cfg *Config) populateAccessors() {
 	if v, ok := cfg.MakeConf["USE"]; ok {
 		cfg.USE = splitShWords(v)
@@ -93,6 +476,10 @@ func (cfg *Config) loadPackageFiles(root string) error {
 	cfg.PackageUse, err = ParsePackageUse(filepath.Join(root, "package.use"))
 	if err != nil {
 		return fmt.Errorf("portage: could not parse package.use: %w", err)
+	}
+	cfg.PackageUseRules, err = ParsePackageUseRules(filepath.Join(root, "package.use"))
+	if err != nil {
+		return fmt.Errorf("portage: could not parse ordered package.use: %w", err)
 	}
 
 	cfg.PackageAcceptKeywords, err = ParsePackageAcceptKeywords(filepath.Join(root, "package.accept_keywords"))
@@ -200,6 +587,23 @@ func readMakeConfLines(path string) ([]string, error) {
 }
 
 func ParsePackageUse(path string) (map[string][]string, error) {
+	rules, err := ParsePackageUseRules(path)
+	if err != nil {
+		return nil, err
+	}
+	if rules == nil {
+		return nil, nil
+	}
+	m := make(map[string][]string)
+	for _, rule := range rules {
+		m[rule.Atom] = append(m[rule.Atom], rule.Flags...)
+	}
+	return m, nil
+}
+
+// ParsePackageUseRules parses package.use without discarding ordering between
+// different, potentially overlapping atoms.
+func ParsePackageUseRules(path string) ([]PackageUseRule, error) {
 	lines, err := ReadConfigFile(path)
 	if err != nil {
 		return nil, err
@@ -208,19 +612,111 @@ func ParsePackageUse(path string) (map[string][]string, error) {
 		return nil, nil
 	}
 
-	m := make(map[string][]string)
+	var rules []PackageUseRule
 	for _, line := range lines {
-		atom, flagsStr := parseAtomConfig(line)
-		if atom == "" {
+		ruleAtom, flagsStr := parseAtomConfig(line)
+		if ruleAtom == "" {
 			continue
 		}
 		flags := splitShWords(flagsStr)
 		if len(flags) == 0 {
 			continue
 		}
-		m[atom] = append(m[atom], flags...)
+		rules = append(rules, PackageUseRule{Atom: ruleAtom, Flags: flags})
 	}
-	return m, nil
+	return rules, nil
+}
+
+// PackageUseFor returns the ordered user package.use changes matching a CPV.
+func (cfg *Config) PackageUseFor(cpv, slot, repo string) []string {
+	if cfg == nil {
+		return nil
+	}
+	if len(cfg.PackageUseRules) == 0 {
+		candidate, err := atom.Parse(cpv)
+		if err != nil {
+			return append([]string(nil), cfg.PackageUse[cpv]...)
+		}
+		return append([]string(nil), cfg.PackageUse[candidate.CP()]...)
+	}
+	var result []string
+	for _, rule := range cfg.PackageUseRules {
+		if PackageAtomMatches(rule.Atom, cpv, slot, repo) {
+			result = append(result, rule.Flags...)
+		}
+	}
+	return result
+}
+
+// PackageAtomMatches reports whether a configuration atom applies to a
+// concrete CPV and its selected slot/repository.
+func PackageAtomMatches(rawRule, cpv, slot, repo string) bool {
+	candidate, err := atom.Parse(cpv)
+	if err != nil {
+		return false
+	}
+	if rawRule == "*/*" {
+		return true
+	}
+	rule, err := atom.Parse(rawRule)
+	if err != nil {
+		return false
+	}
+	if rule.Category != "*" && rule.Category != candidate.Category {
+		return false
+	}
+	if rule.Package != "*" && rule.Package != candidate.Package {
+		return false
+	}
+	if rule.Repo != "" && rule.Repo != repo {
+		return false
+	}
+	if rule.Slot != "" && rule.Slot != slot {
+		return false
+	}
+	if rule.Version == nil {
+		return true
+	}
+	if candidate.Version == nil {
+		return false
+	}
+	cmp := candidate.Version.Compare(rule.Version)
+	switch rule.Op {
+	case atom.OpLess:
+		return cmp < 0
+	case atom.OpLessEq:
+		return cmp <= 0
+	case atom.OpGt:
+		return cmp > 0
+	case atom.OpGtEq:
+		return cmp >= 0
+	case atom.OpTilde:
+		return strings.TrimSuffix(candidate.Version.Raw, fmt.Sprintf("-r%d", candidate.Version.Revision)) ==
+			strings.TrimSuffix(rule.Version.Raw, fmt.Sprintf("-r%d", rule.Version.Revision))
+	case atom.OpEqGlob:
+		return strings.HasPrefix(candidate.Version.Raw, strings.TrimSuffix(rule.Version.Raw, "*"))
+	default:
+		return cmp == 0
+	}
+}
+
+// PackageMaskStatus evaluates administrator masks for a concrete candidate.
+func (cfg *Config) PackageMaskStatus(cpv, slot, repo string) MaskStatus {
+	var status MaskStatus
+	if cfg == nil {
+		return status
+	}
+	for _, entry := range cfg.PackageMask {
+		if PackageAtomMatches(entry, cpv, slot, repo) {
+			status = MaskStatus{Masked: true, Atom: entry, Source: "package.mask"}
+		}
+	}
+	for _, entry := range cfg.PackageUnmask {
+		if PackageAtomMatches(entry, cpv, slot, repo) {
+			status = MaskStatus{Atom: entry, Source: "package.unmask"}
+		}
+	}
+	return status
 }
 
 func ParsePackageAcceptKeywords(path string) (map[string]string, error) {

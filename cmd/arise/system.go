@@ -136,7 +136,7 @@ func runInfo() {
 	fmt.Printf("Arch: %s\n", runtime.GOARCH)
 	fmt.Println()
 
-	cfg, err := portage.LoadConfig(*portageConfigRoot)
+	cfg, err := portage.LoadEffectiveConfig(*portageConfigRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "info: loading portage config: %v\n", err)
 	}
@@ -162,12 +162,15 @@ func runInfo() {
 		}
 		if len(cfg.USE) > 0 {
 			displayUse := cfg.USE
-			if len(displayUse) > 50 {
+			if len(displayUse) > 50 && !*verbose {
 				displayUse = displayUse[:50]
 				fmt.Printf("USE: %s ... (%d total)\n", strings.Join(displayUse, " "), len(cfg.USE))
 			} else {
 				fmt.Printf("USE: %s\n", strings.Join(displayUse, " "))
 			}
+		}
+		if *verbose && len(cfg.ProfileParents) > 0 {
+			fmt.Printf("Profile stack: %s\n", strings.Join(cfg.ProfileParents, " "))
 		}
 	}
 

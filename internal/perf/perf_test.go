@@ -107,6 +107,20 @@ func TestRunRejectsEquivalentButSlower(t *testing.T) {
 	}
 }
 
+func TestRunReportsButDoesNotEnforceAspirationalTarget(t *testing.T) {
+	w := Workload{Name: "test", Runs: 1, Cases: []Case{{
+		Name: "native target", Normalize: "exit-code", ReportOnly: true,
+		Arise: Command{Path: "sleep", Args: []string{"0.02"}}, Reference: Command{Path: "true"},
+	}}}
+	r, err := Run(context.Background(), w, "fixture-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.AllPassed || r.Results[0].PerformancePass || r.Results[0].PerformanceEnforced {
+		t.Fatal("aspirational performance target affected workload status")
+	}
+}
+
 func speedupPtr(value float64) *float64 { return &value }
 
 func TestLoadWorkloadValidation(t *testing.T) {

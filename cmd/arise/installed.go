@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,18 +45,26 @@ func runInstalled(args []string, vdbPath string) {
 	if selector != "" && !quietRequested {
 		quiet = false
 	}
+	separator := "\n"
+	if nul {
+		separator = "\x00"
+	}
+	out := bufio.NewWriterSize(os.Stdout, 64*1024)
+	defer out.Flush()
+	if selector == "" {
+		if err := writeInstalled(out, vdbPath, withVersions, prefixEqual, separator); err != nil {
+			fmt.Fprintf(os.Stderr, "installed: %v\n", err)
+		}
+		return
+	}
 	records, err := scanInstalled(vdbPath, selector)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "installed: %v\n", err)
 		return
 	}
-	separator := "\n"
-	if nul {
-		separator = "\x00"
-	}
 	if !quiet {
-		fmt.Println(installedHeading(selector))
-		fmt.Println()
+		fmt.Fprintln(out, installedHeading(selector))
+		fmt.Fprintln(out)
 	}
 	printed := 0
 	for _, record := range records {
@@ -69,12 +78,52 @@ func runInstalled(args []string, vdbPath string) {
 		if prefixEqual {
 			atom = "=" + atom
 		}
-		fmt.Print(atom, separator)
+		_, _ = out.WriteString(atom)
+		_, _ = out.WriteString(separator)
 		printed++
 	}
 	if !quiet && printed == 0 {
-		fmt.Println("none")
+		fmt.Fprintln(out, "none")
 	}
+}
+
+// writeInstalled streams the common unfiltered query directly from the VDB.
+// Avoiding an intermediate record slice matters for this startup-bound command.
+func writeInstalled(out *bufio.Writer, vdbPath string, withVersions, prefixEqual bool, separator string) error {
+	categories, err := os.ReadDir(vdbPath)
+	if err != nil {
+		return err
+	}
+	for _, category := range categories {
+		if !category.IsDir() {
+			continue
+		}
+		packages, readErr := os.ReadDir(filepath.Join(vdbPath, category.Name()))
+		if readErr != nil {
+			continue
+		}
+		for _, pkg := range packages {
+			if !pkg.IsDir() {
+				continue
+			}
+			cat, name, version, parseErr := metadata.ParseCPV(category.Name() + "/" + pkg.Name())
+			if parseErr != nil || version == "" {
+				continue
+			}
+			if prefixEqual {
+				_ = out.WriteByte('=')
+			}
+			_, _ = out.WriteString(cat)
+			_ = out.WriteByte('/')
+			_, _ = out.WriteString(name)
+			if withVersions {
+				_ = out.WriteByte('-')
+				_, _ = out.WriteString(version)
+			}
+			_, _ = out.WriteString(separator)
+		}
+	}
+	return nil
 }
 
 func installedAtoms(vdbPath string, withVersions bool) ([]string, error) {
@@ -119,12 +168,12 @@ func scanInstalled(vdbPath, selector string) ([]installedRecord, error) {
 			if !pkg.IsDir() {
 				continue
 			}
-			m, parseErr := metadata.ParseCacheEntry(category.Name()+"/"+pkg.Name(), nil)
-			if parseErr != nil || m.Version == "" {
+			categoryName, packageName, version, parseErr := metadata.ParseCPV(category.Name() + "/" + pkg.Name())
+			if parseErr != nil || version == "" {
 				continue
 			}
 			dir := filepath.Join(vdbPath, category.Name(), pkg.Name())
-			record := installedRecord{CP: m.Category + "/" + m.Package, CPV: m.Category + "/" + m.Package + "-" + m.Version}
+			record := installedRecord{CP: categoryName + "/" + packageName, CPV: categoryName + "/" + packageName + "-" + version}
 			if selector == "repo" || selector == "no-repo" {
 				if data, readErr := os.ReadFile(filepath.Join(dir, "repository")); readErr == nil && strings.TrimSpace(string(data)) != "" {
 					record.HasRepo = true
@@ -138,7 +187,6 @@ func scanInstalled(vdbPath, selector string) ([]installedRecord, error) {
 			records = append(records, record)
 		}
 	}
-	sort.Slice(records, func(i, j int) bool { return records[i].CPV < records[j].CPV })
 	return records, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/metadata"
 	"github.com/airencracken/arise/internal/resolve"
+	"github.com/airencracken/arise/internal/resolversnapshot"
+	"github.com/airencracken/arise/internal/vdb"
 	"github.com/dgraph-io/badger/v4"
 )
 
@@ -74,11 +77,13 @@ type DepEdge struct {
 }
 
 type PkgNode struct {
-	Atom       *atom.Atom
-	Metadata   *metadata.PackageMetadata
-	Depends    []DepEdge
-	RevDepends []DepEdge
-	State      PkgState
+	Atom              *atom.Atom
+	Metadata          *metadata.PackageMetadata
+	AvailableVersions []*metadata.PackageMetadata
+	InstalledVersions []vdb.Package
+	Depends           []DepEdge
+	RevDepends        []DepEdge
+	State             PkgState
 }
 
 type DepGraph struct {
@@ -501,21 +506,37 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 	rg := resolve.NewDepGraph()
 
 	for cp, node := range g.Nodes {
-		if node.Metadata != nil {
-			verStr := ""
-			slot := node.Metadata.SLOT
-			subslot := node.Metadata.Subslot
-			if node.Atom != nil && node.Atom.Version != nil {
-				verStr = node.Atom.Version.Raw
-				if slot == "" {
-					slot = node.Atom.Slot
-				}
-				if subslot == "" {
-					subslot = node.Atom.Subslot
-				}
+		available := node.AvailableVersions
+		// Older synthetic graphs stored repository metadata only in Metadata.
+		// A real installed-only node also has Metadata, but it came from VDB and
+		// must never be promoted into a repository-available version.
+		if len(available) == 0 && len(node.InstalledVersions) == 0 && node.Metadata != nil {
+			available = []*metadata.PackageMetadata{node.Metadata}
+		}
+		for _, m := range available {
+			vi := rg.AddVersionFromRepository(cp, m.Version, m.SLOT, m.Subslot, false, iuseDefaults(m.IUSE), m.KEYWORDS, m.Repository)
+			vi.RepositoryPriority = repositoryPriority(m)
+			vi.Depend, vi.Rdepend = m.DEPEND, m.RDEPEND
+			vi.Bdepend, vi.Idepend, vi.Pdepend = m.BDEPEND, m.IDEPEND, m.PDEPEND
+			vi.RequiredUse, vi.License = m.REQUIRED_USE, m.LICENSE
+			vi.RepositoryPath, vi.SrcURI, vi.EAPI = m.RepositoryPath, m.SRC_URI, m.EAPI
+		}
+		for _, installed := range node.InstalledVersions {
+			use := make(map[string]bool)
+			for _, flag := range installed.IUse {
+				use[strings.TrimLeft(flag, "+-")] = false
 			}
-			installed := node.State != StateMissing
-			rg.AddVersion(cp, verStr, slot, subslot, installed, iuseDefaults(node.Metadata.IUSE), node.Metadata.KEYWORDS)
+			for _, flag := range installed.Use {
+				use[flag] = true
+			}
+			vi := rg.AddVersionFromRepository(cp, installed.Version, installed.Slot, installed.Subslot, true, use, "", installed.Repository)
+			vi.EAPI = installed.EAPI
+			vi.InstalledDepend, vi.InstalledRdepend = installed.Depend, installed.RDepend
+			vi.InstalledBdepend, vi.InstalledIdepend, vi.InstalledPdepend = installed.BDepend, installed.IDepend, installed.PDepend
+			if vi.Depend == "" && vi.Rdepend == "" && vi.Bdepend == "" && vi.Idepend == "" && vi.Pdepend == "" {
+				vi.Depend, vi.Rdepend = installed.Depend, installed.RDepend
+				vi.Bdepend, vi.Idepend, vi.Pdepend = installed.BDepend, installed.IDepend, installed.PDepend
+			}
 		}
 
 		if node.Atom != nil {
@@ -525,7 +546,7 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 			if node.Atom.Version != nil {
 				verStr = node.Atom.Version.Raw
 			}
-			installed := node.State != StateMissing
+			installed := len(node.InstalledVersions) > 0
 			if _, exists := rg.Packages[cp]; !exists {
 				rg.AddVersion(cp, verStr, slot, subslot, installed, nil, "")
 			} else if node.Metadata == nil {
@@ -720,4 +741,110 @@ func BuildParallel(db *badger.DB, repoDir string, workers int) (*DepGraph, error
 
 	g.computeRevDeps()
 	return g, err
+}
+
+// BuildFromState constructs a graph from distinct available-repository and
+// installed-VDB snapshots. Loading both snapshots overlaps because neither is
+// allowed to mutate during resolution.
+func BuildFromState(db *badger.DB, vdbPath string, workers int) (*DepGraph, error) {
+	if workers <= 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+	type availableResult struct {
+		packages map[string][]*metadata.PackageMetadata
+		err      error
+	}
+	type installedResult struct {
+		packages []vdb.Package
+		err      error
+	}
+	availableCh := make(chan availableResult, 1)
+	installedCh := make(chan installedResult, 1)
+	go func() {
+		selected := make(map[string][]*metadata.PackageMetadata)
+		records, snapshotErr := resolversnapshot.Read(db.Opts().Dir)
+		if snapshotErr == nil {
+			for _, m := range records {
+				selected[m.Key()] = append(selected[m.Key()], m)
+			}
+			availableCh <- availableResult{packages: selected}
+			return
+		}
+		if !os.IsNotExist(snapshotErr) {
+			availableCh <- availableResult{err: snapshotErr}
+			return
+		}
+		err := ingest.QueryRangeParallel(db, "pkg:", workers, func(m *metadata.PackageMetadata) error {
+			if !m.Complete() {
+				return nil
+			}
+			cp := m.Key()
+			selected[cp] = append(selected[cp], m)
+			return nil
+		})
+		availableCh <- availableResult{packages: selected, err: err}
+	}()
+	go func() {
+		packages, err := vdb.Scan(vdbPath)
+		installedCh <- installedResult{packages: packages, err: err}
+	}()
+
+	available := <-availableCh
+	installed := <-installedCh
+	if available.err != nil {
+		return nil, fmt.Errorf("graph: read available package index: %w", available.err)
+	}
+	if installed.err != nil {
+		return nil, fmt.Errorf("graph: read installed package database: %w", installed.err)
+	}
+
+	g := &DepGraph{Nodes: make(map[string]*PkgNode), InstalledAtoms: make(map[string]*atom.Atom), AllAtoms: make(map[string]*atom.Atom)}
+	for cp, versions := range available.packages {
+		var selected *metadata.PackageMetadata
+		for _, m := range versions {
+			if selected == nil || versionGreater(m.Version, selected.Version) ||
+				(m.Version == selected.Version && repositoryPriority(m) > repositoryPriority(selected)) {
+				selected = m
+			}
+			if a, err := atom.Parse(cp + "-" + m.Version); err == nil {
+				g.AllAtoms[cp+"-"+m.Version] = a
+			}
+		}
+		node := g.getOrCreate(cp, selected)
+		node.AvailableVersions = append(node.AvailableVersions, versions...)
+		g.addEdgesFromMeta(node, selected)
+	}
+	for _, installedPackage := range installed.packages {
+		cp := installedPackage.CP()
+		installedMetadata := installedPackage.Metadata()
+		node := g.Nodes[cp]
+		if node == nil {
+			node = g.getOrCreate(cp, installedMetadata)
+			g.addEdgesFromMeta(node, installedMetadata)
+		}
+		node.State = StateInstalled
+		node.InstalledVersions = append(node.InstalledVersions, installedPackage)
+		for _, availableMetadata := range available.packages[cp] {
+			if versionGreater(availableMetadata.Version, installedPackage.Version) {
+				node.State = StateUpdateAvailable
+				break
+			}
+		}
+		if a, err := atom.Parse(installedPackage.CPV()); err == nil {
+			g.InstalledAtoms[installedPackage.CPV()] = a
+			g.AllAtoms[installedPackage.CPV()] = a
+		}
+	}
+	g.computeRevDeps()
+	return g, nil
+}
+
+func repositoryPriority(m *metadata.PackageMetadata) int {
+	if m == nil {
+		return 0
+	}
+	if m.RepositoryPriority != 0 {
+		return m.RepositoryPriority
+	}
+	return m.OverlayIndex
 }

@@ -8,14 +8,24 @@ import (
 )
 
 type ProfileInfo struct {
-	Path         string              // path to the active profile
-	Parents      []string            // ordered list of parent paths
-	MakeDefaults map[string]string   // merged make.defaults variables
-	SystemSet    []string            // @system packages (merged from all parents)
-	UseForce     []string            // forced USE flags
-	UseMask      []string            // masked USE flags
-	PkgUseForce  map[string][]string // package.use.force (per-package forced USE)
-	PkgUseMask   map[string][]string // package.use.mask (per-package masked USE)
+	Path             string              // path to the active profile
+	Directories      []string            // root-to-leaf profile stacking order
+	Parents          []string            // ordered list of parent paths
+	MakeDefaults     map[string]string   // merged make.defaults variables
+	SystemSet        []string            // @system packages (merged from all parents)
+	UseForce         []string            // forced USE flags
+	UseMask          []string            // masked USE flags
+	PkgUseForce      map[string][]string // package.use.force (per-package forced USE)
+	PkgUseMask       map[string][]string // package.use.mask (per-package masked USE)
+	PkgUse           map[string][]string // package.use profile defaults
+	PkgUseRules      []PackageFlagRule
+	PkgUseForceRules []PackageFlagRule
+	PkgUseMaskRules  []PackageFlagRule
+}
+
+type PackageFlagRule struct {
+	Atom  string
+	Flags []string
 }
 
 func LoadProfile(profileSymlink string, profilesRoot string) (*ProfileInfo, error) {
@@ -48,48 +58,71 @@ func ResolveParent(profilePath string, parentLine string, profilesRoot string) (
 }
 
 func MergeParents(profilePath string, profilesRoot string) (*ProfileInfo, error) {
-	visited := make(map[string]bool)
-	return mergeParentsRecursive(profilePath, profilesRoot, visited)
-}
-
-func mergeParentsRecursive(profilePath string, profilesRoot string, visited map[string]bool) (*ProfileInfo, error) {
-	cleanPath := filepath.Clean(profilePath)
-	if visited[cleanPath] {
-		return nil, fmt.Errorf("profile: circular parent reference at %s", cleanPath)
-	}
-	visited[cleanPath] = true
-
-	info, err := statProfileDir(cleanPath)
-	if err != nil {
+	var order []string
+	seen := make(map[string]bool)
+	stack := make(map[string]bool)
+	if err := collectProfileOrder(filepath.Clean(profilePath), profilesRoot, seen, stack, &order); err != nil {
 		return nil, err
 	}
-	info.Path = cleanPath
+	var merged *ProfileInfo
+	for _, path := range order {
+		layer, err := statProfileDir(path)
+		if err != nil {
+			return nil, err
+		}
+		layer.Path = filepath.Clean(profilePath)
+		layer.Directories = []string{path}
+		if merged == nil {
+			merged = layer
+		} else {
+			merged = mergeProfileInfo(layer, merged)
+		}
+	}
+	if merged == nil {
+		return nil, fmt.Errorf("profile: empty profile graph at %s", profilePath)
+	}
+	merged.Path = filepath.Clean(profilePath)
+	merged.Directories = append([]string(nil), order...)
+	if len(order) > 1 {
+		merged.Parents = append([]string(nil), order[:len(order)-1]...)
+	}
+	return merged, nil
+}
 
-	parentFile := filepath.Join(cleanPath, "parent")
-	parentData, parentErr := os.ReadFile(parentFile)
-
-	if parentErr == nil {
-		lines := splitLines(string(parentData))
-		for _, line := range lines {
+func collectProfileOrder(path, profilesRoot string, seen, stack map[string]bool, order *[]string) error {
+	path = filepath.Clean(path)
+	if stack[path] {
+		return fmt.Errorf("profile: circular parent reference at %s", path)
+	}
+	if seen[path] {
+		return nil
+	}
+	if _, err := statProfileDir(path); err != nil {
+		return err
+	}
+	stack[path] = true
+	data, err := os.ReadFile(filepath.Join(path, "parent"))
+	if err == nil {
+		for _, line := range splitLines(string(data)) {
+			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			parentPath, resolveErr := ResolveParent(cleanPath, line, profilesRoot)
-			if resolveErr != nil {
-				return nil, resolveErr
+			parent, err := ResolveParent(path, line, profilesRoot)
+			if err != nil {
+				return err
 			}
-			info.Parents = append(info.Parents, parentPath)
-
-			parentInfo, mergeErr := mergeParentsRecursive(parentPath, profilesRoot, visited)
-			if mergeErr != nil {
-				return nil, mergeErr
+			if err := collectProfileOrder(parent, profilesRoot, seen, stack, order); err != nil {
+				return err
 			}
-
-			info = mergeProfileInfo(info, parentInfo)
 		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("profile: read parent %s: %w", path, err)
 	}
-
-	return info, nil
+	delete(stack, path)
+	seen[path] = true
+	*order = append(*order, path)
+	return nil
 }
 
 func statProfileDir(profilePath string) (*ProfileInfo, error) {
@@ -106,6 +139,7 @@ func statProfileDir(profilePath string) (*ProfileInfo, error) {
 		MakeDefaults: make(map[string]string),
 		PkgUseForce:  make(map[string][]string),
 		PkgUseMask:   make(map[string][]string),
+		PkgUse:       make(map[string][]string),
 	}
 
 	info.loadMakeDefaults(profilePath)
@@ -144,7 +178,7 @@ func (info *ProfileInfo) loadMakeDefaults(profilePath string) {
 func (info *ProfileInfo) loadPackages(profilePath string) {
 	seen := make(map[string]bool)
 
-	for _, fname := range []string{"packages", "packages.build"} {
+	for _, fname := range []string{"packages"} {
 		path := filepath.Join(profilePath, fname)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -157,16 +191,28 @@ func (info *ProfileInfo) loadPackages(profilePath string) {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			if !seen[line] {
-				seen[line] = true
-				info.SystemSet = append(info.SystemSet, line)
+			entry := line
+			switch {
+			case strings.HasPrefix(line, "-*"):
+				entry = "-" + strings.TrimPrefix(line, "-*")
+			case strings.HasPrefix(line, "*"):
+				entry = strings.TrimPrefix(line, "*")
+			default:
+				continue
+			}
+			if !seen[entry] {
+				seen[entry] = true
+				info.SystemSet = append(info.SystemSet, entry)
 			}
 		}
 	}
 }
 
 func (info *ProfileInfo) loadUseFlags(profilePath string) {
-	for _, pair := range []struct{ file string; dst *[]string }{
+	for _, pair := range []struct {
+		file string
+		dst  *[]string
+	}{
 		{"use.force", &info.UseForce},
 		{"use.mask", &info.UseMask},
 	} {
@@ -188,9 +234,14 @@ func (info *ProfileInfo) loadUseFlags(profilePath string) {
 }
 
 func (info *ProfileInfo) loadPkgUse(profilePath string) {
-	for _, pair := range []struct{ file string; dst *map[string][]string }{
-		{"package.use.force", &info.PkgUseForce},
-		{"package.use.mask", &info.PkgUseMask},
+	for _, pair := range []struct {
+		file  string
+		dst   *map[string][]string
+		rules *[]PackageFlagRule
+	}{
+		{"package.use.force", &info.PkgUseForce, &info.PkgUseForceRules},
+		{"package.use.mask", &info.PkgUseMask, &info.PkgUseMaskRules},
+		{"package.use", &info.PkgUse, &info.PkgUseRules},
 	} {
 		path := filepath.Join(profilePath, pair.file)
 		data, err := os.ReadFile(path)
@@ -211,6 +262,7 @@ func (info *ProfileInfo) loadPkgUse(profilePath string) {
 			pkg := parts[0]
 			flags := parts[1:]
 			(*pair.dst)[pkg] = append((*pair.dst)[pkg], flags...)
+			*pair.rules = append(*pair.rules, PackageFlagRule{Atom: pkg, Flags: append([]string(nil), flags...)})
 		}
 	}
 }
@@ -339,6 +391,12 @@ func mergeProfileInfo(child, parent *ProfileInfo) *ProfileInfo {
 		MakeDefaults: make(map[string]string),
 		PkgUseForce:  make(map[string][]string),
 		PkgUseMask:   make(map[string][]string),
+		PkgUse:       make(map[string][]string),
+	}
+	for _, dir := range append(append([]string{}, parent.Directories...), child.Directories...) {
+		if len(merged.Directories) == 0 || merged.Directories[len(merged.Directories)-1] != dir {
+			merged.Directories = append(merged.Directories, dir)
+		}
 	}
 
 	// parent values first (lower priority)
@@ -350,64 +408,63 @@ func mergeProfileInfo(child, parent *ProfileInfo) *ProfileInfo {
 		merged.MakeDefaults[k] = v
 	}
 
-	// parent system set first, then child
-	seen := make(map[string]bool)
-	for _, pkg := range parent.SystemSet {
-		if !seen[pkg] {
-			seen[pkg] = true
-			merged.SystemSet = append(merged.SystemSet, pkg)
-		}
-	}
-	for _, pkg := range child.SystemSet {
-		if !seen[pkg] {
-			seen[pkg] = true
-			merged.SystemSet = append(merged.SystemSet, pkg)
-		}
-	}
+	merged.SystemSet = applyFlagChanges(parent.SystemSet, child.SystemSet)
 
 	// accumulate USE flags
-	seenForce := make(map[string]bool)
-	for _, flag := range parent.UseForce {
-		if !seenForce[flag] {
-			seenForce[flag] = true
-			merged.UseForce = append(merged.UseForce, flag)
-		}
-	}
-	for _, flag := range child.UseForce {
-		if !seenForce[flag] {
-			seenForce[flag] = true
-			merged.UseForce = append(merged.UseForce, flag)
-		}
-	}
-
-	seenMask := make(map[string]bool)
-	for _, flag := range parent.UseMask {
-		if !seenMask[flag] {
-			seenMask[flag] = true
-			merged.UseMask = append(merged.UseMask, flag)
-		}
-	}
-	for _, flag := range child.UseMask {
-		if !seenMask[flag] {
-			seenMask[flag] = true
-			merged.UseMask = append(merged.UseMask, flag)
-		}
-	}
+	merged.UseForce = applyFlagChanges(parent.UseForce, child.UseForce)
+	merged.UseMask = applyFlagChanges(parent.UseMask, child.UseMask)
+	merged.PkgUseForceRules = append(append([]PackageFlagRule(nil), parent.PkgUseForceRules...), child.PkgUseForceRules...)
+	merged.PkgUseMaskRules = append(append([]PackageFlagRule(nil), parent.PkgUseMaskRules...), child.PkgUseMaskRules...)
+	merged.PkgUseRules = append(append([]PackageFlagRule(nil), parent.PkgUseRules...), child.PkgUseRules...)
 
 	// per-package USE: parent first, child appended
 	for pkg, flags := range parent.PkgUseForce {
 		merged.PkgUseForce[pkg] = append([]string{}, flags...)
 	}
 	for pkg, flags := range child.PkgUseForce {
-		merged.PkgUseForce[pkg] = append(merged.PkgUseForce[pkg], flags...)
+		merged.PkgUseForce[pkg] = applyFlagChanges(merged.PkgUseForce[pkg], flags)
 	}
 
 	for pkg, flags := range parent.PkgUseMask {
 		merged.PkgUseMask[pkg] = append([]string{}, flags...)
 	}
 	for pkg, flags := range child.PkgUseMask {
-		merged.PkgUseMask[pkg] = append(merged.PkgUseMask[pkg], flags...)
+		merged.PkgUseMask[pkg] = applyFlagChanges(merged.PkgUseMask[pkg], flags)
+	}
+	for pkg, flags := range parent.PkgUse {
+		merged.PkgUse[pkg] = append([]string{}, flags...)
+	}
+	for pkg, flags := range child.PkgUse {
+		merged.PkgUse[pkg] = applyFlagChanges(merged.PkgUse[pkg], flags)
 	}
 
 	return merged
+}
+
+func applyFlagChanges(previous, changes []string) []string {
+	result := append([]string(nil), previous...)
+	for _, change := range changes {
+		if strings.HasPrefix(change, "-") {
+			name := strings.TrimPrefix(change, "-")
+			filtered := result[:0]
+			for _, existing := range result {
+				if existing != name {
+					filtered = append(filtered, existing)
+				}
+			}
+			result = filtered
+			continue
+		}
+		found := false
+		for _, existing := range result {
+			if existing == change {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, change)
+		}
+	}
+	return result
 }

@@ -11,6 +11,16 @@ import (
 	"github.com/airencracken/arise/internal/search"
 )
 
+func TestProgressFramesAreASCII(t *testing.T) {
+	for _, frame := range progressFrames {
+		for _, b := range []byte(frame) {
+			if b > 0x7f {
+				t.Fatalf("progress frame %q is not ASCII", frame)
+			}
+		}
+	}
+}
+
 func TestVersionFlagRegistered(t *testing.T) {
 	f := flag.Lookup("version")
 	if f == nil {
@@ -77,6 +87,12 @@ func TestNormalizeEmergeArgs(t *testing.T) {
 	}
 }
 
+func TestFormatIntegerUsesKiBThousandsSeparators(t *testing.T) {
+	if got := formatInteger(112778); got != "112,778" {
+		t.Fatalf("formatInteger = %q", got)
+	}
+}
+
 func TestIndexPrivilegeError(t *testing.T) {
 	if err := indexPrivilegeError(1000, "/var/lib/arise/data"); err == nil {
 		t.Fatal("non-root system database should require root")
@@ -86,6 +102,12 @@ func TestIndexPrivilegeError(t *testing.T) {
 	}
 	if err := indexPrivilegeError(1000, "/tmp/arise-data"); err != nil {
 		t.Fatalf("user-owned database rejected: %v", err)
+	}
+}
+
+func TestSystemDBPathDoesNotCaptureSimilarPrefix(t *testing.T) {
+	if !isSystemDBPath("/var/lib/arise/data") || isSystemDBPath("/var/lib/arise-other/data") {
+		t.Fatal("system database path boundary is incorrect")
 	}
 }
 
@@ -383,7 +405,7 @@ func resetAllFlags() {
 	*autoUnmaskW = false
 	*jobsVal = 0
 	*loadAverage = 0
-	*withBdeps = "n"
+	*withBdeps = "auto"
 	*binpkgRespectUse = false
 	*ignoreBuiltSlotOps = "n"
 	*getbinpkg = false
@@ -407,11 +429,11 @@ func TestResolveFlagsToConfig_Defaults(t *testing.T) {
 	if cfg.Update {
 		t.Error("Update should be false")
 	}
-	if cfg.WithBdeps != "n" {
-		t.Errorf("WithBdeps = %q, want n", cfg.WithBdeps)
+	if cfg.WithBdeps != "auto" {
+		t.Errorf("WithBdeps = %q, want auto", cfg.WithBdeps)
 	}
-	if cfg.WithBdepsAuto {
-		t.Error("WithBdepsAuto should be false")
+	if !cfg.WithBdepsAuto {
+		t.Error("WithBdepsAuto should be true")
 	}
 	if cfg.BinpkgDir != "/var/cache/binpkgs" {
 		t.Errorf("BinpkgDir = %q", cfg.BinpkgDir)

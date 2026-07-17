@@ -11,6 +11,7 @@ import (
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/metadata"
 	"github.com/airencracken/arise/internal/resolve"
+	"github.com/airencracken/arise/internal/vdb"
 	"github.com/dgraph-io/badger/v4"
 )
 
@@ -542,6 +543,43 @@ func TestToResolveGraph_Basic(t *testing.T) {
 	}
 }
 
+func TestToResolveGraph_InstalledOnlyPackageIsNotAvailable(t *testing.T) {
+	installed := vdb.Package{
+		Category: "dev-python", Package: "nspektr", Version: "0.4.0",
+		Slot: "0", Repository: "gentoo", RDepend: "dev-python/old-dependency",
+	}
+	installedAtom, err := atom.Parse(installed.CPV())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &DepGraph{
+		Nodes: map[string]*PkgNode{
+			installed.CP(): {
+				Atom:              installedAtom,
+				Metadata:          installed.Metadata(),
+				InstalledVersions: []vdb.Package{installed},
+				State:             StateInstalled,
+			},
+		},
+		InstalledAtoms: map[string]*atom.Atom{},
+		AllAtoms:       map[string]*atom.Atom{},
+	}
+
+	rg := g.ToResolveGraph()
+	node := rg.Packages[installed.CP()]
+	if node == nil || node.GetInstalledVersion() == nil {
+		t.Fatal("installed version was not retained")
+	}
+	if node.GetBestVersion() != nil {
+		t.Fatalf("installed-only VDB record was promoted to an available ebuild: %#v", node.GetBestVersion())
+	}
+	for _, vi := range node.Versions {
+		if vi.Available {
+			t.Fatalf("installed-only version marked available: %#v", vi)
+		}
+	}
+}
+
 func TestToResolveGraph_IUSEDefaults(t *testing.T) {
 	m := makeMeta("media-libs", "mesa", "26.0.8", "", "", "")
 	m.IUSE = "+opengl -test vulkan"
@@ -703,6 +741,158 @@ func TestBuildParallel_WorkerCount4(t *testing.T) {
 	if len(g.Nodes) != 5 {
 		t.Fatalf("expected 5 nodes, got %d", len(g.Nodes))
 	}
+}
+
+func writeInstalledFixture(t *testing.T, root, category, pf, slot string) {
+	t.Helper()
+	dir := filepath.Join(root, category, pf)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"SLOT": slot, "repository": "gentoo", "EAPI": "8"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(value+"\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestBuildFromStateSeparatesAvailableAndInstalled(t *testing.T) {
+	db := openTestDB(t)
+	ingestEntries(t, db, []*metadata.PackageMetadata{
+		makeMeta("www-client", "firefox", "152.0.6", "", "", ""),
+		makeMeta("app-editors", "vim", "9.1", "", "", ""),
+	})
+	vdbPath := t.TempDir()
+	writeInstalledFixture(t, vdbPath, "www-client", "firefox-140.12.0", "esr/140")
+
+	g, err := BuildFromState(db, vdbPath, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := g.Nodes["www-client/firefox"].State; got != StateUpdateAvailable {
+		t.Fatalf("firefox state = %v, want update available", got)
+	}
+	if got := g.Nodes["app-editors/vim"].State; got != StateMissing {
+		t.Fatalf("available-only vim state = %v, want missing", got)
+	}
+	if _, ok := g.InstalledAtoms["app-editors/vim-9.1"]; ok {
+		t.Fatal("available repository record was marked installed")
+	}
+}
+
+func TestBuildFromStatePreservesAllAvailableVersionsForResolution(t *testing.T) {
+	db := openTestDB(t)
+	stable := makeMeta("sys-apps", "dbus", "1.16.2", "", "", "")
+	stable.KEYWORDS = "amd64"
+	testingVersion := makeMeta("sys-apps", "dbus", "1.16.2-r1", "", "", "")
+	testingVersion.KEYWORDS = "~amd64"
+	ingestEntries(t, db, []*metadata.PackageMetadata{testingVersion, stable})
+
+	g, err := BuildFromState(db, t.TempDir(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(g.Nodes["sys-apps/dbus"].AvailableVersions); got != 2 {
+		t.Fatalf("available versions = %d, want 2", got)
+	}
+	rg := g.ToResolveGraph()
+	if got := len(rg.Packages["sys-apps/dbus"].Versions); got != 2 {
+		t.Fatalf("resolver versions = %d, want 2", got)
+	}
+}
+
+func TestBuildFromStatePreservesMultipleInstalledSlots(t *testing.T) {
+	db := openTestDB(t)
+	vdbPath := t.TempDir()
+	writeInstalledFixture(t, vdbPath, "dev-lang", "python-3.11.9", "3.11/3.11")
+	writeInstalledFixture(t, vdbPath, "dev-lang", "python-3.12.4", "3.12/3.12")
+
+	g, err := BuildFromState(db, vdbPath, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cpv := range []string{"dev-lang/python-3.11.9", "dev-lang/python-3.12.4"} {
+		if _, ok := g.InstalledAtoms[cpv]; !ok {
+			t.Fatalf("installed slot %s was lost", cpv)
+		}
+	}
+}
+
+func TestBuildFromStateUsesRepositoryPriorityForDuplicateCPV(t *testing.T) {
+	db := openTestDB(t)
+	gentoo := makeMeta("app-editors", "vim", "9.1", "", "", "")
+	gentoo.Repository, gentoo.RepositoryPath, gentoo.RepositoryPriority = "gentoo", "/repos/gentoo", 0
+	local := makeMeta("app-editors", "vim", "9.1", "", "", "")
+	local.Repository, local.RepositoryPath, local.RepositoryPriority = "local", "/repos/local", 10
+	ingestEntries(t, db, []*metadata.PackageMetadata{local, gentoo})
+
+	g, err := BuildFromState(db, t.TempDir(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := g.Nodes["app-editors/vim"].Metadata.Repository; got != "local" {
+		t.Fatalf("selected repository = %q, want local", got)
+	}
+}
+
+func TestToResolveGraphKeepsDuplicateCPVRepositoryMetadataAtomic(t *testing.T) {
+	g := &DepGraph{Nodes: make(map[string]*PkgNode)}
+	gentoo := makeMeta("app-editors", "vim", "9.1", "dev-libs/gentoo-dep", "", "")
+	gentoo.Repository, gentoo.RepositoryPriority = "gentoo", 0
+	local := makeMeta("app-editors", "vim", "9.1", "dev-libs/local-dep", "", "")
+	local.Repository, local.RepositoryPriority = "local", 10
+	packageAtom, err := atom.Parse("app-editors/vim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Nodes["app-editors/vim"] = &PkgNode{Atom: packageAtom, Metadata: local, AvailableVersions: []*metadata.PackageMetadata{gentoo, local}}
+
+	rg := g.ToResolveGraph()
+	vi := rg.Packages["app-editors/vim"].GetVersion("9.1")
+	if vi == nil || vi.Repository != "local" || vi.Depend != "dev-libs/local-dep" {
+		t.Fatalf("duplicate CPV became mixed record: %#v", vi)
+	}
+	gentooVI := rg.Packages["app-editors/vim"].GetVersionFromRepository("9.1", "gentoo")
+	if gentooVI == nil || gentooVI.Depend != "dev-libs/gentoo-dep" {
+		t.Fatalf("shadowed repository candidate was lost or mixed: %#v", gentooVI)
+	}
+	if got := len(rg.Packages["app-editors/vim"].Versions); got != 2 {
+		t.Fatalf("resolver candidates = %d, want both repositories", got)
+	}
+}
+
+func BenchmarkBuildFromState(b *testing.B) {
+	db := openBenchmarkDB(b)
+	const packages = 5000
+	entries := make([]*metadata.PackageMetadata, 0, packages)
+	for i := 0; i < packages; i++ {
+		entries = append(entries, makeMeta("app-bench", fmt.Sprintf("pkg-%d", i), "1.0", "", "", ""))
+	}
+	ch := make(chan *metadata.PackageMetadata, len(entries))
+	for _, entry := range entries {
+		ch <- entry
+	}
+	close(ch)
+	if _, err := ingest.Ingest(db, ch); err != nil {
+		b.Fatal(err)
+	}
+	vdbPath := b.TempDir()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := BuildFromState(db, vdbPath, 2); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func openBenchmarkDB(b *testing.B) *badger.DB {
+	b.Helper()
+	db, err := badger.Open(badger.DefaultOptions("").WithInMemory(true).WithLogger(nil))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = db.Close() })
+	return db
 }
 
 func TestVersionOrEmpty(t *testing.T) {

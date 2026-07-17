@@ -2,14 +2,19 @@
 
 Arise uses `emerge` as the correctness reference and compares with `eix` or its
 companion tools wherever they provide an established fast implementation.
-Equivalent behavior is the minimum; every real benchmark also has a speed
-floor, and milestone workloads should require a decisive win.
+Equivalent behavior is the minimum. Emerge/eix milestone workloads have a
+build-breaking speed floor and should require a decisive win. Portage-utils is
+an aspirational native-speed target: its results are published honestly, but a
+loss does not fail the build.
 
 | Area | Benchmark test | Correctness reference | Fast reference | Isolation | Current status |
 |---|---|---|---|---|---|
 | Installed state | All installed CPVs | Portage VDB | eix-installed | live read-only | measured: pass, 4.53x |
 | Installed state | Versionless installed CPs | Portage VDB | eix-installed/qlist | live read-only | workload needed |
 | Installed state | Repository/build-time selectors | Portage VDB | eix-installed | live read-only | workload needed |
+| Package state | All available and installed CPVs | Portage Python API | — | live read-only | measured: exact, 36,111 available and 1,233 installed |
+| Installed state | All installed CPVs | Portage VDB | qlist | live read-only | workload added; native-speed floor |
+| Installed state | Versionless installed CPs | Portage VDB | qlist | live read-only | workload added; native-speed floor |
 | Search | Exact CP/name | emerge search/Portage metadata | eix | disposable index | equivalent; 2.85x faster than eix |
 | Search | Narrow substring | Portage metadata | eix | disposable index | equivalent; 3.16x faster than eix and 74.22x faster than emerge; 31.00 MiB vs eix 25.80 MiB |
 | Search | Broad substring | Portage metadata | eix | disposable index | equivalent; 4.95x faster than eix |
@@ -19,8 +24,11 @@ floor, and milestone workloads should require a decisive win.
 | Query | File ownership | Portage VDB | equery/qlist | live read-only | workload needed |
 | Query | Package file list | Portage VDB | equery/qlist | live read-only | workload needed |
 | Query | USE/size/check/which | Portage metadata/VDB | equery | live read-only | workload needed |
-| Index | Full repository index | emerge --metadata | eix-update | cloned repo + temp DB | equivalent package set vs eix; 3.27x faster, 30.82 MiB vs 25.77 MiB; privileged emerge workload ready |
-| Index | No-change incremental index | emerge --metadata | eix-update | temp DB | equivalent package set; 5.92x faster than eix-update, 30.82 MiB vs 25.77 MiB |
+| Query | Atom parse/reconstruct/compare | PMS/Portage vercmp | qatom | synthetic corpus | Arise CLI surface and workload needed |
+| Search | Native tree name/description search | Portage metadata | qsearch | isolated repos.conf | workload needed |
+| Query | Native ownership/files/deps/size/USE/check | Portage VDB | qfile/qlist/qdepends/qsize/quse/qcheck | live read-only | workloads needed |
+| Index | Full repository index | emerge --metadata | eix-update | cloned repo + temp DB | exact Portage CPV set; crash-safe generation with visibility indexes measured at 3.81s vs 4.22s (1.11x) |
+| Index | No-change index | emerge --metadata | eix-update | temp DB | exact Portage CPV set; crash-safe incremental generation measured at 1.37s vs 4.22s (3.08x) |
 | Index | One-package incremental index | emerge --metadata | eix-update | cloned repo + temp DB | workload needed |
 | Sync | No-change sync | emerge --sync | eix-sync | cloned repos | workload needed |
 | Sync | Incremental sync | emerge --sync | eix-sync | cloned repos | workload needed |

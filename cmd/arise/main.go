@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/airencracken/arise/internal/color"
+	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/log"
 	"github.com/airencracken/arise/internal/search"
 )
@@ -45,19 +46,20 @@ var (
 	keepGoing          = flag.Bool("keep-going", false, "continue on errors")
 	deep               = flag.Bool("deep", false, "-D, consider full dependency tree")
 	completeGraph      = flag.Bool("complete-graph", false, "rebuild reverse deps when packages change")
-	backtrackVal       = flag.Int("backtrack", 10, "--backtrack=INT, max backtrack levels")
+	backtrackVal       = flag.Int("backtrack", 20, "--backtrack=INT, max backtrack levels")
 	jobsVal            = flag.Int("jobs", 0, "-j, parallel jobs")
 	loadAverage        = flag.Float64("load-average", 0, "--load-average=LOAD")
 	pretend            = flag.Bool("pretend", false, "-p, dry run")
 	ask                = flag.Bool("ask", false, "-a, prompt before proceeding")
 	quiet              = flag.Bool("quiet", false, "-q, minimal output")
 	verbose            = flag.Bool("verbose", false, "-v, verbose output")
+	jsonOutput         = flag.Bool("json", false, "emit a versioned JSON resolution plan")
 	tree               = flag.Bool("tree", false, "-t, display dependency tree")
 	resume             = flag.Bool("resume", false, "--resume, resume last operation")
 	skipFirst          = flag.Bool("skipfirst", false, "--skipfirst, skip first package in resume")
 	unorderedDisp      = flag.Bool("unordered-display", false, "--unordered-display, don't sort results")
 	autoUnmaskW        = flag.Bool("autounmask-write", false, "--autounmask-write, write package.unmask entries")
-	withBdeps          = flag.String("with-bdeps", "n", "--with-bdeps=y|n|auto")
+	withBdeps          = flag.String("with-bdeps", "auto", "--with-bdeps=y|n|auto")
 	buildPkg           = flag.Bool("buildpkg", false, "-b, build binary packages")
 	buildPkgOnly       = flag.Bool("buildpkgonly", false, "-B, only build binary packages")
 	usePkg             = flag.Bool("usepkg", false, "-k, use binary packages")
@@ -145,6 +147,7 @@ func init() {
 func main() {
 	os.Args = normalizeEmergeArgs(os.Args)
 	flag.Parse()
+	ingest.WriterVersion = version
 
 	if *showVersion {
 		fmt.Printf("arise %s\n", version)
@@ -156,11 +159,14 @@ func main() {
 	if *colors == "n" || *colors == "no" || *colors == "false" || *colors == "0" {
 		color.UseColor = false
 	}
+	if *jsonOutput {
+		color.UseColor = false
+	}
 
 	args := flag.Args()
 	if len(args) == 0 && *deselectArg == "" {
 		fmt.Fprintf(os.Stderr, "Usage: arise [flags] <command> [args...]\n")
-		fmt.Fprintf(os.Stderr, "Commands: sync, index, install, update, uninstall, query, search, installed, info, audit, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench\n")
+		fmt.Fprintf(os.Stderr, "Commands: sync, index, install, update, uninstall, query, state, search, installed, info, audit, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 		os.Exit(1)
@@ -173,6 +179,13 @@ func main() {
 
 	cmd := args[0]
 	cmdArgs := args[1:]
+	if *jsonOutput && cmd == "search" {
+		*searchJSON = true
+	}
+	if *jsonOutput && (cmd == "install" || cmd == "update") && !*pretend {
+		fmt.Fprintln(os.Stderr, "--json plan output requires --pretend")
+		os.Exit(2)
+	}
 
 	switch cmd {
 	case "sync":
@@ -181,13 +194,15 @@ func main() {
 		runIndex(*dbPath, *repoPath)
 	case "query":
 		runQuery(cmdArgs, *dbPath)
+	case "state":
+		runState(cmdArgs, *dbPath, *vdbDir)
 	case "install":
 		runInstall(cmdArgs, *dbPath, *repoPath)
 	case "update":
 		if len(cmdArgs) == 0 {
 			cmdArgs = []string{"@world"}
 		}
-		runResolveAndRebuild(cmdArgs, *dbPath, *repoPath, true, true)
+		runResolveAndRebuild(cmdArgs, *dbPath, *repoPath, true, false)
 	case "uninstall":
 		runUninstall(cmdArgs, *dbPath, *repoPath)
 	case "audit":

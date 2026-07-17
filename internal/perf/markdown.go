@@ -26,13 +26,18 @@ func MarkdownMatrix(reports []Report) string {
 		return rows[i].result.Name < rows[j].result.Name
 	})
 	var b strings.Builder
-	b.WriteString("| Workload | Test | Reference | Correct | Performance gate | Overall | Arise median | Reference median | Speedup | Arise cache | Reference cache |\n")
+	b.WriteString("| Workload | Test | Reference | Correct | Performance target | Overall | Arise median | Reference median | Speedup | Arise cache | Reference cache |\n")
 	b.WriteString("|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n")
 	for _, entry := range rows {
 		r := entry.result
+		performance := yesNo(r.PerformancePass)
+		if !r.PerformanceEnforced {
+			performance += " (aspirational)"
+		}
+		overall := r.Equivalent && (!r.PerformanceEnforced || r.PerformancePass)
 		b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			escapeCell(entry.workload), escapeCell(r.Name), escapeCell(r.ReferenceTool), yesNo(r.Equivalent),
-			yesNo(r.PerformancePass), yesNo(r.Equivalent && r.PerformancePass), formatDuration(r.AriseMedianNS), formatDuration(r.ReferenceMedianNS), formatSpeedup(r.Speedup), formatBytes(r.AriseCacheBytes), formatBytes(r.ReferenceCacheBytes)))
+			performance, yesNo(overall), formatDuration(r.AriseMedianNS), formatDuration(r.ReferenceMedianNS), formatSpeedup(r.Speedup), formatBytes(r.AriseCacheBytes), formatBytes(r.ReferenceCacheBytes)))
 	}
 	return b.String()
 }

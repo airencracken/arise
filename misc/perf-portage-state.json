@@ -1,0 +1,39 @@
+{
+  "name": "portage-state-parity",
+  "warmups": 1,
+  "runs": 5,
+  "cases": [
+    {
+      "name": "all-available-cpvs",
+      "normalize": "sorted-lines",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["state", "available-cpv"],
+        "version_args": ["--version"]
+      },
+      "reference": {
+        "tool": "portage-python-api",
+        "path": "python",
+        "args": ["-c", "import portage; print('\\n'.join(sorted(portage.db[portage.root]['porttree'].dbapi.cpv_all())))"],
+        "version_args": ["--version"]
+      }
+    },
+    {
+      "name": "all-installed-cpvs",
+      "normalize": "sorted-lines",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["state", "installed-cpv"],
+        "version_args": ["--version"]
+      },
+      "reference": {
+        "tool": "portage-python-api",
+        "path": "python",
+        "args": ["-c", "import portage; print('\\n'.join(sorted(portage.db[portage.root]['vartree'].dbapi.cpv_all())))"],
+        "version_args": ["--version"]
+      }
+    }
+  ]
+}

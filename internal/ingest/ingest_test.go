@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -42,9 +43,52 @@ func TestOpenDB(t *testing.T) {
 	}
 }
 
+func TestSchemaVersionIsInitializedAndFutureSchemaRejected(t *testing.T) {
+	db := openTestDB(t)
+	previousWriter := WriterVersion
+	WriterVersion = "test-version"
+	t.Cleanup(func() { WriterVersion = previousWriter })
+	if err := ensureSchema(db, true); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	if err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(schemaKey))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(value []byte) error { got = string(value); return nil })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got != "3" {
+		t.Fatalf("schema = %q", got)
+	}
+	if err := db.View(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(writerKey))
+		if err != nil {
+			return err
+		}
+		return item.Value(func(value []byte) error {
+			if string(value) != "test-version" {
+				t.Fatalf("writer = %q", value)
+			}
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(txn *badger.Txn) error { return txn.Set([]byte(schemaKey), []byte("999")) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureSchema(db, false); err == nil {
+		t.Fatal("future database schema was accepted")
+	}
+}
+
 func TestResetPackageIndex(t *testing.T) {
 	db := openTestDB(t)
-	entry := &metadata.PackageMetadata{Category: "sys-apps", Package: "portage", Version: "3.0"}
+	entry := &metadata.PackageMetadata{Repository: "gentoo", Category: "sys-apps", Package: "portage", Version: "3.0", SLOT: "0"}
 	if _, err := Ingest(db, sendEntries(t, entry)); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +101,12 @@ func TestResetPackageIndex(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("package remained after reset: %+v", got)
+	}
+	if records, err := QuerySlot(db, "0"); err != nil || len(records) != 0 {
+		t.Fatalf("slot index remained after reset: %d records, %v", len(records), err)
+	}
+	if records, err := QueryRepository(db, "gentoo"); err != nil || len(records) != 0 {
+		t.Fatalf("repository index remained after reset: %d records, %v", len(records), err)
 	}
 }
 
@@ -81,6 +131,9 @@ func TestIngestRoundTrip(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected count=1, got %d", count)
+	}
+	if records, err := CountRecords(db); err != nil || records != 1 {
+		t.Fatalf("CountRecords = %d, %v", records, err)
 	}
 
 	got, err := Query(db, "sys-devel/gcc")
@@ -155,7 +208,7 @@ func TestReconcileNoChangeAndRemoveMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Changed != 2 || len(seen) != 2 {
+	if stats.Changed != 3 || len(seen) != 3 {
 		t.Fatalf("first reconcile stats = %+v, seen=%d", stats, len(seen))
 	}
 	vim, err := Query(db, "app-editors/vim")
@@ -172,12 +225,153 @@ func TestReconcileNoChangeAndRemoveMissing(t *testing.T) {
 		t.Fatalf("no-change reconcile stats = %+v", stats)
 	}
 	removed, err := RemoveMissing(db, seen)
-	if err != nil || removed != 1 {
+	if err != nil || removed != 2 {
 		t.Fatalf("RemoveMissing = %d, %v", removed, err)
 	}
 	portage, err := Query(db, "sys-apps/portage")
 	if err != nil || portage != nil {
 		t.Fatalf("stale package remains: %+v, %v", portage, err)
+	}
+}
+
+func TestReconcilePreservesVersionsAndRepositories(t *testing.T) {
+	db := openTestDB(t)
+	entries := sendEntries(t,
+		&metadata.PackageMetadata{Repository: "gentoo", RepositoryPath: "/repos/gentoo", Category: "www-client", Package: "firefox", Version: "140.12.0", OverlayIndex: 0},
+		&metadata.PackageMetadata{Repository: "gentoo", RepositoryPath: "/repos/gentoo", Category: "www-client", Package: "firefox", Version: "152.0.6", OverlayIndex: 0},
+		&metadata.PackageMetadata{Repository: "local", RepositoryPath: "/repos/local", Category: "www-client", Package: "firefox", Version: "152.0.6", OverlayIndex: 1},
+	)
+	stats, seen, err := ReconcileWithProgress(db, entries, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Changed != 3 || len(seen) != 3 {
+		t.Fatalf("records collapsed during reconcile: stats=%+v seen=%d", stats, len(seen))
+	}
+	records, err := QueryVersions(db, "www-client/firefox")
+	if err != nil || len(records) != 3 {
+		t.Fatalf("QueryVersions returned %d records, err=%v", len(records), err)
+	}
+	preferred, err := Query(db, "www-client/firefox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preferred == nil || preferred.Version != "152.0.6" || preferred.Repository != "local" {
+		t.Fatalf("preferred record = %+v", preferred)
+	}
+	var keys []string
+	if err := QueryKeys(db, "pkg:", func(cp string) error { keys = append(keys, cp); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(keys, []string{"www-client/firefox"}) {
+		t.Fatalf("secondary CP keys = %v", keys)
+	}
+}
+
+func TestSecondaryIndexesTrackUpdatesAndRemoval(t *testing.T) {
+	db := openTestDB(t)
+	record := &metadata.PackageMetadata{Repository: "gentoo", RepositoryPath: "/repos/gentoo", Category: "dev-lang", Package: "python", Version: "3.12.4", SLOT: "3.12"}
+	_, seen, err := ReconcileWithProgress(db, sendEntries(t, record), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySlot, err := QuerySlot(db, "3.12")
+	if err != nil || len(bySlot) != 1 {
+		t.Fatalf("slot index = %d, %v", len(bySlot), err)
+	}
+	byRepo, err := QueryRepository(db, "gentoo")
+	if err != nil || len(byRepo) != 1 {
+		t.Fatalf("repo index = %d, %v", len(byRepo), err)
+	}
+
+	updated := *record
+	updated.SLOT = "3.13"
+	_, seen, err = ReconcileWithProgress(db, sendEntries(t, &updated), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSlot, err := QuerySlot(db, "3.12")
+	if err != nil || len(oldSlot) != 0 {
+		t.Fatalf("stale slot index = %d, %v", len(oldSlot), err)
+	}
+	newSlot, err := QuerySlot(db, "3.13")
+	if err != nil || len(newSlot) != 1 {
+		t.Fatalf("new slot index = %d, %v", len(newSlot), err)
+	}
+
+	if removed, err := RemoveMissing(db, map[string]struct{}{}); err != nil || removed != 1 {
+		t.Fatalf("RemoveMissing = %d, %v (seen=%d)", removed, err, len(seen))
+	}
+	newSlot, err = QuerySlot(db, "3.13")
+	if err != nil || len(newSlot) != 0 {
+		t.Fatalf("removed slot index = %d, %v", len(newSlot), err)
+	}
+	byRepo, err = QueryRepository(db, "gentoo")
+	if err != nil || len(byRepo) != 0 {
+		t.Fatalf("removed repo index = %d, %v", len(byRepo), err)
+	}
+}
+
+func TestVisibilityInputIndexes(t *testing.T) {
+	db := openTestDB(t)
+	record := &metadata.PackageMetadata{Repository: "gentoo", Category: "app-editors", Package: "vim", Version: "9.1", KEYWORDS: "amd64 ~arm64", LICENSE: "vim GPL-2", EAPI: "8"}
+	if _, _, err := ReconcileWithProgress(db, sendEntries(t, record), nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, query := range map[string]func(*badger.DB, string) ([]*metadata.PackageMetadata, error){"keyword": QueryKeyword, "license": QueryLicense, "eapi": QueryEAPI} {
+		value := map[string]string{"keyword": "~arm64", "license": "GPL-2", "eapi": "8"}[name]
+		records, err := query(db, value)
+		if err != nil || len(records) != 1 || records[0].CPV() != record.CPV() {
+			t.Fatalf("%s index = %+v, %v", name, records, err)
+		}
+	}
+}
+
+func TestFingerprintDetectsCacheDigestAndMtimeOnlyChanges(t *testing.T) {
+	db := openTestDB(t)
+	record := &metadata.PackageMetadata{Repository: "gentoo", Category: "app-misc", Package: "fingerprint", Version: "1.0", Unknown: map[string]string{"_md5_": "one", "_mtime_": "1"}}
+	stats, _, err := ReconcileWithProgress(db, sendEntries(t, record), nil)
+	if err != nil || stats.Changed != 1 {
+		t.Fatalf("first reconcile = %+v, %v", stats, err)
+	}
+	updated := *record
+	updated.Unknown = map[string]string{"_md5_": "two", "_mtime_": "2"}
+	stats, _, err = ReconcileWithProgress(db, sendEntries(t, &updated), nil)
+	if err != nil || stats.Changed != 1 || stats.Unchanged != 0 {
+		t.Fatalf("digest-only reconcile = %+v, %v", stats, err)
+	}
+}
+
+func TestReconcileIsIndependentOfConcurrentArrivalOrder(t *testing.T) {
+	entries := []*metadata.PackageMetadata{
+		{Repository: "gentoo", RepositoryPath: "/repos/gentoo", Category: "app-misc", Package: "order-test", Version: "1.0", DESCRIPTION: "alpha"},
+		{Repository: "gentoo", RepositoryPath: "/repos/gentoo", Category: "app-misc", Package: "order-test", Version: "1.0", DESCRIPTION: "beta"},
+		{Repository: "gentoo", RepositoryPath: "/repos/gentoo", Category: "app-misc", Package: "order-test", Version: "1.0", DESCRIPTION: "gamma"},
+	}
+	orders := [][]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}
+	var want [32]byte
+	for i, order := range orders {
+		db := openTestDB(t)
+		ordered := make([]*metadata.PackageMetadata, 0, len(order))
+		for _, index := range order {
+			ordered = append(ordered, entries[index])
+		}
+		if _, _, err := ReconcileWithProgress(db, sendEntries(t, ordered...), nil); err != nil {
+			t.Fatal(err)
+		}
+		got, err := Query(db, "app-misc/order-test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fingerprint, err := metadata.Fingerprint(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			want = fingerprint
+		} else if fingerprint != want {
+			t.Fatalf("arrival order %v selected a different record", order)
+		}
 	}
 }
 
@@ -412,6 +606,42 @@ func TestOpenDB_InvalidPath(t *testing.T) {
 	_, err := OpenDB("/dev/null/nonexistent/impossible/path/db")
 	if err == nil {
 		t.Error("expected error for invalid path")
+	}
+}
+
+func TestOpenReadOnlyDBDoesNotRequireWritableIndex(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "db")
+	db, err := OpenDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := MakeReadable(path); err != nil {
+		t.Fatal(err)
+	}
+	discard, err := os.Stat(filepath.Join(path, "DISCARD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := discard.Mode().Perm(); got != 0644 {
+		t.Fatalf("authoritative DISCARD mode = %04o, want 0644", got)
+	}
+	privateValueDir, err := prepareReadOnlyValueDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if privateValueDir == path {
+		t.Fatal("read-only value log must not use the authoritative index directory")
+	}
+	readOnly, err := OpenReadOnlyDB(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := readOnly.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

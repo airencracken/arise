@@ -12,6 +12,8 @@ import (
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/nameindex"
 	"github.com/airencracken/arise/internal/portage"
+	"github.com/airencracken/arise/internal/resolversnapshot"
+	"github.com/airencracken/arise/internal/snapshotstore"
 	"github.com/airencracken/arise/internal/walker"
 	"golang.org/x/term"
 )
@@ -21,6 +23,16 @@ func runIndex(dbPath, repoPath string) {
 		fmt.Fprintf(os.Stderr, "index: %v\n", err)
 		os.Exit(1)
 	}
+	candidate, err := snapshotstore.Prepare(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "index: prepare snapshot: %v\n", err)
+		os.Exit(1)
+	}
+	if err := candidate.SeedFromActive(); err != nil {
+		fmt.Fprintf(os.Stderr, "index: seed snapshot: %v\n", err)
+		os.Exit(1)
+	}
+	writePath := candidate.GenerationPath
 	cacheRoots := []string{filepath.Join(repoPath, "metadata", "md5-cache")}
 	seenRoots := map[string]bool{cacheRoots[0]: true}
 	if repos, readErr := portage.ReadReposConf(filepath.Join(*portageConfigRoot, "repos.conf")); readErr == nil {
@@ -29,19 +41,18 @@ func runIndex(dbPath, repoPath string) {
 			if repo.Location == "" || seenRoots[cacheRoot] {
 				continue
 			}
-			if info, statErr := os.Stat(cacheRoot); statErr == nil && info.IsDir() {
-				cacheRoots = append(cacheRoots, cacheRoot)
-				seenRoots[cacheRoot] = true
-			}
+			cacheRoots = append(cacheRoots, cacheRoot)
+			seenRoots[cacheRoot] = true
 		}
 	}
-	results, errs := walker.WalkCacheRoots(cacheRoots)
-	db, err := ingest.OpenDB(dbPath)
+	cacheResults, cacheErrs := walker.WalkCacheRoots(cacheRoots)
+	fallbackResults, fallbackErrs := walker.WalkUncachedEbuildRoots(cacheRoots)
+	results, errs := walker.MergeWalks(cacheResults, fallbackResults, cacheErrs, fallbackErrs)
+	db, err := ingest.OpenDB(writePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "index: open db: %v\n", err)
 		os.Exit(1)
 	}
-	defer db.Close()
 	started := time.Now()
 	interactive := term.IsTerminal(int(os.Stdout.Fd()))
 	fmt.Printf("%s Gentoo metadata\n", color.Bold("Indexing"))
@@ -96,9 +107,39 @@ func runIndex(dbPath, repoPath string) {
 		fmt.Fprintf(os.Stderr, "index: collect package names: %v\n", err)
 		os.Exit(1)
 	}
-	if err := nameindex.Write(nameindex.Path(dbPath), packageNames); err != nil {
+	if err := nameindex.Write(nameindex.Path(writePath), packageNames); err != nil {
 		fmt.Fprintf(os.Stderr, "index: write name index: %v\n", err)
 		os.Exit(1)
+	}
+	if err := resolversnapshot.Write(db, writePath, 0); err != nil {
+		fmt.Fprintf(os.Stderr, "index: write resolver snapshot: %v\n", err)
+		os.Exit(1)
+	}
+	recordCount, validationErr := ingest.CountRecords(db)
+	if validationErr != nil || recordCount != len(seen) {
+		fmt.Fprintf(os.Stderr, "index: validate candidate: records=%d expected=%d error=%v\n", recordCount, len(seen), validationErr)
+		os.Exit(1)
+	}
+	if err := db.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "index: close db: %v\n", err)
+		os.Exit(1)
+	}
+	if err := ingest.MakeReadable(writePath); err != nil {
+		fmt.Fprintf(os.Stderr, "index: publish readable database: %v\n", err)
+		os.Exit(1)
+	}
+	if isSystemDBPath(dbPath) {
+		if err := os.Chmod("/var/lib/arise", 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "index: publish database directory: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if err := candidate.Publish(); err != nil {
+		fmt.Fprintf(os.Stderr, "index: publish snapshot: %v\n", err)
+		os.Exit(1)
+	}
+	if err := candidate.Prune(2); err != nil {
+		fmt.Fprintf(os.Stderr, "index: prune old snapshots: %v\n", err)
 	}
 	fmt.Printf("%s Scanned %d entries in %s (%d changed, %d unchanged, %d removed)", color.Green("Done."), stats.Seen, time.Since(started).Round(time.Millisecond), stats.Changed, stats.Unchanged, stats.Removed)
 	if parseErrors > 0 {
@@ -124,8 +165,12 @@ func formatIndexCount(n int) string {
 }
 
 func indexPrivilegeError(euid int, dbPath string) error {
-	if euid != 0 && (dbPath == "/var/lib/arise" || strings.HasPrefix(dbPath, "/var/lib/arise/")) {
+	if euid != 0 && isSystemDBPath(dbPath) {
 		return fmt.Errorf("writing the system database at %s requires root; run su -c 'arise index' or select a user-owned path with -db", dbPath)
 	}
 	return nil
+}
+
+func isSystemDBPath(dbPath string) bool {
+	return dbPath == "/var/lib/arise" || strings.HasPrefix(dbPath, "/var/lib/arise/")
 }

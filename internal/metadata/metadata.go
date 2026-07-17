@@ -13,34 +13,36 @@ import (
 
 // PackageMetadata holds the parsed metadata for a single Gentoo package.
 type PackageMetadata struct {
-	Repository     string
-	RepositoryPath string
-	OverlayIndex   int
-	Category       string
-	Package        string
-	Version        string
-	DEPEND         string
-	RDEPEND        string
-	BDEPEND        string
-	IDEPEND        string
-	PDEPEND        string
-	SRC_URI        string
-	RESTRICT       string
-	PROPERTIES     string
-	SLOT           string
-	Subslot        string
-	KEYWORDS       string
-	IUSE           string
-	LICENSE        string
-	REQUIRED_USE   string
-	EAPI           string
-	DEFINED_PHASES string
-	DESCRIPTION    string
-	HOMEPAGE       string
-	INHERITED      string
-	_md5_          string
-	_mtime_        string
-	Unknown        map[string]string
+	Repository         string
+	RepositoryPath     string
+	RepositoryMasters  []string
+	RepositoryPriority int
+	OverlayIndex       int
+	Category           string
+	Package            string
+	Version            string
+	DEPEND             string
+	RDEPEND            string
+	BDEPEND            string
+	IDEPEND            string
+	PDEPEND            string
+	SRC_URI            string
+	RESTRICT           string
+	PROPERTIES         string
+	SLOT               string
+	Subslot            string
+	KEYWORDS           string
+	IUSE               string
+	LICENSE            string
+	REQUIRED_USE       string
+	EAPI               string
+	DEFINED_PHASES     string
+	DESCRIPTION        string
+	HOMEPAGE           string
+	INHERITED          string
+	_md5_              string
+	_mtime_            string
+	Unknown            map[string]string
 }
 
 // Fingerprint returns a deterministic digest of the fields persisted by gob.
@@ -59,6 +61,21 @@ func Fingerprint(m *PackageMetadata) ([sha256.Size]byte, error) {
 // Key returns the canonical category/package key (CP).
 func (m *PackageMetadata) Key() string {
 	return m.Category + "/" + m.Package
+}
+
+// CPV returns the canonical category/package-version identity.
+func (m *PackageMetadata) CPV() string {
+	if m.Version == "" {
+		return m.Key()
+	}
+	return m.Key() + "-" + m.Version
+}
+
+// RepositoryCPVKey identifies one repository record. RepositoryPath breaks a
+// tie between repositories with the same repo_name without making filesystem
+// location part of normal package matching.
+func (m *PackageMetadata) RepositoryCPVKey() string {
+	return m.Key() + "\x00" + m.Version + "\x00" + m.Repository + "\x00" + m.RepositoryPath
 }
 
 // DependAtoms returns DEPEND split into individual atom strings.
@@ -166,6 +183,12 @@ func ParseCacheEntry(cpv string, data []byte) (*PackageMetadata, error) {
 	}
 
 	return m, nil
+}
+
+// Complete reports whether metadata came from an authoritative evaluated
+// cache rather than static discovery of an uncached ebuild.
+func (m *PackageMetadata) Complete() bool {
+	return m != nil && m.Unknown["_arise_incomplete_metadata_"] != "true"
 }
 
 func (m *PackageMetadata) setField(key, value string) {
@@ -284,6 +307,12 @@ func parseCPV(cpv string) (cat, pkg, ver string, err error) {
 	}
 
 	return cat, pkg, ver, nil
+}
+
+// ParseCPV splits a canonical category/package-version string without parsing
+// any metadata payload.
+func ParseCPV(cpv string) (category, pkg, version string, err error) {
+	return parseCPV(cpv)
 }
 
 func splitLines(data []byte) []string {

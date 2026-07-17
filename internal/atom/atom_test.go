@@ -41,7 +41,7 @@ func TestParse_Basic(t *testing.T) {
 		},
 		{
 			input: "=sys-devel/gcc-12.2.0*",
-			want:  &Atom{Op: OpEq, Category: "sys-devel", Package: "gcc", Version: &Version{Raw: "12.2.0*", Numbers: []int{12, 2, 0}, Revision: -1}},
+			want:  &Atom{Op: OpEqGlob, Category: "sys-devel", Package: "gcc", Version: &Version{Raw: "12.2.0*", Numbers: []int{12, 2, 0}, Revision: -1}},
 		},
 		{
 			input: "~sys-devel/gcc-12.2.0",
@@ -118,6 +118,29 @@ func TestParse_Basic(t *testing.T) {
 	}
 }
 
+func TestParseEqualGlobAtom(t *testing.T) {
+	a, err := Parse("=dev-python/bitarray-3*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Op != OpEqGlob || a.Version == nil || a.Version.Raw != "3*" {
+		t.Fatalf("parsed atom = %+v", a)
+	}
+	if got := a.String(); got != "=dev-python/bitarray-3*" {
+		t.Fatalf("round trip = %q", got)
+	}
+}
+
+func TestParsePackageNameWithNumericWordSuffix(t *testing.T) {
+	a, err := Parse("media-fonts/font-adobe-100dpi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Package != "font-adobe-100dpi" || a.Version != nil {
+		t.Fatalf("numeric package-name suffix misparsed: %+v", a)
+	}
+}
+
 func TestParse_VersionSuffixes(t *testing.T) {
 	tests := []struct {
 		input   string
@@ -131,9 +154,9 @@ func TestParse_VersionSuffixes(t *testing.T) {
 		{"1.0_beta2", []int{1, 0}, []string{"_beta", "2"}, -1},
 		{"1.0_pre3", []int{1, 0}, []string{"_pre", "3"}, -1},
 		{"1.0_rc4", []int{1, 0}, []string{"_rc", "4"}, -1},
-		{"1.0_p5", []int{1, 0}, []string{"_p", "5"}, 5},
+		{"1.0_p5", []int{1, 0}, []string{"_p", "5"}, -1},
 		{"1.0-r1", []int{1, 0}, nil, 1},
-		{"1.0_alpha1_p2", []int{1, 0}, []string{"_alpha", "1", "_p", "2"}, 2},
+		{"1.0_alpha1_p2", []int{1, 0}, []string{"_alpha", "1", "_p", "2"}, -1},
 	}
 
 	for _, tt := range tests {
@@ -152,6 +175,19 @@ func TestParse_VersionSuffixes(t *testing.T) {
 				t.Errorf("revision: got %d, want %d", v.Revision, tt.rev)
 			}
 		})
+	}
+}
+
+func TestParseConditionalUseDependenciesWithDefaults(t *testing.T) {
+	parsed, err := Parse(">=sys-apps/dbus-1.5[abi_x86_32(-)?,abi_x86_64(+)?,!test=]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.String(); got != ">=sys-apps/dbus-1.5[abi_x86_32(-)?,abi_x86_64(+)?,!test=]" {
+		t.Fatalf("round trip = %q", got)
+	}
+	if len(parsed.UseFlags) != 3 || !parsed.UseFlags[0].Conditional || parsed.UseFlags[0].Default == nil || *parsed.UseFlags[0].Default {
+		t.Fatalf("parsed USE dependencies = %+v", parsed.UseFlags)
 	}
 }
 
@@ -195,6 +231,20 @@ func TestParse_VersionComparison(t *testing.T) {
 				t.Errorf("%s.Compare(%s) = %d, want %d", tt.a, tt.b, got, tt.cmp)
 			}
 		})
+	}
+}
+
+func TestPatchSuffixDoesNotReplacePackageRevision(t *testing.T) {
+	plain, err := ParseVersion("5.3_p9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := ParseVersion("5.3_p9-r2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Revision != -1 || r2.Revision != 2 || plain.Compare(r2) >= 0 {
+		t.Fatalf("plain=%+v r2=%+v compare=%d", plain, r2, plain.Compare(r2))
 	}
 }
 

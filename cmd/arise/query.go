@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/ingest"
@@ -10,6 +11,11 @@ import (
 )
 
 func runQuery(cmdArgs []string, dbPath string) {
+	allVersions := false
+	if len(cmdArgs) > 0 && cmdArgs[0] == "--versions" {
+		allVersions = true
+		cmdArgs = cmdArgs[1:]
+	}
 	if len(cmdArgs) == 0 {
 		fmt.Fprintf(os.Stderr, "query: missing package atom argument\n")
 		os.Exit(1)
@@ -20,13 +26,33 @@ func runQuery(cmdArgs []string, dbPath string) {
 		os.Exit(1)
 	}
 
-	db, err := ingest.OpenDB(dbPath)
+	db, err := ingest.OpenReadOnlyDB(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "query: open db: %v\n", err)
 		os.Exit(1)
 	}
 	defer db.Close()
 
+	if allVersions {
+		records, err := ingest.QueryVersions(db, a.Key())
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "query: %v\n", err)
+			os.Exit(1)
+		}
+		sort.Slice(records, func(i, j int) bool {
+			if records[i].Version != records[j].Version {
+				return records[i].Version < records[j].Version
+			}
+			return records[i].Repository < records[j].Repository
+		})
+		for _, m := range records {
+			if a.Version != nil && m.Version != a.Version.Raw {
+				continue
+			}
+			fmt.Printf("%s::%s\n", m.CPV(), m.Repository)
+		}
+		return
+	}
 	m, err := ingest.Query(db, a.Key())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "query: %v\n", err)

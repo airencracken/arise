@@ -16,14 +16,14 @@ func runDepclean(dbPath, repoDir string) {
 		fmt.Println("(pretend mode: no actions will be performed)")
 	}
 
-	db, err := ingest.OpenDB(dbPath)
+	db, err := ingest.OpenReadOnlyDB(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "depclean: open db: %v\n", err)
 		os.Exit(1)
 	}
 	defer db.Close()
 
-	g, err := graph.BuildParallel(db, repoDir, 0)
+	g, err := graph.BuildFromState(db, *vdbDir, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "depclean: build graph: %v\n", err)
 		os.Exit(1)
@@ -75,14 +75,14 @@ func runPrune(dbPath, repoDir string) {
 		fmt.Println("(pretend mode: no actions will be performed)")
 	}
 
-	db, err := ingest.OpenDB(dbPath)
+	db, err := ingest.OpenReadOnlyDB(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "prune: open db: %v\n", err)
 		os.Exit(1)
 	}
 	defer db.Close()
 
-	g, err := graph.BuildParallel(db, repoDir, 0)
+	g, err := graph.BuildFromState(db, *vdbDir, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "prune: build graph: %v\n", err)
 		os.Exit(1)
