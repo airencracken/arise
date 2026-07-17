@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -81,7 +82,16 @@ type ResolveResult struct {
 	BacktrackLevel  int         // how many backtrack levels were used
 	Metrics         ResolveMetrics
 	ConflictDetails []ConflictDetail
+	Verified        bool   // final installed-state overlay passed whole-state verification
+	Verification    string // verified, failed, skipped-nodeps, or incomplete
 }
+
+const (
+	VerificationVerified      = "verified"
+	VerificationFailed        = "failed"
+	VerificationSkippedNoDeps = "skipped-nodeps"
+	VerificationIncomplete    = "incomplete"
+)
 
 type ConflictDetail struct {
 	Kind         string                `json:"kind"`
@@ -170,15 +180,16 @@ type VersionInfo struct {
 
 // DepEdge represents a dependency relationship between packages.
 type DepEdge struct {
-	From     *PkgNode
-	To       *PkgNode
-	Type     DepType
-	Domain   DependencyDomain // filesystem root in which this dependency is satisfied
-	DepAtom  *atom.Atom       // the atom as specified in the dep string
-	UseCond  string           // USE flag condition (empty = always)
-	Block    bool             // is this a blocker?
-	AnyOf    []*DepAtom       // if non-nil, this is an any-of group
-	UseFlags map[string]bool  // effective USE state of the selected parent version
+	From        *PkgNode
+	To          *PkgNode
+	Type        DepType
+	Domain      DependencyDomain // filesystem root in which this dependency is satisfied
+	DepAtom     *atom.Atom       // the atom as specified in the dep string
+	UseCond     string           // USE flag condition (empty = always)
+	Block       bool             // is this a blocker?
+	StrongBlock bool             // !!atom: blocked package must be removed before merge
+	AnyOf       []*DepAtom       // if non-nil, this is an any-of group
+	UseFlags    map[string]bool  // effective USE state of the selected parent version
 }
 
 // DependencyDomain identifies the Portage root associated with a dependency
@@ -218,10 +229,11 @@ func dependencyDomain(depType DepType) DependencyDomain {
 
 // DepAtom holds a dependency atom and metadata.
 type DepAtom struct {
-	Atom    *atom.Atom
-	UseCond string
-	Block   bool
-	AnyOf   []*DepAtom
+	Atom        *atom.Atom
+	UseCond     string
+	Block       bool
+	StrongBlock bool
+	AnyOf       []*DepAtom
 }
 
 // WorldSet represents the set of explicitly requested packages.
@@ -343,6 +355,13 @@ func versionActionKey(cp string, version *VersionInfo) string {
 		return cp
 	}
 	return cp + "-" + versionRepositoryKey(version.Version.Raw, version.Repository)
+}
+
+func actionVersionKey(action *PkgAction) string {
+	if action == nil || action.Atom == nil || action.Atom.Version == nil {
+		return ""
+	}
+	return action.Atom.CP() + "-" + versionRepositoryKey(action.Atom.Version.Raw, action.Repository)
 }
 
 // AddDep adds a dependency edge between packages.
@@ -539,6 +558,8 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 		toUninstall:      make(map[string]*PkgAction),
 		conflicts:        []string{},
 		seenDeps:         make(map[string]bool),
+		activeDeps:       make(map[string]int),
+		cycleSeen:        make(map[string]bool),
 		selectedCPs:      make(map[string]bool),
 		explicitTargets:  make(map[string]bool),
 		constraints:      make(map[string][]*atom.Atom),
@@ -692,6 +713,13 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 		BacktrackLevel:  config.Backtrack - r.backtrackRemaining,
 		Metrics:         r.metrics,
 		ConflictDetails: r.conflictDetails,
+		Verified:        len(r.conflicts) == 0,
+		Verification: func() string {
+			if len(r.conflicts) == 0 {
+				return VerificationVerified
+			}
+			return VerificationFailed
+		}(),
 	}, nil
 }
 
@@ -707,6 +735,9 @@ type resolver struct {
 	conflicts          []string
 	warnings           []string
 	seenDeps           map[string]bool
+	activeDeps         map[string]int
+	dependencyPath     []string
+	cycleSeen          map[string]bool
 	selectedCPs        map[string]bool // final target/dependency closure
 	explicitTargets    map[string]bool // atoms named directly, excluding expanded sets
 	backtrackRemaining int
@@ -1207,9 +1238,16 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	if vi.License != "" {
 		var acceptLicenses []string
 		if r.portageConfig != nil {
-			acceptLicenses = r.portageConfig.ACCEPT_LICENSE
+			acceptLicenses = append([]string(nil), r.portageConfig.ACCEPT_LICENSE...)
+			cpv := cp
+			if vi.Version != nil {
+				cpv += "-" + vi.Version.Raw
+			}
+			acceptLicenses = append(acceptLicenses,
+				r.portageConfig.PackageLicensesFor(cpv, vi.Slot, vi.Repository)...)
+			acceptLicenses = portage.ExpandLicenseGroups(acceptLicenses, r.portageConfig.LicenseGroups)
 		}
-		if !LicenseAccepted(vi.License, acceptLicenses) {
+		if !LicenseExpressionAccepted(vi.License, acceptLicenses, r.candidateUseFlags(node, vi)) {
 			msg := fmt.Sprintf("license %s not accepted for %s", vi.License, cp)
 			r.conflicts = append(r.conflicts, msg)
 			if r.config.KeepGoing {
@@ -1227,7 +1265,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	allowUpdate := (r.config.Update || (depth == 0 && r.explicitTargets[cp])) && (depth == 0 || r.config.Deep)
 
 	// check package.provided — treat as already installed
-	if r.isPackageProvided(cp) {
+	if r.isPackageProvided(target) {
 		if !r.config.Update && !r.config.Reinstall {
 			if installed != nil && !r.config.NoDeps && r.config.Deep {
 				return r.processDeps(node, installed, target.String(), depth+1)
@@ -1252,10 +1290,10 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			if allowUpdate && vi != nil && vi.Version != nil && installed.Version != nil && vi.Version.Compare(installed.Version) > 0 {
 				needInstall = true
 			}
-			if r.config.NewUse {
-				needInstall = true // reinstall to pick up new USE
+			if r.config.NewUse && useFlagsChanged(installedFlags(installed), r.candidateUseFlags(node, vi)) {
+				needInstall = true
 			}
-			if r.config.ChangedUse && useFlagsChanged(installedFlags(installed), r.candidateUseFlags(node, vi)) {
+			if r.config.ChangedUse && effectiveUseChanged(installedFlags(installed), r.candidateUseFlags(node, vi)) {
 				needInstall = true
 			}
 			if r.config.ChangedDeps && depsChanged(installed, vi) {
@@ -1279,14 +1317,11 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			action = "reinstall"
 		} else if allowUpdate && vi.Version != nil && installed.Version != nil && vi.Version.Compare(installed.Version) > 0 {
 			action = "update"
-		} else if r.config.NewUse {
+		} else if r.config.NewUse && useFlagsChanged(installedFlags(installed), r.candidateUseFlags(node, vi)) {
 			action = "reinstall"
-			if useFlagsChanged(installedFlags(installed), r.candidateUseFlags(node, vi)) {
-				action = "update"
-			}
 		} else if r.config.ChangedUse {
-			if useFlagsChanged(installedFlags(installed), r.candidateUseFlags(node, vi)) {
-				action = "update"
+			if effectiveUseChanged(installedFlags(installed), r.candidateUseFlags(node, vi)) {
+				action = "reinstall"
 			}
 		} else if r.config.ChangedDeps && depsChanged(installed, vi) {
 			action = "reinstall"
@@ -1370,14 +1405,36 @@ func (r *resolver) selectMergeType(node *PkgNode, version *VersionInfo) (string,
 }
 
 func (r *resolver) processDeps(node *PkgNode, vi *VersionInfo, parent string, depth int) error {
+	if r.activeDeps == nil {
+		r.activeDeps = make(map[string]int)
+	}
+	if r.cycleSeen == nil {
+		r.cycleSeen = make(map[string]bool)
+	}
 	depKey := node.Atom.CP()
 	if vi != nil && vi.Version != nil {
 		depKey += "-" + vi.Version.Raw + ":" + vi.Slot + "::" + vi.Repository
+	}
+	if start, active := r.activeDeps[depKey]; active {
+		cycle := append([]string(nil), r.dependencyPath[start:]...)
+		cycle = append(cycle, depKey)
+		message := "circular dependency: " + strings.Join(cycle, " -> ")
+		if !r.cycleSeen[message] {
+			r.cycleSeen[message] = true
+			r.warnings = append(r.warnings, message)
+		}
+		return nil
 	}
 	if r.seenDeps[depKey] {
 		return nil
 	}
 	r.setSeenDep(depKey, true)
+	r.activeDeps[depKey] = len(r.dependencyPath)
+	r.dependencyPath = append(r.dependencyPath, depKey)
+	defer func() {
+		delete(r.activeDeps, depKey)
+		r.dependencyPath = r.dependencyPath[:len(r.dependencyPath)-1]
+	}()
 
 	edges, err := r.dependenciesForVersion(node, vi)
 	if err != nil {
@@ -1495,13 +1552,13 @@ func (r *resolver) dependenciesForVersion(node *PkgNode, vi *VersionInfo) ([]*De
 					// case each option is evaluated independently below.
 					group.UseCond = ""
 				}
-				group.AnyOf = append(group.AnyOf, &DepAtom{Atom: a, UseCond: meta.Condition, Block: meta.Block || meta.WeakBlock})
+				group.AnyOf = append(group.AnyOf, &DepAtom{Atom: a, UseCond: meta.Condition, Block: meta.Block || meta.WeakBlock, StrongBlock: meta.WeakBlock})
 				continue
 			}
 			edges = append(edges, &DepEdge{
 				From: node, To: r.graph.Packages[a.CP()], Type: d.typ, Domain: dependencyDomain(d.typ),
 				DepAtom: a, UseCond: meta.Condition,
-				Block: meta.Block || meta.WeakBlock, UseFlags: flags,
+				Block: meta.Block || meta.WeakBlock, StrongBlock: meta.WeakBlock, UseFlags: flags,
 			})
 		}
 	}
@@ -1661,7 +1718,19 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 		// usable runtime closure even without --deep. processEdge still applies
 		// --with-bdeps to the installed tool's own historical BDEPEND, so this
 		// does not turn --with-bdeps=n into an unrestricted deep traversal.
-		if r.config.Deep || edge.Type == DepTypeBuild {
+		if r.config.Deep {
+			// Deep update traversal must promote a satisfied dependency when a
+			// newer matching candidate exists. Otherwise retain the installed
+			// dependency expression and constraint behavior unchanged.
+			if r.config.Update {
+				best := r.findMatchingVersion(toNode, depAtom)
+				if best != nil && best.Version != nil && installed.Version != nil && best.Version.Compare(installed.Version) > 0 {
+					return r.planPackage(depAtom, fmt.Sprintf("dependency of %s", edge.From.Atom.CP()), depth)
+				}
+			}
+			return r.processDeps(toNode, installed, depAtom.String(), depth+1)
+		}
+		if edge.Type == DepTypeBuild {
 			return r.processDeps(toNode, installed, depAtom.String(), depth+1)
 		}
 		return nil
@@ -1981,19 +2050,28 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 		return nil // nothing to block
 	}
 
-	installed := toNode.GetInstalledVersion()
-	if installed == nil {
-		return nil // not installed, nothing to block
+	var blocked []*VersionInfo
+	for _, installed := range toNode.Versions {
+		if installed == nil || !installed.Installed {
+			continue
+		}
+		if edge.DepAtom == nil || versionAtomMatches(toNode.Atom, edge.DepAtom, installed, installedFlags(installed)) {
+			blocked = append(blocked, installed)
+		}
 	}
-	// Versioned blockers only apply when the installed instance matches the
-	// blocker atom. For example, <sys-apps/util-linux-2.13 must not conflict
-	// with a current util-linux installation.
-	if edge.DepAtom != nil && !versionAtomMatches(toNode.Atom, edge.DepAtom, installed, installedFlags(installed)) {
+	sort.Slice(blocked, func(i, j int) bool {
+		if blocked[i].Slot != blocked[j].Slot {
+			return blocked[i].Slot < blocked[j].Slot
+		}
+		return blocked[i].Version.Compare(blocked[j].Version) < 0
+	})
+	if len(blocked) == 0 {
 		return nil
 	}
 	// A blocker against the installed version can be resolved by a coordinated
 	// upgrade when the selected replacement no longer matches the blocker.
-	if r.config.Update && edge.DepAtom != nil {
+	if r.config.Update && edge.DepAtom != nil && len(blocked) == 1 {
+		installed := blocked[0]
 		best := r.findMatchingVersion(toNode, toNode.Atom)
 		if best != nil && best.Version != nil && installed.Version != nil && best.Version.Compare(installed.Version) > 0 &&
 			!versionAtomMatches(toNode.Atom, edge.DepAtom, best, r.candidateUseFlags(toNode, best)) {
@@ -2039,17 +2117,26 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 		return fmt.Errorf("%s", msg)
 	}
 
-	// uninstall the blocked package
-	cpv := cp
-	if installed.Version != nil && installed.Version.Raw != "" {
-		cpv = cp + "-" + installed.Version.Raw
-	}
-	if _, exists := r.toUninstall[cpv]; !exists {
-		r.setUninstall(cpv, &PkgAction{
-			Atom:   toNode.Atom,
-			Action: "uninstall",
-			Reason: fmt.Sprintf("blocked by %s", blocker),
-		})
+	// Uninstall every installed instance matched by the blocker atom. Parallel
+	// slots not matched by a version/slot-qualified blocker remain in the final
+	// state and may continue satisfying other dependencies.
+	for _, installed := range blocked {
+		cpv := cp
+		if installed.Version != nil && installed.Version.Raw != "" {
+			cpv = cp + "-" + versionRepositoryKey(installed.Version.Raw, installed.Repository)
+		}
+		if _, exists := r.toUninstall[cpv]; !exists {
+			strength := "weak"
+			if edge.StrongBlock {
+				strength = "strong; remove before merge"
+			}
+			r.setUninstall(cpv, &PkgAction{
+				Atom:   bestVersionAtom(toNode.Atom, installed),
+				Action: "uninstall",
+				Reason: fmt.Sprintf("%s blocker from %s", strength, blocker),
+				Slot:   installed.Slot, Subslot: installed.Subslot, Repository: installed.Repository,
+			})
+		}
 	}
 
 	return nil
@@ -2146,11 +2233,13 @@ func (r *resolver) verifyPlannedState() {
 	// this set; other newly produced conflicts belong to that intermediate plan.
 	persistent := append([]string(nil), r.conflicts...)
 	persistentSeen := make(map[string]bool, len(persistent))
+	baseDetailsLen := len(r.conflictDetails)
 	for _, conflict := range persistent {
 		persistentSeen[conflict] = true
 	}
 	for attempt := 0; attempt < 100; attempt++ {
 		r.conflicts = append(r.conflicts[:0], persistent...)
+		r.conflictDetails = r.conflictDetails[:baseDetailsLen]
 		if !r.verifyPlannedStatePass() {
 			return
 		}
@@ -2167,6 +2256,7 @@ func (r *resolver) verifyPlannedState() {
 		}
 	}
 	r.conflicts = append(persistent, "post-solve verification: complete-graph repair did not converge")
+	r.conflictDetails = append(r.conflictDetails[:baseDetailsLen], ConflictDetail{Kind: "post-solve-verification", Message: "post-solve verification: complete-graph repair did not converge"})
 }
 
 // Only requirements that need user policy changes survive verification repair
@@ -2181,6 +2271,7 @@ func persistentRepairConflict(conflict string) bool {
 func (r *resolver) verifyPlannedStatePass() bool {
 	changed := make(map[string]bool)
 	removed := make(map[string]bool)
+	removedNames := make(map[string]bool)
 	for _, action := range r.toInstall {
 		if action.Atom != nil {
 			changed[action.Atom.CP()] = true
@@ -2188,11 +2279,18 @@ func (r *resolver) verifyPlannedStatePass() bool {
 	}
 	for _, action := range r.toUninstall {
 		if action.Atom != nil {
-			removed[action.Atom.CP()] = true
+			removed[actionVersionKey(action)] = true
+			removedNames[action.Atom.CP()] = true
 		}
 	}
-	affectedNames := make(map[string]bool, len(changed))
+	affectedNames := make(map[string]bool, len(changed)+len(removedNames))
 	for cp := range changed {
+		affectedNames[cp] = true
+		if provided := r.graph.Providers[cp]; provided != "" {
+			affectedNames[provided] = true
+		}
+	}
+	for cp := range removedNames {
 		affectedNames[cp] = true
 		if provided := r.graph.Providers[cp]; provided != "" {
 			affectedNames[provided] = true
@@ -2200,13 +2298,19 @@ func (r *resolver) verifyPlannedStatePass() bool {
 	}
 	seen := make(map[string]bool)
 	repairAdded := false
-	addConflictKey := func(key, message string) {
+	addConflictKey := func(key, message string) bool {
 		if !seen[key] {
 			seen[key] = true
 			r.conflicts = append(r.conflicts, message)
+			return true
+		}
+		return false
+	}
+	addConflict := func(message string) {
+		if addConflictKey(message, message) {
+			r.conflictDetails = append(r.conflictDetails, ConflictDetail{Kind: "post-solve-verification", Message: message})
 		}
 	}
-	addConflict := func(message string) { addConflictKey(message, message) }
 	addIssue := func(node *PkgNode, vi *VersionInfo, parentChanging bool, message string) {
 		if r.config.CompleteGraph && !parentChanging {
 			added, err := r.scheduleVerificationRebuild(node, vi, message)
@@ -2239,10 +2343,19 @@ func (r *resolver) verifyPlannedStatePass() bool {
 				}
 				return
 			}
-			addConflictKey("installed-only:"+cp, "post-solve verification: "+diagnostic)
+			message := "post-solve verification: " + diagnostic
+			if addConflictKey("installed-only:"+cp, message) {
+				r.conflictDetails = append(r.conflictDetails, ConflictDetail{Kind: "post-solve-verification", Package: cp, Message: message})
+			}
 			return
 		}
-		addConflict(message)
+		if addConflictKey(message, message) {
+			packageName := ""
+			if node != nil && node.Atom != nil {
+				packageName = node.Atom.CP()
+			}
+			r.conflictDetails = append(r.conflictDetails, ConflictDetail{Kind: "post-solve-verification", Package: packageName, Message: message})
+		}
 	}
 	repairDependency := func(dep *atom.Atom, parentCP string) bool {
 		if !r.config.CompleteGraph || dep == nil {
@@ -2282,7 +2395,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 			// are depclean territory and must not be rebuilt into the transaction.
 			continue
 		}
-		versions := r.finalVersions(node, removed[cp])
+		versions := r.finalVersions(node, removed)
 		if len(versions) == 0 {
 			continue
 		}
@@ -2334,7 +2447,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 				if dep == nil {
 					continue
 				}
-				if !parentChanging && !changed[dep.CP()] && !removed[dep.CP()] {
+				if !parentChanging && !changed[dep.CP()] && !removedNames[dep.CP()] {
 					continue
 				}
 				if edge.Block {
@@ -2410,13 +2523,13 @@ func versionDependenciesMention(vi *VersionInfo, names map[string]bool) bool {
 	return false
 }
 
-func (r *resolver) finalVersions(node *PkgNode, removed bool) []*VersionInfo {
-	if node == nil || removed {
+func (r *resolver) finalVersions(node *PkgNode, removed map[string]bool) []*VersionInfo {
+	if node == nil {
 		return nil
 	}
 	bySlot := make(map[string]*VersionInfo)
 	for _, vi := range node.Versions {
-		if vi != nil && vi.Installed {
+		if vi != nil && vi.Installed && !removed[versionActionKey(node.Atom.CP(), vi)] {
 			bySlot[vi.Slot] = vi
 		}
 	}
@@ -2442,12 +2555,12 @@ func (r *resolver) finalVersions(node *PkgNode, removed bool) []*VersionInfo {
 }
 
 func (r *resolver) finalAtomSatisfied(dep *atom.Atom, removed map[string]bool) bool {
-	if dep == nil || removed[dep.CP()] {
+	if dep == nil {
 		return false
 	}
 	node := r.graph.Packages[dep.CP()]
 	if node != nil {
-		for _, vi := range r.finalVersions(node, false) {
+		for _, vi := range r.finalVersions(node, removed) {
 			flags := installedFlags(vi)
 			if r.packageVersionScheduled(node, vi) {
 				flags = r.candidateUseFlags(node, vi)
@@ -2460,7 +2573,7 @@ func (r *resolver) finalAtomSatisfied(dep *atom.Atom, removed map[string]bool) b
 	for _, providerCP := range r.graph.ProvidersOf[dep.CP()] {
 		provider := r.graph.Packages[providerCP]
 		providerDep := providerConstraint(dep, provider)
-		for _, vi := range r.finalVersions(provider, removed[providerCP]) {
+		for _, vi := range r.finalVersions(provider, removed) {
 			flags := installedFlags(vi)
 			if r.packageVersionScheduled(provider, vi) {
 				flags = r.candidateUseFlags(provider, vi)
@@ -3051,6 +3164,20 @@ func useFlagsChanged(old, new map[string]bool) bool {
 	return false
 }
 
+func effectiveUseChanged(old, new map[string]bool) bool {
+	for flag, enabled := range old {
+		if enabled && !new[flag] {
+			return true
+		}
+	}
+	for flag, enabled := range new {
+		if enabled && !old[flag] {
+			return true
+		}
+	}
+	return false
+}
+
 func installedFlags(version *VersionInfo) map[string]bool {
 	if version == nil {
 		return nil
@@ -3072,16 +3199,20 @@ func (r *resolver) getUseFlagsFor(cpv, slot, repo string) map[string]bool {
 	return r.portageConfig.EffectiveUseFor(cpv, slot, repo)
 }
 
-func (r *resolver) isPackageProvided(cp string) bool {
-	if r.portageConfig == nil {
+func (r *resolver) isPackageProvided(requirement *atom.Atom) bool {
+	if r.portageConfig == nil || requirement == nil {
 		return false
 	}
 	for _, entry := range r.portageConfig.PackageProvided {
-		a, err := atom.Parse(entry)
+		provided, err := atom.Parse(entry)
 		if err != nil {
 			continue
 		}
-		if a.CP() == cp {
+		if provided.CP() != requirement.CP() || provided.Version == nil {
+			continue
+		}
+		cpv := provided.CP() + "-" + provided.Version.Raw
+		if portage.PackageAtomMatches(requirement.String(), cpv, provided.Slot, provided.Repo) {
 			return true
 		}
 	}
@@ -3142,30 +3273,52 @@ func (r *resolver) versionKeywordAccepted(node *PkgNode, vi *VersionInfo) bool {
 }
 
 func (r *resolver) versionKeywordAcceptedUncached(node *PkgNode, vi *VersionInfo) bool {
-	if r.keywordAccepted(vi.Keywords) {
-		return true
-	}
 	if r.portageConfig == nil || node == nil || vi == nil || vi.Version == nil {
-		return false
+		return r.keywordAccepted(vi.Keywords)
 	}
 	cpv := node.Atom.CP() + "-" + vi.Version.Raw
-	for rule, accepted := range r.portageConfig.PackageAcceptKeywords {
-		if !portage.PackageAtomMatches(rule, cpv, vi.Slot, vi.Repository) {
+	arch := r.portageConfig.MakeConf["ARCH"]
+	if arch == "" {
+		arch = gentooRuntimeArch(runtime.GOARCH)
+	}
+	return r.portageConfig.KeywordAcceptedFor(cpv, vi.Slot, vi.Repository, vi.Keywords, arch)
+}
+
+func applyKeywordChanges(previous, changes []string) []string {
+	state := append([]string(nil), previous...)
+	for _, change := range changes {
+		if change == "-*" {
+			state = nil
 			continue
 		}
-		values := strings.Fields(accepted)
-		if len(values) == 0 {
-			arch := r.portageConfig.MakeConf["ARCH"]
-			if arch == "" {
-				arch = gentooRuntimeArch(runtime.GOARCH)
+		remove := strings.TrimPrefix(change, "-")
+		filtered := state[:0]
+		for _, current := range state {
+			if current != remove {
+				filtered = append(filtered, current)
 			}
-			values = []string{"~" + arch}
 		}
-		for _, packageKeyword := range values {
-			for _, versionKeyword := range strings.Fields(vi.Keywords) {
-				if packageKeyword == "**" || packageKeyword == versionKeyword {
-					return true
-				}
+		state = filtered
+		if !strings.HasPrefix(change, "-") {
+			state = append(state, change)
+		}
+	}
+	return state
+}
+
+func keywordSetAccepts(keywords string, accepted []string, arch string) bool {
+	for _, allow := range accepted {
+		if allow == "**" {
+			return true
+		}
+		for _, keyword := range strings.Fields(keywords) {
+			if strings.HasPrefix(keyword, "-") {
+				continue
+			}
+			if allow == keyword || allow == "*" && !strings.HasPrefix(keyword, "~") ||
+				allow == "~*" && strings.HasPrefix(keyword, "~") ||
+				allow == arch && keyword == arch {
+				return true
 			}
 		}
 	}
@@ -3289,7 +3442,18 @@ func (r *resolver) candidateUseFlags(node *PkgNode, vi *VersionInfo) map[string]
 			cpv += "-" + vi.Version.Raw
 		}
 		if r.portageConfig != nil {
-			for name, enabled := range r.portageConfig.EffectiveUseFor(cpv, vi.Slot, vi.Repository) {
+			arch := r.portageConfig.MakeConf["ARCH"]
+			if arch == "" {
+				arch = gentooRuntimeArch(runtime.GOARCH)
+			}
+			stable := false
+			for _, keyword := range strings.Fields(vi.Keywords) {
+				if keyword == arch {
+					stable = true
+					break
+				}
+			}
+			for name, enabled := range r.portageConfig.EffectiveUseForStability(cpv, vi.Slot, vi.Repository, stable) {
 				// Repository versions carry the declared IUSE as keys. Project
 				// configuration onto that package-local domain instead of leaking
 				// every global USE/USE_EXPAND flag into actions and dependency
@@ -3467,6 +3631,10 @@ func (r *resolver) buildResult() (*ResolveResult, error) {
 	if !r.config.UnsortedDisplay {
 		install = SortByDeps(install, r.graph)
 	}
+	verification := VerificationIncomplete
+	if r.config.NoDeps {
+		verification = VerificationSkippedNoDeps
+	}
 	return &ResolveResult{
 		Install:         install,
 		Uninstall:       mapToSlice(r.toUninstall),
@@ -3475,6 +3643,7 @@ func (r *resolver) buildResult() (*ResolveResult, error) {
 		BacktrackLevel:  r.config.Backtrack - r.backtrackRemaining,
 		Metrics:         r.metrics,
 		ConflictDetails: r.conflictDetails,
+		Verification:    verification,
 	}, nil
 }
 
@@ -3716,6 +3885,18 @@ func checkRequiredUseNode(node depstring.DepNode, useFlags map[string]bool) erro
 		}
 		return nil
 
+	case *depstring.AtMostOneOfGroup:
+		satisfied := 0
+		for _, child := range n.Children {
+			if checkRequiredUseNode(child, useFlags) == nil {
+				satisfied++
+			}
+		}
+		if satisfied > 1 {
+			return fmt.Errorf("resolve: at most one of the alternative USE requirements may be selected, but %d were found", satisfied)
+		}
+		return nil
+
 	case *depstring.UseConditional:
 		flag := n.Flag
 		negate := false
@@ -3759,60 +3940,95 @@ func LicenseAccepted(license string, acceptLicenses []string) bool {
 	if len(acceptLicenses) == 0 {
 		return true
 	}
-
 	acceptAll := false
 	eulaAllowed := false
-	acceptSet := make(map[string]bool)
-	rejectSet := make(map[string]bool)
-
-	for _, al := range acceptLicenses {
+	explicit := make(map[string]bool)
+	for _, change := range acceptLicenses {
 		switch {
-		case al == "*":
+		case change == "*":
 			acceptAll = true
-		case al == "-*":
+		case change == "-*":
 			acceptAll = false
-		case al == "@EULA":
+		case change == "@EULA":
 			eulaAllowed = true
-		case al == "-@EULA":
+		case change == "-@EULA":
 			eulaAllowed = false
-		case strings.HasPrefix(al, "-"):
-			rejectSet[al[1:]] = true
+		case strings.HasPrefix(change, "-"):
+			explicit[strings.TrimPrefix(change, "-")] = false
 		default:
-			acceptSet[al] = true
+			explicit[change] = true
 		}
 	}
-
-	licenses := strings.Fields(license)
-	for _, lic := range licenses {
-		lic = strings.TrimSpace(lic)
-		if lic == "" {
+	for _, candidate := range strings.Fields(license) {
+		if accepted, found := explicit[candidate]; found {
+			if accepted {
+				return true
+			}
 			continue
 		}
-
-		if rejectSet[lic] {
-			return false
+		if strings.Contains(strings.ToUpper(candidate), "EULA") {
+			if eulaAllowed {
+				return true
+			}
+			continue
 		}
-
-		if acceptSet[lic] {
-			return true
-		}
-
-		isEula := strings.Contains(strings.ToUpper(lic), "EULA")
-
-		if isEula && !eulaAllowed {
-			return false
-		}
-
-		if isEula && eulaAllowed {
+		if acceptAll {
 			return true
 		}
 	}
+	return false
+}
 
-	if acceptAll {
+// LicenseExpressionAccepted evaluates the boolean structure of LICENSE.
+// Whitespace is conjunction, || groups are alternatives, and USE conditionals
+// include their body only when active for the selected package version.
+func LicenseExpressionAccepted(expression string, acceptLicenses []string, useFlags map[string]bool) bool {
+	if strings.TrimSpace(expression) == "" {
 		return true
 	}
-
-	return false
+	node, err := depstring.Parse(expression)
+	if err != nil {
+		return false
+	}
+	var accepted func(depstring.DepNode) bool
+	accepted = func(current depstring.DepNode) bool {
+		switch n := current.(type) {
+		case *depstring.AtomDep:
+			return LicenseAccepted(n.Atom, acceptLicenses)
+		case *depstring.AllOfGroup:
+			for _, child := range n.Children {
+				if !accepted(child) {
+					return false
+				}
+			}
+			return true
+		case *depstring.AnyOfGroup:
+			for _, child := range n.Children {
+				if accepted(child) {
+					return true
+				}
+			}
+			return false
+		case *depstring.UseConditional:
+			flag := strings.TrimPrefix(n.Flag, "!")
+			enabled := useFlags[flag]
+			if strings.HasPrefix(n.Flag, "!") {
+				enabled = !enabled
+			}
+			if !enabled {
+				return true
+			}
+			for _, child := range n.Children {
+				if !accepted(child) {
+					return false
+				}
+			}
+			return true
+		default:
+			return false
+		}
+	}
+	return accepted(node)
 }
 
 // ---------------------------------------------------------------------------
@@ -3973,19 +4189,21 @@ func SkipFirstResume(path string) error {
 // Changed deps detection (--changed-deps)
 // ---------------------------------------------------------------------------
 
-// depsChanged checks if the DEPEND and RDEPEND strings differ between
-// the installed version and the available version.
+// depsChanged compares the dependency metadata recorded at install time with
+// the selected repository candidate across every EAPI dependency class.
 func depsChanged(installedVer *VersionInfo, availableVer *VersionInfo) bool {
 	if installedVer == nil || availableVer == nil {
 		return false
 	}
-	if installedVer.Depend != availableVer.Depend {
-		return true
+	installed := []string{
+		installedVer.InstalledDepend, installedVer.InstalledRdepend,
+		installedVer.InstalledBdepend, installedVer.InstalledIdepend, installedVer.InstalledPdepend,
 	}
-	if installedVer.Rdepend != availableVer.Rdepend {
-		return true
+	if installed[0] == "" && installed[1] == "" && installed[2] == "" && installed[3] == "" && installed[4] == "" {
+		installed = []string{installedVer.Depend, installedVer.Rdepend, installedVer.Bdepend, installedVer.Idepend, installedVer.Pdepend}
 	}
-	return false
+	available := []string{availableVer.Depend, availableVer.Rdepend, availableVer.Bdepend, availableVer.Idepend, availableVer.Pdepend}
+	return !slices.Equal(installed, available)
 }
 
 // ---------------------------------------------------------------------------

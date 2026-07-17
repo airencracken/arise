@@ -3,7 +3,6 @@ package features
 import (
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,28 +12,28 @@ import (
 type Flag string
 
 const (
-	FeatCcache          Flag = "ccache"
-	FeatDistcc          Flag = "distcc"
-	FeatBuildPkg        Flag = "buildpkg"
-	FeatParallelInstall Flag = "parallel-install"
-	FeatPreserveLibs    Flag = "preserve-libs"
-	FeatStrict          Flag = "strict"
-	FeatNoStrip         Flag = "nostrip"
-	FeatTest            Flag = "test"
-	FeatSplitLog        Flag = "split-log"
-	FeatCompressDebug   Flag = "compressdebug"
-	FeatUserPriv        Flag = "userpriv"
-	FeatUserSandbox     Flag = "usersandbox"
-	FeatSandbox         Flag = "sandbox"
-	FeatNetworkSandbox  Flag = "network-sandbox"
-	FeatPidSandbox      Flag = "pid-sandbox"
-	FeatIpcSandbox      Flag = "ipc-sandbox"
-	FeatFakeroot        Flag = "fakeroot"
+	FeatCcache           Flag = "ccache"
+	FeatDistcc           Flag = "distcc"
+	FeatBuildPkg         Flag = "buildpkg"
+	FeatParallelInstall  Flag = "parallel-install"
+	FeatPreserveLibs     Flag = "preserve-libs"
+	FeatStrict           Flag = "strict"
+	FeatNoStrip          Flag = "nostrip"
+	FeatTest             Flag = "test"
+	FeatSplitLog         Flag = "split-log"
+	FeatCompressDebug    Flag = "compressdebug"
+	FeatUserPriv         Flag = "userpriv"
+	FeatUserSandbox      Flag = "usersandbox"
+	FeatSandbox          Flag = "sandbox"
+	FeatNetworkSandbox   Flag = "network-sandbox"
+	FeatPidSandbox       Flag = "pid-sandbox"
+	FeatIpcSandbox       Flag = "ipc-sandbox"
+	FeatFakeroot         Flag = "fakeroot"
 	FeatCollisionProtect Flag = "collision-protect"
-	FeatProtectOwned    Flag = "protect-owned"
-	FeatConfigProtect   Flag = "config-protect"
-	FeatFailClean       Flag = "fail-clean"
-	FeatGetBinPkg       Flag = "getbinpkg"
+	FeatProtectOwned     Flag = "protect-owned"
+	FeatConfigProtect    Flag = "config-protect"
+	FeatFailClean        Flag = "fail-clean"
+	FeatGetBinPkg        Flag = "getbinpkg"
 )
 
 type Config struct {
@@ -106,24 +105,31 @@ func (c *Config) ApplyToEnv(cmd *exec.Cmd) {
 	if c.IsEnabled(FeatUserPriv) {
 		c.applyUserPriv(cmd)
 	}
-	if c.IsEnabled(FeatUserSandbox) {
-		log.Printf("features: usersandbox is not implemented (stub)")
+}
+
+type UnsupportedFeatureError struct{ Feature Flag }
+
+func (e *UnsupportedFeatureError) Error() string {
+	return fmt.Sprintf("features: %s is unsupported by the current execution ABI", e.Feature)
+}
+
+// ExecutionError rejects every enabled feature the legacy runner cannot
+// actually honor. Parsing a feature never implies implementation.
+func (c *Config) ExecutionError() error {
+	if c == nil {
+		return nil
 	}
-	if c.IsEnabled(FeatSandbox) {
-		log.Printf("features: sandbox is not implemented (stub)")
+	supported := map[Flag]bool{
+		FeatCcache: true, FeatDistcc: true, FeatBuildPkg: true,
+		FeatNoStrip: true, FeatTest: true, FeatSplitLog: true,
+		FeatUserPriv: true, FeatFailClean: true,
 	}
-	if c.IsEnabled(FeatNetworkSandbox) {
-		log.Printf("features: network-sandbox is not implemented (stub)")
+	for feature, enabled := range c.Enabled {
+		if enabled && !supported[feature] {
+			return &UnsupportedFeatureError{Feature: feature}
+		}
 	}
-	if c.IsEnabled(FeatPidSandbox) {
-		log.Printf("features: pid-sandbox is not implemented (stub)")
-	}
-	if c.IsEnabled(FeatIpcSandbox) {
-		log.Printf("features: ipc-sandbox is not implemented (stub)")
-	}
-	if c.IsEnabled(FeatFakeroot) {
-		log.Printf("features: fakeroot is not implemented (stub)")
-	}
+	return nil
 }
 
 // applyCcache prefixes PATH with the ccache directory and sets CCACHE_DIR.
@@ -178,10 +184,12 @@ func (c *Config) applySplitLog(cmd *exec.Cmd) {
 		c.splitLogCmds[cmd] = struct{}{}
 	} else {
 		if outF != nil {
-			if cerr := outF.Close(); cerr != nil { /* Best effort */ }
+			if cerr := outF.Close(); cerr != nil { /* Best effort */
+			}
 		}
 		if errF != nil {
-			if cerr := errF.Close(); cerr != nil { /* Best effort */ }
+			if cerr := errF.Close(); cerr != nil { /* Best effort */
+			}
 		}
 	}
 }
@@ -194,10 +202,12 @@ func (c *Config) CloseSplitLogs() {
 	}
 	for cmd := range c.splitLogCmds {
 		if wc, ok := cmd.Stdout.(io.Closer); ok {
-			if cerr := wc.Close(); cerr != nil { /* Best effort */ }
+			if cerr := wc.Close(); cerr != nil { /* Best effort */
+			}
 		}
 		if wc, ok := cmd.Stderr.(io.Closer); ok {
-			if cerr := wc.Close(); cerr != nil { /* Best effort */ }
+			if cerr := wc.Close(); cerr != nil { /* Best effort */
+			}
 		}
 	}
 	c.splitLogCmds = make(map[*exec.Cmd]struct{})

@@ -30,6 +30,8 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 		}},
 		BacktrackLevel: 1,
 		Warnings:       []string{"example warning"},
+		Verified:       true,
+		Verification:   resolve.VerificationVerified,
 	}
 	cfg := resolve.DefaultResolveConfig()
 	cfg.Update = true
@@ -49,7 +51,7 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 	if err := json.Unmarshal(first.Bytes(), &document); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, first.String())
 	}
-	if document.Schema != 1 || !document.Complete || document.Operation != "update" || document.Resolution.DurationNS != int64(2*time.Second) {
+	if document.Schema != 1 || !document.Complete || !document.Resolution.Verified || document.Resolution.Verification != resolve.VerificationVerified || document.Operation != "update" || document.Resolution.DurationNS != int64(2*time.Second) {
 		t.Fatalf("document header = %#v", document)
 	}
 	if len(document.Actions) != 1 || !reflect.DeepEqual(document.Actions[0].UseEnabled, []string{"alpha", "zeta"}) || !reflect.DeepEqual(document.Actions[0].UseDisabled, []string{"debug"}) {

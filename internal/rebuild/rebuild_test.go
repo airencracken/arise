@@ -2,8 +2,12 @@ package rebuild
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha512"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -608,6 +612,65 @@ DESCRIPTION="GM test package"
 	contentsPath := filepath.Join(vdbDir, "app-misc", "gmtest-1.0", "CONTENTS")
 	if _, err := os.Stat(contentsPath); err != nil {
 		t.Errorf("CONTENTS file not found: %v", err)
+	}
+}
+
+func TestRebuildPackageUsesVerifiedCachedDISTDIR(t *testing.T) {
+	tmp := t.TempDir()
+	repoDir := filepath.Join(tmp, "repo")
+	distDir := filepath.Join(tmp, "distfiles")
+	workDir := filepath.Join(tmp, "work")
+	rootDir := filepath.Join(tmp, "root")
+	vdbDir := filepath.Join(tmp, "vdb")
+	packageDir := filepath.Join(repoDir, "app-misc", "cached")
+	for _, directory := range []string{distDir, workDir, rootDir, vdbDir, packageDir} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var archive bytes.Buffer
+	gzipWriter := gzip.NewWriter(&archive)
+	tarWriter := tar.NewWriter(gzipWriter)
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	content := archive.Bytes()
+	digest := sha512.Sum512(content)
+	if err := os.WriteFile(filepath.Join(distDir, "source.tar.gz"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "DIST source.tar.gz " + fmt.Sprint(len(content)) + " SHA512 " + hex.EncodeToString(digest[:]) + "\n"
+	if err := os.WriteFile(filepath.Join(packageDir, "Manifest"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := "EAPI=8\nSRC_URI=\"https://invalid.example/source.tar.gz\"\n"
+	if err := os.WriteFile(filepath.Join(packageDir, "cached-1.ebuild"), []byte(ebuild), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := RebuildConfig{RepoDir: repoDir, DistfilesDir: distDir, RootDir: rootDir, VdbDir: vdbDir, WorkDirBase: workDir}
+	if err := RebuildPackage(context.Background(), "app-misc/cached-1", &cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRebuildPackageRefusesSourceWithoutManifest(t *testing.T) {
+	tmp := t.TempDir()
+	packageDir := filepath.Join(tmp, "repo", "app-misc", "missing")
+	for _, directory := range []string{packageDir, filepath.Join(tmp, "dist"), filepath.Join(tmp, "work")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(packageDir, "missing-1.ebuild"), []byte("EAPI=8\nSRC_URI=\"https://invalid.example/source.tar\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := RebuildConfig{RepoDir: filepath.Join(tmp, "repo"), DistfilesDir: filepath.Join(tmp, "dist"), RootDir: filepath.Join(tmp, "root"), VdbDir: filepath.Join(tmp, "vdb"), WorkDirBase: filepath.Join(tmp, "work")}
+	err := RebuildPackage(context.Background(), "app-misc/missing-1", &cfg)
+	if err == nil || !strings.Contains(err.Error(), "open Manifest") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

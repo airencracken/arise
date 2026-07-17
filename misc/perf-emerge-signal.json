@@ -4,18 +4,18 @@
   "runs": 3,
   "cases": [
     {
-      "name": "signal-desktop-bin-pretend-exit",
-      "normalize": "exit-code",
+      "name": "signal-desktop-bin-equivalent-plan",
+      "normalize": "package-plan",
       "arise": {
         "tool": "arise",
         "path": "./arise",
-        "args": ["--color=n", "--db", "/tmp/arise-perf-data", "--repo", "/var/db/repos/gentoo", "--pretend", "install", "net-im/signal-desktop-bin"],
+        "args": ["--json", "--color=n", "--db", "/tmp/arise-perf-data", "--repo", "/var/db/repos/gentoo", "--pretend", "install", "net-im/signal-desktop-bin"],
         "version_args": ["--version"]
       },
       "reference": {
         "tool": "emerge",
         "path": "emerge",
-        "args": ["--color", "n", "--pretend", "net-im/signal-desktop-bin"],
+        "args": ["--color", "n", "--pretend", "--verbose", "net-im/signal-desktop-bin"],
         "version_args": ["--version"]
       }
     }

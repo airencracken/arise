@@ -1,6 +1,7 @@
 # binaries
 /arise
 /arise-perf
+/arise-perf-table
 
 # test coverage
 *.out

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/pprof"
 	"sort"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/distfiles"
 	"github.com/airencracken/arise/internal/features"
+	"github.com/airencracken/arise/internal/fetch"
 	"github.com/airencracken/arise/internal/graph"
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/portage"
@@ -66,6 +68,9 @@ func runResolveAndRebuild(targets []string, dbPath, repoDir string, update bool,
 
 func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phaseEnd func(string, error)) *rebuild.RebuildConfig {
 	portageCfg, _ := portage.LoadEffectiveConfig(*portageConfigRoot)
+	if portageCfg == nil {
+		portageCfg = &portage.Config{MakeConf: make(map[string]string)}
+	}
 	var featConfig *features.Config
 	if portageCfg != nil {
 		if rawFeatures, ok := portageCfg.MakeConf["FEATURES"]; ok {
@@ -75,34 +80,24 @@ func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phase
 
 	makeOpts := fmt.Sprintf("-j%d", jobs)
 	if jobs <= 0 {
-		makeOpts = os.Getenv("MAKEOPTS")
+		makeOpts = portageCfg.MAKEOPTS
 	}
 
 	cfg := &rebuild.RebuildConfig{
-		RepoDir:      repoDir,
-		DistfilesDir: *distfilesDir,
-		RootDir:      "/",
-		VdbDir:       *vdbDir,
-		WorkDirBase:  *workDir,
-		CFLAGS:       os.Getenv("CFLAGS"),
-		CXXFLAGS:     os.Getenv("CXXFLAGS"),
-		LDFLAGS:      os.Getenv("LDFLAGS"),
-		MAKEOPTS:     makeOpts,
-		Arch:         os.Getenv("ARCH"),
-		Features:     featConfig,
-		OnPhaseStart: phaseStart,
-		OnPhaseEnd:   phaseEnd,
-	}
-	if portageCfg != nil {
-		if cfg.CFLAGS == "" {
-			cfg.CFLAGS = portageCfg.CFLAGS
-		}
-		if cfg.CXXFLAGS == "" {
-			cfg.CXXFLAGS = portageCfg.CXXFLAGS
-		}
-		if cfg.MAKEOPTS == "" {
-			cfg.MAKEOPTS = portageCfg.MAKEOPTS
-		}
+		RepoDir:       repoDir,
+		DistfilesDir:  *distfilesDir,
+		RootDir:       commandEnv("ROOT", "/"),
+		VdbDir:        *vdbDir,
+		WorkDirBase:   *workDir,
+		CFLAGS:        portageCfg.CFLAGS,
+		CXXFLAGS:      portageCfg.CXXFLAGS,
+		LDFLAGS:       portageCfg.MakeConf["LDFLAGS"],
+		MAKEOPTS:      makeOpts,
+		Arch:          portageCfg.MakeConf["ARCH"],
+		Features:      featConfig,
+		GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]),
+		OnPhaseStart:  phaseStart,
+		OnPhaseEnd:    phaseEnd,
 	}
 	return cfg
 }
@@ -481,15 +476,72 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	if cfg.Pretend {
 		return
 	}
-
-	// Save resume state for --resume support
-	if err := resolve.SaveResume(*resumeFile, result); err != nil && !*quiet {
-		fmt.Fprintf(os.Stderr, "resume: save: %v\n", err)
+	if err := planExecutionVerificationError(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-
 	if cfg.FetchOnly {
+		if err := fetchPlanActions(context.Background(), result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"])}, &fetch.Fetcher{}); err != nil {
+			fmt.Fprintf(os.Stderr, "arise: fetch-only failed: %v\n", err)
+			os.Exit(1)
+		}
+		if !cfg.Quiet {
+			fmt.Println("All source artifacts are present and Manifest-verified.")
+		}
 		return
 	}
+
+	// Resolution is production-capable, but package execution is not yet wired
+	// to the journaled P4/P6 transaction path. Never report success for a plan
+	// that was not executed, including fetch-only requests.
+	fmt.Fprintln(os.Stderr, unsupportedExecutionMessage(cfg))
+	os.Exit(1)
+}
+
+func planExecutionVerificationError(result *resolve.ResolveResult) error {
+	if result == nil {
+		return fmt.Errorf("arise: refusing execution: no resolved plan")
+	}
+	if !result.Verified {
+		status := result.Verification
+		if status == "" {
+			status = resolve.VerificationIncomplete
+		}
+		return fmt.Errorf("arise: refusing execution: plan did not pass whole-state verification (%s)", status)
+	}
+	return nil
+}
+
+func fetchPlanActions(ctx context.Context, actions []resolve.PkgAction, baseConfig fetch.FetchConfig, fetcher *fetch.Fetcher) error {
+	if fetcher == nil {
+		return fmt.Errorf("fetch-only: nil fetcher")
+	}
+	for _, action := range actions {
+		if action.Atom == nil || action.RepositoryPath == "" {
+			return fmt.Errorf("fetch-only: source action lacks package or repository identity")
+		}
+		if action.MergeType == "binary" {
+			return fmt.Errorf("fetch-only: binary acquisition for %s is not implemented", action.Atom)
+		}
+		if strings.TrimSpace(action.SrcURI) == "" {
+			continue
+		}
+		manifest := filepath.Join(action.RepositoryPath, action.Atom.Category, action.Atom.Package, "Manifest")
+		mirrorGroups, err := fetch.LoadMirrorGroups(filepath.Join(action.RepositoryPath, "profiles", "thirdpartymirrors"))
+		if err != nil {
+			return fmt.Errorf("%s: %w", action.Atom, err)
+		}
+		config := baseConfig
+		config.MirrorGroups = mirrorGroups
+		if _, err := fetcher.AcquireManifest(ctx, manifest, action.SrcURI, action.UseFlags, config); err != nil {
+			return fmt.Errorf("%s: %w", action.Atom, err)
+		}
+	}
+	return nil
+}
+
+func unsupportedExecutionMessage(cfg resolve.ResolveConfig) string {
+	return "arise: install/update execution is experimental and unavailable; rerun with --pretend (live mutation remains gated on the P4/P6 transaction engine)"
 }
 
 func sortedUseFlags(flags map[string]bool) ([]string, []string) {

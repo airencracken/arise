@@ -25,29 +25,42 @@ type Config struct {
 	ACCEPT_KEYWORDS []string
 	ACCEPT_LICENSE  []string
 	FEATURES        []string
+	LicenseGroups   map[string][]string
 
-	PackageUse            map[string][]string
-	PackageUseRules       []PackageUseRule
-	PackageAcceptKeywords map[string]string
-	PackageLicense        map[string]string
-	PackageMask           []string
-	PackageUnmask         []string
-	PackageEnv            map[string]string
-	PackageProvided       []string
+	PackageUse                map[string][]string
+	PackageUseRules           []PackageUseRule
+	PackageAcceptKeywords     map[string]string
+	PackageAcceptKeywordRules []PackageUseRule
+	PackageLicense            map[string]string
+	PackageLicenseRules       []PackageUseRule
+	PackageMask               []string
+	PackageMaskRules          []PackageMaskRule
+	PackageUnmask             []string
+	PackageEnv                map[string]string
+	PackageEnvRules           []PackageUseRule
+	commandEnvironment        []configAssignment
+	commandEnvironmentBase    map[string]string
+	commandEnvironmentExisted map[string]bool
+	ConfigRoot                string
+	PackageProvided           []string
 
-	ProfilePath          string
-	ProfileParents       []string
-	SystemSet            []string
-	UseForce             []string
-	UseMask              []string
-	PackageUseForce      map[string][]string
-	PackageUseMask       map[string][]string
-	PackageUseForceRules []PackageUseRule
-	PackageUseMaskRules  []PackageUseRule
-	UseOrder             []string
-	UseExpand            []string
-	UseExpandHidden      []string
-	UseExpandImplicit    []string
+	ProfilePath                string
+	ProfileParents             []string
+	SystemSet                  []string
+	UseForce                   []string
+	UseMask                    []string
+	UseStableForce             []string
+	UseStableMask              []string
+	PackageUseForce            map[string][]string
+	PackageUseMask             map[string][]string
+	PackageUseForceRules       []PackageUseRule
+	PackageUseMaskRules        []PackageUseRule
+	PackageUseStableForceRules []PackageUseRule
+	PackageUseStableMaskRules  []PackageUseRule
+	UseOrder                   []string
+	UseExpand                  []string
+	UseExpandHidden            []string
+	UseExpandImplicit          []string
 }
 
 // PackageUseRule preserves package.use file order. A map is insufficient here:
@@ -61,7 +74,10 @@ type MaskStatus struct {
 	Masked bool
 	Atom   string
 	Source string
+	Reason string
 }
+
+type PackageMaskRule struct{ Atom, Source, Reason string }
 
 func LoadConfig(portageConfigRoot string) (*Config, error) {
 	cfg := &Config{
@@ -71,6 +87,7 @@ func LoadConfig(portageConfigRoot string) (*Config, error) {
 		PackageLicense:        make(map[string]string),
 		PackageEnv:            make(map[string]string),
 	}
+	cfg.ConfigRoot = filepath.Clean(portageConfigRoot)
 
 	if _, err := os.Stat(portageConfigRoot); os.IsNotExist(err) {
 		return cfg, nil
@@ -97,6 +114,23 @@ func LoadConfig(portageConfigRoot string) (*Config, error) {
 // LoadEffectiveConfig overlays the active profile defaults and policy with
 // /etc/portage configuration. User make.conf values retain highest priority.
 func LoadEffectiveConfig(portageConfigRoot string) (*Config, error) {
+	return LoadEffectiveConfigWithEnvironment(portageConfigRoot, os.Environ())
+}
+
+// LoadEffectiveConfigWithEnvironment loads the disk configuration and then
+// applies the small, explicit set of variables Portage accepts from a command
+// invocation. Taking the environment as data keeps precedence testable and
+// avoids accidentally importing unrelated process state.
+func LoadEffectiveConfigWithEnvironment(portageConfigRoot string, environ []string) (*Config, error) {
+	cfg, err := loadEffectiveConfig(portageConfigRoot)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ApplyCommandEnvironment(environ)
+	return cfg, nil
+}
+
+func loadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 	cfg, err := LoadConfig(portageConfigRoot)
 	if err != nil {
 		return nil, err
@@ -112,18 +146,56 @@ func LoadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 		return nil, fmt.Errorf("portage: load active profile: %w", err)
 	}
 	merged := make(map[string]string)
+	removals := make(map[string]map[string]bool)
+	globalLayer, err := parseSelectedAssignments("/usr/share/portage/config/make.globals", map[string]bool{"FEATURES": true, "USE_ORDER": true})
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("portage: parse make.globals: %w", err)
+	}
+	trackIncrementalRemovals(removals, globalLayer)
+	mergeConfigAssignments(merged, globalLayer)
 	for _, directory := range info.Directories {
 		layer, err := parseMakeConfAssignments(filepath.Join(directory, "make.defaults"))
 		if err != nil {
 			return nil, fmt.Errorf("portage: parse profile defaults %s: %w", directory, err)
 		}
+		trackIncrementalRemovals(removals, layer)
 		mergeConfigAssignments(merged, layer)
 	}
+	// ProfileInfo retains the leaf-effective assignment for each variable. Use
+	// it as the authoritative tombstone source when intervening self-references
+	// repeat values across a diamond profile graph.
+	var profileEffective []configAssignment
+	for key, value := range info.MakeDefaults {
+		profileEffective = append(profileEffective, configAssignment{key: key, value: value})
+	}
+	trackIncrementalRemovals(removals, profileEffective)
 	userLayer, err := parseMakeConfAssignments(filepath.Join(portageConfigRoot, "make.conf"))
 	if err != nil {
 		return nil, fmt.Errorf("portage: parse user make.conf: %w", err)
 	}
+	trackIncrementalRemovals(removals, userLayer)
+	for _, assignment := range userLayer {
+		if assignment.key == "ACCEPT_LICENSE" {
+			// An explicit user policy replaces the profile's default acceptance
+			// baseline; additions/removals within the user layer remain ordered.
+			delete(merged, "ACCEPT_LICENSE")
+			break
+		}
+	}
 	mergeConfigAssignments(merged, userLayer)
+	for variable := range removalOnlyIncrementalVariables {
+		values := applyOrderedChanges(nil, splitShWords(merged[variable]))
+		var filtered []string
+		for _, value := range values {
+			if !removals[variable][value] {
+				filtered = append(filtered, value)
+			}
+		}
+		merged[variable] = strings.Join(filtered, " ")
+	}
+	if merged["USE_ORDER"] == "" {
+		merged["USE_ORDER"] = "env:pkg:conf:defaults:pkginternal:features:repo:env.d"
+	}
 	ResolveMakeConfRefs(merged)
 	cfg.MakeConf = merged
 	cfg.populateAccessors()
@@ -132,19 +204,57 @@ func LoadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 		cfg.ProfileParents = append([]string(nil), info.Directories[:len(info.Directories)-1]...)
 	}
 	cfg.SystemSet = append([]string(nil), info.SystemSet...)
+	cfg.PackageProvided = applyAtomChanges(info.PackageProvided, cfg.PackageProvided)
 	cfg.UseForce = append([]string(nil), info.UseForce...)
 	cfg.UseMask = append([]string(nil), info.UseMask...)
+	cfg.UseStableForce = append([]string(nil), info.UseStableForce...)
+	cfg.UseStableMask = append([]string(nil), info.UseStableMask...)
 	cfg.PackageUseForce = cloneFlagMap(info.PkgUseForce)
 	cfg.PackageUseMask = cloneFlagMap(info.PkgUseMask)
 	cfg.PackageUseForceRules = profilePackageRules(info.PkgUseForceRules)
 	cfg.PackageUseMaskRules = profilePackageRules(info.PkgUseMaskRules)
+	cfg.PackageUseStableForceRules = profilePackageRules(info.PkgUseStableForceRules)
+	cfg.PackageUseStableMaskRules = profilePackageRules(info.PkgUseStableMaskRules)
 	profileUseRules := profilePackageRules(info.PkgUseRules)
 	cfg.PackageUseRules = append(profileUseRules, cfg.PackageUseRules...)
-	profileMasks, profileUnmasks, err := loadProfileMaskStack(info.Directories)
+	repositories, err := RepositoryPolicyOrder(filepath.Join(portageConfigRoot, "repos.conf"))
+	if err != nil {
+		return nil, err
+	}
+	var repositoryRoots []string
+	for _, repository := range repositories {
+		if repository.Location != "" {
+			repositoryRoots = append(repositoryRoots, repository.Location)
+		}
+	}
+	if len(repositoryRoots) == 0 {
+		repositoryRoots = profileRepositories(info.Directories)
+	}
+	cfg.LicenseGroups, err = ParseLicenseGroups(repositoryRoots)
+	if err != nil {
+		return nil, fmt.Errorf("portage: load license groups: %w", err)
+	}
+	profileMasks, profileUnmasks, err := loadProfileMaskStack(repositoryRoots, info.Directories)
 	if err != nil {
 		return nil, err
 	}
 	cfg.PackageMask = applyAtomChanges(profileMasks, cfg.PackageMask)
+	var policyRules []PackageMaskRule
+	for _, root := range repositoryRoots {
+		rules, rulesErr := ParsePackageMaskRules(filepath.Join(root, "profiles", "package.mask"))
+		if rulesErr != nil {
+			return nil, rulesErr
+		}
+		policyRules = applyPackageMaskRuleChanges(policyRules, rules)
+	}
+	for _, directory := range info.Directories {
+		rules, rulesErr := ParsePackageMaskRules(filepath.Join(directory, "package.mask"))
+		if rulesErr != nil {
+			return nil, rulesErr
+		}
+		policyRules = applyPackageMaskRuleChanges(policyRules, rules)
+	}
+	cfg.PackageMaskRules = applyPackageMaskRuleChanges(policyRules, cfg.PackageMaskRules)
 	cfg.PackageUnmask = applyAtomChanges(profileUnmasks, cfg.PackageUnmask)
 	cfg.UseOrder = splitShWords(merged["USE_ORDER"])
 	cfg.UseExpand = splitShWords(merged["USE_EXPAND"])
@@ -157,7 +267,239 @@ func LoadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 	return cfg, nil
 }
 
-func loadProfileMaskStack(directories []string) ([]string, []string, error) {
+var commandEnvironmentVariables = map[string]bool{
+	// Package policy and toolchain controls.
+	"USE": true, "FEATURES": true, "ACCEPT_KEYWORDS": true, "ACCEPT_LICENSE": true,
+	"ARCH": true, "CHOST": true, "CBUILD": true, "CTARGET": true,
+	"CFLAGS": true, "CXXFLAGS": true, "CPPFLAGS": true, "LDFLAGS": true,
+	"MAKEOPTS": true, "EMERGE_DEFAULT_OPTS": true,
+	// Portage roots, repositories, storage and binary-package selectors.
+	"PORTAGE_CONFIGROOT": true, "ROOT": true, "SYSROOT": true, "BROOT": true,
+	"PORTDIR": true, "PORTDIR_OVERLAY": true, "DISTDIR": true, "PKGDIR": true,
+	"PORTAGE_TMPDIR": true, "PORTAGE_BINHOST": true,
+	// One-shot presentation controls used by emerge-compatible front ends.
+	"NOCOLOR": true, "TERM": true, "COLUMNS": true, "PORTAGE_NICENESS": true,
+}
+
+// ApplyCommandEnvironment overlays only documented command-facing Portage
+// variables. Unknown entries are ignored, including variables that merely
+// happen to resemble make.conf assignments.
+func (cfg *Config) ApplyCommandEnvironment(environ []string) {
+	if cfg == nil {
+		return
+	}
+	var assignments []configAssignment
+	for _, entry := range environ {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && commandEnvironmentVariables[name] {
+			assignments = append(assignments, configAssignment{key: name, value: value})
+		}
+	}
+	if len(assignments) == 0 {
+		return
+	}
+	cfg.commandEnvironmentBase = make(map[string]string)
+	cfg.commandEnvironmentExisted = make(map[string]bool)
+	for _, assignment := range assignments {
+		if _, recorded := cfg.commandEnvironmentExisted[assignment.key]; recorded {
+			continue
+		}
+		value, existed := cfg.MakeConf[assignment.key]
+		cfg.commandEnvironmentBase[assignment.key] = value
+		cfg.commandEnvironmentExisted[assignment.key] = existed
+	}
+	cfg.commandEnvironment = append(cfg.commandEnvironment[:0], assignments...)
+	mergeConfigAssignments(cfg.MakeConf, assignments)
+	ResolveMakeConfRefs(cfg.MakeConf)
+	cfg.populateAccessors()
+	cfg.UseOrder = splitShWords(cfg.MakeConf["USE_ORDER"])
+	cfg.UseExpand = splitShWords(cfg.MakeConf["USE_EXPAND"])
+	cfg.UseExpandHidden = splitShWords(cfg.MakeConf["USE_EXPAND_HIDDEN"])
+	cfg.UseExpandImplicit = splitShWords(cfg.MakeConf["USE_EXPAND_IMPLICIT"])
+	cfg.USE = appendUseExpand(cfg.USE, cfg.UseExpand, cfg.MakeConf)
+	cfg.USE = applyEffectiveGlobalUse(cfg.USE, cfg.UseForce, cfg.UseMask)
+}
+
+var packageExecutionEnvironmentVariables = map[string]bool{
+	"USE": true, "FEATURES": true, "ACCEPT_KEYWORDS": true, "ACCEPT_LICENSE": true,
+	"ARCH": true, "CHOST": true, "CBUILD": true, "CTARGET": true,
+	"CFLAGS": true, "CXXFLAGS": true, "CPPFLAGS": true, "FFLAGS": true,
+	"FCFLAGS": true, "LDFLAGS": true, "MAKEOPTS": true,
+	"CC": true, "CXX": true, "CPP": true, "AR": true, "AS": true,
+	"LD": true, "NM": true, "OBJCOPY": true, "OBJDUMP": true,
+	"RANLIB": true, "READELF": true, "STRIP": true,
+}
+
+// PackageExecutionEnvironmentFor reduces the three execution layers in
+// Portage precedence order: effective global configuration, matching
+// package.env files, then one-shot command/request overrides. The command layer
+// retained by ApplyCommandEnvironment is replayed because cfg.MakeConf already
+// contains it and package.env must not accidentally gain precedence over it.
+func (cfg *Config) PackageExecutionEnvironmentFor(cpv, slot, repo string, request map[string]string) (map[string]string, error) {
+	result := make(map[string]string)
+	if cfg == nil {
+		for name, value := range request {
+			result[name] = value
+		}
+		return result, nil
+	}
+	for name, value := range cfg.MakeConf {
+		if packageExecutionEnvironmentVariables[name] {
+			result[name] = value
+		}
+	}
+	for name, existed := range cfg.commandEnvironmentExisted {
+		if !packageExecutionEnvironmentVariables[name] {
+			continue
+		}
+		if existed {
+			result[name] = cfg.commandEnvironmentBase[name]
+		} else {
+			delete(result, name)
+		}
+	}
+	packageEnvironment, err := cfg.PackageEnvironmentFor(cpv, slot, repo)
+	if err != nil {
+		return nil, err
+	}
+	mergeEnvironmentMap(result, packageEnvironment)
+	var command []configAssignment
+	for _, assignment := range cfg.commandEnvironment {
+		if packageExecutionEnvironmentVariables[assignment.key] {
+			command = append(command, assignment)
+		}
+	}
+	mergeConfigAssignments(result, command)
+	mergeEnvironmentMap(result, request)
+	ResolveMakeConfRefs(result)
+	return result, nil
+}
+
+func mergeEnvironmentMap(target, layer map[string]string) {
+	names := make([]string, 0, len(layer))
+	for name := range layer {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	assignments := make([]configAssignment, 0, len(names))
+	for _, name := range names {
+		assignments = append(assignments, configAssignment{key: name, value: layer[name]})
+	}
+	mergeConfigAssignments(target, assignments)
+}
+
+func trackIncrementalRemovals(state map[string]map[string]bool, assignments []configAssignment) {
+	for _, assignment := range assignments {
+		if !removalOnlyIncrementalVariables[assignment.key] {
+			continue
+		}
+		if state[assignment.key] == nil {
+			state[assignment.key] = make(map[string]bool)
+		}
+		for _, token := range splitShWords(assignment.value) {
+			if strings.Contains(token, "${") {
+				continue
+			}
+			name := strings.TrimPrefix(token, "-")
+			if name == "" || name == "*" {
+				continue
+			}
+			state[assignment.key][name] = strings.HasPrefix(token, "-")
+		}
+	}
+}
+
+func profileRepositories(directories []string) []string {
+	seen := make(map[string]bool)
+	var roots []string
+	marker := string(filepath.Separator) + "profiles" + string(filepath.Separator)
+	for _, directory := range directories {
+		clean := filepath.Clean(directory)
+		index := strings.Index(clean, marker)
+		if index < 0 {
+			continue
+		}
+		root := clean[:index]
+		if !seen[root] {
+			seen[root] = true
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
+func ParseLicenseGroups(repositoryRoots []string) (map[string][]string, error) {
+	groups := make(map[string][]string)
+	for _, root := range repositoryRoots {
+		lines, err := ReadConfigFile(filepath.Join(root, "profiles", "license_groups"))
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range lines {
+			fields := splitShWords(line)
+			if len(fields) < 2 {
+				continue
+			}
+			groups[fields[0]] = applyOrderedChanges(groups[fields[0]], fields[1:])
+		}
+	}
+	return groups, nil
+}
+
+func applyOrderedChanges(previous, changes []string) []string {
+	result := append([]string(nil), previous...)
+	for _, change := range changes {
+		if change == "-*" {
+			result = nil
+			continue
+		}
+		name := strings.TrimPrefix(change, "-")
+		filtered := result[:0]
+		for _, current := range result {
+			if current != name {
+				filtered = append(filtered, current)
+			}
+		}
+		result = filtered
+		if !strings.HasPrefix(change, "-") {
+			result = append(result, change)
+		}
+	}
+	return result
+}
+
+func ExpandLicenseGroups(values []string, groups map[string][]string) []string {
+	var result []string
+	var expand func(string, map[string]bool)
+	expand = func(value string, stack map[string]bool) {
+		negative := strings.HasPrefix(value, "-")
+		name := strings.TrimPrefix(value, "-")
+		if !strings.HasPrefix(name, "@") {
+			result = append(result, value)
+			return
+		}
+		group := strings.TrimPrefix(name, "@")
+		members, found := groups[group]
+		if !found || stack[group] {
+			result = append(result, value)
+			return
+		}
+		stack[group] = true
+		for _, member := range members {
+			if negative && !strings.HasPrefix(member, "-") {
+				member = "-" + member
+			}
+			expand(member, stack)
+		}
+		delete(stack, group)
+	}
+	for _, value := range values {
+		expand(value, make(map[string]bool))
+	}
+	return result
+}
+
+func loadProfileMaskStack(repositoryRoots, directories []string) ([]string, []string, error) {
 	var masks, unmasks []string
 	if len(directories) == 0 {
 		return nil, nil, nil
@@ -169,8 +511,12 @@ func loadProfileMaskStack(directories []string) ([]string, []string, error) {
 	if index := strings.Index(filepath.Clean(directories[len(directories)-1]), marker); index >= 0 {
 		profilesRoot = filepath.Clean(directories[len(directories)-1])[:index+len(marker)-1]
 	}
-	layers := append([]string(nil), directories...)
-	if profilesRoot != "" {
+	var layers []string
+	for _, root := range repositoryRoots {
+		layers = append(layers, filepath.Join(root, "profiles"))
+	}
+	layers = append(layers, directories...)
+	if profilesRoot != "" && len(repositoryRoots) == 0 {
 		layers = append([]string{profilesRoot}, layers...)
 	}
 	seen := make(map[string]bool)
@@ -254,6 +600,11 @@ var incrementalVariables = map[string]bool{
 	"CONFIG_PROTECT": true, "CONFIG_PROTECT_MASK": true,
 }
 
+var removalOnlyIncrementalVariables = map[string]bool{
+	"USE_EXPAND": true, "USE_EXPAND_HIDDEN": true, "USE_EXPAND_IMPLICIT": true,
+	"FEATURES": true,
+}
+
 type configAssignment struct{ key, value string }
 
 func parseMakeConfAssignments(path string) ([]configAssignment, error) {
@@ -290,6 +641,36 @@ func mergeConfigAssignments(target map[string]string, assignments []configAssign
 			target[assignment.key] = value
 		}
 	}
+}
+
+func parseSelectedAssignments(path string, selected map[string]bool) ([]configAssignment, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	physical := strings.Split(string(data), "\n")
+	var result []configAssignment
+	for index := 0; index < len(physical); index++ {
+		line := strings.TrimSpace(physical[index])
+		pos := strings.IndexByte(line, '=')
+		if pos < 1 || !selected[strings.TrimSpace(line[:pos])] {
+			continue
+		}
+		logical := line
+		for hasUnclosedShellQuote(logical) && index+1 < len(physical) {
+			index++
+			logical += " " + strings.TrimSpace(physical[index])
+		}
+		pos = strings.IndexByte(logical, '=')
+		result = append(result, configAssignment{
+			key: strings.TrimSpace(logical[:pos]), value: unquote(strings.TrimSpace(logical[pos+1:])),
+		})
+	}
+	return result, nil
+}
+
+func dropNegativeTokens(value string) string {
+	return strings.Join(applyOrderedChanges(nil, splitShWords(value)), " ")
 }
 
 func expandLayerValue(value string, current map[string]string) string {
@@ -378,6 +759,10 @@ func (cfg *Config) PackageUseMaskFor(cpv, slot, repo string) []string {
 // EffectiveUseFor reduces the configuration layers that apply to a selected
 // package version. IUSE filtering and defaults remain the caller's concern.
 func (cfg *Config) EffectiveUseFor(cpv, slot, repo string) map[string]bool {
+	return cfg.EffectiveUseForStability(cpv, slot, repo, false)
+}
+
+func (cfg *Config) EffectiveUseForStability(cpv, slot, repo string, stable bool) map[string]bool {
 	result := make(map[string]bool)
 	if cfg == nil {
 		return result
@@ -417,6 +802,12 @@ func (cfg *Config) EffectiveUseFor(cpv, slot, repo string) map[string]bool {
 	}
 	applyPolicy(force, true)
 	applyPolicy(mask, false)
+	if stable {
+		applyPolicy(cfg.UseStableForce, true)
+		applyPolicy(cfg.UseStableMask, false)
+		applyPolicy(packagePolicyFlagsFor(cfg.PackageUseStableForceRules, cpv, slot, repo), true)
+		applyPolicy(packagePolicyFlagsFor(cfg.PackageUseStableMaskRules, cpv, slot, repo), false)
+	}
 	return result
 }
 
@@ -486,15 +877,27 @@ func (cfg *Config) loadPackageFiles(root string) error {
 	if err != nil {
 		return fmt.Errorf("portage: could not parse package.accept_keywords: %w", err)
 	}
+	cfg.PackageAcceptKeywordRules, err = ParsePackageAcceptKeywordRules(filepath.Join(root, "package.accept_keywords"))
+	if err != nil {
+		return fmt.Errorf("portage: could not parse ordered package.accept_keywords: %w", err)
+	}
 
 	cfg.PackageLicense, err = ParsePackageLicense(filepath.Join(root, "package.license"))
 	if err != nil {
 		return fmt.Errorf("portage: could not parse package.license: %w", err)
 	}
+	cfg.PackageLicenseRules, err = ParsePackageLicenseRules(filepath.Join(root, "package.license"))
+	if err != nil {
+		return fmt.Errorf("portage: could not parse ordered package.license: %w", err)
+	}
 
 	cfg.PackageMask, err = ParsePackageMask(filepath.Join(root, "package.mask"))
 	if err != nil {
 		return fmt.Errorf("portage: could not parse package.mask: %w", err)
+	}
+	cfg.PackageMaskRules, err = ParsePackageMaskRules(filepath.Join(root, "package.mask"))
+	if err != nil {
+		return fmt.Errorf("portage: could not parse package.mask reasons: %w", err)
 	}
 
 	cfg.PackageUnmask, err = ParsePackageUnmask(filepath.Join(root, "package.unmask"))
@@ -505,6 +908,10 @@ func (cfg *Config) loadPackageFiles(root string) error {
 	cfg.PackageEnv, err = ParsePackageEnv(filepath.Join(root, "package.env"))
 	if err != nil {
 		return fmt.Errorf("portage: could not parse package.env: %w", err)
+	}
+	cfg.PackageEnvRules, err = ParsePackageEnvRules(filepath.Join(root, "package.env"))
+	if err != nil {
+		return fmt.Errorf("portage: could not parse ordered package.env: %w", err)
 	}
 
 	cfg.PackageProvided, err = ParsePackageProvided(filepath.Join(root, "profile", "package.provided"))
@@ -563,12 +970,10 @@ func readMakeConfLines(path string) ([]string, error) {
 	for scanner.Scan() {
 		raw := scanner.Text()
 		stripped := strings.TrimRight(raw, " \t")
-
 		if len(stripped) > 0 && stripped[len(stripped)-1] == '\\' && !strings.HasSuffix(stripped, "\\\\") {
 			buf.WriteString(stripped[:len(stripped)-1])
 			continue
 		}
-
 		if buf.Len() > 0 {
 			buf.WriteString(raw)
 			lines = append(lines, buf.String())
@@ -584,6 +989,28 @@ func readMakeConfLines(path string) ([]string, error) {
 		return nil, fmt.Errorf("portage: could not read %s: %w", path, err)
 	}
 	return lines, nil
+}
+
+func hasUnclosedShellQuote(value string) bool {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote == 0 && (ch == '\'' || ch == '"') {
+			quote = ch
+		} else if ch == quote {
+			quote = 0
+		}
+	}
+	return quote != 0
 }
 
 func ParsePackageUse(path string) (map[string][]string, error) {
@@ -706,9 +1133,16 @@ func (cfg *Config) PackageMaskStatus(cpv, slot, repo string) MaskStatus {
 	if cfg == nil {
 		return status
 	}
+	for _, rule := range cfg.PackageMaskRules {
+		if PackageAtomMatches(rule.Atom, cpv, slot, repo) {
+			status = MaskStatus{Masked: true, Atom: rule.Atom, Source: rule.Source, Reason: rule.Reason}
+		}
+	}
 	for _, entry := range cfg.PackageMask {
 		if PackageAtomMatches(entry, cpv, slot, repo) {
-			status = MaskStatus{Masked: true, Atom: entry, Source: "package.mask"}
+			if status.Atom != entry {
+				status = MaskStatus{Masked: true, Atom: entry, Source: "package.mask"}
+			}
 		}
 	}
 	for _, entry := range cfg.PackageUnmask {
@@ -739,6 +1173,82 @@ func ParsePackageAcceptKeywords(path string) (map[string]string, error) {
 	return m, nil
 }
 
+// ParsePackageAcceptKeywordRules preserves file order and repeated or
+// overlapping atoms. Keyword configuration is incremental, so reducing it to
+// a map loses both removal operations and precedence.
+func ParsePackageAcceptKeywordRules(path string) ([]PackageUseRule, error) {
+	lines, err := ReadConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var rules []PackageUseRule
+	for _, line := range lines {
+		ruleAtom, keywords := parseAtomConfig(line)
+		if ruleAtom == "" {
+			continue
+		}
+		rules = append(rules, PackageUseRule{Atom: ruleAtom, Flags: splitShWords(keywords)})
+	}
+	return rules, nil
+}
+
+// PackageAcceptKeywordsFor returns ordered keyword changes for a concrete
+// package. An empty matching rule means the unstable keyword for the host
+// architecture, as in Portage.
+func (cfg *Config) PackageAcceptKeywordsFor(cpv, slot, repo, arch string) []string {
+	if cfg == nil {
+		return nil
+	}
+	var result []string
+	if len(cfg.PackageAcceptKeywordRules) == 0 {
+		for rule, keywords := range cfg.PackageAcceptKeywords {
+			if PackageAtomMatches(rule, cpv, slot, repo) {
+				values := splitShWords(keywords)
+				if len(values) == 0 {
+					values = []string{"~" + arch}
+				}
+				result = append(result, values...)
+			}
+		}
+		return result
+	}
+	for _, rule := range cfg.PackageAcceptKeywordRules {
+		if !PackageAtomMatches(rule.Atom, cpv, slot, repo) {
+			continue
+		}
+		if len(rule.Flags) == 0 {
+			result = append(result, "~"+arch)
+		} else {
+			result = append(result, rule.Flags...)
+		}
+	}
+	return result
+}
+
+func (cfg *Config) KeywordAcceptedFor(cpv, slot, repo, keywords, arch string) bool {
+	if cfg == nil {
+		return true
+	}
+	accepted := []string{arch}
+	accepted = applyOrderedChanges(accepted, cfg.ACCEPT_KEYWORDS)
+	accepted = applyOrderedChanges(accepted, cfg.PackageAcceptKeywordsFor(cpv, slot, repo, arch))
+	for _, allow := range accepted {
+		if allow == "**" {
+			return true
+		}
+		for _, keyword := range strings.Fields(keywords) {
+			if strings.HasPrefix(keyword, "-") {
+				continue
+			}
+			if allow == keyword || allow == "*" && !strings.HasPrefix(keyword, "~") ||
+				allow == "~*" && strings.HasPrefix(keyword, "~") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func ParsePackageLicense(path string) (map[string]string, error) {
 	lines, err := ReadConfigFile(path)
 	if err != nil {
@@ -759,8 +1269,119 @@ func ParsePackageLicense(path string) (map[string]string, error) {
 	return m, nil
 }
 
+func ParsePackageLicenseRules(path string) ([]PackageUseRule, error) {
+	lines, err := ReadConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var rules []PackageUseRule
+	for _, line := range lines {
+		ruleAtom, licenses := parseAtomConfig(line)
+		if ruleAtom != "" {
+			rules = append(rules, PackageUseRule{Atom: ruleAtom, Flags: splitShWords(licenses)})
+		}
+	}
+	return rules, nil
+}
+
+func (cfg *Config) PackageLicensesFor(cpv, slot, repo string) []string {
+	if cfg == nil {
+		return nil
+	}
+	var result []string
+	if len(cfg.PackageLicenseRules) == 0 {
+		for rule, licenses := range cfg.PackageLicense {
+			if PackageAtomMatches(rule, cpv, slot, repo) {
+				result = append(result, splitShWords(licenses)...)
+			}
+		}
+		return result
+	}
+	for _, rule := range cfg.PackageLicenseRules {
+		if PackageAtomMatches(rule.Atom, cpv, slot, repo) {
+			result = append(result, rule.Flags...)
+		}
+	}
+	return result
+}
+
 func ParsePackageMask(path string) ([]string, error) {
 	return parseAtomList(path)
+}
+
+func ParsePackageMaskRules(path string) ([]PackageMaskRule, error) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	if info.IsDir() {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+				files = append(files, filepath.Join(path, entry.Name()))
+			}
+		}
+		sort.Strings(files)
+	} else {
+		files = []string{path}
+	}
+	var rules []PackageMaskRule
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return nil, err
+		}
+		var comments []string
+		sawAtom := false
+		for _, raw := range strings.Split(string(data), "\n") {
+			line := strings.TrimSpace(raw)
+			switch {
+			case line == "":
+				comments, sawAtom = nil, false
+			case strings.HasPrefix(line, "#"):
+				if sawAtom {
+					comments, sawAtom = nil, false
+				}
+				text := strings.TrimSpace(strings.TrimPrefix(line, "#"))
+				if text != "" && !strings.HasPrefix(text, "---") {
+					comments = append(comments, text)
+				}
+			default:
+				entry, _ := parseAtomConfig(line)
+				if entry != "" {
+					rules = append(rules, PackageMaskRule{entry, file, strings.Join(comments, " ")})
+					sawAtom = true
+				}
+			}
+		}
+	}
+	return rules, nil
+}
+
+func applyPackageMaskRuleChanges(previous, changes []PackageMaskRule) []PackageMaskRule {
+	result := append([]PackageMaskRule(nil), previous...)
+	for _, change := range changes {
+		if strings.HasPrefix(change.Atom, "-") {
+			remove := strings.TrimPrefix(change.Atom, "-")
+			filtered := result[:0]
+			for _, current := range result {
+				if current.Atom != remove {
+					filtered = append(filtered, current)
+				}
+			}
+			result = filtered
+		} else {
+			result = append(result, change)
+		}
+	}
+	return result
 }
 
 func ParsePackageUnmask(path string) ([]string, error) {
@@ -810,6 +1431,69 @@ func ParsePackageEnv(path string) (map[string]string, error) {
 		m[atom] = envFile
 	}
 	return m, nil
+}
+
+func ParsePackageEnvRules(path string) ([]PackageUseRule, error) {
+	lines, err := ReadConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var rules []PackageUseRule
+	for _, line := range lines {
+		ruleAtom, files := parseAtomConfig(line)
+		if ruleAtom != "" {
+			rules = append(rules, PackageUseRule{Atom: ruleAtom, Flags: splitShWords(files)})
+		}
+	}
+	return rules, nil
+}
+
+func (cfg *Config) PackageEnvFilesFor(cpv, slot, repo string) []string {
+	if cfg == nil {
+		return nil
+	}
+	var result []string
+	if len(cfg.PackageEnvRules) == 0 {
+		for rule, files := range cfg.PackageEnv {
+			if PackageAtomMatches(rule, cpv, slot, repo) {
+				result = append(result, splitShWords(files)...)
+			}
+		}
+		return result
+	}
+	for _, rule := range cfg.PackageEnvRules {
+		if PackageAtomMatches(rule.Atom, cpv, slot, repo) {
+			result = append(result, rule.Flags...)
+		}
+	}
+	return result
+}
+
+// PackageEnvironmentFor composes referenced /etc/portage/env files in
+// package.env rule order. Later files override scalar variables, while the
+// standard incremental variables retain their ordered add/remove semantics.
+func (cfg *Config) PackageEnvironmentFor(cpv, slot, repo string) (map[string]string, error) {
+	result := make(map[string]string)
+	if cfg == nil {
+		return result, nil
+	}
+	envRoot := filepath.Join(cfg.ConfigRoot, "env")
+	for _, name := range cfg.PackageEnvFilesFor(cpv, slot, repo) {
+		if name == "" || filepath.IsAbs(name) {
+			return nil, fmt.Errorf("portage: invalid package.env file %q", name)
+		}
+		path := filepath.Clean(filepath.Join(envRoot, name))
+		if path != envRoot && !strings.HasPrefix(path, envRoot+string(filepath.Separator)) {
+			return nil, fmt.Errorf("portage: package.env file %q escapes %s", name, envRoot)
+		}
+		assignments, err := parseMakeConfAssignments(path)
+		if err != nil {
+			return nil, fmt.Errorf("portage: parse package environment %s: %w", name, err)
+		}
+		mergeConfigAssignments(result, assignments)
+	}
+	ResolveMakeConfRefs(result)
+	return result, nil
 }
 
 func ResolveMakeConfRefs(m map[string]string) {
@@ -998,6 +1682,59 @@ type RepoEntry struct {
 	Location string
 	SyncURI  string
 	SyncType string
+	Masters  []string
+}
+
+// EclassLookupDirectories returns the selected repository followed by its
+// declared masters. Lookup precedence is intentionally child-first.
+func EclassLookupDirectories(entries []RepoEntry, selected string) ([]string, error) {
+	byName := make(map[string]RepoEntry, len(entries))
+	for _, entry := range entries {
+		byName[entry.Name] = entry
+	}
+	var directories []string
+	state := make(map[string]uint8)
+	var visit func(string) error
+	visit = func(name string) error {
+		if state[name] == 1 {
+			return fmt.Errorf("portage: repository master cycle at %s", name)
+		}
+		if state[name] == 2 {
+			return nil
+		}
+		entry, ok := byName[name]
+		if !ok || entry.Location == "" {
+			return fmt.Errorf("portage: repository %s has no configured location", name)
+		}
+		state[name] = 1
+		directories = append(directories, filepath.Join(entry.Location, "eclass"))
+		for _, master := range entry.Masters {
+			if err := visit(master); err != nil {
+				return err
+			}
+		}
+		state[name] = 2
+		return nil
+	}
+	if err := visit(selected); err != nil {
+		return nil, err
+	}
+	return directories, nil
+}
+
+// UserPatchDirectories reproduces Portage's least-to-most-specific user patch
+// order. Later directories override equal patch basenames.
+func UserPatchDirectories(configRoot, category, pn, p, pr, slot string) []string {
+	base := filepath.Join(configRoot, "etc", "portage", "patches", category)
+	slot = strings.SplitN(slot, "/", 2)[0]
+	var result []string
+	for _, packageName := range []string{pn, p, p + "-" + pr} {
+		result = append(result, filepath.Join(base, packageName))
+		if slot != "" {
+			result = append(result, filepath.Join(base, packageName+":"+slot))
+		}
+	}
+	return result
 }
 
 // ReadReposConf returns all repository entries from a repos.conf file or
@@ -1062,7 +1799,7 @@ func parseReposConfDir(root string) ([]RepoEntry, error) {
 			return nil, err
 		}
 		for _, e := range entries {
-			if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") || strings.HasSuffix(e.Name(), "~") {
 				continue
 			}
 			files = append(files, filepath.Join(root, e.Name()))
@@ -1081,6 +1818,85 @@ func parseReposConfDir(root string) ([]RepoEntry, error) {
 		allEntries = append(allEntries, entries...)
 	}
 	return allEntries, nil
+}
+
+// RepositoryPolicyOrder returns repositories in deterministic master-before-
+// child order. Repository masters come from metadata/layout.conf, while
+// repos.conf file/section order breaks ties between independent repositories.
+func RepositoryPolicyOrder(reposConfPath string) ([]RepoEntry, error) {
+	entries, err := ReadReposConf(reposConfPath)
+	if err != nil {
+		return nil, err
+	}
+	byName := make(map[string]*RepoEntry)
+	var names []string
+	for i := range entries {
+		entry := &entries[i]
+		if entry.Name == "DEFAULT" || entry.Name == "" {
+			continue
+		}
+		if _, exists := byName[entry.Name]; exists {
+			continue
+		}
+		if entry.Location == "" || !pathIsDirectory(entry.Location) {
+			fallback := filepath.Join("/var/db/repos", entry.Name)
+			if pathIsDirectory(fallback) {
+				entry.Location = fallback
+			}
+		}
+		entry.Masters = readRepositoryMasters(entry.Location)
+		byName[entry.Name] = entry
+		names = append(names, entry.Name)
+	}
+	var order []RepoEntry
+	state := make(map[string]uint8)
+	var visit func(string) error
+	visit = func(name string) error {
+		if state[name] == 2 {
+			return nil
+		}
+		if state[name] == 1 {
+			return fmt.Errorf("portage: repository master cycle at %s", name)
+		}
+		entry := byName[name]
+		if entry == nil {
+			return fmt.Errorf("portage: repository master %s is not configured", name)
+		}
+		state[name] = 1
+		for _, master := range entry.Masters {
+			if err := visit(master); err != nil {
+				return err
+			}
+		}
+		state[name] = 2
+		order = append(order, *entry)
+		return nil
+	}
+	for _, name := range names {
+		if err := visit(name); err != nil {
+			return nil, err
+		}
+	}
+	return order, nil
+}
+
+func pathIsDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func readRepositoryMasters(root string) []string {
+	data, err := os.ReadFile(filepath.Join(root, "metadata", "layout.conf"))
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if found && strings.TrimSpace(key) == "masters" {
+			return strings.Fields(strings.TrimSpace(value))
+		}
+	}
+	return nil
 }
 
 func parseReposConfFile(path string) ([]RepoEntry, error) {

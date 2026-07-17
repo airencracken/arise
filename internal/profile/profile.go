@@ -8,19 +8,24 @@ import (
 )
 
 type ProfileInfo struct {
-	Path             string              // path to the active profile
-	Directories      []string            // root-to-leaf profile stacking order
-	Parents          []string            // ordered list of parent paths
-	MakeDefaults     map[string]string   // merged make.defaults variables
-	SystemSet        []string            // @system packages (merged from all parents)
-	UseForce         []string            // forced USE flags
-	UseMask          []string            // masked USE flags
-	PkgUseForce      map[string][]string // package.use.force (per-package forced USE)
-	PkgUseMask       map[string][]string // package.use.mask (per-package masked USE)
-	PkgUse           map[string][]string // package.use profile defaults
-	PkgUseRules      []PackageFlagRule
-	PkgUseForceRules []PackageFlagRule
-	PkgUseMaskRules  []PackageFlagRule
+	Path                   string              // path to the active profile
+	Directories            []string            // root-to-leaf profile stacking order
+	Parents                []string            // ordered list of parent paths
+	MakeDefaults           map[string]string   // merged make.defaults variables
+	SystemSet              []string            // @system packages (merged from all parents)
+	PackageProvided        []string            // versioned package.provided atoms
+	UseForce               []string            // forced USE flags
+	UseMask                []string            // masked USE flags
+	UseStableForce         []string            // stable-only forced USE flags
+	UseStableMask          []string            // stable-only masked USE flags
+	PkgUseForce            map[string][]string // package.use.force (per-package forced USE)
+	PkgUseMask             map[string][]string // package.use.mask (per-package masked USE)
+	PkgUse                 map[string][]string // package.use profile defaults
+	PkgUseRules            []PackageFlagRule
+	PkgUseForceRules       []PackageFlagRule
+	PkgUseMaskRules        []PackageFlagRule
+	PkgUseStableForceRules []PackageFlagRule
+	PkgUseStableMaskRules  []PackageFlagRule
 }
 
 type PackageFlagRule struct {
@@ -50,6 +55,37 @@ func ResolveParent(profilePath string, parentLine string, profilesRoot string) (
 
 	if filepath.IsAbs(parentLine) {
 		return filepath.Clean(parentLine), nil
+	}
+
+	if repository, subpath, found := strings.Cut(parentLine, ":"); found {
+		if repository == "" || subpath == "" || filepath.IsAbs(subpath) {
+			return "", fmt.Errorf("profile: invalid cross-repository parent %q", parentLine)
+		}
+		repositoriesRoot := ""
+		if profilesRoot != "" {
+			clean := filepath.Clean(profilesRoot)
+			if filepath.Base(clean) == "profiles" {
+				repositoriesRoot = filepath.Dir(filepath.Dir(clean))
+			} else {
+				repositoriesRoot = clean
+			}
+		} else {
+			clean := filepath.Clean(profilePath)
+			marker := string(filepath.Separator) + "profiles" + string(filepath.Separator)
+			if index := strings.Index(clean, marker); index >= 0 {
+				repositoryRoot := clean[:index]
+				repositoriesRoot = filepath.Dir(repositoryRoot)
+			}
+		}
+		if repositoriesRoot == "" {
+			return "", fmt.Errorf("profile: cannot locate repository root for parent %q from %s", parentLine, profilePath)
+		}
+		base := filepath.Join(repositoriesRoot, repository, "profiles")
+		resolved := filepath.Clean(filepath.Join(base, subpath))
+		if resolved != base && !strings.HasPrefix(resolved, base+string(filepath.Separator)) {
+			return "", fmt.Errorf("profile: cross-repository parent %q escapes %s", parentLine, base)
+		}
+		return resolved, nil
 	}
 
 	// Parent lines are relative to the profile directory (where the parent file lives)
@@ -144,11 +180,25 @@ func statProfileDir(profilePath string) (*ProfileInfo, error) {
 
 	info.loadMakeDefaults(profilePath)
 	info.loadPackages(profilePath)
+	info.loadPackageProvided(profilePath)
 	info.loadUseFlags(profilePath)
 	info.loadPkgUse(profilePath)
 	info.loadBashrc(profilePath)
 
 	return info, nil
+}
+
+func (info *ProfileInfo) loadPackageProvided(profilePath string) {
+	data, err := os.ReadFile(filepath.Join(profilePath, "package.provided"))
+	if err != nil {
+		return
+	}
+	for _, line := range splitLines(string(data)) {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			info.PackageProvided = append(info.PackageProvided, line)
+		}
+	}
 }
 
 func (info *ProfileInfo) loadMakeDefaults(profilePath string) {
@@ -215,6 +265,8 @@ func (info *ProfileInfo) loadUseFlags(profilePath string) {
 	}{
 		{"use.force", &info.UseForce},
 		{"use.mask", &info.UseMask},
+		{"use.stable.force", &info.UseStableForce},
+		{"use.stable.mask", &info.UseStableMask},
 	} {
 		path := filepath.Join(profilePath, pair.file)
 		data, err := os.ReadFile(path)
@@ -242,6 +294,8 @@ func (info *ProfileInfo) loadPkgUse(profilePath string) {
 		{"package.use.force", &info.PkgUseForce, &info.PkgUseForceRules},
 		{"package.use.mask", &info.PkgUseMask, &info.PkgUseMaskRules},
 		{"package.use", &info.PkgUse, &info.PkgUseRules},
+		{"package.use.stable.force", nil, &info.PkgUseStableForceRules},
+		{"package.use.stable.mask", nil, &info.PkgUseStableMaskRules},
 	} {
 		path := filepath.Join(profilePath, pair.file)
 		data, err := os.ReadFile(path)
@@ -261,7 +315,9 @@ func (info *ProfileInfo) loadPkgUse(profilePath string) {
 			}
 			pkg := parts[0]
 			flags := parts[1:]
-			(*pair.dst)[pkg] = append((*pair.dst)[pkg], flags...)
+			if pair.dst != nil {
+				(*pair.dst)[pkg] = append((*pair.dst)[pkg], flags...)
+			}
 			*pair.rules = append(*pair.rules, PackageFlagRule{Atom: pkg, Flags: append([]string(nil), flags...)})
 		}
 	}
@@ -409,13 +465,18 @@ func mergeProfileInfo(child, parent *ProfileInfo) *ProfileInfo {
 	}
 
 	merged.SystemSet = applyFlagChanges(parent.SystemSet, child.SystemSet)
+	merged.PackageProvided = applyFlagChanges(parent.PackageProvided, child.PackageProvided)
 
 	// accumulate USE flags
 	merged.UseForce = applyFlagChanges(parent.UseForce, child.UseForce)
 	merged.UseMask = applyFlagChanges(parent.UseMask, child.UseMask)
+	merged.UseStableForce = applyFlagChanges(parent.UseStableForce, child.UseStableForce)
+	merged.UseStableMask = applyFlagChanges(parent.UseStableMask, child.UseStableMask)
 	merged.PkgUseForceRules = append(append([]PackageFlagRule(nil), parent.PkgUseForceRules...), child.PkgUseForceRules...)
 	merged.PkgUseMaskRules = append(append([]PackageFlagRule(nil), parent.PkgUseMaskRules...), child.PkgUseMaskRules...)
 	merged.PkgUseRules = append(append([]PackageFlagRule(nil), parent.PkgUseRules...), child.PkgUseRules...)
+	merged.PkgUseStableForceRules = append(append([]PackageFlagRule(nil), parent.PkgUseStableForceRules...), child.PkgUseStableForceRules...)
+	merged.PkgUseStableMaskRules = append(append([]PackageFlagRule(nil), parent.PkgUseStableMaskRules...), child.PkgUseStableMaskRules...)
 
 	// per-package USE: parent first, child appended
 	for pkg, flags := range parent.PkgUseForce {

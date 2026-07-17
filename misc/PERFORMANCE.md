@@ -81,6 +81,12 @@ Normalization modes:
   prints `category/package` to be compared with one that prints only `package`.
 - `search-package-names` extracts package names from Arise, eix, or emerge
   search output while ignoring headings and descriptive fields.
+- `package-plan` parses Arise's versioned JSON plan or emerge's verbose pretend
+  output into the same deterministic action records, including CPV, slot,
+  repository, action, merge type and effective USE. Use it for resolver timing;
+  exit-code equality is not sufficient evidence of plan equivalence. Parseable
+  plans are compared semantically even when Portage exits nonzero because the
+  surrounding installed world is broken; both raw exit codes remain recorded.
 - `exit-code` compares exit behavior only. It is suitable for harness smoke
   tests, not feature-parity or release-performance claims.
 

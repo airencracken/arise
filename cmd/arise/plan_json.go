@@ -24,17 +24,19 @@ type jsonPlan struct {
 }
 
 type jsonResolution struct {
-	DurationNS      int64 `json:"duration_ns"`
-	BacktrackUsed   int   `json:"backtrack_used"`
-	BacktrackLimit  int   `json:"backtrack_limit"`
-	IndexNS         int64 `json:"index_ns"`
-	StateNS         int64 `json:"state_ns"`
-	GraphNS         int64 `json:"graph_ns"`
-	SolverNS        int64 `json:"solver_ns"`
-	SearchNS        int64 `json:"search_ns"`
-	CompleteGraphNS int64 `json:"complete_graph_ns"`
-	VerificationNS  int64 `json:"verification_ns"`
-	SortNS          int64 `json:"sort_ns"`
+	Verified        bool   `json:"verified"`
+	Verification    string `json:"verification"`
+	DurationNS      int64  `json:"duration_ns"`
+	BacktrackUsed   int    `json:"backtrack_used"`
+	BacktrackLimit  int    `json:"backtrack_limit"`
+	IndexNS         int64  `json:"index_ns"`
+	StateNS         int64  `json:"state_ns"`
+	GraphNS         int64  `json:"graph_ns"`
+	SolverNS        int64  `json:"solver_ns"`
+	SearchNS        int64  `json:"search_ns"`
+	CompleteGraphNS int64  `json:"complete_graph_ns"`
+	VerificationNS  int64  `json:"verification_ns"`
+	SortNS          int64  `json:"sort_ns"`
 }
 
 type jsonAction struct {
@@ -64,8 +66,9 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 	}
 	document := jsonPlan{
 		Schema: 1, Operation: operation, Targets: append([]string(nil), targets...),
-		Complete: resolveErr == nil && len(result.Conflicts) == 0,
+		Complete: resolveErr == nil && result.Verified && len(result.Conflicts) == 0,
 		Resolution: jsonResolution{
+			Verified: result.Verified, Verification: result.Verification,
 			DurationNS: timings.Total.Nanoseconds(), BacktrackUsed: result.BacktrackLevel, BacktrackLimit: cfg.Backtrack,
 			IndexNS: timings.Index.Nanoseconds(), StateNS: timings.State.Nanoseconds(), GraphNS: timings.Graph.Nanoseconds(), SolverNS: timings.Solver.Nanoseconds(),
 			SearchNS: result.Metrics.Search.Nanoseconds(), CompleteGraphNS: result.Metrics.CompleteGraph.Nanoseconds(),

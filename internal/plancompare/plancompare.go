@@ -76,7 +76,8 @@ func ParseArise(output string) ([]Action, error) {
 // changes cannot silently invalidate correctness comparisons.
 func ParseAriseJSON(output string) ([]Action, error) {
 	var plan ariseJSONPlan
-	if err := json.Unmarshal([]byte(output), &plan); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(output))
+	if err := decoder.Decode(&plan); err != nil {
 		return nil, fmt.Errorf("parse Arise JSON plan: %w", err)
 	}
 	if plan.Schema != 1 {
@@ -184,10 +185,18 @@ func parseUseGroups(text string) (map[string][]string, map[string]bool) {
 	result := make(map[string][]string)
 	effective := make(map[string]bool)
 	for _, match := range useGroupRE.FindAllStringSubmatch(text, -1) {
-		values := strings.Fields(match[2])
-		for i := range values {
-			values[i] = normalizeUseToken(values[i])
-			name, enabled := canonicalUseFlag(match[1], values[i])
+		rawValues := strings.Fields(match[2])
+		values := make([]string, 0, len(rawValues))
+		for _, raw := range rawValues {
+			// Portage renders a flag that existed only in the installed IUSE as
+			// (-flag%). It explains why --newuse considers the package changed,
+			// but it is not part of the replacement's effective USE domain.
+			if historicalRemovedUseToken(raw) {
+				continue
+			}
+			value := normalizeUseToken(raw)
+			values = append(values, value)
+			name, enabled := canonicalUseFlag(match[1], value)
 			if name != "" {
 				effective[name] = enabled
 			}
@@ -198,6 +207,11 @@ func parseUseGroups(text string) (map[string][]string, map[string]bool) {
 		return nil, nil
 	}
 	return result, effective
+}
+
+func historicalRemovedUseToken(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "(") && strings.HasSuffix(value, ")") && strings.Contains(value, "%")
 }
 
 func normalizeUseToken(value string) string {

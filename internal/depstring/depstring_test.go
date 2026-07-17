@@ -55,6 +55,17 @@ func nodesEqual(a, b DepNode) bool {
 			}
 		}
 		return true
+	case *AtMostOneOfGroup:
+		bn, ok := b.(*AtMostOneOfGroup)
+		if !ok || len(an.Children) != len(bn.Children) {
+			return false
+		}
+		for i := range an.Children {
+			if !nodesEqual(an.Children[i], bn.Children[i]) {
+				return false
+			}
+		}
+		return true
 	case *UseConditional:
 		bn, ok := b.(*UseConditional)
 		if !ok || an.Flag != bn.Flag || len(an.Children) != len(bn.Children) {
@@ -141,6 +152,59 @@ func TestParseMultipleAtoms(t *testing.T) {
 		if ad.Atom != exp {
 			t.Errorf("child %d: expected %q, got %q", i, exp, ad.Atom)
 		}
+	}
+}
+
+func TestParseAtMostOneOfGroupRoundTrip(t *testing.T) {
+	input := "?? ( foo bar? ( baz ) )"
+	node, err := Parse(input)
+	if err != nil {
+		t.Fatalf("Parse(%q): %v", input, err)
+	}
+	root := node.(*AllOfGroup)
+	if len(root.Children) != 1 {
+		t.Fatalf("children = %d, want 1", len(root.Children))
+	}
+	group, ok := root.Children[0].(*AtMostOneOfGroup)
+	if !ok {
+		t.Fatalf("child type = %T, want *AtMostOneOfGroup", root.Children[0])
+	}
+	if got := group.String(); got != input {
+		t.Fatalf("String() = %q, want %q", got, input)
+	}
+	if got := group.Atoms(); !reflect.DeepEqual(got, []string{"foo", "baz"}) {
+		t.Fatalf("Atoms() = %#v", got)
+	}
+}
+
+func TestAtMostOneOfGroupSatisfactionAndMetadata(t *testing.T) {
+	node, err := Parse("?? ( dev-libs/foo dev-libs/bar )")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foo, _ := atom.Parse("dev-libs/foo-1")
+	bar, _ := atom.Parse("dev-libs/bar-1")
+	tests := []struct {
+		name      string
+		installed map[string]*atom.Atom
+		want      bool
+	}{
+		{name: "none", installed: map[string]*atom.Atom{}, want: true},
+		{name: "one", installed: map[string]*atom.Atom{"dev-libs/foo": foo}, want: true},
+		{name: "two", installed: map[string]*atom.Atom{"dev-libs/foo": foo, "dev-libs/bar": bar}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, _ := Satisfy(node, test.installed, nil)
+			if got != test.want {
+				t.Fatalf("Satisfy() = %v, want %v", got, test.want)
+			}
+		})
+	}
+
+	meta := CollectMeta(node)
+	if len(meta) != 2 || meta[0].Atom != "dev-libs/foo" || meta[1].Atom != "dev-libs/bar" {
+		t.Fatalf("CollectMeta() = %#v", meta)
 	}
 }
 

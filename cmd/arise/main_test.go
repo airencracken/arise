@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/airencracken/arise/internal/resolve"
 	"github.com/airencracken/arise/internal/search"
 )
 
@@ -751,6 +752,66 @@ func TestBuildRebuildConfig_EnvOverrides(t *testing.T) {
 	}
 	if cfg.Arch != "amd64" {
 		t.Errorf("Arch = %q", cfg.Arch)
+	}
+}
+
+func TestCommandEnvironmentPathSelectors(t *testing.T) {
+	t.Setenv("PORTAGE_CONFIGROOT", "/target")
+	t.Setenv("ROOT", "/image")
+	t.Setenv("DISTDIR", "/cache/dist")
+
+	if got := commandConfigRoot(); got != "/target/etc/portage" {
+		t.Fatalf("commandConfigRoot() = %q", got)
+	}
+	if got := commandRootPath("/var/db/pkg"); got != "/image/var/db/pkg" {
+		t.Fatalf("rooted VDB = %q", got)
+	}
+	if got := commandEnv("DISTDIR", "/fallback"); got != "/cache/dist" {
+		t.Fatalf("DISTDIR = %q", got)
+	}
+}
+
+func TestCommandEnvironmentHonorsExplicitEmptyValue(t *testing.T) {
+	t.Setenv("PORTAGE_BINHOST", "")
+	if got := commandEnv("PORTAGE_BINHOST", "https://fallback.invalid"); got != "" {
+		t.Fatalf("explicit empty PORTAGE_BINHOST = %q", got)
+	}
+}
+
+func TestUnsupportedExecutionMessageNeverPromisesMutation(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		cfg  resolve.ResolveConfig
+		want string
+	}{
+		{name: "install", cfg: resolve.ResolveConfig{}, want: "install/update execution is experimental and unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			message := unsupportedExecutionMessage(test.cfg)
+			if !strings.Contains(message, test.want) || !strings.Contains(message, "--pretend") || !strings.Contains(message, "P4/P6") {
+				t.Fatalf("unsafe execution diagnostic = %q", message)
+			}
+		})
+	}
+}
+
+func TestUnsupportedRemovalMessageRequiresPretendAndJournal(t *testing.T) {
+	for _, command := range []string{"uninstall", "depclean", "prune"} {
+		message := unsupportedRemovalMessage(command)
+		if !strings.Contains(message, command+" execution is experimental and unavailable") ||
+			!strings.Contains(message, "--pretend") || !strings.Contains(message, "P6 journal") {
+			t.Fatalf("unsafe %s diagnostic = %q", command, message)
+		}
+	}
+}
+
+func TestUnsupportedRebuildMessageRequiresPretendAndTransaction(t *testing.T) {
+	for _, command := range []string{"preserved-rebuild", "revdep-rebuild", "audit --fix"} {
+		message := unsupportedRebuildMessage(command)
+		if !strings.Contains(message, command+" execution is experimental and unavailable") ||
+			!strings.Contains(message, "--pretend") || !strings.Contains(message, "P4/P6") {
+			t.Fatalf("unsafe %s diagnostic = %q", command, message)
+		}
 	}
 }
 

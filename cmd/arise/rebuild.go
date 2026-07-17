@@ -1,10 +1,8 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/airencracken/arise/internal/preserved"
 )
@@ -35,35 +33,8 @@ func runPreservedRebuild() {
 	if *pretend {
 		return
 	}
-
-	if *ask {
-		fmt.Print("\nWould you like to rebuild these packages? [y/N] ")
-		var response string
-		fmt.Scanln(&response)
-		if !strings.HasPrefix(strings.ToLower(response), "y") {
-			fmt.Println("Aborted.")
-			return
-		}
-	}
-
-	jobs := *jobsVal
-	if jobs <= 0 {
-		jobs = 1
-	}
-
-	cfg := buildRebuildConfig(*repoPath, jobs, func(phase string) {
-		fmt.Printf("  [%s]\n", phase)
-	}, func(phase string, err error) {
-		if err != nil {
-			fmt.Printf("  [%s] FAILED: %v\n", phase, err)
-		}
-	})
-
-	loadAvg := *loadAverage
-	if err := runRebuild(context.Background(), packages, cfg, jobs, loadAvg); err != nil {
-		fmt.Fprintf(os.Stderr, "preserved-rebuild: %v\n", err)
-		os.Exit(1)
-	}
+	fmt.Fprintln(os.Stderr, unsupportedRebuildMessage("preserved-rebuild"))
+	os.Exit(1)
 }
 
 func runRevdepRebuild() {
@@ -92,33 +63,10 @@ func runRevdepRebuild() {
 	if *pretend {
 		return
 	}
+	fmt.Fprintln(os.Stderr, unsupportedRebuildMessage("revdep-rebuild"))
+	os.Exit(1)
+}
 
-	if *ask {
-		fmt.Print("\nWould you like to rebuild these packages? [y/N] ")
-		var response string
-		fmt.Scanln(&response)
-		if !strings.HasPrefix(strings.ToLower(response), "y") {
-			fmt.Println("Aborted.")
-			return
-		}
-	}
-
-	jobs := *jobsVal
-	if jobs <= 0 {
-		jobs = 1
-	}
-
-	cfg := buildRebuildConfig(*repoPath, jobs, func(phase string) {
-		fmt.Printf("  [%s]\n", phase)
-	}, func(phase string, err error) {
-		if err != nil {
-			fmt.Printf("  [%s] FAILED: %v\n", phase, err)
-		}
-	})
-
-	loadAvg := *loadAverage
-	if err := runRebuild(context.Background(), packages, cfg, jobs, loadAvg); err != nil {
-		fmt.Fprintf(os.Stderr, "revdep-rebuild: %v\n", err)
-		os.Exit(1)
-	}
+func unsupportedRebuildMessage(command string) string {
+	return fmt.Sprintf("arise: %s execution is experimental and unavailable; rerun with --pretend (live rebuild remains gated on the P4/P6 transaction engine)", command)
 }

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "captured_utc_date": "2026-07-17",
+  "portage_version": "3.0.77",
+  "gentoo_repository_commit": "6cab62289e9a2cb34ec66247cb739fe570b75e40",
+  "profile": "default/linux/amd64/23.0/split-usr/desktop",
+  "arise_revision": "39e28f4d8c9cbdc17698704ac8935f450b5bc241",
+  "arise_worktree_dirty": true,
+  "live_differentials": {
+    "effective_use": {"matched": 100, "total": 100},
+    "visibility_best_visible": {"matched": 100, "total": 100},
+    "mask_reasons": {"matched": 25, "total": 25},
+    "policy_variables": {
+      "matched": 9,
+      "total": 9,
+      "names": ["ARCH", "CHOST", "USE_ORDER", "USE_EXPAND", "USE_EXPAND_HIDDEN", "USE_EXPAND_IMPLICIT", "ACCEPT_KEYWORDS", "ACCEPT_LICENSE", "FEATURES"]
+    }
+  },
+  "privilege_boundary": {
+    "standard_cases": 116,
+    "filtered_root_cases_before_user_interrupt": 31,
+    "explicit_root_cases": 119,
+    "timeouts": 0,
+    "standard_env_sha256": "9e05b22f2ea302434c053427463b2694fd1fabba1b621622965d8c4c91bc57b9",
+    "filtered_root_env_sha256": "9e05b22f2ea302434c053427463b2694fd1fabba1b621622965d8c4c91bc57b9",
+    "explicit_probe_env_sha256": "150ac40253ec87137345f41adb535065d67b6c266db455d93912d1a6c46a7442",
+    "conclusion": "Normal su filtering produced the same Portage environment as the unprivileged process; fixed explicit probe values changed the command-facing layer. Arise consumes only values present after privilege transition and does not reconstruct removed values."
+  },
+  "raw_bundle_policy": "Raw bundles remain local because they contain host policy and paths. Hashes permit review without committing host-specific data."
+}

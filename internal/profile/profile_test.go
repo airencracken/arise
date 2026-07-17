@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -117,6 +118,67 @@ func TestSystemSetMerging(t *testing.T) {
 		if !found[expected] {
 			t.Errorf("SystemSet missing %q", expected)
 		}
+	}
+}
+
+func TestStableUsePolicyLoadsAndMerges(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	child := filepath.Join(root, "child")
+	for _, dir := range []string{parent, child} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(child, "parent"), []byte("../parent\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "use.stable.force"), []byte("ssl\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "use.stable.mask"), []byte("test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "package.use.stable.force"), []byte("dev-lang/python ensurepip\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := MergeParents(child, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(info.UseStableForce, []string{"ssl"}) || !reflect.DeepEqual(info.UseStableMask, []string{"test"}) {
+		t.Fatalf("stable global policy = force %v mask %v", info.UseStableForce, info.UseStableMask)
+	}
+	if len(info.PkgUseStableForceRules) != 1 || info.PkgUseStableForceRules[0].Atom != "dev-lang/python" {
+		t.Fatalf("stable package policy = %#v", info.PkgUseStableForceRules)
+	}
+}
+
+func TestPackageProvidedProfileStack(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	child := filepath.Join(root, "child")
+	for _, directory := range []string{parent, child} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(child, "parent"), []byte("../parent\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "package.provided"), []byte("dev-lang/python-3.11\napp-editors/vim-9.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "package.provided"), []byte("-dev-lang/python-3.11\ndev-lang/python-3.12\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := MergeParents(child, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"app-editors/vim-9.0", "dev-lang/python-3.12"}
+	if !reflect.DeepEqual(info.PackageProvided, want) {
+		t.Fatalf("PackageProvided = %v, want %v", info.PackageProvided, want)
 	}
 }
 
@@ -335,6 +397,46 @@ func TestResolveParentAbsolute(t *testing.T) {
 	}
 	if resolved != "/absolute/path/to/parent" {
 		t.Errorf("resolved: got %q", resolved)
+	}
+}
+
+func TestResolveParentCrossRepository(t *testing.T) {
+	got, err := ResolveParent("/var/db/repos/overlay/profiles/default/linux/amd64", "gentoo:default/linux", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/var/db/repos/gentoo/profiles/default/linux"; got != want {
+		t.Fatalf("ResolveParent() = %q, want %q", got, want)
+	}
+}
+
+func TestMergeParentsCrossRepository(t *testing.T) {
+	repositories := t.TempDir()
+	master := filepath.Join(repositories, "gentoo", "profiles", "base")
+	overlay := filepath.Join(repositories, "overlay", "profiles", "default")
+	for _, directory := range []string{master, overlay} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(master, "use.force"), []byte("master\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(overlay, "parent"), []byte("gentoo:base\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := MergeParents(overlay, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(info.Directories, []string{master, overlay}) || !reflect.DeepEqual(info.UseForce, []string{"master"}) {
+		t.Fatalf("cross-repository profile = dirs %v force %v", info.Directories, info.UseForce)
+	}
+}
+
+func TestResolveParentCrossRepositoryRejectsEscape(t *testing.T) {
+	if _, err := ResolveParent("/var/db/repos/overlay/profiles/default", "gentoo:../../overlay", ""); err == nil {
+		t.Fatal("expected cross-repository traversal to fail")
 	}
 }
 

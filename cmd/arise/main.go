@@ -16,20 +16,36 @@ import (
 // version is replaced by release builds with -ldflags "-X main.version=...".
 var version = "devel"
 
+func commandEnv(name, fallback string) string {
+	if value, ok := os.LookupEnv(name); ok {
+		return value
+	}
+	return fallback
+}
+
+func commandConfigRoot() string {
+	root := commandEnv("PORTAGE_CONFIGROOT", "/")
+	return filepath.Join(root, "etc", "portage")
+}
+
+func commandRootPath(path string) string {
+	return filepath.Join(commandEnv("ROOT", "/"), strings.TrimPrefix(path, "/"))
+}
+
 var (
 	showVersion = flag.Bool("version", false, "print version and exit")
 	dbPath      = flag.String("db", "/var/lib/arise/data", "database path")
-	repoPath    = flag.String("repo", "/var/db/repos/gentoo", "repository path")
+	repoPath    = flag.String("repo", commandEnv("PORTDIR", "/var/db/repos/gentoo"), "repository path")
 	repoURL     = flag.String("repo-url", "", "remote repository URL for sync")
 
 	// Filesystem path configuration
-	distfilesDir      = flag.String("distfiles-dir", "/var/cache/distfiles", "path to distfiles directory")
-	vdbDir            = flag.String("vdb-dir", "/var/db/pkg", "path to VDB (var/db/pkg)")
-	workDir           = flag.String("work-dir", "/var/tmp/arise", "path to working directory")
-	binpkgDir         = flag.String("binpkg-dir", "/var/cache/binpkgs", "path to binary package directory")
-	portageConfigRoot = flag.String("portage-config-root", "/etc/portage", "path to portage configuration directory")
-	worldFile         = flag.String("world-file", "/var/lib/portage/world", "path to world set file")
-	resumeFile        = flag.String("resume-file", "/var/tmp/arise/resume", "path to resume state file")
+	distfilesDir      = flag.String("distfiles-dir", commandEnv("DISTDIR", "/var/cache/distfiles"), "path to distfiles directory")
+	vdbDir            = flag.String("vdb-dir", commandRootPath("/var/db/pkg"), "path to VDB (var/db/pkg)")
+	workDir           = flag.String("work-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise"), "path to working directory")
+	binpkgDir         = flag.String("binpkg-dir", commandEnv("PKGDIR", "/var/cache/binpkgs"), "path to binary package directory")
+	portageConfigRoot = flag.String("portage-config-root", commandConfigRoot(), "path to portage configuration directory")
+	worldFile         = flag.String("world-file", commandRootPath("/var/lib/portage/world"), "path to world set file")
+	resumeFile        = flag.String("resume-file", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "resume"), "path to resume state file")
 
 	// Logging
 	logLevel = flag.String("log-level", "info", "log level: debug, info, warn, error")

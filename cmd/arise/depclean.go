@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/airencracken/arise/internal/graph"
 	"github.com/airencracken/arise/internal/ingest"
@@ -58,16 +57,8 @@ func runDepclean(dbPath, repoDir string) {
 	if *pretend {
 		return
 	}
-
-	if *ask {
-		fmt.Print("\nWould you like to remove these packages? [y/N] ")
-		var response string
-		fmt.Scanln(&response)
-		if !strings.HasPrefix(strings.ToLower(response), "y") {
-			fmt.Println("Aborted.")
-			return
-		}
-	}
+	fmt.Fprintln(os.Stderr, unsupportedRemovalMessage("depclean"))
+	os.Exit(1)
 }
 
 func runPrune(dbPath, repoDir string) {
@@ -109,14 +100,6 @@ func runPrune(dbPath, repoDir string) {
 	if *pretend {
 		return
 	}
-
-	if *ask {
-		fmt.Print("\nWould you like to remove these packages? [y/N] ")
-		var response string
-		fmt.Scanln(&response)
-		if !strings.HasPrefix(strings.ToLower(response), "y") {
-			fmt.Println("Aborted.")
-			return
-		}
-	}
+	fmt.Fprintln(os.Stderr, unsupportedRemovalMessage("prune"))
+	os.Exit(1)
 }

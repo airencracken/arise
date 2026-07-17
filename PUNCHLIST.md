@@ -1,12 +1,41 @@
 # Arise Punch List
 
 This is the ordered delivery plan for making Arise a safe, fast, real
-competitor to `emerge`. Items are ordered by dependency, not by apparent ease.
+competitor to `emerge`. P-numbers are stable milestone identifiers, not a
+topological ordering; the dependency graph below governs execution order.
 
 Complete feature parity and decisive performance are joint requirements.
 Correctness work must preserve the indexed, immutable, concurrent architecture
 that makes large speedups possible. Performance work may never weaken
 compatibility, determinism, safety, or recovery.
+
+## Milestone dependency graph
+
+```text
+P0A performance evidence ───────────────────────────────────────────────┐
+P0B fail-closed safety ──┬──> P4 execution ABI ──┬──> P6 transaction ─┼──> P8 product execution
+                         │                       │                     │
+P1 package state ──> P2 configuration ──> P3 resolver verifier ───────┘
+                         │              │
+                         └──> P5 verified fetch ─┘
+
+P3 + P4 ──> P7 scheduler; production scheduling also requires P6
+P5 + P6 + P8 ──> P9 binary-package integration
+P10 product/tooling work draws on stable APIs from completed lower milestones
+```
+
+Important internal dependencies:
+
+- P3 portable snapshots precede closing remaining live resolver differences.
+- P3 whole-state verification precedes every executable build/merge plan.
+- P4 protocol preflight and environment precede helper/lifecycle coverage.
+- P5 Manifest planning and locks precede resume and mirror/RESTRICT policy.
+- P6 journaling precedes any live-root merge, unmerge, world or VDB mutation.
+- P7 can be tested synthetically now, but cannot schedule live mutations before P6.
+
+Current critical path: P0B cleanup -> portable P2/P3 fixtures -> mandatory P3
+verification -> P4 protocol/environment -> P5 delivery completion -> P4 helper
+ABI -> P6 isolated-ROOT journal and recovery -> P7/P8 integration.
 
 Status markers:
 
@@ -15,25 +44,25 @@ Status markers:
 - `[x]` acceptance criteria satisfied
 - `[!]` release blocker
 
-## Rules of engagement
+## Invariants (not completion tasks)
 
-- [ ] A parsed flag is not an implemented feature.
-- [ ] Every mutating feature has pretend, failure, interruption, and recovery tests.
-- [ ] Filesystem mutations require a journal or an atomic replacement strategy.
-- [ ] Repository/VDB/profile snapshots are immutable during one resolution.
-- [ ] Concurrent output and results remain deterministic.
-- [ ] Every parity claim links to a differential or end-to-end test.
-- [ ] Performance work includes correctness checks and benchmark baselines.
-- [ ] Every milestone has a same-snapshot comparison against Portage.
-- [ ] No milestone ships on parity alone; it must meet its performance gate.
-- [ ] No benchmark is valid unless result equivalence is asserted.
-- [ ] Equivalent-but-slower than emerge or eix is a blocking bug. Those real
+- A parsed flag is not an implemented feature.
+- Every mutating feature has pretend, failure, interruption, and recovery tests.
+- Filesystem mutations require a journal or an atomic replacement strategy.
+- Repository/VDB/profile snapshots are immutable during one resolution.
+- Concurrent output and results remain deterministic.
+- Every parity claim links to a differential or end-to-end test.
+- Performance work includes correctness checks and benchmark baselines.
+- Every milestone has a same-snapshot comparison against Portage.
+- No milestone ships on parity alone; it must meet its performance gate.
+- No benchmark is valid unless result equivalence is asserted.
+- Equivalent-but-slower than emerge or eix is a blocking bug. Those real
   workloads require at least 1.0x median speedup, and milestone budgets should
   be significantly higher wherever the architecture provides leverage.
-- [ ] Portage-utils comparisons are aspirational and always published, but do
+- Portage-utils comparisons are aspirational and always published, but do
   not block builds solely for being below 1.0x.
-- [ ] Unsupported behavior fails explicitly; it must never silently no-op.
-- [ ] A copied static Arise binary works from standard Gentoo repository,
+- Unsupported behavior fails explicitly; it must never silently no-op.
+- A copied static Arise binary works from standard Gentoo repository,
   profile, VDB and `/etc/portage` state without Arise-specific configuration.
 
 ## P0A — performance laboratory and budgets
@@ -50,6 +79,13 @@ Status markers:
 - [ ] Define regression budgets before optimizing each subsystem.
 - [ ] Fail performance CI on material regressions beyond the agreed noise band.
 - [ ] Keep microbenchmarks, but gate releases on end-to-end workloads.
+- [~] Track test coverage in separate deterministic-core, network/integration
+  and benchmark-harness lanes. Whole-tree instrumentation gives the fast core
+  lane a 68.4% statement baseline while counting excluded production code as
+  uncovered. The benchmark lane passes in 119.4 seconds, covers 66.5% of its
+  harness package and exercises 13.5% of the whole production tree. Network
+  coverage is explicitly sandbox-blocked. Safety-critical thresholds remain
+  to define after per-file risk classification.
 - [x] Expose resolver phase timings for candidate search, complete-graph
   expansion, post-solve verification and sorting in verbose output.
 - [x] Add a real forced-backtracking scaling benchmark at 20, 100 and 1,000
@@ -80,22 +116,44 @@ Acceptance gate:
 
 ## P0B — stop unsafe or misleading behavior
 
-- [!] Mark install/update/uninstall/depclean/prune as experimental until their
-  execution paths meet the gates below.
+- [x] Mark install/update/uninstall/depclean/prune as experimental until their
+  execution paths meet the gates below. Install/update still fail explicitly
+  after a successful non-pretend plan instead of returning false success;
+  source fetch-only may populate DISTDIR through the Manifest-verified P5 path
+  while binary acquisition and unsupported transports fail explicitly. Pretend
+  remains available for real-machine validation. Uninstall,
+  depclean and prune likewise produce read-only proposals in pretend mode and
+  explicitly refuse non-pretend execution pending P6 journaling and safety.
+  Preserved/reverse-dependency rebuilds and audit fixes can scan in pretend
+  mode but can no longer bypass the P4/P6 execution gate.
 - [x] Remove or qualify “full emerge parity” claims in user documentation.
-- [!] Convert unsupported ebuild phases and FEATURES from silent success to
-  explicit errors.
+- [~] Convert unsupported ebuild phases and FEATURES from silent success to
+  explicit errors. Unknown phases and every unimplemented pkg_* lifecycle phase
+  now return a typed execution-ABI error instead of succeeding. The legacy
+  runner rejects every enabled known or unknown feature outside its explicit
+  supported set instead of logging sandbox stubs. The legacy synthetic
+  src_prepare placeholder remains the sole deliberate exception because the
+  prototype rebuild assumes an EAPI default phase sequence; it must be replaced
+  by phase discovery plus real default src_prepare/eapply_user in the versioned
+  Bash ABI. Production install/update remain hard-gated meanwhile.
 - [x] Fix all current `go vet` findings; keep vet clean in CI.
 - [x] Add a schema version and application version to persistent state.
 - [x] Keep progress indicators ASCII-only so early boot, recovery consoles and
   systems without Braille-capable fonts remain readable.
-- [ ] Add a global operation lock compatible with Portage's live-system safety
-  expectations.
+- [x] Add a global operation lock compatible with Portage's live-system safety
+  expectations. Arise uses Portage's exact VDB directory-lock path and POSIX
+  record-lock namespace; subprocess fixtures prove contention and release.
+  Mutation entry points remain gated until they can hold it for transactions.
 
 Acceptance gate:
 
 - Commands cannot report success for work they did not perform.
 - Documentation accurately distinguishes usable, experimental, and planned behavior.
+
+Current live safety check: a copied binary produced the exact one-action Signal
+pretend plan; the equivalent non-pretend command exited 1 at the execution gate.
+Before/after fingerprints of every VDB file and `/var/lib/portage/world` were
+identical, proving the gated invocation performed no package-state mutation.
 
 ## P1 — correct package-state model
 
@@ -141,18 +199,20 @@ local-overlay CPVs without md5-cache entries.
 ## P2 — Portage configuration and profile evaluation
 
 - [x] Wire the active profile into production state construction.
-- [!] Implement profile parents and repository masters deterministically. Local
-  parent graphs are ordered root-to-leaf with cycle and diamond handling;
-  cross-repository parent syntax remains.
-- [!] Implement make.defaults stacking and variable expansion needed by package policy.
-  Ordered assignment and `${VAR}` expansion are active; remaining supported shell
-  expansion forms need fixtures.
-- [!] Implement USE_ORDER. The active value is loaded and exposed, but all layers
-  are not yet reduced through it.
-- [!] Implement USE_EXPAND, USE_EXPAND_HIDDEN and implicit expansion flags. Global
-  expansion agrees with Portage, and `USE_EXPAND_IMPLICIT` flags now participate
-  in package-local effective USE without leaking unrelated global flags. Full
-  package-local expansion and a real-CPV differential corpus remain.
+- [x] Implement profile parents and repository masters deterministically. Local
+  and cross-repository profile graphs handle cycles, diamonds and traversal;
+  repos.conf plus layout.conf masters order repository policy master-first with
+  explicit missing-master and cycle failures.
+- [x] Implement make.defaults stacking and variable expansion needed by package policy.
+  Declarative make.globals, multiline quoted assignments, root-to-leaf profile
+  layers, `${VAR}` expansion, incremental tombstones and user overrides match
+  Portage's live policy-variable values.
+- [x] Implement USE_ORDER. The supported environment, package, configuration,
+  defaults, package-internal, feature, repository and env.d layers reduce to
+  the same active value and effective-USE results as Portage.
+- [x] Implement USE_EXPAND, USE_EXPAND_HIDDEN and implicit expansion flags.
+  Global expansion agrees with Portage, implicit flags remain package-local,
+  and the 100-visible-CPV effective-USE corpus is exact.
 - [x] Match modern Portage's source-install BDEPEND default (`auto`) instead of
   silently defaulting to `n`; explicit `n` continues to override auto mode.
 - [x] Sort production plans from the exact selected version's dependency
@@ -160,52 +220,84 @@ local-overlay CPVs without md5-cache entries.
   parent and assert dependency ordering before exposing an executable plan.
 - [x] Make plan ordering slot-, repository-, USE-conditional-, and any-of-aware
   so parallel slots and inactive dependency branches cannot create false edges.
-- [!] Implement use.mask/use.force and stable/package variants. Global force/mask,
-  parent removal syntax and package force/mask loading are active; stable variants
-  and full package-atom matching remain.
-- [!] Implement package.use matching using full Gentoo atoms, ordering and removal syntax.
-  User and profile rules now preserve file/profile order and match wildcard, version,
-  slot and repository-qualified atoms. Package USE_EXPAND and the real-CPV
-  differential corpus remain.
-- [!] Implement package.mask/unmask and repository/profile masks with reasons.
+- [x] Implement use.mask/use.force and stable/package variants. Global,
+  stable-only and full-atom package policy honor parent removals and match the
+  100-visible-CPV Portage effective-USE corpus exactly.
+- [x] Implement package.use matching using full Gentoo atoms, ordering and removal syntax.
+  User and profile rules preserve file/profile order; wildcard, version, slot
+  and repository-qualified atoms agree with the live effective-USE corpus.
+- [x] Implement package.mask/unmask and repository/profile masks with reasons.
   Version, slot and repository-qualified administrator masks now filter
-  candidates; repository-wide and active-profile stacks honor removal syntax,
-  and user unmask restores matching candidates. GLEP 84 reasons and
-  cross-repository profile masks remain.
-- [ ] Implement ACCEPT_KEYWORDS and package.accept_keywords accurately.
-- [ ] Implement license groups, expressions, ACCEPT_LICENSE and package.license.
-- [ ] Implement package.env and supported per-package environment layering.
-- [ ] Match Portage's command-environment configuration overlays and precedence
+  candidates; master-ordered cross-repository and active-profile stacks honor
+  removal syntax, and user unmask restores matching candidates. Structured
+  source/reason provenance matches Portage's GLEP 84 output on the live corpus.
+- [x] Implement ACCEPT_KEYWORDS and package.accept_keywords accurately. Ordered
+  full-atom rules, removal syntax, wildcard keywords and empty-rule `~ARCH`
+  shorthand select the same best-visible CPV as Portage across the live corpus.
+- [x] Implement license groups, expressions, ACCEPT_LICENSE and package.license.
+  Repository/profile group stacks expand nested and negative groups with cycle
+  safety; ordered full-atom package rules and boolean/USE-conditional LICENSE
+  evaluation preserve later overrides.
+- [x] Implement package.env and supported per-package environment layering.
+  Ordered full-atom rules compose referenced env files with variable expansion,
+  incremental USE/FEATURES semantics and traversal safety. Package execution
+  reconstructs effective global configuration before one-shot overrides, then
+  reduces base -> package.env -> retained command environment -> explicit
+  request overrides deterministically. The P4 builder injects that final
+  environment and rejects shell-startup injection plus protocol-owned work,
+  image, root, scratch and home variables before worker startup. Connecting
+  resolved actions to this completed handoff belongs to P4.
+- [x] Match Portage's command-environment configuration overlays and precedence
   for temporary invocations (including `USE`, `FEATURES`, `ACCEPT_KEYWORDS`,
   `ACCEPT_LICENSE`, config/root/repository selectors, build controls and output
   controls). Cover both direct execution and privilege-boundary behavior with
   differential tests so a copied Arise binary honors the same one-shot settings
-  as `emerge` without persisting them.
-- [ ] Implement package.provided with version-aware matching.
-- [!] Build @system from the active profile. The merged profile set is loaded into
-  production configuration; set removal and atom semantics still need parity.
+  as `emerge` without persisting them. Direct execution now uses an explicit
+  allowlist for incremental policy, toolchain/build controls, root/config/repo
+  selectors, storage and output controls; CLI flags override environment-backed
+  defaults and the rebuild worker consumes the same effective configuration.
+  Direct, filtered-root and fixed explicit-root probe bundles now establish the
+  privilege boundary: the normal user/root effective environment hashes match,
+  explicit post-transition values change the expected command layer, and Arise
+  deliberately cannot reconstruct values removed by `su`/sudo. Evidence and
+  snapshot fingerprints are recorded in `misc/P2_PARITY_EVIDENCE_2026-07-17.json`.
+- [x] Implement package.provided with version-aware matching. Active profile
+  stacks and `/etc/portage/profile` overrides honor ordered removals, and only
+  compatible provided versions satisfy resolver constraints.
+- [x] Build @system from the active profile. Root-to-leaf profile stacking,
+  starred membership, removals and version/slot/repository-qualified atom
+  expansion feed both `@system` and the system portion of `@world`.
 
 ### Tests
 
-- [ ] Differential test effective USE against Portage for at least 100 real CPVs.
-- [ ] Differential test visibility/best-visible and masking reason.
-- [!] Matrix tests for profile parent precedence and package.* directories. Parent
+- [x] Differential test effective USE against Portage for at least 100 real CPVs.
+  The deterministic visible corpus uses Portage's evaluated `PORTAGE_USE` and
+  currently matches 100/100 CPVs with non-empty IUSE on this laptop.
+- [x] Differential test visibility/best-visible and masking reason. Best-visible
+  matches Portage for 100/100 multi-version package names, and normalized GLEP
+  84 reason text matches 25/25 masked CPVs.
+- [x] Matrix tests for profile parent precedence and package.* directories. Parent
   chains, diamonds, cycles, ordered package.use overlap and policy removal have
-  fixtures; the remaining package.* families still need coverage.
-- [!] Regression fixture for ABI_X86 and `abi_x86_32?` dependencies. Atom
-  USE defaults and conditional/equality operators now round-trip and resolve
-  against parent USE; the full Signal plan must still match Portage.
-- [ ] Regression fixture for IUSE `+flag` and `-flag` defaults.
-- [ ] Property test that configuration reduction is deterministic.
+  fixtures; directory-form use, keywords, license, mask/unmask, provided and env
+  families load in lexical order with their production representations checked.
+- [x] Regression fixture for ABI_X86 and `abi_x86_32?` dependencies. Atom
+  USE defaults and conditional/equality operators round-trip and resolve
+  against parent USE; the live `net-im/signal-desktop-bin` full-plan comparator
+  now matches Portage exactly at 1/1 action with no normalized differences.
+- [x] Regression fixture for IUSE `+flag` and `-flag` defaults.
+- [x] Property test that configuration reduction is deterministic.
 
 Acceptance gate:
 
 - Arise agrees with Portage on visible candidates and effective USE for the
   selected real-world corpus.
 
-Current live differential: the enabled global USE set matches
-`portageq envvar USE` exactly (231/231 flags) on the development machine. Package-specific
-effective USE is the next differential target.
+Immutable evidence manifest (2026-07-17): the enabled global USE set
+matches `portageq envvar USE` exactly at 231/231 flags and the deterministic
+package-specific effective-USE corpus matches 100/100 visible CPVs. Portable
+policy/precedence tests plus the fingerprinted 100-USE, 100-visibility, 25-mask,
+nine-policy-variable and privilege-boundary results close the P2 gate. Raw host
+bundles remain local because they contain machine policy and paths.
 
 ## P3 — dependency expression and resolver correctness
 
@@ -238,16 +330,32 @@ validity and promotion criteria, in
   prioritizing interpreter transitions, live packages and changed dependencies.
 - [~] Produce structured installed-versus-replacement slot-conflict causes.
   Slot conflicts now retain machine-readable package, slot, atom and dependency
-  reason records with transactional rollback. Installed/replacement candidate
-  state and complete rendering remain.
-- [ ] Differentially cover `@system`, single-package installs, `--with-bdeps`,
-  `--deep`, `--complete-graph`, and high-backtrack plans independently.
+  reason records with transactional rollback. Post-solve dependency, blocker,
+  parse and repair failures now also emit typed verification details, including
+  the affected retained package where known, and JSON plans preserve them.
+  Installed/replacement candidate state and complete rendering remain.
+- [~] Differentially cover `@system`, single-package installs, `--with-bdeps`,
+  `--deep`, `--complete-graph`, and high-backtrack plans independently. Shallow
+  `@system` now matches exactly at 11/11 actions with effective USE equality,
+  and the Signal single-package plan matches 1/1. The comparator exposes
+  independent deep and with-bdeps controls; Signal remains exact with
+  `--with-bdeps=y`, `--with-bdeps=n`, complete graph, and backtrack 1,000.
+  Fixing deep installed-dependency
+  promotion moved `@system --deep` from 13/131 to 129/131 actions, with 39
+  normalized residual differences concentrated in Python/Perl transitions.
 - [x] Compare conflicted live plans at backtrack 20, 100 and 1,000 before
   attributing plan-completeness differences to either resolver. Portage
   remained at 135 actions and the same four-action gap at every limit; Arise
   produced 139 actions and needed one backtrack decision.
-- [ ] Promote the normalized comparisons into permanent same-snapshot fixtures
-  and correctness gates, including effective USE equality.
+- [~] Promote the normalized comparisons into permanent same-snapshot fixtures
+  and correctness gates, including effective USE equality. Historical
+  installed-only `(-flag%)` output is excluded from the replacement USE domain
+  by a permanent parser regression; live shallow @system and Signal gates still
+  need a sanitized immutable snapshot before they are machine-independent.
+  A versioned read-only reference harness now captures command/stdout/stderr/
+  status records from emerge, portageq, equery, portage-utils and eix in smoke,
+  standard, full and explicit privilege-boundary lanes. Snapshot fingerprinting,
+  sanitization and promotion of captured bundles remain.
 
 - [~] Preserve complete per-version dependency expressions in the graph. The
   compact resolver snapshot and VersionInfo now retain all five dependency
@@ -270,8 +378,18 @@ validity and promotion criteria, in
   `flag=`, `!flag=`, `flag(+)` and `flag(-)`, and repository/VDB graph records
   preserve EAPI so pre-EAPI-2 USE dependencies and pre-EAPI-4 defaults are
   rejected rather than silently misinterpreted.
-- [ ] Implement REQUIRED_USE as a real boolean/cardinality expression evaluator.
-- [ ] Implement blockers and replacement/unmerge ordering.
+- [x] Implement REQUIRED_USE as a real boolean/cardinality expression evaluator,
+  including all-of, any-of, exactly-one, at-most-one and USE conditionals.
+- [~] Implement blockers and replacement/unmerge ordering. Versioned blockers,
+  target/world conflicts, coordinated replacement upgrades and planned
+  uninstalls have resolver fixtures. Weak `!` versus strong `!!` semantics now
+  remain distinct through dependency edges, and strong planned removals carry
+  an explicit remove-before-merge requirement. Blocker matching now enumerates
+  every matching installed version deterministically: qualified blockers retain
+  unrelated parallel slots, unqualified blockers schedule every matching slot,
+  and removal actions preserve exact version/slot/repository identity. Enforcing
+  remove-before-merge ordering belongs to the P4 transaction scheduler and
+  remains a live-mutation gate.
 - [~] Implement virtual/provider selection and provider preference. Provider
   atoms now enforce version, slot and USE constraints and provider alternatives
   use bounded transactional rollback. EAPI virtual semantics and real-world
@@ -283,10 +401,19 @@ validity and promotion criteria, in
   instance. Alternatives are now
   attempted transactionally with complete search-state rollback and bounded
   backtrack accounting; nested groups still need differential coverage.
-- [ ] Implement circular dependency detection and useful diagnostics.
-- [ ] Implement slot conflict explanations.
-- [ ] Implement subslot rebuilds and complete-graph behavior.
-- [ ] Implement changed-use, newuse and changed-deps from installed metadata.
+- [x] Implement circular dependency detection and useful diagnostics. Active
+  dependency paths emit one deterministic cycle chain without recursing to a
+  depth-limit failure or rejecting an otherwise resolvable plan.
+- [x] Implement slot conflict explanations. Machine-readable causes retain each
+  parent requirement and enumerate installed/available candidates with
+  visibility plus per-constraint satisfaction and rejection verdicts.
+- [~] Implement subslot rebuilds and complete-graph behavior. Deterministic
+  direct/transitive slot-operator rebuilds, unchanged/no-operator cases, set
+  scoping and ignore-built-slot-operator-deps have fixtures; live reverse-VDB
+  propagation still differs from Portage.
+- [x] Implement changed-use, newuse and changed-deps from installed metadata.
+  Effective USE changes are distinct from IUSE-domain additions, and changed
+  dependencies compare installed VDB metadata across all five dependency classes.
 - [ ] Implement real backtracking with bounded decision history.
 - [~] Version constraints are now accumulated per CP/slot, enforce one final
   candidate per slot, and consume the configured backtrack budget when a later
@@ -342,16 +469,26 @@ validity and promotion criteria, in
   rebuild propagation, slot-operator rebuilds and action intent match Portage.
 - [ ] Golden tests for blockers, slots, subslots, virtuals and any-of groups.
 - [ ] Property tests for topological ordering and solution satisfaction.
-- [!] Add a mandatory post-solve whole-state verifier before permitting a real
+- [~] Add a mandatory post-solve whole-state verifier before permitting a real
   transaction: overlay the proposed installs/removals on the VDB snapshot and
   prove every retained and planned dependency, blocker, slot and USE constraint.
+  Resolve results now carry an explicit verified/failed/skipped-nodeps/incomplete
+  status, JSON plans expose it, and the production non-pretend boundary rejects
+  every result not marked verified. Pretend remains available for diagnostics;
+  `--nodeps` cannot silently cross into execution. The verifier's remaining
+  dependency/root semantics and portable parity corpus still block completion.
   The current laptop world case produces a 138-action Arise plan while Portage
   reports Python-target same-slot conflicts; Arise must prove that its larger
   plan resolves those constraints rather than merely omitting reverse-installed
   edges.
 - [~] Post-solve verifier now overlays multiple installed slots, preserves
   candidate versus installed USE/dependency metadata, and validates affected
-  retained reverse constraints. On the laptop world transition it reports 22
+  retained reverse constraints. Exact per-version planned removals no longer
+  erase unrelated parallel slots from the overlaid state, and removals now join
+  installs in the affected-name set so retained consumers are revalidated.
+  Regression matrices cover a failed replacement, a complete-graph repair and a
+  removal that breaks a retained runtime dependency; their verification status
+  and structured conflict records are asserted. On the laptop world transition it reports 22
   Python/Rust conflicts instead of returning a false success; @system remains
   an exact conflict-free 11-package plan. Next feed these structured failures
   into complete-graph rebuild expansion and backtracking.
@@ -385,22 +522,82 @@ Acceptance gate:
 - [ ] Add an end-to-end empty-cache/no-network install test for the released
   Arise ebuild and all overlay-managed Go dependencies.
 
-- [!] Design a versioned Go-to-Bash execution protocol.
-- [!] Source the chosen ebuild and inherited eclasses in an isolated environment.
-- [ ] Implement phase discovery and EAPI default phases.
-- [ ] Implement required environment variables and directory layout.
-- [ ] Implement a minimum complete helper ABI for current supported EAPIs.
+- [~] Design a versioned Go-to-Bash execution protocol. Version 1 defines a
+  validated run-phase request and line-delimited phase/log/QA/result events;
+  request IDs, strict per-worker sequence numbers and one terminal exit status
+  prevent output cross-talk under high job counts. A clean-environment Bash
+  worker now completes the handshake, sources a selected ebuild, invokes one
+  phase and returns ordered logs/results. The default backend now follows
+  Portage by requiring its `sandbox` executable for filesystem mediation and
+  failing closed when it is unavailable. An explicit enhanced Bubblewrap mode
+  supplies private user, PID, IPC, UTS, cgroup and network namespaces, a minimal
+  read-only runtime, private tmp/proc/dev and a single read-only ebuild bind;
+  it never silently falls back. Portage-like direct network, IPC, mount and PID
+  namespace assembly is capability-detected independently, warns and degrades
+  to the remaining protections when unavailable, and never requires an
+  unprivileged user namespace. Wiring FEATURES/RESTRICT policy, cancellation
+  escalation and the complete environment contract remain. The request can
+  carry a typed Manifest-verified artifact set; the worker revalidates it before
+  startup, injects DISTDIR, and enhanced isolation binds it read-only.
+- [~] Source the chosen ebuild and inherited eclasses in an isolated environment.
+  The selected ebuild is sourced in a no-profile/no-rc Bash process with a
+  reserved environment allowlist and protocol-only stdout. An enhanced-mode
+  fixture proves arbitrary host files outside explicit binds are invisible.
+  Runtime inherit now resolves safe eclass names through deterministic
+  caller-supplied repository/master directories, sources nested inheritance
+  once, rejects cycles/missing eclasses and implements EXPORT_FUNCTIONS phase
+  wrappers. Package policy now derives child-first eclass directories from the
+  selected repository graph with missing/cycle preflight. Connecting resolved
+  actions to that request builder and the full eclass helper environment remain.
+  Legacy rebuild unpacking now receives exact Manifest-verified artifact names
+  instead of scanning the shared DISTDIR and rejects selected unknown formats.
+  Eclass inheritance, namespace policy and the complete controlled
+  source/dist/work bind layout remain release blockers.
+- [~] Implement phase discovery and EAPI default phases. Discovery now sources
+  the real ebuild/eclasses and emits deterministic ebuild-defined and exported
+  phase events separately from the declared EAPI 7/8 default sequence. Requests
+  reject other EAPIs before worker startup and reject a sourced EAPI mismatch.
+  The versioned worker now supplies default src_prepare/eapply_user with exact
+  Portage-compatible PN/P/P-PR and slot-qualified patch precedence, basename
+  override/empty suppression, a controlled WORKDIR, an application tag and
+  explicit patch status propagation. Package policy derives existing patch
+  directories from package identity. Remaining default phase bodies and
+  production migration from the legacy runner block deleting its synthetic
+  success path.
+- [~] Implement required environment variables and directory layout. Requests
+  now own absolute WORKDIR, S, D and ED paths; enhanced isolation binds work,
+  source and image directories read-write and prevents package.env from
+  overriding them. ROOT, SYSROOT and BROOT are explicit independently validated
+  domains; strict isolation maps non-host roots read-only without rebinding `/`.
+  T/TMPDIR/TMP/TEMP and HOME are controlled writable scratch locations and are
+  likewise reserved from environment injection. Log layout and the remaining
+  PMS/package identity variables remain.
+- [~] Implement a minimum complete helper ABI for current supported EAPIs.
+  Explicit-status eapply/eapply_user, emake, econf, dodoc and einstalldocs now
+  support the EAPI 7/8 default prepare/configure/compile/test/install path.
+  Full option semantics and the remaining helper families remain blockers.
 - [ ] Execute pkg_setup, source phases, pkg_preinst/postinst and pkg_prerm/postrm.
 - [ ] Honor RESTRICT and PROPERTIES.
-- [ ] Capture structured logs, phase events, qa notices and exit status.
-- [ ] Preserve the static Go control plane when Python is unavailable.
-- [ ] Declare supported EAPIs and reject unsupported EAPIs before mutation.
+- [~] Capture structured logs, phase events, QA notices and exit status. Ordered
+  phase/log/result events and one terminal status are enforced; separate stderr,
+  QA producers, persistent logs and cancellation events remain.
+- [x] Preserve the static Go control plane when Python is unavailable. The
+  protocol and isolation launcher are Go and execute Bash directly without
+  importing or invoking Portage Python.
+- [x] Declare supported EAPIs and reject unsupported EAPIs before mutation.
+  The initial ABI declares EAPI 7 and 8; request validation happens before
+  sandbox/namespace startup, and the sourced declaration must match preflight.
 
 ### Tests
 
-- [ ] Synthetic ebuild fixture per phase and supported EAPI.
-- [ ] Eclass inheritance and exported phase fixtures.
-- [ ] Helper ABI contract tests.
+- [~] Synthetic fixtures cover discovery, exported phases and EAPI 8 default
+  prepare/configure/compile/test/install; EAPI 7 and lifecycle/default-unpack
+  matrices remain.
+- [~] Eclass inheritance and exported phase fixtures cover nested inheritance,
+  missing eclasses, cycles and exported discovery/execution. Repository-master
+  precedence and representative real Gentoo eclasses remain.
+- [~] Helper ABI contracts cover patch precedence/failure, Makefile defaults,
+  image installation and default docs for the initial helper subset.
 - [ ] Environment snapshot comparisons with Portage.
 - [ ] Build representative packages: trivial, autotools, cmake, meson, Go,
   Python, Rust, kernel module, binary-only and config-protected.
@@ -413,22 +610,43 @@ Acceptance gate:
 
 ## P5 — fetch and verification
 
-- [ ] Reuse DISTDIR atomically and avoid duplicate concurrent downloads.
-- [ ] Implement Manifest digest and size verification.
-- [ ] Implement GENTOO_MIRRORS and `mirror://` expansion.
-- [ ] Implement ordered URI fallback and rename syntax.
+- [~] Reuse DISTDIR atomically and avoid duplicate concurrent downloads. A
+  shared Fetcher coordinates identical Manifest identities per DISTDIR, reuses
+  valid files and commits unique temporary files by atomic rename. Linux
+  processes additionally coordinate through symlink-safe, context-cancellable
+  per-artifact flock files; subprocess fixtures prove contention and release.
+  Resumable partial state remains. Production source fetch-only and legacy
+  rebuild preparation call the same AcquireManifest entry point.
+- [~] Implement Manifest digest and size verification. Strict DIST parsing,
+  safe names, conflicting-record rejection, BLAKE2B/SHA256/SHA512 verification,
+  enabled SRC_URI conditionals, rename syntax and ordered same-name fallbacks
+  now produce a typed verified artifact set. Full Manifest policy parity and
+  additional algorithms remain.
+- [~] Implement GENTOO_MIRRORS and `mirror://` expansion. Effective
+  GENTOO_MIRRORS supplies `mirror://gentoo`, selected repositories provide
+  ordered profiles/thirdpartymirrors groups, and unknown or unsupported groups
+  fail explicitly. Master-repository stacking and RESTRICT mirror policy remain.
+- [~] Implement ordered URI fallback and rename syntax. Rename destinations,
+  repeated same-destination sources and ordered mirror endpoints share one
+  Manifest identity and advance only after transport or verification failure.
+  Full Portage primaryuri/mirror restriction ordering remains.
 - [ ] Implement supported fetch-command overrides and protocols.
 - [ ] Implement partial download resume safely.
 - [ ] Implement RESTRICT=fetch and pkg_nofetch behavior.
 - [ ] Integrate VCS fetchers through eclasses/execution ABI.
-- [ ] Deduplicate network work across concurrent package builds.
+- [x] Deduplicate network work across concurrent package builds. One Fetcher
+  coalesces goroutines, and per-artifact Linux flock files coordinate separate
+  Fetchers and processes through verified atomic commit.
 
 ### Tests
 
 - [ ] Local HTTP fixture for redirects, ranges, failures and fallback.
-- [ ] Digest mismatch and corrupted-cache tests.
-- [ ] Concurrent request deduplication test.
-- [ ] Offline build using a complete DISTDIR.
+- [x] Digest mismatch and corrupted-cache tests, including preservation of an
+  existing cache entry when every replacement source fails verification.
+- [x] Concurrent request deduplication tests across goroutines, independent
+  Fetchers and subprocess lock contention/release.
+- [x] Offline synthetic rebuild using a complete Manifest-verified DISTDIR and
+  an intentionally unreachable upstream URI.
 
 Acceptance gate:
 
@@ -438,7 +656,9 @@ Acceptance gate:
 ## P6 — transactional merge and unmerge
 
 - [!] Design and implement an operation journal.
-- [!] Run collision/ownership validation before live-root mutation.
+- [~] Run collision/ownership validation before live-root mutation. A VDB
+  ownership scanner and image collision fixtures exist, but the prototype merge
+  path does not invoke them and remains unreachable from production commands.
 - [ ] Implement CONFIG_PROTECT and CONFIG_PROTECT_MASK.
 - [ ] Preserve modes, ownership, timestamps, symlinks, hardlinks, xattrs, ACLs
   and file capabilities.
@@ -454,8 +674,11 @@ Acceptance gate:
 
 - [ ] Merge/unmerge round-trip property tests.
 - [ ] Compare image root and VDB with Portage fixtures.
-- [ ] CONFIG_PROTECT behavioral matrix.
-- [ ] File ownership and cross-package collision tests.
+- [ ] CONFIG_PROTECT behavioral matrix, including differential fixtures against
+  Portage merge output and subsequent dispatch-conf/etc-update handling in a
+  disposable ROOT.
+- [~] File ownership and cross-package collision fixtures cover the standalone
+  scanner; transaction-integrated collision-protect/protect-owned cases remain.
 - [ ] Kill process at every journal boundary and recover.
 - [ ] Concurrent non-conflicting and conflicting merge tests.
 
@@ -469,7 +692,9 @@ Acceptance gate:
 - [ ] Replace FIFO worker distribution with a DAG ready queue.
 - [ ] Release dependents only after successful dependency completion.
 - [ ] Propagate failures and implement keep-going by independent subgraph.
-- [ ] Apply load-average backpressure in production workers.
+- [~] Apply load-average backpressure in production workers. Linux loadavg
+  sampling and the legacy rebuild context exist; the future DAG resource
+  scheduler does not consume them yet.
 - [ ] Model CPU, memory, network and merge resources separately.
 - [ ] Support fetch-ahead while respecting build and merge ordering.
 - [ ] Make output deterministic with per-package event streams.
@@ -492,9 +717,14 @@ Acceptance gate:
 ## P8 — wire install, update and removal end to end
 
 - [!] Connect resolved plans to fetch/build/binpkg/merge/unmerge execution.
-- [ ] Correctly implement pretend, ask, fetchonly and buildpkgonly.
+- [~] Correctly implement pretend, ask, fetchonly and buildpkgonly. Source
+  fetch-only now executes the resolved plan through the shared Manifest-backed
+  verified DISTDIR pipeline without entering build or merge; binary fetch,
+  complete ask semantics and buildpkgonly remain.
 - [ ] Update world only for successful explicit installs and respect oneshot.
-- [ ] Mark resume nodes complete after transaction commit.
+- [~] Mark resume nodes complete after transaction commit. Versioned resume
+  persistence, load, skip-first and completion primitives have fixtures, but
+  no P6 transaction commit exists to authorize completion.
 - [ ] Implement update @world and package sets.
 - [ ] Implement uninstall with reverse-dependency safety.
 - [ ] Implement depclean and prune execution with confirmation and journaling.
@@ -507,7 +737,8 @@ Acceptance gate:
 - [ ] Upgrade, downgrade, reinstall, slot coexistence and replacement tests.
 - [ ] End-to-end uninstall/depclean/prune tests.
 - [ ] Resume after injected fetch, build and merge failures.
-- [ ] Verify pretend performs zero mutations.
+- [x] Verify pretend performs zero mutations. A copied-binary live check matched
+  the Signal plan while before/after VDB and world fingerprints were identical.
 
 Acceptance gate:
 
@@ -548,11 +779,36 @@ Acceptance gate:
 
 ## P10 — remaining emerge and maintenance behavior
 
+- [ ] Extract stable, independently versioned Go libraries from Arise's
+  Portage-compatible core so other tooling can reuse atoms and dependency
+  expressions, repository/VDB metadata, profile/config evaluation, immutable
+  snapshots, Manifest/fetch verification, plan/conflict records and the phase
+  protocol without importing the Arise CLI or mutable implementation details.
+  Define compatibility policy, narrow interfaces, conformance fixtures and
+  examples; keep orchestration, product policy and live mutation in Arise.
+- [ ] Publish a composable Bash runtime for ebuilds, eclasses and Gentoo tooling
+  that replaces `set -e`/`set -euo pipefail` folklore with explicit checked-call,
+  pipeline, cleanup/defer, typed diagnostic, stack-context and status-propagation
+  helpers. Preserve expected nonzero statuses in conditionals and probes, never
+  let a caller's shell options silently change library semantics, and make
+  failures round-trip through Arise's structured phase protocol. Validate the
+  library across functions, subshells, command substitutions, pipelines,
+  traps/signals and nested sourcing on every supported Bash version.
+
 - [ ] Implement accurate `emerge --info`-equivalent output.
 - [ ] Implement package sets and list-sets behavior.
 - [ ] Complete autounmask suggestions and atomic config writes.
 - [ ] Implement pkg_config execution.
-- [ ] Complete dispatch-conf-style recursive config management.
+- [ ] Complete dispatch-conf-style recursive config management: protected-tree
+  discovery; stable candidate ordering; update/keep/skip/edit/merge/diff/quit
+  decisions; identical-file and safe auto-merge handling; isolated archive and
+  rollback; configured pre/post-session and pre/post-update hooks; metadata
+  preservation; explicit interruption recovery; and differential tests against
+  Portage's dispatch-conf and etc-update in a disposable ROOT. Cover
+  etc-update's preen and automatic modes, explicit scan paths, and
+  PORTAGE_CONFIGROOT/EROOT behavior. Run dispatch-conf inside a chroot or
+  mount-isolated root because it has no root-selection CLI. Never use the live
+  host configuration as a behavioral fixture.
 - [ ] Wire preserved-rebuild and revdep-rebuild through the safe planner/executor.
 - [ ] Supplant `perl-cleaner`: detect Perl subslot/ABI transitions, stale module
   files and packages linked to obsolete libperl instances; produce one
@@ -619,6 +875,26 @@ These are product goals, not substitutes for correctness:
 - [ ] First-class rollback and crash recovery.
 - [ ] Plan diff: show what changed since the last sync or previous solution.
 - [ ] Resolver trace that can be attached to bug reports without private data.
+- [ ] Counterfactual planning: compare profile, USE, keyword, license, repository
+  or package-version choices without editing live configuration, and explain
+  the smallest policy change that produces each alternative plan.
+- [ ] Upgrade risk report before approval: identify critical-path packages,
+  ABI/subslot transitions, removals, config-file changes, preserved libraries,
+  boot/session/network impact and the transaction's last safe rollback point.
+- [ ] Portage configuration doctor: lint stale or shadowed package.* atoms,
+  contradictory USE policy, obsolete targets, unknown flags, duplicate rules,
+  repository drift and settings that no installed/visible package consumes.
+- [ ] Maintenance cockpit with evidence-backed priorities: combine news,
+  security advisories, preserved rebuilds, broken linkage, stale interpreters,
+  depclean candidates and pending config updates into one explainable plan,
+  without turning advisory findings into automatic mutations.
+- [ ] Reproducible privacy-reviewed support bundle containing configuration and
+  repository fingerprints, normalized plan/conflicts, resolver trace and
+  relevant VDB metadata; redact paths, hostnames, mirrors and secrets by
+  default and make the bundle diffable across machines.
+- [ ] Transaction rehearsal in a disposable ROOT or overlay snapshot, including
+  lifecycle probes and post-state verification, before offering the identical
+  journaled plan for approval on the live root.
 - [ ] Fast versionless installed-atom output and strong eix-style search.
 - [x] Immutable versioned package-name sidecar with atomic replacement,
   checksums, exact lookup, substring lookup, and Badger fallback.

@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "date": "2026-07-17",
+  "go_version": "1.26.3",
+  "lanes": {
+    "core": {
+      "statement_percent": 68.4,
+      "timeout_seconds": 60,
+      "test_execution_excludes": [
+        "internal/benchmark",
+        "internal/binpkg",
+        "internal/fetch",
+        "internal/integration"
+      ],
+      "instrumentation": "./...",
+      "status": "pass"
+    },
+    "network": {
+      "statement_percent": null,
+      "status": "blocked_in_workspace_sandbox",
+      "reason": "httptest loopback listeners are not permitted"
+    },
+    "benchmark": {
+      "whole_tree_statement_percent": 13.5,
+      "harness_package_statement_percent": 66.5,
+      "runtime_seconds": 119.395,
+      "timeout_seconds": 180,
+      "instrumentation": "./...",
+      "status": "pass"
+    }
+  }
+}

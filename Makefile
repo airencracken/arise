@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-unit test-adversarial test-mutation test-race test-bench test-integration test-coverage vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
+.PHONY: all build static test test-v test-unit test-adversarial test-mutation test-race test-bench test-integration test-coverage test-coverage-network test-coverage-benchmark vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -11,6 +11,7 @@ DOCDIR ?= $(PREFIX)/share/doc/arise
 GO ?= go
 GOFLAGS ?= -trimpath -ldflags="-s -w"
 CGO_ENABLED ?= 0
+COVERAGE_CORE_PKGS := $(shell $(GO) list ./cmd/... ./internal/... | grep -Ev '/(benchmark|binpkg|fetch|integration)$$')
 
 all: build test vet
 
@@ -52,8 +53,20 @@ test-integration:
 	fi
 
 test-coverage:
-	$(GO) test $$($(GO) list ./internal/... | grep -v /integration$$) -coverprofile=/tmp/arise-coverage.out -covermode=atomic
-	$(GO) tool cover -func=/tmp/arise-coverage.out
+	$(GO) test $(COVERAGE_CORE_PKGS) -coverpkg=./... -coverprofile=/tmp/arise-coverage.out -covermode=atomic -count=1 -timeout 60s
+	$(GO) tool cover -func=/tmp/arise-coverage.out > /tmp/arise-coverage-functions.txt
+	@tail -n 1 /tmp/arise-coverage-functions.txt
+	@echo "Function report: /tmp/arise-coverage-functions.txt"
+	@echo "Core coverage excludes network-listener, live-integration and benchmark test execution; all production packages remain instrumented."
+
+test-coverage-network:
+	$(GO) test ./internal/binpkg ./internal/fetch -coverpkg=./... -coverprofile=/tmp/arise-coverage-network.out -covermode=atomic -count=1 -timeout 60s
+
+test-coverage-benchmark:
+	$(GO) test ./internal/benchmark -coverpkg=./... -coverprofile=/tmp/arise-coverage-benchmark.out -covermode=atomic -count=1 -timeout 180s
+	$(GO) tool cover -func=/tmp/arise-coverage-benchmark.out > /tmp/arise-coverage-benchmark-functions.txt
+	@tail -n 1 /tmp/arise-coverage-benchmark-functions.txt
+	@echo "Benchmark function report: /tmp/arise-coverage-benchmark-functions.txt"
 
 test-coverage-html: test-coverage
 	$(GO) tool cover -html=/tmp/arise-coverage.out -o /tmp/arise-coverage.html

@@ -23,16 +23,35 @@ type report struct {
 func main() {
 	arisePath := flag.String("arise", "arise", "Arise executable")
 	emergePath := flag.String("emerge", "emerge", "emerge executable")
+	ariseDB := flag.String("arise-db", "", "Arise metadata database path")
+	ariseRepo := flag.String("arise-repo", "", "Arise repository path")
 	target := flag.String("target", "@world", "package atom or set")
 	operation := flag.String("operation", "update", "Arise operation")
 	completeGraph := flag.Bool("complete-graph", true, "enable complete-graph resolution")
+	deep := flag.Bool("deep", false, "enable deep dependency traversal")
+	withBdeps := flag.String("with-bdeps", "auto", "build dependency mode: y, n, or auto")
 	backtrack := flag.Int("backtrack", 20, "backtrack limit for both resolvers")
 	jsonOutput := flag.Bool("json", false, "emit JSON")
 	flag.Parse()
+	if *withBdeps != "auto" && *withBdeps != "y" && *withBdeps != "n" {
+		fatal(fmt.Errorf("--with-bdeps must be auto, y, or n"))
+	}
 
 	ariseArgs := []string{"--json", "--pretend", fmt.Sprintf("--backtrack=%d", *backtrack)}
+	if *ariseDB != "" {
+		ariseArgs = append(ariseArgs, "--db", *ariseDB)
+	}
+	if *ariseRepo != "" {
+		ariseArgs = append(ariseArgs, "--repo", *ariseRepo)
+	}
 	if *completeGraph {
 		ariseArgs = append(ariseArgs, "--complete-graph")
+	}
+	if *deep {
+		ariseArgs = append(ariseArgs, "--deep")
+	}
+	if *withBdeps != "auto" {
+		ariseArgs = append(ariseArgs, "--with-bdeps="+*withBdeps)
 	}
 	ariseArgs = append(ariseArgs, *operation, *target)
 	// Verbose output is required for Portage to retain slot, repository and USE
@@ -43,6 +62,12 @@ func main() {
 	}
 	if *completeGraph {
 		emergeArgs = append(emergeArgs, "--complete-graph=y")
+	}
+	if *deep {
+		emergeArgs = append(emergeArgs, "--deep")
+	}
+	if *withBdeps != "auto" {
+		emergeArgs = append(emergeArgs, "--with-bdeps="+*withBdeps)
 	}
 	emergeArgs = append(emergeArgs, *target)
 

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/airencracken/arise/internal/plancompare"
 )
 
 type Command struct {
@@ -126,7 +128,7 @@ func LoadWorkload(path string) (Workload, error) {
 			return Workload{}, fmt.Errorf("case %q must provide both validation commands", c.Name)
 		}
 		switch c.Normalize {
-		case "exact", "sorted-lines", "package-names", "search-package-names", "exit-code":
+		case "exact", "sorted-lines", "package-names", "search-package-names", "package-plan", "exit-code":
 		default:
 			return Workload{}, fmt.Errorf("case %q has unsupported normalization %q", c.Name, c.Normalize)
 		}
@@ -184,8 +186,9 @@ func runCase(ctx context.Context, c Case, warmups, runs int) (Result, error) {
 		ariseRuns = append(ariseRuns, a)
 		referenceRuns = append(referenceRuns, p)
 	}
-	aOut := normalize(ariseRuns[0].stdout, c.Normalize)
-	pOut := normalize(referenceRuns[0].stdout, c.Normalize)
+	aRaw, pRaw := ariseRuns[0].stdout, referenceRuns[0].stdout
+	aOut := normalize(aRaw, c.Normalize)
+	pOut := normalize(pRaw, c.Normalize)
 	aExit, pExit := ariseRuns[0].exit, referenceRuns[0].exit
 	if c.AriseValidate != nil {
 		aValidation, err := execute(ctx, *c.AriseValidate)
@@ -198,6 +201,7 @@ func runCase(ctx context.Context, c Case, warmups, runs int) (Result, error) {
 		}
 		aOut = normalize(aValidation.stdout, c.Normalize)
 		pOut = normalize(pValidation.stdout, c.Normalize)
+		aRaw, pRaw = aValidation.stdout, pValidation.stdout
 		aExit, pExit = aValidation.exit, pValidation.exit
 	}
 	r := Result{Name: c.Name, Normalize: c.Normalize, AriseExitCode: ariseRuns[0].exit, ReferenceTool: c.Reference.Tool, ReferenceExitCode: referenceRuns[0].exit}
@@ -210,7 +214,8 @@ func runCase(ctx context.Context, c Case, warmups, runs int) (Result, error) {
 	}
 	r.AriseOutputSHA256 = digest(aOut)
 	r.ReferenceOutputSHA256 = digest(pOut)
-	r.Equivalent = aExit == pExit && bytes.Equal(aOut, pOut)
+	exitEquivalent := aExit == pExit || c.Normalize == "package-plan"
+	r.Equivalent = exitEquivalent && outputsEquivalent(aRaw, pRaw, aOut, pOut, c.Normalize)
 	if c.AriseValidate == nil {
 		for i := range ariseRuns {
 			if ariseRuns[i].exit != r.AriseExitCode || !bytes.Equal(normalize(ariseRuns[i].stdout, c.Normalize), aOut) {
@@ -241,6 +246,18 @@ func runCase(ctx context.Context, c Case, warmups, runs int) (Result, error) {
 	r.PerformancePass = r.Speedup >= r.MinSpeedup
 	r.PerformanceEnforced = !c.ReportOnly
 	return r, nil
+}
+
+func outputsEquivalent(ariseRaw, referenceRaw, ariseNormalized, referenceNormalized []byte, mode string) bool {
+	if mode != "package-plan" {
+		return bytes.Equal(ariseNormalized, referenceNormalized)
+	}
+	arisePlan, err := plancompare.ParseAriseJSON(string(ariseRaw))
+	if err != nil {
+		return false
+	}
+	referencePlan, err := plancompare.ParseEmerge(string(referenceRaw))
+	return err == nil && len(plancompare.Compare(arisePlan, referencePlan)) == 0
 }
 
 func cacheSize(paths []string) (int64, error) {
@@ -367,6 +384,23 @@ func normalize(data []byte, mode string) []byte {
 		}
 		sort.Strings(names)
 		s = strings.Join(names, "\n")
+	}
+	if mode == "package-plan" {
+		var actions []plancompare.Action
+		var err error
+		if strings.HasPrefix(s, "{") {
+			actions, err = plancompare.ParseAriseJSON(s)
+		} else {
+			actions, err = plancompare.ParseEmerge(s)
+		}
+		if err != nil {
+			return []byte("package-plan parse error: " + err.Error())
+		}
+		normalized, err := json.Marshal(actions)
+		if err != nil {
+			return []byte("package-plan encode error: " + err.Error())
+		}
+		return normalized
 	}
 	return []byte(s)
 }

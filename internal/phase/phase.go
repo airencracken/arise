@@ -17,6 +17,8 @@ import (
 type PhaseConfig struct {
 	WorkDir           string
 	Sourcedir         string
+	DistDir           string
+	Distfiles         []string
 	DESTDIR           string
 	CFLAGS            string
 	CXXFLAGS          string
@@ -44,6 +46,9 @@ func NewRunner(cfg PhaseConfig) (*Runner, error) {
 	}
 	if cfg.DESTDIR == "" {
 		return nil, fmt.Errorf("phase: DESTDIR must not be empty")
+	}
+	if err := cfg.Features.ExecutionError(); err != nil {
+		return nil, fmt.Errorf("phase: %w", err)
 	}
 	return &Runner{cfg: cfg}, nil
 }
@@ -74,10 +79,22 @@ func (r *Runner) RunPhase(ctx context.Context, phase string) error {
 		"pkg_config",
 		"pkg_info",
 		"pkg_nofetch":
-		return nil
+		return unsupportedPhase(phase)
 	default:
-		return nil
+		return unsupportedPhase(phase)
 	}
+}
+
+type UnsupportedPhaseError struct {
+	Phase string
+}
+
+func (e *UnsupportedPhaseError) Error() string {
+	return fmt.Sprintf("phase: %s is unsupported by the current execution ABI", e.Phase)
+}
+
+func unsupportedPhase(phase string) error {
+	return &UnsupportedPhaseError{Phase: phase}
 }
 
 func (r *Runner) RunPhases(ctx context.Context, phases []string) error {
@@ -95,19 +112,30 @@ func (r *Runner) RunPhases(ctx context.Context, phases []string) error {
 }
 
 func (r *Runner) unpack(ctx context.Context) error {
-	srcDir := r.cfg.Sourcedir
+	srcDir := r.cfg.DistDir
+	if srcDir == "" {
+		srcDir = r.cfg.Sourcedir
+	}
 	workDir := r.cfg.WorkDir
 
-	entries, err := os.ReadDir(srcDir)
-	if err != nil {
-		return err
+	names := append([]string(nil), r.cfg.Distfiles...)
+	if names == nil {
+		entries, err := os.ReadDir(srcDir)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				names = append(names, entry.Name())
+			}
+		}
 	}
 
-	for _, e := range entries {
-		ext := filepath.Ext(e.Name())
+	for _, name := range names {
+		ext := filepath.Ext(name)
 		switch ext {
 		case ".gz", ".xz", ".bz2", ".tgz":
-			archivePath := filepath.Join(srcDir, e.Name())
+			archivePath := filepath.Join(srcDir, name)
 			cmd := exec.CommandContext(ctx, "tar", "xf", archivePath, "-C", workDir)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
@@ -116,6 +144,10 @@ func (r *Runner) unpack(ctx context.Context) error {
 				return cmdError(err)
 			}
 			return nil
+		default:
+			if r.cfg.Distfiles != nil {
+				return fmt.Errorf("phase: selected distfile %s has unsupported archive format", name)
+			}
 		}
 	}
 	return nil
@@ -244,6 +276,9 @@ func (r *Runner) buildEnv() []string {
 	setenv("DESTDIR", r.cfg.DESTDIR)
 	setenv("ED", r.cfg.DESTDIR)
 	setenv("EROOT", r.cfg.DESTDIR)
+	if r.cfg.DistDir != "" {
+		setenv("DISTDIR", r.cfg.DistDir)
+	}
 	if r.cfg.CFLAGS != "" {
 		setenv("CFLAGS", r.cfg.CFLAGS)
 	}

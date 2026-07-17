@@ -23,7 +23,7 @@ func TestParseAndComparePlans(t *testing.T) {
 }
 
 func TestParseEmergeCanonicalizesUseExpandAndMarkers(t *testing.T) {
-	plan, err := ParseEmerge(`[ebuild U ] media-libs/mesa-26.0.8::gentoo USE="(opengl) -test" ABI_X86="(64) -32 (-x32)" LLVM_SLOT="22%* -21*"`)
+	plan, err := ParseEmerge(`[ebuild U ] media-libs/mesa-26.0.8::gentoo USE="(opengl) -test" ABI_X86="(64) -32 (-x32)" LLVM_SLOT="22%* -21* (-20%)"`)
 	if err != nil || len(plan) != 1 {
 		t.Fatalf("plan=%#v err=%v", plan, err)
 	}
@@ -32,6 +32,9 @@ func TestParseEmergeCanonicalizesUseExpandAndMarkers(t *testing.T) {
 		if got, ok := plan[0].EffectiveUse[flag]; !ok || got != enabled {
 			t.Errorf("%s = %v, present %v; want %v", flag, got, ok, enabled)
 		}
+	}
+	if _, historical := plan[0].EffectiveUse["llvm_slot_20"]; historical {
+		t.Fatal("removed installed-only USE flag entered replacement effective domain")
 	}
 }
 
@@ -52,7 +55,7 @@ func TestParseAriseStripsColor(t *testing.T) {
 }
 
 func TestParseAriseJSON(t *testing.T) {
-	plan, err := ParseAriseJSON(`{"schema":1,"actions":[{"action":"update","cpv":"dev-libs/glib-2.84.0","slot":"2","subslot":"2.84","repository":"gentoo","merge_type":"binary","use_enabled":["dbus"],"use_disabled":["test"]}]}`)
+	plan, err := ParseAriseJSON("{\"schema\":1,\"actions\":[{\"action\":\"update\",\"cpv\":\"dev-libs/glib-2.84.0\",\"slot\":\"2\",\"subslot\":\"2.84\",\"repository\":\"gentoo\",\"merge_type\":\"binary\",\"use_enabled\":[\"dbus\"],\"use_disabled\":[\"test\"]}]}\nCannot proceed with unresolved conflicts.\n")
 	if err != nil {
 		t.Fatal(err)
 	}

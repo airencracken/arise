@@ -1,6 +1,7 @@
 package features
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -281,14 +282,14 @@ func TestApplyToEnv_UserPriv_Linux(t *testing.T) {
 	}
 }
 
-func TestApplyToEnv_SandboxStubs(t *testing.T) {
-	// These should not crash
-	for _, feat := range []string{"usersandbox", "sandbox", "network-sandbox", "pid-sandbox", "ipc-sandbox", "fakeroot"} {
+func TestExecutionRejectsUnsupportedAndUnknownFeatures(t *testing.T) {
+	for _, feat := range []string{"usersandbox", "sandbox", "network-sandbox", "pid-sandbox", "ipc-sandbox", "fakeroot", "unknown-feature"} {
 		t.Run(feat, func(t *testing.T) {
 			cfg := ParseFeatures(feat)
-			cmd := exec.Command("true")
-			cmd.Env = os.Environ()
-			cfg.ApplyToEnv(cmd)
+			var unsupported *UnsupportedFeatureError
+			if err := cfg.ExecutionError(); !errors.As(err, &unsupported) || string(unsupported.Feature) != feat {
+				t.Fatalf("ExecutionError() = %v", err)
+			}
 		})
 	}
 }

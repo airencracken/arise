@@ -71,6 +71,23 @@ type XorOfGroup struct {
 	Children []DepNode
 }
 
+// AtMostOneOfGroup represents ?? ( node node ... ) — zero or one child may
+// be satisfied.
+type AtMostOneOfGroup struct {
+	Children []DepNode
+}
+
+func (g *AtMostOneOfGroup) String() string {
+	if len(g.Children) == 0 {
+		return "?? ( )"
+	}
+	return "?? ( " + joinNodes(g.Children) + " )"
+}
+
+func (g *AtMostOneOfGroup) Atoms() []string {
+	return collectAtoms(g.Children)
+}
+
 func (g *XorOfGroup) String() string {
 	if len(g.Children) == 0 {
 		return "^^ ( )"
@@ -100,7 +117,8 @@ func (u *UseConditional) Atoms() []string {
 	return collectAtoms(u.Children)
 }
 
-// Block represents !atom — a hard blocker (conflicts with the specified atom).
+// Block represents !atom — a weak blocker. The packages may temporarily
+// coexist during a transaction, but not in the final installed state.
 type Block struct {
 	Atom string
 }
@@ -110,7 +128,8 @@ func (b *Block) Atoms() []string {
 	return []string{b.Atom}
 }
 
-// WeakBlock represents !!atom — a weak blocker (conflicts if installed).
+// WeakBlock is the legacy type name for !!atom, Portage's strong blocker. A
+// transaction must remove the blocked package before merging the blocker.
 type WeakBlock struct {
 	Atom string
 }
@@ -179,6 +198,12 @@ func collectMeta(node DepNode, condition string, anyOf bool, anyOfID int, nextID
 		}
 		return result
 	case *XorOfGroup:
+		var result []AtomMeta
+		for _, child := range n.Children {
+			result = append(result, collectMeta(child, condition, anyOf, anyOfID, nextID)...)
+		}
+		return result
+	case *AtMostOneOfGroup:
 		var result []AtomMeta
 		for _, child := range n.Children {
 			result = append(result, collectMeta(child, condition, anyOf, anyOfID, nextID)...)
@@ -254,6 +279,8 @@ func (p *parser) parseNode() (DepNode, error) {
 		return p.parseAnyOfGroup()
 	case tok == "^^":
 		return p.parseXorOfGroup()
+	case tok == "??":
+		return p.parseAtMostOneOfGroup()
 	case tok == "(":
 		return p.parseAllOfGroup()
 	case tok == ")":
@@ -314,6 +341,19 @@ func (p *parser) parseXorOfGroup() (DepNode, error) {
 		return nil, err
 	}
 	return &XorOfGroup{Children: children}, nil
+}
+
+func (p *parser) parseAtMostOneOfGroup() (DepNode, error) {
+	p.skipWS()
+	if p.pos >= len(p.input) || p.input[p.pos] != '(' {
+		return nil, fmt.Errorf("expected '(' after '??' at position %d", p.pos)
+	}
+	p.pos++ // consume '('
+	children, err := p.parseChildren()
+	if err != nil {
+		return nil, err
+	}
+	return &AtMostOneOfGroup{Children: children}, nil
 }
 
 func (p *parser) parseAllOfGroup() (DepNode, error) {
@@ -448,6 +488,15 @@ func Satisfy(node DepNode, installed map[string]*atom.Atom, useFlags map[string]
 			flatMissing = append(flatMissing, m...)
 		}
 		return false, flatMissing
+	case *AtMostOneOfGroup:
+		satisfiedCount := 0
+		for _, child := range n.Children {
+			sat, _ := Satisfy(child, installed, useFlags)
+			if sat {
+				satisfiedCount++
+			}
+		}
+		return satisfiedCount <= 1, nil
 	case *UseConditional:
 		flag := n.Flag
 		negate := false

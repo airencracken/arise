@@ -11,6 +11,7 @@ import (
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/binpkg"
+	"github.com/airencracken/arise/internal/distfiles"
 	"github.com/airencracken/arise/internal/ebuild"
 	"github.com/airencracken/arise/internal/features"
 	"github.com/airencracken/arise/internal/fetch"
@@ -20,23 +21,35 @@ import (
 
 // RebuildConfig holds the configuration for rebuilding packages.
 type RebuildConfig struct {
-	RepoDir      string
-	DistfilesDir string
-	RootDir      string
-	VdbDir       string
-	WorkDirBase  string
-	CFLAGS       string
-	CXXFLAGS     string
-	LDFLAGS      string
-	MAKEOPTS     string
-	Arch         string
-	Features     *features.Config
+	RepoDir       string
+	DistfilesDir  string
+	RootDir       string
+	VdbDir        string
+	WorkDirBase   string
+	CFLAGS        string
+	CXXFLAGS      string
+	LDFLAGS       string
+	MAKEOPTS      string
+	Arch          string
+	Features      *features.Config
+	UseFlags      map[string]bool
+	Fetcher       *fetch.Fetcher
+	GentooMirrors []string
 
 	OnPhaseStart func(phase string)
 	OnPhaseEnd   func(phase string, err error)
 	OnError      func(pkg string, err error)
 
 	mu sync.Mutex
+}
+
+func (c *RebuildConfig) fetcher() *fetch.Fetcher {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Fetcher == nil {
+		c.Fetcher = &fetch.Fetcher{}
+	}
+	return c.Fetcher
 }
 
 func (c *RebuildConfig) firePhaseStart(phase string) {
@@ -89,7 +102,8 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 	}
 
 	vars := eb.Vars()
-	resolvedURIs := resolveURIs(eb.SourceURIList(), vars)
+	srcURI := strings.TrimSpace(vars["SRC_URI"])
+	var verified distfiles.VerifiedSet
 
 	workDir, err := os.MkdirTemp(cfg.WorkDirBase, cat+"-"+pkg+"-"+ver+"-*")
 	if err != nil {
@@ -108,30 +122,35 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 	}
 	defer os.RemoveAll(destDir)
 
-	if len(resolvedURIs) > 0 {
-		fetchCfg := fetch.FetchConfig{
-			Destination:  workDir,
-			DistfilesDir: cfg.DistfilesDir,
+	if srcURI != "" {
+		mirrorGroups, mirrorErr := fetch.LoadMirrorGroups(filepath.Join(cfg.RepoDir, "profiles", "thirdpartymirrors"))
+		if mirrorErr != nil {
+			return fmt.Errorf("rebuild: load mirror policy: %w", mirrorErr)
 		}
-		if _, err := fetch.Fetch(ctx, resolvedURIs, fetchCfg); err != nil {
+		fetchCfg := fetch.FetchConfig{DistfilesDir: cfg.DistfilesDir, GentooMirrors: cfg.GentooMirrors, MirrorGroups: mirrorGroups}
+		var err error
+		verified, err = cfg.fetcher().AcquireManifest(ctx, filepath.Join(filepath.Dir(ebuildFile), "Manifest"), srcURI, cfg.UseFlags, fetchCfg)
+		if err != nil {
 			cfg.fireError(atomStr, fmt.Errorf("rebuild: failed to fetch source files: %w", err))
-			return fmt.Errorf("rebuild: could not download source files: %w", err)
+			return fmt.Errorf("rebuild: could not acquire verified source files: %w", err)
 		}
 	}
 
 	phaseCfg := phase.PhaseConfig{
-		DESTDIR:          destDir,
-		WorkDir:          workDir,
-		Sourcedir:        workDir,
-		CFLAGS:           cfg.CFLAGS,
-		CXXFLAGS:         cfg.CXXFLAGS,
-		LDFLAGS:          cfg.LDFLAGS,
-		MAKEOPTS:         cfg.MAKEOPTS,
-		PN:               pkg,
-		PV:               ver,
-		CATEGORY:         cat,
-		EBUILD_PATH:      ebuildFile,
-		Features:         cfg.Features,
+		DESTDIR:     destDir,
+		WorkDir:     workDir,
+		Sourcedir:   workDir,
+		DistDir:     cfg.DistfilesDir,
+		Distfiles:   artifactNames(verified.Artifacts),
+		CFLAGS:      cfg.CFLAGS,
+		CXXFLAGS:    cfg.CXXFLAGS,
+		LDFLAGS:     cfg.LDFLAGS,
+		MAKEOPTS:    cfg.MAKEOPTS,
+		PN:          pkg,
+		PV:          ver,
+		CATEGORY:    cat,
+		EBUILD_PATH: ebuildFile,
+		Features:    cfg.Features,
 	}
 
 	runner, err := phase.NewRunner(phaseCfg)
@@ -191,6 +210,14 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 	}
 
 	return nil
+}
+
+func artifactNames(artifacts []distfiles.Artifact) []string {
+	names := make([]string, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		names = append(names, artifact.Name)
+	}
+	return names
 }
 
 // RebuildPackages rebuilds a list of packages, continuing on errors and

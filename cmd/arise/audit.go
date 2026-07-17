@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -76,21 +75,12 @@ func runAudit(args []string, repoDir string) {
 
 	if fix {
 		fmt.Printf("\nRebuilding %d packages...\n", len(packages))
-		cfg := buildRebuildConfig(repoDir, jobs, func(phase string) {
-			fmt.Printf("  [%s]\n", phase)
-		}, func(phase string, err error) {
-			if err != nil {
-				fmt.Printf("  [%s] FAILED: %v\n", phase, err)
-			}
-		})
+		_ = jobs // retained for CLI compatibility while execution is gated
 		if pretend {
 			fmt.Println("(pretend mode: would rebuild these packages)")
 			return
 		}
-		loadAvg := *loadAverage
-		if err := runRebuild(context.Background(), packages, cfg, jobs, loadAvg); err != nil {
-			fmt.Fprintf(os.Stderr, "rebuild: %v\n", err)
-			os.Exit(1)
-		}
+		fmt.Fprintln(os.Stderr, unsupportedRebuildMessage("audit --fix"))
+		os.Exit(1)
 	}
 }

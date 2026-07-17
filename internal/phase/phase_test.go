@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -285,6 +286,8 @@ func TestExtractTarGz(t *testing.T) {
 	cfg := PhaseConfig{
 		WorkDir:   workDir,
 		Sourcedir: dir,
+		DistDir:   dir,
+		Distfiles: []string{"test.tar.gz"},
 		DESTDIR:   filepath.Join(dir, "install"),
 	}
 	r, err := NewRunner(cfg)
@@ -349,6 +352,8 @@ func TestExtractTarGz_DirectoryEntries(t *testing.T) {
 	cfg := PhaseConfig{
 		WorkDir:   workDir,
 		Sourcedir: dir,
+		DistDir:   dir,
+		Distfiles: []string{"dirs.tar.gz"},
 		DESTDIR:   filepath.Join(dir, "install"),
 	}
 	r, err := NewRunner(cfg)
@@ -385,6 +390,8 @@ func TestExtractUnsupportedFormat(t *testing.T) {
 	cfg := PhaseConfig{
 		WorkDir:   workDir,
 		Sourcedir: dir,
+		DistDir:   dir,
+		Distfiles: []string{"file.7z"},
 		DESTDIR:   filepath.Join(dir, "install"),
 	}
 	r, err := NewRunner(cfg)
@@ -392,8 +399,8 @@ func TestExtractUnsupportedFormat(t *testing.T) {
 		t.Fatalf("NewRunner: %v", err)
 	}
 
-	if err := r.RunPhase(context.Background(), "src_unpack"); err != nil {
-		t.Fatalf("unsupported format should be silently skipped: %v", err)
+	if err := r.RunPhase(context.Background(), "src_unpack"); err == nil {
+		t.Fatal("selected unsupported format succeeded")
 	}
 
 	entries, _ := os.ReadDir(workDir)
@@ -706,7 +713,7 @@ func TestPhase_Adversarial_NilContext(t *testing.T) {
 	}
 
 	if err := r.Run(context.Background(), "src_prepare"); err != nil {
-		t.Errorf("src_prepare should be no-op: %v", err)
+		t.Fatalf("synthetic src_prepare placeholder failed: %v", err)
 	}
 }
 
@@ -722,9 +729,7 @@ func TestPhase_Adversarial_EmptyPhaseName(t *testing.T) {
 		t.Fatalf("NewRunner: %v", err)
 	}
 
-	if err := r.Run(context.Background(), ""); err != nil {
-		t.Errorf("empty phase should be no-op: %v", err)
-	}
+	assertUnsupportedPhase(t, r.Run(context.Background(), ""), "")
 }
 
 func TestPhase_Adversarial_VeryLongPhaseName(t *testing.T) {
@@ -740,9 +745,7 @@ func TestPhase_Adversarial_VeryLongPhaseName(t *testing.T) {
 	}
 
 	longName := strings.Repeat("x", 10000)
-	if err := r.Run(context.Background(), longName); err != nil {
-		t.Errorf("unknown phase should be no-op: %v", err)
-	}
+	assertUnsupportedPhase(t, r.Run(context.Background(), longName), longName)
 }
 
 func TestPhase_Adversarial_MalformedArchive(t *testing.T) {
@@ -756,6 +759,8 @@ func TestPhase_Adversarial_MalformedArchive(t *testing.T) {
 	cfg := PhaseConfig{
 		WorkDir:   workDir,
 		Sourcedir: dir,
+		DistDir:   dir,
+		Distfiles: []string{"bad.tar.gz"},
 		DESTDIR:   filepath.Join(dir, "dest"),
 	}
 	r, err := NewRunner(cfg)
@@ -779,6 +784,8 @@ func TestPhase_Adversarial_UnsupportedExtension(t *testing.T) {
 	cfg := PhaseConfig{
 		WorkDir:   workDir,
 		Sourcedir: dir,
+		DistDir:   dir,
+		Distfiles: []string{"script.sh"},
 		DESTDIR:   filepath.Join(dir, "dest"),
 	}
 	r, err := NewRunner(cfg)
@@ -786,8 +793,8 @@ func TestPhase_Adversarial_UnsupportedExtension(t *testing.T) {
 		t.Fatalf("NewRunner: %v", err)
 	}
 
-	if err := r.Run(context.Background(), "src_unpack"); err != nil {
-		t.Errorf("unsupported extension should be silently skipped: %v", err)
+	if err := r.Run(context.Background(), "src_unpack"); err == nil {
+		t.Error("selected unsupported extension succeeded")
 	}
 }
 
@@ -812,7 +819,7 @@ func TestPhase_Adversarial_CancelledCtx(t *testing.T) {
 	}
 }
 
-func TestRunPhase_PkgPreinstNoop(t *testing.T) {
+func TestRunPhaseLifecyclePhasesFailExplicitly(t *testing.T) {
 	dir := t.TempDir()
 	cfg := PhaseConfig{
 		WorkDir:   dir,
@@ -824,59 +831,16 @@ func TestRunPhase_PkgPreinstNoop(t *testing.T) {
 		t.Fatalf("NewRunner: %v", err)
 	}
 
-	if err := r.RunPhase(context.Background(), "pkg_preinst"); err != nil {
-		t.Errorf("pkg_preinst should be no-op: %v", err)
+	for _, phase := range []string{"pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm"} {
+		assertUnsupportedPhase(t, r.RunPhase(context.Background(), phase), phase)
 	}
 }
 
-func TestRunPhase_PkgPostinstNoop(t *testing.T) {
-	dir := t.TempDir()
-	cfg := PhaseConfig{
-		WorkDir:   dir,
-		Sourcedir: dir,
-		DESTDIR:   dir,
-	}
-	r, err := NewRunner(cfg)
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
-
-	if err := r.RunPhase(context.Background(), "pkg_postinst"); err != nil {
-		t.Errorf("pkg_postinst should be no-op: %v", err)
-	}
-}
-
-func TestRunPhase_PkgPrermNoop(t *testing.T) {
-	dir := t.TempDir()
-	cfg := PhaseConfig{
-		WorkDir:   dir,
-		Sourcedir: dir,
-		DESTDIR:   dir,
-	}
-	r, err := NewRunner(cfg)
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
-
-	if err := r.RunPhase(context.Background(), "pkg_prerm"); err != nil {
-		t.Errorf("pkg_prerm should be no-op: %v", err)
-	}
-}
-
-func TestRunPhase_PkgPostrmNoop(t *testing.T) {
-	dir := t.TempDir()
-	cfg := PhaseConfig{
-		WorkDir:   dir,
-		Sourcedir: dir,
-		DESTDIR:   dir,
-	}
-	r, err := NewRunner(cfg)
-	if err != nil {
-		t.Fatalf("NewRunner: %v", err)
-	}
-
-	if err := r.RunPhase(context.Background(), "pkg_postrm"); err != nil {
-		t.Errorf("pkg_postrm should be no-op: %v", err)
+func assertUnsupportedPhase(t *testing.T, err error, phase string) {
+	t.Helper()
+	var unsupported *UnsupportedPhaseError
+	if !errors.As(err, &unsupported) || unsupported.Phase != phase {
+		t.Fatalf("phase %q error = %v, want typed unsupported phase", phase, err)
 	}
 }
 
@@ -897,7 +861,7 @@ func TestRunPhase_SrcTestNoopWhenNoMakefile(t *testing.T) {
 	}
 }
 
-func TestRunPhase_PkgSetupNoop(t *testing.T) {
+func TestRunPhaseUnsupportedFailsExplicitly(t *testing.T) {
 	dir := t.TempDir()
 	cfg := PhaseConfig{
 		WorkDir:   dir,
@@ -909,8 +873,12 @@ func TestRunPhase_PkgSetupNoop(t *testing.T) {
 		t.Fatalf("NewRunner: %v", err)
 	}
 
-	if err := r.RunPhase(context.Background(), "pkg_setup"); err != nil {
-		t.Errorf("pkg_setup should be no-op: %v", err)
+	for _, name := range []string{"pkg_setup", "future_phase"} {
+		err := r.RunPhase(context.Background(), name)
+		var unsupported *UnsupportedPhaseError
+		if !errors.As(err, &unsupported) || unsupported.Phase != name {
+			t.Errorf("RunPhase(%q) error = %v, want typed unsupported phase", name, err)
+		}
 	}
 }
 

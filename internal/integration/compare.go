@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"github.com/airencracken/arise/internal/depstring"
 	"github.com/airencracken/arise/internal/ebuild"
 	"github.com/airencracken/arise/internal/metadata"
+	ariseportage "github.com/airencracken/arise/internal/portage"
 )
 
 // atomTestCases are pairs of version strings used to compare arise's version
@@ -163,7 +165,6 @@ func CompareAtoms(t *testing.T) {
 		"sys-devel/gcc[-openmp]",
 		"sys-devel/gcc[openmp,pch]",
 	}
-
 
 	for _, raw := range atomStrings {
 		t.Run(raw, func(t *testing.T) {
@@ -643,6 +644,225 @@ func CompareUseFlags(t *testing.T) {
 	})
 }
 
+type portageUseRecord struct {
+	CPV      string `json:"cpv"`
+	IUSE     string `json:"iuse"`
+	Use      string `json:"use"`
+	Keywords string `json:"keywords"`
+	Slot     string `json:"slot"`
+	Repo     string `json:"repo"`
+}
+
+type portageVisibilityCandidate struct {
+	CPV      string `json:"cpv"`
+	Keywords string `json:"keywords"`
+	Slot     string `json:"slot"`
+	Repo     string `json:"repo"`
+}
+
+type portageVisibilityRecord struct {
+	CP         string                       `json:"cp"`
+	Best       string                       `json:"best"`
+	Candidates []portageVisibilityCandidate `json:"candidates"`
+}
+
+func CompareVisibilityCorpus(t *testing.T) {
+	RequirePortage(t)
+	const script = `
+import json, portage
+db = portage.db[portage.settings['ROOT']]['porttree'].dbapi
+records = []
+for cp in sorted(db.cp_all()):
+    candidates = []
+    for cpv in db.cp_list(cp):
+        keywords, slot, repo = db.aux_get(cpv, ['KEYWORDS', 'SLOT', 'repository'])
+        candidates.append({'cpv': cpv, 'keywords': keywords, 'slot': slot.split('/', 1)[0], 'repo': repo})
+    if len(candidates) < 2:
+        continue
+    best = db.xmatch('bestmatch-visible', cp)
+    records.append({'cp': cp, 'best': best or '', 'candidates': candidates})
+    if len(records) == 100:
+        break
+print(json.dumps(records, sort_keys=True))
+`
+	var records []portageVisibilityRecord
+	if err := json.Unmarshal([]byte(runPython(t, script)), &records); err != nil {
+		t.Fatalf("decode Portage visibility corpus: %v", err)
+	}
+	if len(records) != 100 {
+		t.Fatalf("Portage visibility corpus has %d records, want 100", len(records))
+	}
+	cfg, err := ariseportage.LoadEffectiveConfig("/etc/portage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arch := cfg.MakeConf["ARCH"]
+	for _, record := range records {
+		best := ""
+		var bestVersion *atom.Version
+		for _, candidate := range record.Candidates {
+			parsed, err := atom.Parse(candidate.CPV)
+			if err != nil || parsed.Version == nil {
+				t.Fatalf("parse candidate %q: %v", candidate.CPV, err)
+			}
+			if cfg.PackageMaskStatus(candidate.CPV, candidate.Slot, candidate.Repo).Masked ||
+				!cfg.KeywordAcceptedFor(candidate.CPV, candidate.Slot, candidate.Repo, candidate.Keywords, arch) {
+				continue
+			}
+			if bestVersion == nil || parsed.Version.Compare(bestVersion) > 0 {
+				best, bestVersion = candidate.CPV, parsed.Version
+			}
+		}
+		if best != record.Best {
+			t.Errorf("%s best-visible mismatch: Arise=%q Portage=%q", record.CP, best, record.Best)
+		}
+	}
+}
+
+func CompareEffectivePolicyVariables(t *testing.T) {
+	RequirePortage(t)
+	cfg, err := ariseportage.LoadEffectiveConfig("/etc/portage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	variables := []string{
+		"ARCH", "CHOST", "USE_ORDER", "USE_EXPAND", "USE_EXPAND_HIDDEN",
+		"USE_EXPAND_IMPLICIT", "ACCEPT_KEYWORDS", "ACCEPT_LICENSE", "FEATURES",
+	}
+	for _, variable := range variables {
+		t.Run(variable, func(t *testing.T) {
+			portageValue := normalizeMetadataValue(runPortageq(t, "envvar", variable))
+			ariseValue := normalizeMetadataValue(cfg.MakeConf[variable])
+			if strings.HasPrefix(variable, "USE_EXPAND") || variable == "FEATURES" {
+				portageValue = strings.Join(splitSortDedup(portageValue), " ")
+				ariseValue = strings.Join(splitSortDedup(ariseValue), " ")
+			}
+			if ariseValue != portageValue {
+				t.Errorf("%s mismatch: Arise=%q Portage=%q", variable, ariseValue, portageValue)
+			}
+		})
+	}
+}
+
+func CompareMaskReasonCorpus(t *testing.T) {
+	RequirePortage(t)
+	const script = `
+import json, portage
+db = portage.db[portage.settings['ROOT']]['porttree'].dbapi
+records = []
+for cp in sorted(db.cp_all()):
+    for cpv in db.cp_list(cp):
+        reason = portage.getmaskingreason(cpv)
+        if not reason:
+            continue
+        slot, repo = db.aux_get(cpv, ['SLOT', 'repository'])
+        records.append({'cpv': cpv, 'slot': slot.split('/', 1)[0], 'repo': repo, 'reason': reason})
+        if len(records) == 25:
+            break
+    if len(records) == 25:
+        break
+print(json.dumps(records, sort_keys=True))
+`
+	var records []struct{ CPV, Slot, Repo, Reason string }
+	if err := json.Unmarshal([]byte(runPython(t, script)), &records); err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 25 {
+		t.Fatalf("mask reason corpus has %d records", len(records))
+	}
+	cfg, err := ariseportage.LoadEffectiveConfig("/etc/portage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizeReason := func(reason string) string {
+		var lines []string
+		for _, line := range strings.Split(reason, "\n") {
+			line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+			if line != "" {
+				lines = append(lines, line)
+			}
+		}
+		return strings.Join(lines, " ")
+	}
+	for _, record := range records {
+		status := cfg.PackageMaskStatus(record.CPV, record.Slot, record.Repo)
+		if !status.Masked || status.Reason != normalizeReason(record.Reason) {
+			t.Errorf("%s mask reason mismatch: Arise=%q Portage=%q source=%q", record.CPV, status.Reason, normalizeReason(record.Reason), status.Source)
+		}
+	}
+}
+
+func CompareEffectiveUseCorpus(t *testing.T) {
+	RequirePortage(t)
+	const script = `
+import json, portage
+db = portage.db[portage.settings['ROOT']]['porttree'].dbapi
+records = []
+for cp in sorted(db.cp_all()):
+    cpv = db.xmatch('bestmatch-visible', cp)
+    if not cpv:
+        continue
+    iuse, keywords, slot, repo = db.aux_get(cpv, ['IUSE', 'KEYWORDS', 'SLOT', 'repository'])
+    if not iuse:
+        continue
+    settings = portage.config(clone=portage.settings)
+    settings.setcpv(cpv, mydb=db)
+    records.append({'cpv': cpv, 'iuse': iuse, 'use': settings.get('PORTAGE_USE', ''),
+                    'keywords': keywords, 'slot': slot.split('/', 1)[0], 'repo': repo})
+    if len(records) == 100:
+        break
+print(json.dumps(records, sort_keys=True))
+`
+	output := runPython(t, script)
+	var records []portageUseRecord
+	if err := json.Unmarshal([]byte(output), &records); err != nil {
+		t.Fatalf("decode Portage USE corpus: %v", err)
+	}
+	if len(records) != 100 {
+		t.Fatalf("Portage USE corpus has %d records, want 100", len(records))
+	}
+	cfg, err := ariseportage.LoadEffectiveConfig("/etc/portage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arch := cfg.MakeConf["ARCH"]
+	for _, record := range records {
+		base := make(map[string]bool)
+		for _, raw := range strings.Fields(record.IUSE) {
+			base[strings.TrimLeft(raw, "+-")] = strings.HasPrefix(raw, "+")
+		}
+		stable := false
+		for _, keyword := range strings.Fields(record.Keywords) {
+			stable = stable || keyword == arch
+		}
+		for flag, enabled := range cfg.EffectiveUseForStability(record.CPV, record.Slot, record.Repo, stable) {
+			if _, declared := base[flag]; declared {
+				base[flag] = enabled
+			}
+		}
+		portageEnabled := make(map[string]bool)
+		for _, flag := range strings.Fields(record.Use) {
+			if _, declared := base[flag]; declared {
+				portageEnabled[flag] = true
+			}
+		}
+		var onlyArise, onlyPortage []string
+		for flag, enabled := range base {
+			if enabled && !portageEnabled[flag] {
+				onlyArise = append(onlyArise, flag)
+			}
+			if !enabled && portageEnabled[flag] {
+				onlyPortage = append(onlyPortage, flag)
+			}
+		}
+		sort.Strings(onlyArise)
+		sort.Strings(onlyPortage)
+		if len(onlyArise) > 0 || len(onlyPortage) > 0 {
+			t.Errorf("%s USE mismatch: only Arise=%v only Portage=%v", record.CPV, onlyArise, onlyPortage)
+		}
+	}
+}
+
 // BrokenState represents a detected inconsistency between a system's
 // installed state and what emerge reports.
 type BrokenState struct {
@@ -727,4 +947,8 @@ func RunAll(t *testing.T) {
 	t.Run("CompareVersionComparison", CompareVersionComparison)
 	t.Run("CompareDepSatisfaction", CompareDepSatisfaction)
 	t.Run("CompareUseFlags", CompareUseFlags)
+	t.Run("CompareEffectiveUseCorpus", CompareEffectiveUseCorpus)
+	t.Run("CompareVisibilityCorpus", CompareVisibilityCorpus)
+	t.Run("CompareEffectivePolicyVariables", CompareEffectivePolicyVariables)
+	t.Run("CompareMaskReasonCorpus", CompareMaskReasonCorpus)
 }

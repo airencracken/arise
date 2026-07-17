@@ -26,6 +26,14 @@ func runUninstall(args []string, dbPath, repoDir string) {
 			vdbPath = vdbPath + "-" + a.Version.Raw
 		}
 
-		fmt.Printf("Uninstall: %s\n", vdbPath)
+		fmt.Printf("Proposed uninstall: %s\n", vdbPath)
 	}
+	if !*pretend {
+		fmt.Fprintln(os.Stderr, unsupportedRemovalMessage("uninstall"))
+		os.Exit(1)
+	}
+}
+
+func unsupportedRemovalMessage(command string) string {
+	return fmt.Sprintf("arise: %s execution is experimental and unavailable; rerun with --pretend (live removal remains gated on the P6 journal and reverse-dependency safety)", command)
 }

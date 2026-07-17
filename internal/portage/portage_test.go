@@ -1,6 +1,8 @@
 package portage
 
 import (
+	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,6 +32,78 @@ func TestParseReposConfMatchesRepositoryNameAfterLocationMigration(t *testing.T)
 	}
 	if got := ParseReposConf(conf, "/var/db/repos/gentoo"); got != "https://example.test/gentoo.git" {
 		t.Fatalf("ParseReposConf() = %q, want migrated gentoo URI", got)
+	}
+}
+
+func TestRepositoryPolicyOrderMastersBeforeChildren(t *testing.T) {
+	root := t.TempDir()
+	master := filepath.Join(root, "master")
+	child := filepath.Join(root, "child")
+	for _, repository := range []string{master, child} {
+		if err := os.MkdirAll(filepath.Join(repository, "metadata"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(child, "metadata", "layout.conf"), []byte("masters = master\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(root, "repos.conf")
+	content := fmt.Sprintf("[child]\nlocation = %s\n[master]\nlocation = %s\n", child, master)
+	if err := os.WriteFile(conf, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	order, err := RepositoryPolicyOrder(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(order) != 2 || order[0].Name != "master" || order[1].Name != "child" {
+		t.Fatalf("repository order = %#v", order)
+	}
+}
+
+func TestRepositoryPolicyOrderRejectsCycle(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a", "b"} {
+		if err := os.MkdirAll(filepath.Join(root, name, "metadata"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "a", "metadata", "layout.conf"), []byte("masters = b\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "b", "metadata", "layout.conf"), []byte("masters = a\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(root, "repos.conf")
+	content := fmt.Sprintf("[a]\nlocation = %s\n[b]\nlocation = %s\n", filepath.Join(root, "a"), filepath.Join(root, "b"))
+	if err := os.WriteFile(conf, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RepositoryPolicyOrder(conf); err == nil {
+		t.Fatal("expected repository master cycle error")
+	}
+}
+
+func TestLoadProfileMaskStackIncludesRepositoryOrder(t *testing.T) {
+	root := t.TempDir()
+	master := filepath.Join(root, "master")
+	child := filepath.Join(root, "child")
+	profile := filepath.Join(root, "active")
+	for _, directory := range []string{filepath.Join(master, "profiles"), filepath.Join(child, "profiles"), profile} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.WriteFile(filepath.Join(master, "profiles", "package.mask"), []byte("dev-libs/old\n"), 0644)
+	os.WriteFile(filepath.Join(child, "profiles", "package.mask"), []byte("-dev-libs/old\ndev-libs/child\n"), 0644)
+	os.WriteFile(filepath.Join(profile, "package.mask"), []byte("dev-libs/profile\n"), 0644)
+	masks, _, err := loadProfileMaskStack([]string{master, child}, []string{profile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"dev-libs/child", "dev-libs/profile"}
+	if !reflect.DeepEqual(masks, want) {
+		t.Fatalf("repository/profile masks = %v, want %v", masks, want)
 	}
 }
 
@@ -679,6 +753,27 @@ func TestParsePackageAcceptKeywords_Directory(t *testing.T) {
 	}
 }
 
+func TestPackageAcceptKeywordsForPreservesFullAtomOrder(t *testing.T) {
+	cfg := &Config{PackageAcceptKeywordRules: []PackageUseRule{
+		{Atom: "dev-lang/python", Flags: []string{"~amd64"}},
+		{Atom: ">=dev-lang/python-3.13", Flags: []string{"-~amd64"}},
+		{Atom: "=dev-lang/python-3.13.2::gentoo", Flags: []string{"~amd64"}},
+	}}
+	got := cfg.PackageAcceptKeywordsFor("dev-lang/python-3.13.2", "0", "gentoo", "amd64")
+	want := []string{"~amd64", "-~amd64", "~amd64"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PackageAcceptKeywordsFor() = %v, want %v", got, want)
+	}
+}
+
+func TestPackageAcceptKeywordsForEmptyRuleAcceptsHostTesting(t *testing.T) {
+	cfg := &Config{PackageAcceptKeywordRules: []PackageUseRule{{Atom: "dev-lang/python"}}}
+	got := cfg.PackageAcceptKeywordsFor("dev-lang/python-3.13", "0", "gentoo", "amd64")
+	if !reflect.DeepEqual(got, []string{"~amd64"}) {
+		t.Fatalf("PackageAcceptKeywordsFor() = %v", got)
+	}
+}
+
 func TestParsePackageLicense_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "package.license")
@@ -709,6 +804,54 @@ func TestParsePackageLicense_MissingFile(t *testing.T) {
 	}
 	if m != nil {
 		t.Errorf("expected nil map, got %v", m)
+	}
+}
+
+func TestPackageLicensesForPreservesFullAtomOrder(t *testing.T) {
+	cfg := &Config{PackageLicenseRules: []PackageUseRule{
+		{Atom: "dev-lang/oracle-jdk-bin", Flags: []string{"Oracle-BCLA-JavaSE"}},
+		{Atom: ">=dev-lang/oracle-jdk-bin-22", Flags: []string{"-Oracle-BCLA-JavaSE"}},
+		{Atom: "=dev-lang/oracle-jdk-bin-22::gentoo", Flags: []string{"Oracle-No-Fee-Terms-and-Conditions"}},
+	}}
+	got := cfg.PackageLicensesFor("dev-lang/oracle-jdk-bin-22", "0", "gentoo")
+	want := []string{"Oracle-BCLA-JavaSE", "-Oracle-BCLA-JavaSE", "Oracle-No-Fee-Terms-and-Conditions"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PackageLicensesFor() = %v, want %v", got, want)
+	}
+}
+
+func TestLicenseGroupsStackAndExpand(t *testing.T) {
+	master := t.TempDir()
+	overlay := t.TempDir()
+	for _, root := range []string{master, overlay} {
+		if err := os.MkdirAll(filepath.Join(root, "profiles"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(master, "profiles", "license_groups"), []byte("FREE MIT BSD\nREDIST @FREE firmware\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(overlay, "profiles", "license_groups"), []byte("FREE -BSD Apache-2.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := ParseLicenseGroups([]string{master, overlay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := groups["FREE"], []string{"MIT", "Apache-2.0"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("FREE = %v, want %v", got, want)
+	}
+	if got, want := ExpandLicenseGroups([]string{"-*", "@REDIST", "-@FREE"}, groups),
+		[]string{"-*", "MIT", "Apache-2.0", "firmware", "-MIT", "-Apache-2.0"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expanded groups = %v, want %v", got, want)
+	}
+}
+
+func TestLicenseGroupsCycleRemainsExplicit(t *testing.T) {
+	groups := map[string][]string{"A": {"@B"}, "B": {"@A", "MIT"}}
+	got := ExpandLicenseGroups([]string{"@A"}, groups)
+	if !reflect.DeepEqual(got, []string{"@A", "MIT"}) {
+		t.Fatalf("cycle expansion = %v", got)
 	}
 }
 
@@ -744,6 +887,36 @@ func TestParsePackageMask_EmptyFile(t *testing.T) {
 	}
 	if atoms != nil {
 		t.Errorf("expected nil for empty file, got %v", atoms)
+	}
+}
+
+func TestParsePackageMaskRulesRetainsGLEP84Reason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "package.mask")
+	content := "# Dev Example <dev@example.test> (2026-07-17)\n# Broken ABI. Bug #123.\n>=dev-libs/foo-2\n=dev-libs/foo-3\n\n# Different reason.\ndev-libs/bar\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParsePackageMaskRules(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rules) != 3 {
+		t.Fatalf("rules = %#v", rules)
+	}
+	want := "Dev Example <dev@example.test> (2026-07-17) Broken ABI. Bug #123."
+	if rules[0].Reason != want || rules[1].Reason != want || rules[0].Source != path {
+		t.Fatalf("GLEP 84 rules = %#v", rules)
+	}
+	if rules[2].Reason != "Different reason." {
+		t.Fatalf("bar reason = %q", rules[2].Reason)
+	}
+}
+
+func TestPackageMaskStatusIncludesReasonAndSource(t *testing.T) {
+	cfg := &Config{PackageMask: []string{">=dev-libs/foo-2"}, PackageMaskRules: []PackageMaskRule{{Atom: ">=dev-libs/foo-2", Source: "/repo/profiles/package.mask", Reason: "Broken ABI."}}}
+	status := cfg.PackageMaskStatus("dev-libs/foo-3", "0", "gentoo")
+	if !status.Masked || status.Reason != "Broken ABI." || status.Source != "/repo/profiles/package.mask" {
+		t.Fatalf("status = %#v", status)
 	}
 }
 
@@ -838,6 +1011,46 @@ func TestParsePackageEnv_MissingFile(t *testing.T) {
 	}
 	if m != nil {
 		t.Errorf("expected nil map, got %v", m)
+	}
+}
+
+func TestPackageEnvironmentForOrderedFullAtomRules(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "env"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"common":  "USE=\"ssl test\"\nFEATURES=\"sandbox\"\nCFLAGS=\"-O2\"\n",
+		"python":  "USE=\"-test ensurepip\"\nFEATURES=\"userpriv\"\nCFLAGS=\"${CFLAGS} -pipe\"\n",
+		"testing": "ACCEPT_KEYWORDS=\"~amd64\"\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(root, "env", name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &Config{ConfigRoot: root, PackageEnvRules: []PackageUseRule{
+		{Atom: "*/*", Flags: []string{"common"}},
+		{Atom: "dev-lang/python", Flags: []string{"python"}},
+		{Atom: ">=dev-lang/python-3.13::gentoo", Flags: []string{"testing"}},
+	}}
+	got, err := cfg.PackageEnvironmentFor("dev-lang/python-3.13.2", "3.13", "gentoo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"USE": "ssl -test ensurepip", "FEATURES": "sandbox userpriv",
+		"CFLAGS": "-O2 -pipe", "ACCEPT_KEYWORDS": "~amd64",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PackageEnvironmentFor() = %#v, want %#v", got, want)
+	}
+}
+
+func TestPackageEnvironmentForRejectsTraversal(t *testing.T) {
+	cfg := &Config{ConfigRoot: t.TempDir(), PackageEnvRules: []PackageUseRule{{Atom: "*/*", Flags: []string{"../make.conf"}}}}
+	if _, err := cfg.PackageEnvironmentFor("dev-lang/python-3.13", "3.13", "gentoo"); err == nil {
+		t.Fatal("expected package.env traversal to fail")
 	}
 }
 
@@ -1120,20 +1333,25 @@ func TestLoadConfig_DirectoryBasedPackageFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pkgUseDir := filepath.Join(dir, "package.use")
-	if err := os.MkdirAll(pkgUseDir, 0755); err != nil {
-		t.Fatal(err)
+	files := map[string]map[string]string{
+		"package.use":              {"10-base": "dev-lang/python ssl\n", "20-local": "dev-lang/python -ssl sqlite\n"},
+		"package.accept_keywords":  {"python": "dev-lang/python ~amd64\n"},
+		"package.license":          {"python": "dev-lang/python PSF-2\n"},
+		"package.mask":             {"python": ">=dev-lang/python-3.12\n"},
+		"package.unmask":           {"python": "=dev-lang/python-3.12\n"},
+		"profile/package.provided": {"python": "dev-lang/python-3.11\n"},
+		"package.env":              {"python": "dev-lang/python python.conf\n"},
 	}
-	if err := os.WriteFile(filepath.Join(pkgUseDir, "python"), []byte("dev-lang/python ssl\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	pkgMaskDir := filepath.Join(dir, "package.mask")
-	if err := os.MkdirAll(pkgMaskDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(pkgMaskDir, "python"), []byte(">=dev-lang/python-3.12\n"), 0644); err != nil {
-		t.Fatal(err)
+	for family, entries := range files {
+		path := filepath.Join(dir, family)
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range entries {
+			if err := os.WriteFile(filepath.Join(path, name), []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 
 	cfg, err := LoadConfig(dir)
@@ -1141,11 +1359,25 @@ func TestLoadConfig_DirectoryBasedPackageFiles(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	if !reflect.DeepEqual(cfg.PackageUse["dev-lang/python"], []string{"ssl"}) {
+	if !reflect.DeepEqual(cfg.PackageUse["dev-lang/python"], []string{"ssl", "-ssl", "sqlite"}) {
 		t.Errorf("PackageUse python = %v", cfg.PackageUse["dev-lang/python"])
+	}
+	if got := cfg.PackageUseRules; !reflect.DeepEqual(got, []PackageUseRule{
+		{Atom: "dev-lang/python", Flags: []string{"ssl"}},
+		{Atom: "dev-lang/python", Flags: []string{"-ssl", "sqlite"}},
+	}) {
+		t.Errorf("ordered PackageUseRules = %#v", got)
+	}
+	if cfg.PackageAcceptKeywords["dev-lang/python"] != "~amd64" || cfg.PackageLicense["dev-lang/python"] != "PSF-2" {
+		t.Errorf("keyword/license directories not loaded: %#v %#v", cfg.PackageAcceptKeywords, cfg.PackageLicense)
 	}
 	if !reflect.DeepEqual(cfg.PackageMask, []string{">=dev-lang/python-3.12"}) {
 		t.Errorf("PackageMask = %v", cfg.PackageMask)
+	}
+	if !reflect.DeepEqual(cfg.PackageUnmask, []string{"=dev-lang/python-3.12"}) ||
+		!reflect.DeepEqual(cfg.PackageProvided, []string{"dev-lang/python-3.11"}) ||
+		cfg.PackageEnv["dev-lang/python"] != "python.conf" {
+		t.Errorf("atom/env directories not loaded: unmask=%v provided=%v env=%v", cfg.PackageUnmask, cfg.PackageProvided, cfg.PackageEnv)
 	}
 }
 
@@ -1402,6 +1634,40 @@ func TestProperty_ReadConfigFile_DeterministicOrder(t *testing.T) {
 
 	if !reflect.DeepEqual(first, second) {
 		t.Errorf("ReadConfigFile not deterministic: first=%v, second=%v", first, second)
+	}
+}
+
+func TestPropertyConfigurationReductionDeterministic(t *testing.T) {
+	wantUse := map[string]bool{"ssl": true, "test": false, "ensurepip": true}
+	wantKeywords := []string{"~amd64", "-~amd64", "~amd64"}
+	wantLicenses := []string{"-*", "PSF-2"}
+	for seed := int64(0); seed < 100; seed++ {
+		rng := rand.New(rand.NewSource(seed))
+		makeConf := make(map[string]string)
+		entries := [][2]string{{"ARCH", "amd64"}, {"USE", "ssl test"}, {"ACCEPT_LICENSE", "-*"}}
+		rng.Shuffle(len(entries), func(i, j int) { entries[i], entries[j] = entries[j], entries[i] })
+		for _, entry := range entries {
+			makeConf[entry[0]] = entry[1]
+		}
+		cfg := &Config{
+			MakeConf: makeConf, USE: []string{"ssl", "test"}, UseStableMask: []string{"test"},
+			PackageUseStableForceRules: []PackageUseRule{{Atom: "dev-lang/python", Flags: []string{"ensurepip"}}},
+			PackageAcceptKeywordRules: []PackageUseRule{
+				{Atom: "dev-lang/python", Flags: []string{"~amd64"}},
+				{Atom: ">=dev-lang/python-3.13", Flags: []string{"-~amd64"}},
+				{Atom: "=dev-lang/python-3.13.2", Flags: []string{"~amd64"}},
+			},
+			PackageLicenseRules: []PackageUseRule{{Atom: "dev-lang/python", Flags: []string{"-*", "PSF-2"}}},
+		}
+		if got := cfg.EffectiveUseForStability("dev-lang/python-3.13.2", "3.13", "gentoo", true); !reflect.DeepEqual(got, wantUse) {
+			t.Fatalf("seed %d effective USE = %#v", seed, got)
+		}
+		if got := cfg.PackageAcceptKeywordsFor("dev-lang/python-3.13.2", "3.13", "gentoo", "amd64"); !reflect.DeepEqual(got, wantKeywords) {
+			t.Fatalf("seed %d keywords = %#v", seed, got)
+		}
+		if got := cfg.PackageLicensesFor("dev-lang/python-3.13.2", "3.13", "gentoo"); !reflect.DeepEqual(got, wantLicenses) {
+			t.Fatalf("seed %d licenses = %#v", seed, got)
+		}
 	}
 }
 
@@ -1734,6 +2000,86 @@ func TestLoadEffectiveConfigMergesActiveProfileAndUserConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.UseExpand, []string{"ABI_X86", "L10N"}) || !reflect.DeepEqual(cfg.UseExpandHidden, []string{"ABI_X86"}) {
 		t.Fatalf("USE_EXPAND = %v hidden=%v", cfg.UseExpand, cfg.UseExpandHidden)
+	}
+}
+
+func TestApplyCommandEnvironmentIsAllowlistedAndOrdered(t *testing.T) {
+	cfg := &Config{
+		MakeConf:      map[string]string{"USE": "base old", "FEATURES": "sandbox test", "ACCEPT_LICENSE": "@FREE"},
+		UseForce:      []string{"forced"},
+		UseMask:       []string{"masked"},
+		LicenseGroups: map[string][]string{},
+	}
+	cfg.populateAccessors()
+	cfg.ApplyCommandEnvironment([]string{
+		"USE=-old temporary masked",
+		"FEATURES=-test network-sandbox",
+		"ACCEPT_LICENSE=-@FREE @BINARY-REDISTRIBUTABLE",
+		"MAKEOPTS=-j3",
+		"ROOT=/target",
+		"ARBITRARY_SECRET=must-not-enter-config",
+	})
+
+	if got := strings.Join(cfg.USE, " "); got != "base -old temporary -masked forced" {
+		t.Fatalf("USE = %q", got)
+	}
+	if got := strings.Join(cfg.FEATURES, " "); got != "sandbox -test network-sandbox" {
+		t.Fatalf("FEATURES = %q", got)
+	}
+	if got := strings.Join(cfg.ACCEPT_LICENSE, " "); got != "-@FREE @BINARY-REDISTRIBUTABLE" {
+		t.Fatalf("ACCEPT_LICENSE = %q", got)
+	}
+	if cfg.MAKEOPTS != "-j3" || cfg.MakeConf["ROOT"] != "/target" {
+		t.Fatalf("command controls not applied: %#v", cfg.MakeConf)
+	}
+	if _, exists := cfg.MakeConf["ARBITRARY_SECRET"]; exists {
+		t.Fatal("non-allowlisted environment variable entered configuration")
+	}
+}
+
+func TestPackageExecutionEnvironmentLayerPrecedence(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "env"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "env", "package.conf"), []byte("USE=\"-base package\"\nFEATURES=\"-test package-feature\"\nCFLAGS=\"-O3\"\nPACKAGE_ONLY=yes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &Config{
+		ConfigRoot: root,
+		MakeConf: map[string]string{
+			"USE": "base old", "FEATURES": "sandbox test", "CFLAGS": "-O2", "MAKEOPTS": "-j2",
+		},
+		PackageEnvRules: []PackageUseRule{{Atom: "dev-lang/python", Flags: []string{"package.conf"}}},
+		LicenseGroups:   map[string][]string{},
+	}
+	cfg.populateAccessors()
+	cfg.ApplyCommandEnvironment([]string{"USE=-old command", "FEATURES=-test command-feature", "CFLAGS=-O0", "IGNORED_SECRET=no"})
+
+	got, err := cfg.PackageExecutionEnvironmentFor("dev-lang/python-3.13", "3.13", "gentoo", map[string]string{"MAKEOPTS": "-j8", "REQUEST_ONLY": "yes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"USE": "-base -old package command", "FEATURES": "sandbox -test package-feature command-feature",
+		"CFLAGS": "-O0", "MAKEOPTS": "-j8", "PACKAGE_ONLY": "yes", "REQUEST_ONLY": "yes",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("execution environment = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadEffectiveConfigWithEnvironmentWithoutProfile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "make.conf"), []byte("CFLAGS=-O2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadEffectiveConfigWithEnvironment(root, []string{"CFLAGS=-O0", "ARCH=test-arch", "MAKEOPTS="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CFLAGS != "-O0" || cfg.MakeConf["ARCH"] != "test-arch" || cfg.MAKEOPTS != "" {
+		t.Fatalf("effective command environment not retained: %#v", cfg.MakeConf)
 	}
 }
 

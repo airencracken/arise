@@ -89,6 +89,30 @@ func TestEmergeSearchNormalization(t *testing.T) {
 	}
 }
 
+func TestPackagePlanNormalization(t *testing.T) {
+	arise := `{"schema":1,"actions":[{"action":"install","cpv":"net-im/signal-desktop-bin-1","slot":"0","repository":"gentoo","merge_type":"source"}]}`
+	emerge := `[ebuild  N     ] net-im/signal-desktop-bin-1:0::gentoo`
+	if got, want := string(normalize([]byte(arise), "package-plan")), string(normalize([]byte(emerge), "package-plan")); got != want {
+		t.Fatalf("plan normalization differs:\nArise: %s\nemerge: %s", got, want)
+	}
+}
+
+func TestRunUsesSemanticPackagePlanEquivalence(t *testing.T) {
+	arise := `{"schema":1,"actions":[{"action":"install","cpv":"net-im/signal-desktop-bin-1","slot":"0","repository":"gentoo","merge_type":"source","use_enabled":["extra","ssl"]}]}`
+	emerge := `[ebuild  N     ] net-im/signal-desktop-bin-1:0::gentoo USE="ssl"`
+	w := Workload{Name: "resolver", Runs: 1, Cases: []Case{{
+		Name: "plan", Normalize: "package-plan", MinSpeedup: speedupPtr(0),
+		Arise: Command{Path: "printf", Args: []string{arise}}, Reference: Command{Path: "printf", Args: []string{emerge}},
+	}}}
+	report, err := Run(context.Background(), w, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.AllEquivalent {
+		t.Fatal("semantic plan equivalence rejected Arise-only non-Portage output flags")
+	}
+}
+
 func TestRunRejectsEquivalentButSlower(t *testing.T) {
 	w := Workload{Name: "test", Runs: 2, Cases: []Case{{
 		Name: "slow", Normalize: "exit-code",

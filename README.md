@@ -1,7 +1,9 @@
 # Arise — Gentoo Package Manager
 
-A high-performance, self-healing package manager for Gentoo Linux, written in
-Go. Statically linked, no Python or Bash dependency for core operations.
+A high-performance package-manager control plane for Gentoo Linux, written in
+Go. Core state inspection, configuration evaluation, resolution and fetching
+do not require Portage's Python runtime. Ebuild execution intentionally uses
+Bash and remains experimental.
 
 > **Development status:** repository sync, indexing, search, and installed
 > package queries are usable foundations. The emerge-compatible resolver,
@@ -22,19 +24,21 @@ Portage has also accumulated decades of technical debt: recursive dependency
 resolution through a Python interpreter, linear metadata scans, and emergent
 complexity from maintaining backwards compatibility across 20+ years of EAPIs.
 
-Arise solves both problems:
+Arise is being built around both problems:
 
-- **Survives system breakage**: a single statically-linked Go binary. No Python,
-  no Bash, no shared libraries. If your kernel boots, arise works.
+- **Recovery-oriented control plane**: one statically linked Go binary can
+  inspect package state and construct verified plans when Portage's Python
+  environment is damaged. Safe live repair still requires the unfinished
+  execution and transaction milestones.
 - **Performance**: BadgerDB-backed metadata queries replace filesystem scans and
   shell invocations. Dependency resolution runs in-process instead of spawning
   Python for every decision.
-- **Unification**: one tool replaces emerge, eix, equery, quickpkg,
+- **Unified direction**: one tool is intended to cover emerge, eix, equery, quickpkg,
   perl-cleaner, python-updater, dispatch-conf, env-update, revdep-rebuild,
   and eselect-news. Learn one CLI, carry one binary.
-- **Correctness**: every component has adversarial input tests, mutation tests,
-  and an integration framework that compares Arise output against portageq and
-  emerge --info to verify 1:1 parity.
+- **Correctness gates**: deterministic tests and live differential corpora
+  compare package state, policy, plans and benchmarks with Portage. Unsupported
+  execution fails closed rather than reporting success.
 
 The core design rules are:
 
@@ -87,15 +91,15 @@ arise equery uses sys-devel/gcc
 arise equery check sys-devel/gcc
 arise equery which sys-devel/gcc
 
-# Install
-arise install app-editors/vim
+# Resolve an install without mutating the system
+arise --pretend install app-editors/vim
 
-# Update world
-arise update
+# Resolve an @world update
+arise --pretend update
 
-# Audit for outdated Python/Perl packages
+# Read-only audit for outdated Python/Perl packages
 arise audit python
-arise audit perl --fix
+arise audit perl
 
 # System info
 arise info
@@ -103,11 +107,16 @@ arise info
 # Maintenance
 arise depclean --pretend
 arise prune --pretend
-arise preserved-rebuild
-arise revdep-rebuild
+# Read-only maintenance proposals
+arise --pretend preserved-rebuild
+arise --pretend revdep-rebuild
 arise dispatch-conf
-arise env-update
 ```
+
+Non-pretend install, update, uninstall, depclean, repair and rebuild execution
+is deliberately blocked until the versioned ebuild ABI and journaled
+transaction engine satisfy their punch-list gates. Source `--fetchonly` is the
+current bounded exception and consumes only Manifest-verified artifacts.
 
 ## Usage
 
@@ -117,16 +126,16 @@ arise [global-flags] <command> [args...]
 Commands:
   sync            Sync the Gentoo repository
   index           Rebuild metadata database from ebuild tree
-  install         Install packages
-  update          Update @world
-  uninstall       Remove packages
-  depclean        Remove orphaned packages
-  prune           Remove old package versions
+  install         Resolve package installation (execution gated)
+  update          Resolve an @world update (execution gated)
+  uninstall       Propose package removal (execution gated)
+  depclean        Propose orphan removal (execution gated)
+  prune           Propose old-version removal (execution gated)
   deselect        Remove from @world set
   search          Search packages (replaces eix)
   installed       List installed CP atoms or CPVs (replaces eix-installed)
   query           Look up package metadata
-  info            System information (replaces emerge --info)
+  info            Partial system information
   equery          Package queries (replaces equery)
   audit           Audit Python/Perl site-packages
   preserved-rebuild  Rebuild after soname changes
@@ -148,34 +157,29 @@ related tools are performance references where they provide an equivalent
 operation. Correctness-equivalent but slower results fail Arise's benchmark
 gate; matching speed is the floor, and the goal is to win decisively.
 
-Initial same-snapshot, correctness-gated results on the development laptop:
+Same-snapshot, correctness-gated checkpoint results from 2026-07-17:
 
 | Task | Reference | Equivalent | Arise median | Reference median | Speedup |
 |---|---|---:|---:|---:|---:|
-| List all installed CPVs | eix-installed | yes | 8.14 ms | 36.86 ms | **4.53x** |
-| Firefox substring search | eix | yes | 11.07 ms | 33.01 ms | **2.98x — pass** |
-| Firefox substring search | emerge | yes | 11.62 ms | 862.26 ms | **74.22x — pass** |
-| Crash-safe full package index | eix-update | yes | 3.81 s | 4.22 s | **1.11x — pass** |
-| Crash-safe no-change package index | eix-update | yes | 1.37 s | 4.22 s | **3.08x — pass** |
+| List all installed CPVs | eix-installed | yes | 6.42 ms | 37.47 ms | **5.83x** |
+| Firefox substring search | eix | yes | 11.69 ms | 33.95 ms | **2.90x** |
+| Firefox substring search | emerge | yes | 10.95 ms | 865.47 ms | **79.03x** |
+| Signal Desktop dependency plan | emerge | yes | 1.30 s | 3.30 s | **2.54x** |
+| Crash-safe full configured-repository index | eix-update | yes | 3.96 s | 4.26 s | **1.08x** |
+| Crash-safe no-change configured-repository index | eix-update | yes | 1.86 s | 4.26 s | **2.29x** |
 
-The current active immutable generation is about 74 MiB versus eix's 25.80 MiB;
-Arise's dedicated name index is 451 KiB. Immutable Badger tables are hard-linked
-between generations, so the active plus rollback generation currently consume
-about 83 MiB of physical storage rather than twice the active size.
-The older cache-only 713 ms result is intentionally retired: it omitted
-uncached overlay packages and mutated the live database in place. Current
-indexing builds and validates a complete immutable generation, atomically
-publishes it, and retains the prior generation for crash recovery. Delta
-Incremental generations recover most of the earlier speed without weakening
-this guarantee: immutable tables are shared, mutable files are copied, and only
-changed records are reconciled before atomic publication.
+The index comparison covers every configured repository on both sides and
+validates normalized package names after each build. Current indexing creates a
+complete immutable generation, publishes it atomically and retains a rollback
+generation. Cache-footprint publication is temporarily withheld because the
+harness must follow generation symlinks before its numbers are trustworthy.
 
 Not yet claimed:
 
 - The isolated `emerge --metadata` workload is ready but still needs a
   privileged run because Portage enforces root/portage-group access.
-- Signal Desktop planning remains correctness-blocked; its timing is invalid
-  until Arise and emerge produce equivalent plans.
+- `@world` planning remains correctness-blocked on the intentionally damaged
+  development snapshot and has no published speedup.
 
 The complete current and planned task matrix is in
 [BENCHMARK_MATRIX.md](BENCHMARK_MATRIX.md), with methodology in
@@ -195,7 +199,7 @@ the intended compatibility surface, not completed behavioral parity.
 - FEATURES engine: ccache, distcc, userpriv, split-log, nostrip, fail-clean
 - Collision detection, `--noreplace`, `package.provided`
 
-### eix (search) feature parity
+### Search surface
 
 - 30+ search filters: category, name, slot, use, keywords, license, regex
 - `--versions`, `--json`, `--format`, `--brief`, `--and`/`--not`
@@ -203,7 +207,7 @@ the intended compatibility surface, not completed behavioral parity.
 - `--care`, `--overflow`, `--masked`, `--duplicates`
 - Output modes: JSON, brief, custom format strings, eix-compatible dump
 
-### equery feature parity
+### Installed-package query surface
 
 - `belongs` — find owning package for a file
 - `files` — list installed files
@@ -243,7 +247,8 @@ internal/
   env/              env-update implementation
   equery/           Package query (belongs, files, uses, etc.)
   features/         FEATURES engine
-  fetch/            HTTP source fetcher
+  distfiles/        Manifest parsing and artifact verification
+  fetch/            Atomic, mirror-aware verified source acquisition
   graph/            Dependency graph builder
   ingest/           gob encoding to BadgerDB
   integration/      portageq comparison test framework
@@ -252,6 +257,8 @@ internal/
   nameindex/        Immutable, checksummed package-name sidecar
   news/             GLEP 42 news reader
   phase/            Build phase executor (unpack, configure, compile, install)
+  phaseproto/       Versioned isolated Go-to-Bash ebuild protocol
+  oplock/           Portage-compatible operation locking
   perf/             Correctness-gated benchmark harness and reports
   portage/          /etc/portage config parser
   preserved/        @preserved-rebuild and revdep-rebuild scanner
@@ -268,10 +275,11 @@ internal/
 
 | Variable | Purpose |
 |---|---|
-| `ARISE_DB_PATH` | Override database path (default: `/var/lib/arise/data`) |
-| `ARISE_REPO_PATH` | Override repository path (default: `/var/db/repos/gentoo`) |
+| `PORTDIR` | Default repository path; overridden by `--repo` |
+| `PORTAGE_CONFIGROOT`, `ROOT`, `SYSROOT`, `BROOT` | Portage root selectors |
+| `DISTDIR`, `PKGDIR`, `PORTAGE_TMPDIR` | Storage/build path defaults |
 | `NO_COLOR` | Disable colored output |
-| `CFLAGS`, `CXXFLAGS`, `MAKEOPTS` | Build configuration |
+| `USE`, `FEATURES`, policy and toolchain variables | Allowlisted one-shot Portage configuration; see the P2 contract |
 
 ## License
 
