@@ -390,6 +390,16 @@ validity and promotion criteria, in
   and removal actions preserve exact version/slot/repository identity. Enforcing
   remove-before-merge ordering belongs to the P4 transaction scheduler and
   remains a live-mutation gate.
+- [x] Verify the complete planned installed state before execution. Ordinary
+  resolution and explicit install/removal overlays share one fail-closed gate;
+  general uninstall, reverse-dependency breakage, repaired replacement,
+  parallel-slot retention and invalid-action matrices are permanent tests.
+  Immutable ROOT, SYSROOT and BROOT installed views are checked according to
+  DEPEND/RDEPEND/BDEPEND/IDEPEND/PDEPEND domains, including any-of, providers
+  and blockers. Planned actions and removals carry their destination domain,
+  retain distinct identity and ordering across roots, and serialize that domain
+  in JSON; aliased native roots collapse to one action. The broader emerge
+  source/binary cross-root differential matrix remains under EAPI semantics.
 - [~] Implement virtual/provider selection and provider preference. Provider
   atoms now enforce version, slot and USE constraints and provider alternatives
   use bounded transactional rollback. EAPI virtual semantics and real-world
@@ -463,35 +473,33 @@ validity and promotion criteria, in
   sanitized fixture, including removed ebuilds, stale Python targets, virtual
   transitions, blockers and overlays, before repairing the live installation.
 - [!] Current laptop `--update @world` differential is intentionally failing:
-  Arise now finds 102 actions in 10.43 s versus Portage's 135. Normalized CPV
-  comparison leaves 41 one-sided entries (including four Arise-only entries).
-  Do not treat successful resolution as parity until remaining USE_EXPAND
-  rebuild propagation, slot-operator rebuilds and action intent match Portage.
+  after correcting installed-versus-repository EAPI contamination, resolution
+  now fails closed on installed live `llvm-core/llvm-23.0.0.9999:23/23.0`
+  because no matching candidate is installable. Freeze that state and decide
+  Portage-equivalent installed-live handling before resuming the action-set
+  differential; no world speed claim is valid meanwhile.
 - [ ] Golden tests for blockers, slots, subslots, virtuals and any-of groups.
 - [ ] Property tests for topological ordering and solution satisfaction.
-- [~] Add a mandatory post-solve whole-state verifier before permitting a real
+- [x] Add a mandatory post-solve whole-state verifier before permitting a real
   transaction: overlay the proposed installs/removals on the VDB snapshot and
   prove every retained and planned dependency, blocker, slot and USE constraint.
   Resolve results now carry an explicit verified/failed/skipped-nodeps/incomplete
   status, JSON plans expose it, and the production non-pretend boundary rejects
   every result not marked verified. Pretend remains available for diagnostics;
-  `--nodeps` cannot silently cross into execution. The verifier's remaining
-  dependency/root semantics and portable parity corpus still block completion.
-  The current laptop world case produces a 138-action Arise plan while Portage
-  reports Python-target same-slot conflicts; Arise must prove that its larger
-  plan resolves those constraints rather than merely omitting reverse-installed
-  edges.
-- [~] Post-solve verifier now overlays multiple installed slots, preserves
+  `--nodeps` cannot silently cross into execution. Dependency domains, general
+  removal overlays and planned-action root placement are enforced; portable
+  world parity remains a separate resolver-corpus gate.
+- [x] Post-solve verifier now overlays multiple installed slots, preserves
   candidate versus installed USE/dependency metadata, and validates affected
   retained reverse constraints. Exact per-version planned removals no longer
   erase unrelated parallel slots from the overlaid state, and removals now join
   installs in the affected-name set so retained consumers are revalidated.
   Regression matrices cover a failed replacement, a complete-graph repair and a
   removal that breaks a retained runtime dependency; their verification status
-  and structured conflict records are asserted. On the laptop world transition it reports 22
-  Python/Rust conflicts instead of returning a false success; @system remains
-  an exact conflict-free 11-package plan. Next feed these structured failures
-  into complete-graph rebuild expansion and backtracking.
+  and structured conflict records are asserted. `@system` remains an exact
+  conflict-free 11-package plan and now has a correctness-gated 2.84x benchmark.
+  The damaged world transition is blocked earlier by its installed live LLVM
+  state and must become a portable fixture before further repair/backtracking.
 - [ ] Mutation tests that remove or invert constraints and must fail.
 - [ ] Fuzz atom and dependency expression parsers with round-trip invariants.
 - [ ] Regression test for `net-im/signal-desktop-bin` on the laptop snapshot.
@@ -796,6 +804,12 @@ Acceptance gate:
   traps/signals and nested sourcing on every supported Bash version.
 
 - [ ] Implement accurate `emerge --info`-equivalent output.
+- [ ] Match emerge's unknown-atom "did you mean" behavior. Generate
+  deterministic typo/category suggestions from the same visible package
+  snapshot used by resolution, distinguish unavailable/masked exact atoms from
+  spelling mistakes, and never silently substitute a suggestion. Differential
+  fixtures should cover misspelled package names, wrong categories, ambiguous
+  names, versioned atoms and a no-useful-suggestion case.
 - [ ] Implement package sets and list-sets behavior.
 - [ ] Complete autounmask suggestions and atomic config writes.
 - [ ] Implement pkg_config execution.

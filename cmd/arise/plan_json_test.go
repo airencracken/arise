@@ -54,7 +54,7 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 	if document.Schema != 1 || !document.Complete || !document.Resolution.Verified || document.Resolution.Verification != resolve.VerificationVerified || document.Operation != "update" || document.Resolution.DurationNS != int64(2*time.Second) {
 		t.Fatalf("document header = %#v", document)
 	}
-	if len(document.Actions) != 1 || !reflect.DeepEqual(document.Actions[0].UseEnabled, []string{"alpha", "zeta"}) || !reflect.DeepEqual(document.Actions[0].UseDisabled, []string{"debug"}) {
+	if len(document.Actions) != 1 || document.Actions[0].Domain != string(resolve.DomainROOT) || !reflect.DeepEqual(document.Actions[0].UseEnabled, []string{"alpha", "zeta"}) || !reflect.DeepEqual(document.Actions[0].UseDisabled, []string{"debug"}) {
 		t.Fatalf("action = %#v", document.Actions)
 	}
 }

@@ -530,7 +530,10 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 				use[flag] = true
 			}
 			vi := rg.AddVersionFromRepository(cp, installed.Version, installed.Slot, installed.Subslot, true, use, "", installed.Repository)
-			vi.EAPI = installed.EAPI
+			vi.InstalledEAPI = installed.EAPI
+			if vi.EAPI == "" {
+				vi.EAPI = installed.EAPI
+			}
 			vi.InstalledDepend, vi.InstalledRdepend = installed.Depend, installed.RDepend
 			vi.InstalledBdepend, vi.InstalledIdepend, vi.InstalledPdepend = installed.BDepend, installed.IDepend, installed.PDepend
 			if vi.Depend == "" && vi.Rdepend == "" && vi.Bdepend == "" && vi.Idepend == "" && vi.Pdepend == "" {

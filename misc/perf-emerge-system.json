@@ -1,0 +1,23 @@
+{
+  "name": "system-set-dependency-resolution",
+  "warmups": 1,
+  "runs": 5,
+  "cases": [
+    {
+      "name": "shallow-system-equivalent-plan",
+      "normalize": "package-plan",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["--json", "--color=n", "--db", "/tmp/arise-perf-data", "--repo", "/var/db/repos/gentoo", "--pretend", "update", "@system"],
+        "version_args": ["--version"]
+      },
+      "reference": {
+        "tool": "emerge",
+        "path": "emerge",
+        "args": ["--color", "n", "--pretend", "--verbose", "--update", "@system"],
+        "version_args": ["--version"]
+      }
+    }
+  ]
+}

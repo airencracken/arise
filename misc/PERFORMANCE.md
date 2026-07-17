@@ -45,6 +45,13 @@ make perf-prepare
 
 This writes `/tmp/arise-perf-data`; it does not alter the system Arise index.
 
+Current resolver checkpoints on the 2026-07-17 laptop snapshot include an
+equivalent 11-action shallow `@system` plan at 2.259 s median versus emerge at
+6.423 s (2.84x). The workload is `misc/perf-emerge-system.json`; its five timed
+runs are correctness-gated with `package-plan` normalization. `@world` remains
+ineligible for a speed claim because the damaged installed state contains live
+LLVM without an installable matching candidate.
+
 ## Workload format
 
 ```json

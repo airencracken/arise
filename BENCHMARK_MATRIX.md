@@ -35,7 +35,8 @@ loss does not fail the build.
 | Resolution | Single installed package plan | emerge -p | — | immutable snapshot | workload needed |
 | Resolution | New package dependency plan | emerge -p | — | immutable snapshot | Signal action/USE plan equivalent; 1.30s vs 3.30s (2.54x) |
 | Resolution | Multi-target plan | emerge -p | — | immutable snapshot | workload needed |
-| Resolution | @world plan | emerge -pvuDN @world | — | immutable snapshot | implementation needed |
+| Resolution | Shallow @system plan | emerge -pu @system | — | live read-only snapshot | exact 11/11 action plan; 2.26s vs 6.42s (2.84x) |
+| Resolution | @world plan | emerge -pvuDN @world | — | immutable snapshot | correctness-blocked by installed live LLVM without a matching candidate; fixture needed |
 | Resolution | Backtracking/slot conflict | emerge -p | — | fixture snapshot | workload needed |
 | Fetch | Fetch-only, warm DISTDIR | emerge -f | — | temp ROOT/DISTDIR | implementation needed |
 | Fetch | Fetch-only, cold DISTDIR | emerge -f | — | local mirror + temp ROOT | implementation needed |

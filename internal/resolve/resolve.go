@@ -65,6 +65,11 @@ type ResolveConfig struct {
 	PortageConfig               *portage.Config
 	WorldSet                    *WorldSet
 	SystemSet                   *WorldSet
+	// InstalledByDomain supplies immutable installed-state views for cross-root
+	// verification. Missing domains retain the historical single-graph view.
+	// Planned actions are overlaid from the transaction graph in every domain;
+	// action placement becomes explicit when the cross-root scheduler lands.
+	InstalledByDomain map[DependencyDomain]*DepGraph
 }
 
 func (c *ResolveConfig) Defaults() {
@@ -134,7 +139,8 @@ type PkgAction struct {
 	UseFlags       map[string]bool
 	MergeType      string // source or binary
 	BinaryPath     string
-	Unsorted       bool // if true, exclude from topological sort
+	Unsorted       bool             // if true, exclude from topological sort
+	Domain         DependencyDomain // filesystem domain receiving/removing this package
 }
 
 // PkgNode represents a package in the dependency graph.
@@ -168,6 +174,7 @@ type VersionInfo struct {
 	InstalledBdepend   string
 	InstalledIdepend   string
 	InstalledPdepend   string
+	InstalledEAPI      string
 	Keywords           string // ebuild keywords (e.g. "amd64 ~x86")
 	RequiredUse        string // REQUIRED_USE constraint
 	License            string // LICENSE value
@@ -357,11 +364,25 @@ func versionActionKey(cp string, version *VersionInfo) string {
 	return cp + "-" + versionRepositoryKey(version.Version.Raw, version.Repository)
 }
 
+func domainActionKey(key string, domain DependencyDomain) string {
+	if domain == "" || domain == DomainROOT {
+		return key
+	}
+	return string(domain) + "\x00" + key
+}
+
+func normalizedActionDomain(domain DependencyDomain) DependencyDomain {
+	if domain == "" {
+		return DomainROOT
+	}
+	return domain
+}
+
 func actionVersionKey(action *PkgAction) string {
 	if action == nil || action.Atom == nil || action.Atom.Version == nil {
 		return ""
 	}
-	return action.Atom.CP() + "-" + versionRepositoryKey(action.Atom.Version.Raw, action.Repository)
+	return domainActionKey(action.Atom.CP()+"-"+versionRepositoryKey(action.Atom.Version.Raw, action.Repository), action.Domain)
 }
 
 // AddDep adds a dependency edge between packages.
@@ -448,6 +469,25 @@ func matchingInstalledVersion(node *PkgNode, constraint *atom.Atom) *VersionInfo
 		}
 	}
 	return best
+}
+
+func (r *resolver) matchingInstalledVersionInDomain(node *PkgNode, constraint *atom.Atom, domain DependencyDomain) *VersionInfo {
+	graph := r.graph
+	if configured := r.config.InstalledByDomain[normalizedActionDomain(domain)]; configured != nil {
+		graph = configured
+	}
+	if node == nil || node.Atom == nil {
+		return nil
+	}
+	return matchingInstalledVersion(graph.Packages[node.Atom.CP()], constraint)
+}
+
+func (r *resolver) effectiveDomain(domain DependencyDomain) DependencyDomain {
+	domain = normalizedActionDomain(domain)
+	if domain != DomainROOT && r.config.InstalledByDomain[domain] == nil {
+		return DomainROOT
+	}
+	return domain
 }
 
 // GetBestVersion returns the highest available version for a package.
@@ -723,6 +763,68 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 	}, nil
 }
 
+// VerifyTransaction validates an already constructed install/removal overlay.
+// Removal-oriented commands use this entry point so they receive the same
+// whole-state dependency, blocker, slot, USE, provider, and root-domain checks
+// as ordinary resolution before a transaction can become executable.
+func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config ResolveConfig) (*ResolveResult, error) {
+	if g == nil {
+		return nil, fmt.Errorf("resolve: no dependency graph provided (internal error)")
+	}
+	r := &resolver{
+		graph:            g,
+		config:           config,
+		installed:        make(map[string]*PkgAction),
+		toInstall:        make(map[string]*PkgAction),
+		toUninstall:      make(map[string]*PkgAction),
+		seenDeps:         make(map[string]bool),
+		activeDeps:       make(map[string]int),
+		cycleSeen:        make(map[string]bool),
+		selectedCPs:      make(map[string]bool),
+		explicitTargets:  make(map[string]bool),
+		constraints:      make(map[string][]*atom.Atom),
+		constraintCauses: make(map[string][]ConflictRequirement),
+		useOverrides:     make(map[string]map[string]bool),
+		useChangeSeen:    make(map[string]bool),
+		baseUseCache:     make(map[string]map[string]bool),
+		maskCache:        make(map[string]portage.MaskStatus),
+		keywordCache:     make(map[string]bool),
+		portageConfig:    config.PortageConfig,
+		worldSet:         config.WorldSet,
+		systemSet:        config.SystemSet,
+		strictWholeState: true,
+	}
+	for i := range installs {
+		action := installs[i]
+		if action.Atom == nil {
+			return nil, fmt.Errorf("resolve: install action %d has no atom", i)
+		}
+		r.toInstall[actionVersionKey(&action)] = &action
+	}
+	for i := range removals {
+		action := removals[i]
+		if action.Atom == nil {
+			return nil, fmt.Errorf("resolve: removal action %d has no atom", i)
+		}
+		r.toUninstall[actionVersionKey(&action)] = &action
+	}
+	started := time.Now()
+	r.verifyPlannedState()
+	r.metrics.Verification = time.Since(started)
+	return &ResolveResult{
+		Install: installs, Uninstall: removals,
+		Conflicts: r.conflicts, Warnings: r.warnings,
+		ConflictDetails: r.conflictDetails, Metrics: r.metrics,
+		Verified: len(r.conflicts) == 0,
+		Verification: func() string {
+			if len(r.conflicts) == 0 {
+				return VerificationVerified
+			}
+			return VerificationFailed
+		}(),
+	}, nil
+}
+
 type resolver struct {
 	graph              *DepGraph
 	config             ResolveConfig
@@ -752,10 +854,12 @@ type resolver struct {
 	keywordCache       map[string]bool
 	pendingConstraint  *atom.Atom // unpinned dependency behind an internally pinned candidate
 	pendingReason      string
+	pendingDomain      DependencyDomain
 	portageConfig      *portage.Config
 	metrics            ResolveMetrics
 	transactions       []*resolverTransaction
 	setScoped          bool // @world/@system excludes unrelated installed orphans
+	strictWholeState   bool // explicit transaction verification cannot downgrade breakage to depclean advice
 }
 
 type anyOfDecision struct {
@@ -1339,9 +1443,13 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			return mergeErr
 		}
 	}
-	actionKey := versionActionKey(cp, vi)
+	actionDomain := r.pendingDomain
+	if actionDomain == "" {
+		actionDomain = DomainROOT
+	}
+	actionKey := domainActionKey(versionActionKey(cp, vi), actionDomain)
 	for key, existingAction := range r.toInstall {
-		if existingAction.Atom != nil && existingAction.Atom.CP() == cp && existingAction.Slot == vi.Slot && key != actionKey {
+		if existingAction.Atom != nil && existingAction.Atom.CP() == cp && existingAction.Slot == vi.Slot && normalizedActionDomain(existingAction.Domain) == actionDomain && key != actionKey {
 			r.deleteInstall(key)
 		}
 	}
@@ -1362,6 +1470,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			UseFlags:       r.candidateUseFlags(node, vi),
 			MergeType:      mergeType,
 			BinaryPath:     binaryPath,
+			Domain:         actionDomain,
 		})
 	}
 
@@ -1466,9 +1575,7 @@ func (r *resolver) dependenciesForVersion(node *PkgNode, vi *VersionInfo) ([]*De
 		vi.InstalledDepend == "" && vi.InstalledRdepend == "" && vi.InstalledBdepend == "" && vi.InstalledIdepend == "" && vi.InstalledPdepend == "") {
 		return node.Deps, nil
 	}
-	if err := validateDependencyClassesEAPI(vi); err != nil {
-		return nil, fmt.Errorf("%s: %w", node.Atom.CP(), err)
-	}
+	chosenEAPI := vi.EAPI
 	deps := []struct {
 		raw string
 		typ DepType
@@ -1493,6 +1600,27 @@ func (r *resolver) dependenciesForVersion(node *PkgNode, vi *VersionInfo) ([]*De
 			{vi.InstalledBdepend, DepTypeBuild}, {vi.InstalledIdepend, DepTypeInstall},
 			{vi.InstalledPdepend, DepTypePost},
 		}
+		if vi.InstalledEAPI != "" {
+			chosenEAPI = vi.InstalledEAPI
+		}
+	}
+	validation := &VersionInfo{EAPI: chosenEAPI}
+	for _, dependency := range deps {
+		switch dependency.typ {
+		case DepTypeDepend:
+			validation.Depend = dependency.raw
+		case DepTypeRuntime:
+			validation.Rdepend = dependency.raw
+		case DepTypeBuild:
+			validation.Bdepend = dependency.raw
+		case DepTypeInstall:
+			validation.Idepend = dependency.raw
+		case DepTypePost:
+			validation.Pdepend = dependency.raw
+		}
+	}
+	if err := validateDependencyClassesEAPI(validation); err != nil {
+		return nil, fmt.Errorf("%s: %w", node.Atom.CP(), err)
 	}
 	if vi.Installed && !scheduledVersion {
 		bdepsMode := r.config.WithBdeps
@@ -1671,7 +1799,7 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 	}
 	if toNode == nil {
 		if len(r.graph.ProvidersOf[depAtom.CP()]) > 0 {
-			return r.processProviderDependency(edge.From, depAtom, depth)
+			return r.processProviderDependency(edge.From, depAtom, depth, edge.Domain)
 		}
 	}
 	if toNode == nil {
@@ -1697,7 +1825,7 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 	}
 
 	// check if installed version satisfies the dep
-	installed := matchingInstalledVersion(toNode, depAtom)
+	installed := r.matchingInstalledVersionInDomain(toNode, depAtom, edge.Domain)
 	if installed != nil {
 		// dep satisfied by installed package
 		// check for slot operator rebuilds
@@ -1743,7 +1871,7 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 	}
 
 	if best == nil && len(r.graph.ProvidersOf[depAtom.CP()]) > 0 {
-		return r.processProviderDependency(edge.From, depAtom, depth)
+		return r.processProviderDependency(edge.From, depAtom, depth, edge.Domain)
 	}
 
 	if best == nil {
@@ -1758,10 +1886,10 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 	// install dependency
 	reason := fmt.Sprintf("dependency of %s", edge.From.Atom.CP())
 	bestAt := versionedDependencyAtom(toNode, depAtom, best)
-	return r.planDependency(bestAt, depAtom, reason, depth)
+	return r.planDependencyInDomain(bestAt, depAtom, reason, depth, edge.Domain)
 }
 
-func (r *resolver) processProviderDependency(parent *PkgNode, depAtom *atom.Atom, depth int) error {
+func (r *resolver) processProviderDependency(parent *PkgNode, depAtom *atom.Atom, depth int, domain DependencyDomain) error {
 	type providerCandidate struct {
 		node       *PkgNode
 		constraint *atom.Atom
@@ -1775,7 +1903,7 @@ func (r *resolver) processProviderDependency(parent *PkgNode, depAtom *atom.Atom
 			continue
 		}
 		constraint := providerConstraint(depAtom, node)
-		installed := matchingInstalledVersion(node, constraint)
+		installed := r.matchingInstalledVersionInDomain(node, constraint, domain)
 		best := r.findMatchingVersion(node, constraint)
 		if installed != nil || best != nil {
 			candidates = append(candidates, providerCandidate{node: node, constraint: constraint, installed: installed, best: best})
@@ -1812,7 +1940,7 @@ func (r *resolver) processProviderDependency(parent *PkgNode, depAtom *atom.Atom
 		} else {
 			reason := fmt.Sprintf("provider of %s (dependency of %s)", depAtom.CP(), parentCP)
 			selected := versionedConstraintAtom(candidate.constraint, candidate.best)
-			err = r.planDependency(selected, candidate.constraint, reason, depth)
+			err = r.planDependencyInDomain(selected, candidate.constraint, reason, depth, domain)
 		}
 		if err == nil && len(r.conflicts) == tx.conflictsLen {
 			r.commitTransaction(tx)
@@ -1861,10 +1989,19 @@ func (r *resolver) packageScheduled(node *PkgNode) bool {
 }
 
 func (r *resolver) packageVersionScheduled(node *PkgNode, vi *VersionInfo) bool {
+	for _, domain := range []DependencyDomain{DomainROOT, DomainSYSROOT, DomainBROOT} {
+		if r.packageVersionScheduledInDomain(node, vi, domain) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *resolver) packageVersionScheduledInDomain(node *PkgNode, vi *VersionInfo, domain DependencyDomain) bool {
 	if node == nil || node.Atom == nil || vi == nil || vi.Version == nil {
 		return false
 	}
-	action := r.toInstall[versionActionKey(node.Atom.CP(), vi)]
+	action := r.toInstall[domainActionKey(versionActionKey(node.Atom.CP(), vi), domain)]
 	return action != nil && action.Atom != nil && action.Atom.CP() == node.Atom.CP() &&
 		(action.Slot == "" || action.Slot == vi.Slot)
 }
@@ -1931,7 +2068,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 		if toNode == nil {
 			continue
 		}
-		inst := matchingInstalledVersion(toNode, resolvedAtom)
+		inst := r.matchingInstalledVersionInDomain(toNode, resolvedAtom, edge.Domain)
 		satisfied := inst != nil
 		best := r.findMatchingVersion(toNode, resolvedAtom)
 		if !satisfied && best == nil {
@@ -1998,7 +2135,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 			err = fmt.Errorf("no installable version found for any-of dependency %s", chosen.depAtom.Atom.CP())
 		} else {
 			reason := fmt.Sprintf("any-of dependency of %s", node.Atom.CP())
-			err = r.planDependency(versionedConstraintAtom(chosen.depAtom.Atom, chosen.best), chosen.depAtom.Atom, reason, depth)
+			err = r.planDependencyInDomain(versionedConstraintAtom(chosen.depAtom.Atom, chosen.best), chosen.depAtom.Atom, reason, depth, edge.Domain)
 		}
 
 		// KeepGoing may turn a branch error into a recorded conflict. A branch
@@ -2031,13 +2168,20 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 }
 
 func (r *resolver) planDependency(selected, constraint *atom.Atom, reason string, depth int) error {
+	return r.planDependencyInDomain(selected, constraint, reason, depth, DomainROOT)
+}
+
+func (r *resolver) planDependencyInDomain(selected, constraint *atom.Atom, reason string, depth int, domain DependencyDomain) error {
 	previous := r.pendingConstraint
 	previousReason := r.pendingReason
+	previousDomain := r.pendingDomain
 	r.pendingConstraint = constraint
 	r.pendingReason = reason
+	r.pendingDomain = r.effectiveDomain(domain)
 	err := r.planPackage(selected, reason, depth)
 	r.pendingConstraint = previous
 	r.pendingReason = previousReason
+	r.pendingDomain = previousDomain
 	return err
 }
 
@@ -2049,13 +2193,21 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 	if toNode == nil {
 		return nil // nothing to block
 	}
+	installedNode := toNode
+	blockDomain := r.effectiveDomain(edge.Domain)
+	if graph := r.config.InstalledByDomain[blockDomain]; graph != nil {
+		installedNode = graph.Packages[toNode.Atom.CP()]
+		if installedNode == nil {
+			return nil
+		}
+	}
 
 	var blocked []*VersionInfo
-	for _, installed := range toNode.Versions {
+	for _, installed := range installedNode.Versions {
 		if installed == nil || !installed.Installed {
 			continue
 		}
-		if edge.DepAtom == nil || versionAtomMatches(toNode.Atom, edge.DepAtom, installed, installedFlags(installed)) {
+		if edge.DepAtom == nil || versionAtomMatches(installedNode.Atom, edge.DepAtom, installed, installedFlags(installed)) {
 			blocked = append(blocked, installed)
 		}
 	}
@@ -2084,25 +2236,29 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 
 	// check if the blocked package is a world/target package
 	isWorldPkg := false
-	if r.worldSet != nil {
-		for _, e := range r.worldSet.Entries {
-			if strings.TrimSpace(e) == cp {
+	if blockDomain != DomainROOT {
+		isWorldPkg = false
+	} else {
+		if r.worldSet != nil {
+			for _, e := range r.worldSet.Entries {
+				if strings.TrimSpace(e) == cp {
+					isWorldPkg = true
+					break
+				}
+			}
+		}
+		for _, t := range r.targetAtoms {
+			if t.CP() == cp {
 				isWorldPkg = true
 				break
 			}
 		}
-	}
-	for _, t := range r.targetAtoms {
-		if t.CP() == cp {
-			isWorldPkg = true
-			break
-		}
-	}
-	// check if it's in our install list
-	for _, a := range r.toInstall {
-		if a.Atom != nil && a.Atom.CP() == cp {
-			isWorldPkg = true
-			break
+		// check if it's in our install list
+		for _, a := range r.toInstall {
+			if a.Atom != nil && a.Atom.CP() == cp {
+				isWorldPkg = true
+				break
+			}
 		}
 	}
 
@@ -2125,16 +2281,18 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 		if installed.Version != nil && installed.Version.Raw != "" {
 			cpv = cp + "-" + versionRepositoryKey(installed.Version.Raw, installed.Repository)
 		}
-		if _, exists := r.toUninstall[cpv]; !exists {
+		key := domainActionKey(cpv, blockDomain)
+		if _, exists := r.toUninstall[key]; !exists {
 			strength := "weak"
 			if edge.StrongBlock {
 				strength = "strong; remove before merge"
 			}
-			r.setUninstall(cpv, &PkgAction{
-				Atom:   bestVersionAtom(toNode.Atom, installed),
+			r.setUninstall(key, &PkgAction{
+				Atom:   bestVersionAtom(installedNode.Atom, installed),
 				Action: "uninstall",
 				Reason: fmt.Sprintf("%s blocker from %s", strength, blocker),
 				Slot:   installed.Slot, Subslot: installed.Subslot, Repository: installed.Repository,
+				Domain: blockDomain,
 			})
 		}
 	}
@@ -2323,7 +2481,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 				return
 			}
 		}
-		if !parentChanging && node != nil && node.Atom != nil && node.GetBestVersion() == nil {
+		if !r.strictWholeState && !parentChanging && node != nil && node.Atom != nil && node.GetBestVersion() == nil {
 			cp := node.Atom.CP()
 			diagnostic := fmt.Sprintf("installed-only package %s has no available ebuild and cannot retain a valid dependency graph (%s); it is a depclean candidate", cp, strings.TrimPrefix(message, "post-solve verification: "))
 			depKey := cp
@@ -2433,7 +2591,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 							continue
 						}
 						active++
-						if r.finalAtomSatisfied(resolveUseDependencies(option.Atom, flags), removed) {
+						if r.finalAtomSatisfiedInDomain(resolveUseDependencies(option.Atom, flags), removed, edge.Domain) {
 							satisfied = true
 							break
 						}
@@ -2451,12 +2609,12 @@ func (r *resolver) verifyPlannedStatePass() bool {
 					continue
 				}
 				if edge.Block {
-					if r.finalAtomSatisfied(dep, removed) {
+					if r.finalAtomSatisfiedInDomain(dep, removed, edge.Domain) {
 						addIssue(node, vi, parentChanging, fmt.Sprintf("post-solve verification: %s remains blocked by %s", dep.CP(), cp))
 					}
 					continue
 				}
-				if !r.finalAtomSatisfied(dep, removed) {
+				if !r.finalAtomSatisfiedInDomain(dep, removed, edge.Domain) {
 					if parentChanging && repairDependency(dep, cp) {
 						continue
 					}
@@ -2555,14 +2713,23 @@ func (r *resolver) finalVersions(node *PkgNode, removed map[string]bool) []*Vers
 }
 
 func (r *resolver) finalAtomSatisfied(dep *atom.Atom, removed map[string]bool) bool {
+	return r.finalAtomSatisfiedInDomain(dep, removed, DomainROOT)
+}
+
+func (r *resolver) finalAtomSatisfiedInDomain(dep *atom.Atom, removed map[string]bool, domain DependencyDomain) bool {
 	if dep == nil {
 		return false
 	}
-	node := r.graph.Packages[dep.CP()]
+	domain = r.effectiveDomain(domain)
+	installedGraph := r.graph
+	if configured := r.config.InstalledByDomain[domain]; configured != nil {
+		installedGraph = configured
+	}
+	node := installedGraph.Packages[dep.CP()]
 	if node != nil {
-		for _, vi := range r.finalVersions(node, removed) {
+		for _, vi := range r.finalVersionsInDomain(node, domainRemovals(removed, domain), installedGraph == r.graph, domain) {
 			flags := installedFlags(vi)
-			if r.packageVersionScheduled(node, vi) {
+			if installedGraph == r.graph && r.packageVersionScheduled(node, vi) {
 				flags = r.candidateUseFlags(node, vi)
 			}
 			if versionAtomMatches(node.Atom, dep, vi, flags) {
@@ -2570,12 +2737,12 @@ func (r *resolver) finalAtomSatisfied(dep *atom.Atom, removed map[string]bool) b
 			}
 		}
 	}
-	for _, providerCP := range r.graph.ProvidersOf[dep.CP()] {
-		provider := r.graph.Packages[providerCP]
+	for _, providerCP := range installedGraph.ProvidersOf[dep.CP()] {
+		provider := installedGraph.Packages[providerCP]
 		providerDep := providerConstraint(dep, provider)
-		for _, vi := range r.finalVersions(provider, removed) {
+		for _, vi := range r.finalVersionsInDomain(provider, domainRemovals(removed, domain), installedGraph == r.graph, domain) {
 			flags := installedFlags(vi)
-			if r.packageVersionScheduled(provider, vi) {
+			if installedGraph == r.graph && r.packageVersionScheduled(provider, vi) {
 				flags = r.candidateUseFlags(provider, vi)
 			}
 			if versionAtomMatches(provider.Atom, providerDep, vi, flags) {
@@ -2583,7 +2750,71 @@ func (r *resolver) finalAtomSatisfied(dep *atom.Atom, removed map[string]bool) b
 			}
 		}
 	}
+	// Planned actions are stored independently by domain and overlay only the
+	// corresponding immutable installed view.
+	if installedGraph != r.graph {
+		transactionNode := r.graph.Packages[dep.CP()]
+		if transactionNode == nil {
+			return false
+		}
+		for _, vi := range transactionNode.Versions {
+			if !r.packageVersionScheduledInDomain(transactionNode, vi, domain) {
+				continue
+			}
+			if versionAtomMatches(transactionNode.Atom, dep, vi, r.candidateUseFlags(transactionNode, vi)) {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+func domainRemovals(removed map[string]bool, domain DependencyDomain) map[string]bool {
+	domain = normalizedActionDomain(domain)
+	result := make(map[string]bool)
+	prefix := string(domain) + "\x00"
+	for key := range removed {
+		if domain == DomainROOT {
+			if !strings.Contains(key, "\x00") {
+				result[key] = true
+			}
+			continue
+		}
+		if strings.HasPrefix(key, prefix) {
+			result[strings.TrimPrefix(key, prefix)] = true
+		}
+	}
+	return result
+}
+
+func (r *resolver) finalVersionsInDomain(node *PkgNode, removed map[string]bool, overlayPlanned bool, domain DependencyDomain) []*VersionInfo {
+	if node == nil {
+		return nil
+	}
+	bySlot := make(map[string]*VersionInfo)
+	for _, vi := range node.Versions {
+		if vi != nil && vi.Installed && !removed[versionActionKey(node.Atom.CP(), vi)] {
+			bySlot[vi.Slot] = vi
+		}
+	}
+	if overlayPlanned {
+		for _, vi := range node.Versions {
+			if vi != nil && r.packageVersionScheduledInDomain(node, vi, domain) {
+				bySlot[vi.Slot] = vi
+			}
+		}
+	}
+	result := make([]*VersionInfo, 0, len(bySlot))
+	for _, vi := range bySlot {
+		result = append(result, vi)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Slot != result[j].Slot {
+			return result[i].Slot < result[j].Slot
+		}
+		return result[i].Version.Compare(result[j].Version) < 0
+	})
+	return result
 }
 
 // providerConstraint applies a virtual's version, slot and USE requirements to
@@ -2815,7 +3046,7 @@ func (r *resolver) sortPlannedActions(actions []PkgAction) []PkgAction {
 				dependencies = append(dependencies, edge.DepAtom)
 			}
 			for _, dependency := range dependencies {
-				for _, depIndex := range plannedDependencyIndices(actions, index, dependency) {
+				for _, depIndex := range plannedDependencyIndices(actions, index, dependency, r.effectiveDomain(edge.Domain)) {
 					if edge.Type == DepTypePost {
 						add(parentIndex, depIndex)
 					} else {
@@ -2878,7 +3109,7 @@ func (r *resolver) versionForAction(action *PkgAction) (*VersionInfo, *PkgNode) 
 	return nil, node
 }
 
-func plannedDependencyIndices(actions []PkgAction, index map[string][]int, dependency *atom.Atom) []int {
+func plannedDependencyIndices(actions []PkgAction, index map[string][]int, dependency *atom.Atom, domain DependencyDomain) []int {
 	if dependency == nil {
 		return nil
 	}
@@ -2889,6 +3120,9 @@ func plannedDependencyIndices(actions []PkgAction, index map[string][]int, depen
 			continue
 		}
 		if dependency.Repo != "" && action.Repository != dependency.Repo {
+			continue
+		}
+		if normalizedActionDomain(action.Domain) != normalizedActionDomain(domain) {
 			continue
 		}
 		if atomMatches(action.Atom, dependency, action.Slot, action.Subslot, action.UseFlags, action.Atom.Version) {
@@ -2933,7 +3167,7 @@ func (r *resolver) validatePlanOrder(actions []PkgAction) {
 				dependencies = append(dependencies, edge.DepAtom)
 			}
 			for _, dependency := range dependencies {
-				for _, depIndex := range plannedDependencyIndices(actions, positions, dependency) {
+				for _, depIndex := range plannedDependencyIndices(actions, positions, dependency, r.effectiveDomain(edge.Domain)) {
 					invalid := edge.Type == DepTypePost && depIndex < parentIndex
 					invalid = invalid || (edge.Type != DepTypePost && depIndex > parentIndex)
 					if invalid {
@@ -3686,7 +3920,7 @@ func actionIdentity(action *PkgAction) string {
 	if slot == "" {
 		slot = action.Atom.Slot
 	}
-	return strings.Join([]string{action.Action, action.Atom.CP(), version, slot}, "|")
+	return strings.Join([]string{action.Action, action.Atom.CP(), version, slot, string(normalizedActionDomain(action.Domain))}, "|")
 }
 
 // Depclean finds packages that can be safely removed because they are not

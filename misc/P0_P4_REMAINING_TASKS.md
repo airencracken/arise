@@ -124,13 +124,20 @@ milestone hardening rather than a known model feature gap:
 
 ### P3.2 Make whole-state verification a transaction gate
 
-- [~] Overlay all planned installs/removals on every installed slot. Planned
+- [x] Overlay all planned installs/removals on every installed slot. Planned
   blocker removals now retain exact version/slot/repository identity, qualified
   blockers preserve unrelated slots, and unqualified blockers enumerate all
   matching installed instances. Both installs and removals trigger retained
-  reverse-dependency verification; failed replacement, repaired replacement and
-  dependency-breaking removal matrices assert the final status. General
-  uninstall and cross-root matrices remain.
+  reverse-dependency verification; failed replacement, repaired replacement,
+  general uninstall and dependency-breaking removal matrices assert the final
+  status. Explicit removal verification is strict: an installed-only consumer
+  cannot downgrade breakage to depclean advice. Immutable ROOT, SYSROOT and
+  BROOT views now gate all five dependency classes, providers, any-of groups and
+  blockers without aliasing a ROOT removal into another domain. Planned action
+  identity, blocker removal, dependency ordering and JSON output now retain the
+  destination domain; identical package versions can coexist as independent
+  ROOT, SYSROOT and BROOT actions. Native aliased roots collapse back to one
+  ROOT action, preserving ordinary Gentoo plans.
 - [x] Carry an explicit verification status on every resolve result and JSON
   plan, and reject non-pretend execution unless the status is `verified`.
   Early-returned, partial, errored and `--nodeps` plans remain inspectable but

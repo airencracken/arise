@@ -5034,6 +5034,197 @@ func TestResolve_PostSolveVerifierChecksDependenciesBrokenByRemoval(t *testing.T
 	}
 }
 
+func TestResolve_PostSolveVerifierUsesDependencyDomain(t *testing.T) {
+	tests := []struct {
+		name       string
+		dependency func(*VersionInfo)
+		domain     DependencyDomain
+	}{
+		{name: "BDEPEND uses BROOT", domain: DomainBROOT, dependency: func(vi *VersionInfo) { vi.Bdepend = "dev-build/tool" }},
+		{name: "IDEPEND uses BROOT", domain: DomainBROOT, dependency: func(vi *VersionInfo) { vi.Idepend = "dev-build/tool" }},
+		{name: "DEPEND uses SYSROOT", domain: DomainSYSROOT, dependency: func(vi *VersionInfo) { vi.Depend = "dev-build/tool" }},
+		{name: "RDEPEND uses ROOT", domain: DomainROOT, dependency: func(vi *VersionInfo) { vi.Rdepend = "dev-build/tool" }},
+		{name: "PDEPEND uses ROOT", domain: DomainROOT, dependency: func(vi *VersionInfo) { vi.Pdepend = "dev-build/tool" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := makeGraph()
+			app := pkg(g, "app-misc/application", "1", "0", "0", false, nil)
+			app.EAPI = "8"
+			tt.dependency(app)
+			pkg(g, "dev-build/tool", "1", "0", "0", true, nil)
+
+			wrongDomain := makeGraph()
+			cfg := DefaultResolveConfig()
+			cfg.InstalledByDomain = map[DependencyDomain]*DepGraph{tt.domain: wrongDomain}
+			result, err := Resolve(g, []string{"app-misc/application"}, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Verified || !strings.Contains(strings.Join(result.Conflicts, "\n"), "dev-build/tool required by app-misc/application") {
+				t.Fatalf("dependency installed only in another domain passed verification: verified=%t conflicts=%v", result.Verified, result.Conflicts)
+			}
+
+			correctDomain := makeGraph()
+			pkg(correctDomain, "dev-build/tool", "1", "0", "0", true, nil)
+			cfg.InstalledByDomain[tt.domain] = correctDomain
+			result, err = Resolve(g, []string{"app-misc/application"}, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !result.Verified || len(result.Conflicts) != 0 {
+				t.Fatalf("dependency in %s failed verification: verified=%t conflicts=%v", tt.domain, result.Verified, result.Conflicts)
+			}
+		})
+	}
+}
+
+func TestResolve_PostSolveVerifierUsesDomainForAnyOfAndBlockers(t *testing.T) {
+	t.Run("any-of", func(t *testing.T) {
+		g := makeGraph()
+		app := pkg(g, "app-misc/application", "1", "0", "0", false, nil)
+		app.EAPI = "8"
+		app.Bdepend = "|| ( dev-build/one dev-build/two )"
+		pkg(g, "dev-build/one", "1", "0", "0", true, nil)
+		emptyBROOT := makeGraph()
+		cfg := DefaultResolveConfig()
+		cfg.InstalledByDomain = map[DependencyDomain]*DepGraph{DomainBROOT: emptyBROOT}
+		result, err := Resolve(g, []string{"app-misc/application"}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Verified || !strings.Contains(strings.Join(result.Conflicts, "\n"), "no alternative dependency") {
+			t.Fatalf("cross-domain any-of escaped verification: %#v", result)
+		}
+	})
+
+	t.Run("blocker", func(t *testing.T) {
+		g := makeGraph()
+		app := pkg(g, "app-misc/application", "1", "0", "0", false, nil)
+		app.EAPI = "8"
+		app.Bdepend = "!dev-build/conflict"
+		// The transaction removes the ROOT instance, but the identical BROOT CPV
+		// is a separate installed object and must continue to satisfy the blocker.
+		pkg(g, "dev-build/conflict", "1", "0", "0", true, nil)
+		broot := makeGraph()
+		pkg(broot, "dev-build/conflict", "1", "0", "0", true, nil)
+		cfg := DefaultResolveConfig()
+		cfg.InstalledByDomain = map[DependencyDomain]*DepGraph{DomainBROOT: broot}
+		result, err := Resolve(g, []string{"app-misc/application"}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Verified || len(result.Uninstall) != 1 || result.Uninstall[0].Domain != DomainBROOT {
+			t.Fatalf("cross-domain blocker removal was not placed in BROOT: %#v", result)
+		}
+	})
+}
+
+func TestVerifyTransactionRemovalMatrix(t *testing.T) {
+	t.Run("unreferenced removal is verified", func(t *testing.T) {
+		g := makeGraph()
+		pkg(g, "app-misc/orphan", "1", "0", "0", true, nil)
+		result, err := VerifyTransaction(g, nil, []PkgAction{{
+			Atom: mustParse("app-misc/orphan-1"), Action: "uninstall", Slot: "0",
+		}}, DefaultResolveConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Verified || result.Verification != VerificationVerified {
+			t.Fatalf("safe removal rejected: %#v", result)
+		}
+	})
+
+	t.Run("reverse dependency blocks removal", func(t *testing.T) {
+		g := makeGraph()
+		pkg(g, "dev-libs/library", "1", "0", "0", true, nil)
+		consumer := pkg(g, "app-misc/consumer", "1", "0", "0", true, nil)
+		consumer.InstalledRdepend = "dev-libs/library"
+		result, err := VerifyTransaction(g, nil, []PkgAction{{
+			Atom: mustParse("dev-libs/library-1"), Action: "uninstall", Slot: "0",
+		}}, DefaultResolveConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Verified || result.Verification != VerificationFailed || !strings.Contains(strings.Join(result.Conflicts, "\n"), "required by app-misc/consumer") {
+			t.Fatalf("dependency-breaking removal passed: %#v", result)
+		}
+	})
+
+	t.Run("parallel slot retains satisfaction", func(t *testing.T) {
+		g := makeGraph()
+		pkg(g, "dev-libs/library", "1", "1", "1", true, nil)
+		pkg(g, "dev-libs/library", "2", "2", "2", true, nil)
+		consumer := pkg(g, "app-misc/consumer", "1", "0", "0", true, nil)
+		consumer.InstalledRdepend = "dev-libs/library:2"
+		result, err := VerifyTransaction(g, nil, []PkgAction{{
+			Atom: mustParse("dev-libs/library-1"), Action: "uninstall", Slot: "1",
+		}}, DefaultResolveConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Verified {
+			t.Fatalf("unrelated slot removal rejected: %#v", result)
+		}
+	})
+
+	t.Run("nil action atom fails closed", func(t *testing.T) {
+		if _, err := VerifyTransaction(makeGraph(), nil, []PkgAction{{Action: "uninstall"}}, DefaultResolveConfig()); err == nil {
+			t.Fatal("invalid removal action was accepted")
+		}
+	})
+}
+
+func TestResolve_PlansSamePackageIndependentlyAcrossRootDomains(t *testing.T) {
+	g := makeGraph()
+	app := pkg(g, "app-misc/application", "1", "0", "0", false, nil)
+	app.EAPI = "8"
+	app.Depend = "dev-build/tool"
+	app.Rdepend = "dev-build/tool"
+	app.Bdepend = "dev-build/tool"
+	pkg(g, "dev-build/tool", "1", "0", "0", false, nil)
+
+	cfg := DefaultResolveConfig()
+	cfg.InstalledByDomain = map[DependencyDomain]*DepGraph{
+		DomainROOT: makeGraph(), DomainSYSROOT: makeGraph(), DomainBROOT: makeGraph(),
+	}
+	result, err := Resolve(g, []string{"app-misc/application"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified {
+		t.Fatalf("three-domain plan failed verification: %v", result.Conflicts)
+	}
+	domains := make(map[DependencyDomain]int)
+	for _, action := range result.Install {
+		if action.Atom.CP() == "dev-build/tool" {
+			domains[action.Domain]++
+		}
+	}
+	if domains[DomainROOT] != 1 || domains[DomainSYSROOT] != 1 || domains[DomainBROOT] != 1 || len(domains) != 3 {
+		t.Fatalf("same dependency collided across domains: actions=%#v domains=%v", result.Install, domains)
+	}
+}
+
+func TestDependenciesForVersionKeepsInstalledEAPISeparateFromRepositoryCandidate(t *testing.T) {
+	g := makeGraph()
+	vi := g.AddVersionFromRepository("x11-misc/example", "1", "0", "0", false, nil, "amd64", "gentoo")
+	vi.EAPI = "8"
+	vi.Bdepend = "dev-build/new-tool"
+	installed := g.AddVersionFromRepository("x11-misc/example", "1", "0", "0", true, nil, "", "gentoo")
+	installed.InstalledEAPI = "6"
+	installed.InstalledRdepend = "dev-libs/runtime"
+	pkg(g, "dev-libs/runtime", "1", "0", "0", true, nil)
+	r := &resolver{graph: g, config: DefaultResolveConfig(), toInstall: make(map[string]*PkgAction)}
+	edges, err := r.dependenciesForVersion(g.Packages["x11-misc/example"], installed)
+	if err != nil {
+		t.Fatalf("repository EAPI/dependencies contaminated retained metadata: %v", err)
+	}
+	if len(edges) != 1 || edges[0].Type != DepTypeRuntime || edges[0].DepAtom.CP() != "dev-libs/runtime" {
+		t.Fatalf("retained dependency view = %#v", edges)
+	}
+}
+
 func TestResolve_VerifierReportsUnselectedInstalledOnlyPackageAsDepcleanWarning(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "dev-libs/one", "1", "0", "0", true, nil)

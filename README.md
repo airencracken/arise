@@ -165,6 +165,7 @@ Same-snapshot, correctness-gated checkpoint results from 2026-07-17:
 | Firefox substring search | eix | yes | 11.69 ms | 33.95 ms | **2.90x** |
 | Firefox substring search | emerge | yes | 10.95 ms | 865.47 ms | **79.03x** |
 | Signal Desktop dependency plan | emerge | yes | 1.30 s | 3.30 s | **2.54x** |
+| Shallow `@system` dependency plan | emerge | yes (11/11 actions) | 2.26 s | 6.42 s | **2.84x** |
 | Crash-safe full configured-repository index | eix-update | yes | 3.96 s | 4.26 s | **1.08x** |
 | Crash-safe no-change configured-repository index | eix-update | yes | 1.86 s | 4.26 s | **2.29x** |
 
@@ -179,7 +180,9 @@ Not yet claimed:
 - The isolated `emerge --metadata` workload is ready but still needs a
   privileged run because Portage enforces root/portage-group access.
 - `@world` planning remains correctness-blocked on the intentionally damaged
-  development snapshot and has no published speedup.
+  development snapshot; the current hard gate is an installed live
+  `llvm-core/llvm-23.0.0.9999:23/23.0` without an installable matching
+  candidate, so no speedup is published.
 
 The complete current and planned task matrix is in
 [BENCHMARK_MATRIX.md](BENCHMARK_MATRIX.md), with methodology in

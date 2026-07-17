@@ -48,6 +48,7 @@ type jsonAction struct {
 	MergeType   string   `json:"merge_type,omitempty"`
 	BinaryPath  string   `json:"binary_path,omitempty"`
 	Reason      string   `json:"reason,omitempty"`
+	Domain      string   `json:"domain"`
 	UseEnabled  []string `json:"use_enabled,omitempty"`
 	UseDisabled []string `json:"use_disabled,omitempty"`
 }
@@ -105,7 +106,11 @@ func jsonActions(actions []resolve.PkgAction) []jsonAction {
 		if action.Atom.Version != nil {
 			cpv += "-" + action.Atom.Version.Raw
 		}
-		item := jsonAction{Action: action.Action, CPV: cpv, Slot: action.Slot, Subslot: action.Subslot, Repository: action.Repository, MergeType: action.MergeType, BinaryPath: action.BinaryPath, Reason: action.Reason}
+		domain := action.Domain
+		if domain == "" {
+			domain = resolve.DomainROOT
+		}
+		item := jsonAction{Action: action.Action, CPV: cpv, Slot: action.Slot, Subslot: action.Subslot, Repository: action.Repository, MergeType: action.MergeType, BinaryPath: action.BinaryPath, Reason: action.Reason, Domain: string(domain)}
 		for flag, enabled := range action.UseFlags {
 			if enabled {
 				item.UseEnabled = append(item.UseEnabled, flag)
