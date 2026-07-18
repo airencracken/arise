@@ -29,6 +29,7 @@ type header struct {
 type Record struct {
 	Repository, RepositoryPath                 string
 	RepositoryPriority, OverlayIndex           int
+	EAPIBanned, EAPIDeprecated                 bool
 	Category, Package, Version                 string
 	Depend, Rdepend, Bdepend, Idepend, Pdepend string
 	SrcURI, Slot, Subslot, Keywords, Iuse      string
@@ -114,6 +115,7 @@ func fromMetadata(m *metadata.PackageMetadata) Record {
 	return Record{
 		Repository: m.Repository, RepositoryPath: m.RepositoryPath,
 		RepositoryPriority: m.RepositoryPriority, OverlayIndex: m.OverlayIndex,
+		EAPIBanned: m.EAPIBanned, EAPIDeprecated: m.EAPIDeprecated,
 		Category: m.Category, Package: m.Package, Version: m.Version,
 		Depend: m.DEPEND, Rdepend: m.RDEPEND, Bdepend: m.BDEPEND, Idepend: m.IDEPEND, Pdepend: m.PDEPEND,
 		SrcURI: m.SRC_URI, Slot: m.SLOT, Subslot: m.Subslot, Keywords: m.KEYWORDS, Iuse: m.IUSE,
@@ -125,6 +127,7 @@ func (r Record) metadata() *metadata.PackageMetadata {
 	return &metadata.PackageMetadata{
 		Repository: r.Repository, RepositoryPath: r.RepositoryPath,
 		RepositoryPriority: r.RepositoryPriority, OverlayIndex: r.OverlayIndex,
+		EAPIBanned: r.EAPIBanned, EAPIDeprecated: r.EAPIDeprecated,
 		Category: r.Category, Package: r.Package, Version: r.Version,
 		DEPEND: r.Depend, RDEPEND: r.Rdepend, BDEPEND: r.Bdepend, IDEPEND: r.Idepend, PDEPEND: r.Pdepend,
 		SRC_URI: r.SrcURI, SLOT: r.Slot, Subslot: r.Subslot, KEYWORDS: r.Keywords, IUSE: r.Iuse,

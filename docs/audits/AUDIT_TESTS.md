@@ -1,5 +1,7 @@
 # Test Quality Audit
 
+> Historical development audit; retain for context until superseded or pruned.
+
 ## Test Categories Present
 
 | Category | Location | Status |

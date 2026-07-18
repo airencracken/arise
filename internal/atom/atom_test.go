@@ -178,6 +178,23 @@ func TestParse_VersionSuffixes(t *testing.T) {
 	}
 }
 
+func TestComparePreservesTrailingNumericComponents(t *testing.T) {
+	short, err := parseVersionString("1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	long, err := parseVersionString("1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := short.Compare(long); got != -1 {
+		t.Fatalf("1.0 Compare 1.0.0 = %d, want -1", got)
+	}
+	if got := long.Compare(short); got != 1 {
+		t.Fatalf("1.0.0 Compare 1.0 = %d, want 1", got)
+	}
+}
+
 func TestParseConditionalUseDependenciesWithDefaults(t *testing.T) {
 	parsed, err := Parse(">=sys-apps/dbus-1.5[abi_x86_32(-)?,abi_x86_64(+)?,!test=]")
 	if err != nil {
@@ -199,7 +216,7 @@ func TestParse_VersionComparison(t *testing.T) {
 		{"1.0", "1.0", 0},
 		{"1.0", "2.0", -1},
 		{"2.0", "1.0", 1},
-		{"1.2", "1.2.0", 0},
+		{"1.2", "1.2.0", -1},
 		{"1.2.3", "1.2.3", 0},
 		{"1.0_alpha", "1.0", -1},
 		{"1.0_beta", "1.0", -1},

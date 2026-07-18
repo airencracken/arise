@@ -861,6 +861,32 @@ func TestToResolveGraphKeepsDuplicateCPVRepositoryMetadataAtomic(t *testing.T) {
 	}
 }
 
+func TestToResolveGraphEnforcesRepositoryEAPIPolicy(t *testing.T) {
+	g := &DepGraph{Nodes: make(map[string]*PkgNode)}
+	banned := makeMeta("app-misc", "example", "2", "", "", "")
+	banned.Repository, banned.EAPI, banned.EAPIBanned = "gentoo", "6", true
+	deprecated := makeMeta("app-misc", "example", "1", "", "", "")
+	deprecated.Repository, deprecated.EAPI, deprecated.EAPIDeprecated = "gentoo", "7", true
+	packageAtom, err := atom.Parse("app-misc/example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Nodes["app-misc/example"] = &PkgNode{Atom: packageAtom, Metadata: banned, AvailableVersions: []*metadata.PackageMetadata{banned, deprecated}}
+	rg := g.ToResolveGraph()
+	var bannedAvailable, deprecatedAvailable, deprecatedMarked bool
+	for _, version := range rg.Packages["app-misc/example"].Versions {
+		switch version.Version.Raw {
+		case "2":
+			bannedAvailable = version.Available
+		case "1":
+			deprecatedAvailable, deprecatedMarked = version.Available, version.EAPIDeprecated
+		}
+	}
+	if bannedAvailable || !deprecatedAvailable || !deprecatedMarked {
+		t.Fatalf("policy propagation: banned available=%t deprecated available=%t marked=%t", bannedAvailable, deprecatedAvailable, deprecatedMarked)
+	}
+}
+
 func BenchmarkBuildFromState(b *testing.B) {
 	db := openBenchmarkDB(b)
 	const packages = 5000

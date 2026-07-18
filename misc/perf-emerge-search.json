@@ -17,6 +17,7 @@
         "tool": "emerge",
         "path": "emerge",
         "args": ["--search", "--quiet", "firefox"],
+        "env": ["FEATURES=-news"],
         "version_args": ["--version"]
       }
     }

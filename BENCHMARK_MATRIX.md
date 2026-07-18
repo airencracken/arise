@@ -36,7 +36,9 @@ loss does not fail the build.
 | Resolution | New package dependency plan | emerge -p | — | immutable snapshot | Signal action/USE plan equivalent; 1.30s vs 3.30s (2.54x) |
 | Resolution | Multi-target plan | emerge -p | — | immutable snapshot | workload needed |
 | Resolution | Shallow @system plan | emerge -pu @system | — | live read-only snapshot | exact 11/11 action plan; 2.26s vs 6.42s (2.84x) |
-| Resolution | @world plan | emerge -pvuDN @world | — | immutable snapshot | correctness-blocked by installed live LLVM without a matching candidate; fixture needed |
+| Resolution | Deep @system plan | emerge -puDN @system | — | immutable snapshot | correctness-gated workload added; parity required before timing claim |
+| Resolution | Standard @world plan | emerge -puDN @world | — | immutable snapshot | correctness-gated workload added; live parity remains open |
+| Resolution | Recovery @world plan | emerge -puDN --keep-going --with-bdeps=y --complete-graph --backtrack=1000 @world | — | immutable snapshot | correctness-gated workload added; current deep complete-graph diagnostic is 313 vs 317 actions |
 | Resolution | Backtracking/slot conflict | emerge -p | — | fixture snapshot | workload needed |
 | Fetch | Fetch-only, warm DISTDIR | emerge -f | — | temp ROOT/DISTDIR | implementation needed |
 | Fetch | Fetch-only, cold DISTDIR | emerge -f | — | local mirror + temp ROOT | implementation needed |

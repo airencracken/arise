@@ -4,6 +4,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -239,6 +240,109 @@ b_src_compile() {
 	}
 	if err != nil && !strings.Contains(err.Error(), "circular") {
 		t.Errorf("expected circular error, got: %v", err)
+	}
+}
+
+func TestResolveInheritAllowsDiamondAndEmitsSharedDependencyOnce(t *testing.T) {
+	repoDir := t.TempDir()
+	eclassDir := filepath.Join(repoDir, "eclass")
+	if err := os.MkdirAll(eclassDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"base.eclass":    "BASE=1\n",
+		"left.eclass":    "inherit base\n",
+		"right.eclass":   "inherit base\n",
+		"diamond.eclass": "inherit left right\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(eclassDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	order, err := ResolveInherit([]string{"diamond"}, repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"base", "left", "right", "diamond"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("inherit order = %v, want %v", order, want)
+	}
+}
+
+func TestResolveInheritTraversesConventionalEclassGuard(t *testing.T) {
+	repoDir := t.TempDir()
+	eclassDir := filepath.Join(repoDir, "eclass")
+	if err := os.MkdirAll(eclassDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(eclassDir, "base.eclass"), []byte("BASE=1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	guarded := "if [[ -z ${_GUARDED_ECLASS} ]]; then\n_GUARDED_ECLASS=1\ninherit base\nfi\n"
+	if err := os.WriteFile(filepath.Join(eclassDir, "guarded.eclass"), []byte(guarded), 0644); err != nil {
+		t.Fatal(err)
+	}
+	order, err := ResolveInherit([]string{"guarded"}, repoDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"base", "guarded"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("inherit order = %v, want %v", order, want)
+	}
+}
+
+func TestResolveInheritEvaluatesSimpleConditionalInheritFromEbuildGlobals(t *testing.T) {
+	repoDir := t.TempDir()
+	eclassDir := filepath.Join(repoDir, "eclass")
+	if err := os.MkdirAll(eclassDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"optional.eclass": "OPTIONAL=1\n",
+		"parent.eclass":   "[[ -n ${ENABLE_OPTIONAL} ]] && inherit optional\n",
+	} {
+		if err := os.WriteFile(filepath.Join(eclassDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	enabled, err := ResolveInheritWithVariables([]string{"parent"}, repoDir, map[string]string{"ENABLE_OPTIONAL": "1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"optional", "parent"}; !reflect.DeepEqual(enabled, want) {
+		t.Fatalf("enabled inherit order = %v, want %v", enabled, want)
+	}
+	disabled, err := ResolveInheritWithVariables([]string{"parent"}, repoDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"parent"}; !reflect.DeepEqual(disabled, want) {
+		t.Fatalf("disabled inherit order = %v, want %v", disabled, want)
+	}
+}
+
+func TestResolveInheritEvaluatesLiteralEAPICase(t *testing.T) {
+	repoDir := t.TempDir()
+	eclassDir := filepath.Join(repoDir, "eclass")
+	if err := os.MkdirAll(eclassDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"compat.eclass": "COMPAT=1\n",
+		"modern.eclass": "MODERN=1\n",
+		"select.eclass": "case ${EAPI} in\n7|8) inherit compat ;;\n9) inherit modern ;;\nesac\n",
+	} {
+		if err := os.WriteFile(filepath.Join(eclassDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	order, err := ResolveInheritWithVariables([]string{"select"}, repoDir, map[string]string{"EAPI": "8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"compat", "select"}; !reflect.DeepEqual(order, want) {
+		t.Fatalf("inherit order = %v, want %v", order, want)
 	}
 }
 

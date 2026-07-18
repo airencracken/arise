@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -17,6 +18,8 @@ import (
 	"github.com/airencracken/arise/internal/fetch"
 	"github.com/airencracken/arise/internal/merge"
 	"github.com/airencracken/arise/internal/phase"
+	"github.com/airencracken/arise/internal/phaseproto"
+	"github.com/airencracken/arise/internal/portage"
 )
 
 // RebuildConfig holds the configuration for rebuilding packages.
@@ -35,6 +38,13 @@ type RebuildConfig struct {
 	UseFlags      map[string]bool
 	Fetcher       *fetch.Fetcher
 	GentooMirrors []string
+	// PhaseProtocol selects the versioned, eclass-aware Bash execution ABI.
+	// Host installation remains gated by the caller's transaction boundary.
+	PhaseProtocol bool
+	Repositories  []portage.RepoEntry
+	Repository    string
+	PortageConfig *portage.Config
+	ConfigRoot    string
 
 	OnPhaseStart func(phase string)
 	OnPhaseEnd   func(phase string, err error)
@@ -136,6 +146,13 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 		}
 	}
 
+	if cfg.PhaseProtocol {
+		if err := rebuildWithPhaseProtocol(ctx, atomStr, eb, ebuildFile, workDir, destDir, verified, cfg); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	phaseCfg := phase.PhaseConfig{
 		DESTDIR:     destDir,
 		WorkDir:     workDir,
@@ -209,6 +226,94 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 		}
 	}
 
+	return nil
+}
+
+func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Ebuild, ebuildFile, workDir, destDir string, verified distfiles.VerifiedSet, cfg *RebuildConfig) error {
+	a, err := atom.Parse(atomStr)
+	if err != nil || a.Version == nil {
+		return fmt.Errorf("rebuild: protocol package identity: %w", err)
+	}
+	cat, pn, version := a.Category, a.Package, a.Version.Raw
+	p := pn + "-" + version
+	repository := cfg.Repository
+	repositories := append([]portage.RepoEntry(nil), cfg.Repositories...)
+	if repository == "" {
+		repository = "selected"
+	}
+	if len(repositories) == 0 {
+		repositories = []portage.RepoEntry{{Name: repository, Location: cfg.RepoDir}}
+	}
+	sourceDir := filepath.Join(workDir, p)
+	for _, directory := range []string{sourceDir, destDir, filepath.Join(workDir, "temp"), filepath.Join(workDir, "home")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			return fmt.Errorf("rebuild: protocol directory %s: %w", directory, err)
+		}
+	}
+	use := make([]string, 0, len(cfg.UseFlags))
+	for name, enabled := range cfg.UseFlags {
+		if enabled {
+			use = append(use, name)
+		}
+	}
+	sort.Strings(use)
+	artifacts := artifactNames(verified.Artifacts)
+	base := phaseproto.Request{
+		Protocol: phaseproto.Version, ID: "policy-preflight", Command: "run_phase", Phase: "pkg_setup", EAPI: eb.EAPI, Ebuild: ebuildFile,
+		Env: map[string]string{
+			"CATEGORY": cat, "PN": pn, "PV": version, "P": p, "PF": p,
+			"PVR": version, "PR": "r0", "SLOT": strings.TrimSpace(eb.Vars()["SLOT"]),
+			"USE": strings.Join(use, " "), "A": strings.Join(artifacts, " "),
+			"CFLAGS": cfg.CFLAGS, "CXXFLAGS": cfg.CXXFLAGS, "LDFLAGS": cfg.LDFLAGS,
+			"MAKEOPTS": cfg.MAKEOPTS,
+		},
+	}
+	if len(verified.Artifacts) != 0 {
+		base.Distfiles = &verified
+	}
+	base, err = phaseproto.ApplyPackagePolicy(base, phaseproto.PackagePolicy{
+		Configuration: cfg.PortageConfig, Repositories: repositories, Repository: repository,
+		ConfigRoot: cfg.ConfigRoot, CPV: cat + "/" + p, Category: cat, PN: pn, P: p, PR: "r0",
+		Slot: eb.Vars()["SLOT"], WorkDir: workDir, SourceDir: sourceDir, ImageDir: destDir,
+		RootDir: cfg.RootDir, SysrootDir: cfg.RootDir, BrootDir: cfg.RootDir,
+		TempDir: filepath.Join(workDir, "temp"), HomeDir: filepath.Join(workDir, "home"),
+	})
+	if err != nil {
+		return fmt.Errorf("rebuild: phase protocol policy: %w", err)
+	}
+	run := func(phaseName string) error {
+		request := base
+		request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + p + "-" + phaseName)
+		request.Command, request.Phase = "run_phase", phaseName
+		cfg.firePhaseStart(phaseName)
+		events, phaseErr := phaseproto.RunBashWorker(ctx, request)
+		cfg.firePhaseEnd(phaseName, phaseErr)
+		if phaseErr != nil {
+			var logs []string
+			for _, event := range events {
+				if event.Kind == "log" && event.Message != "" {
+					logs = append(logs, event.Message)
+				}
+			}
+			if len(logs) != 0 {
+				return fmt.Errorf("rebuild: phase protocol %s: %w: %s", phaseName, phaseErr, strings.Join(logs, "\n"))
+			}
+			return fmt.Errorf("rebuild: phase protocol %s: %w", phaseName, phaseErr)
+		}
+		return nil
+	}
+	for _, phaseName := range []string{"pkg_setup", "src_unpack", "src_prepare", "src_configure", "src_compile", "src_test", "src_install", "pkg_preinst"} {
+		if err := run(phaseName); err != nil {
+			return err
+		}
+	}
+	mergeCfg := merge.MergeConfig{RootDir: cfg.RootDir, VdbDir: cfg.VdbDir, Category: cat, Package: pn, Version: version}
+	if err := merge.Merge(ctx, destDir, mergeCfg); err != nil {
+		return fmt.Errorf("rebuild: protocol merge: %w", err)
+	}
+	if err := run("pkg_postinst"); err != nil {
+		return err
+	}
 	return nil
 }
 

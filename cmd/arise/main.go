@@ -51,13 +51,18 @@ var (
 	logLevel = flag.String("log-level", "info", "log level: debug, info, warn, error")
 
 	// Package resolution flags
+	updateMode         = flag.Bool("update", false, "-u, update packages to the best available version")
 	oneshot            = flag.Bool("oneshot", false, "-1, install without adding to world set")
 	nodeps             = flag.Bool("nodeps", false, "-O, skip dependency resolution")
 	onlydeps           = flag.Bool("onlydeps", false, "-o, only install dependencies")
+	onlydepsWithRdeps  = flag.String("onlydeps-with-rdeps", "", "--onlydeps-with-rdeps=y|n")
+	onlydepsWithIDeps  = flag.String("onlydeps-with-ideps", "", "--onlydeps-with-ideps=y|n")
+	rootDeps           = flag.String("root-deps", "", "--root-deps=True|rdeps")
 	emptytree          = flag.Bool("emptytree", false, "-e, rebuild entire tree as if empty")
 	reinstall          = flag.Bool("reinstall", false, "force reinstall of already-installed packages")
 	changedUse         = flag.Bool("changed-use", false, "reinstall when USE flags changed")
 	changedDeps        = flag.Bool("changed-deps", false, "reinstall when DEPENDs changed")
+	dynamicDeps        = flag.Bool("dynamic-deps", true, "use current ebuild dependencies for installed packages")
 	newuse             = flag.Bool("newuse", false, "-N, rebuild when USE flags changed")
 	keepGoing          = flag.Bool("keep-going", false, "continue on errors")
 	deep               = flag.Bool("deep", false, "-D, consider full dependency tree")
@@ -134,6 +139,7 @@ func init() {
 		use  string
 	}{
 		{"1", oneshot, "alias for --oneshot"},
+		{"u", updateMode, "alias for --update"},
 		{"O", nodeps, "alias for --nodeps"},
 		{"o", onlydeps, "alias for --onlydeps"},
 		{"e", emptytree, "alias for --emptytree"},
@@ -193,8 +199,7 @@ func main() {
 		return
 	}
 
-	cmd := args[0]
-	cmdArgs := args[1:]
+	cmd, cmdArgs := selectCommand(args)
 	if *jsonOutput && cmd == "search" {
 		*searchJSON = true
 	}
@@ -268,12 +273,30 @@ func main() {
 	}
 }
 
+func selectCommand(args []string) (string, []string) {
+	if len(args) == 0 {
+		return "", nil
+	}
+	commands := map[string]bool{
+		"sync": true, "index": true, "query": true, "state": true,
+		"install": true, "update": true, "uninstall": true, "audit": true,
+		"dispatch-conf": true, "quickpkg": true, "depclean": true, "prune": true,
+		"search": true, "installed": true, "info": true, "preserved-rebuild": true,
+		"revdep-rebuild": true, "env-update": true, "ldconfig": true, "config": true,
+		"news": true, "deselect": true, "equery": true, "bench": true,
+	}
+	if commands[args[0]] {
+		return args[0], args[1:]
+	}
+	return "install", args
+}
+
 func normalizeEmergeArgs(args []string) []string {
 	if len(args) < 2 {
 		return args
 	}
 	expanded := []string{args[0]}
-	boolShort := map[byte]bool{'1': true, 'O': true, 'o': true, 'e': true, 'N': true, 'D': true, 'p': true, 'a': true, 'q': true, 'v': true, 't': true, 'b': true, 'B': true, 'k': true, 'K': true, 'f': true, 'n': true, 'g': true, 'G': true}
+	boolShort := map[byte]bool{'1': true, 'u': true, 'O': true, 'o': true, 'e': true, 'N': true, 'D': true, 'p': true, 'a': true, 'q': true, 'v': true, 't': true, 'b': true, 'B': true, 'k': true, 'K': true, 'f': true, 'n': true, 'g': true, 'G': true}
 	for _, arg := range args[1:] {
 		if len(arg) > 2 && arg[0] == '-' && arg[1] != '-' {
 			allBool := true

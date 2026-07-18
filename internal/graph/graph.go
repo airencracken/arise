@@ -516,6 +516,8 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 		for _, m := range available {
 			vi := rg.AddVersionFromRepository(cp, m.Version, m.SLOT, m.Subslot, false, iuseDefaults(m.IUSE), m.KEYWORDS, m.Repository)
 			vi.RepositoryPriority = repositoryPriority(m)
+			vi.Available = !m.EAPIBanned
+			vi.EAPIDeprecated = m.EAPIDeprecated
 			vi.Depend, vi.Rdepend = m.DEPEND, m.RDEPEND
 			vi.Bdepend, vi.Idepend, vi.Pdepend = m.BDEPEND, m.IDEPEND, m.PDEPEND
 			vi.RequiredUse, vi.License = m.REQUIRED_USE, m.LICENSE
@@ -523,13 +525,17 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 		}
 		for _, installed := range node.InstalledVersions {
 			use := make(map[string]bool)
+			iuse := make(map[string]bool)
 			for _, flag := range installed.IUse {
-				use[strings.TrimLeft(flag, "+-")] = false
+				name := strings.TrimLeft(flag, "+-")
+				use[name] = false
+				iuse[name] = true
 			}
 			for _, flag := range installed.Use {
 				use[flag] = true
 			}
 			vi := rg.AddVersionFromRepository(cp, installed.Version, installed.Slot, installed.Subslot, true, use, "", installed.Repository)
+			vi.InstalledIUseFlags = iuse
 			vi.InstalledEAPI = installed.EAPI
 			if vi.EAPI == "" {
 				vi.EAPI = installed.EAPI

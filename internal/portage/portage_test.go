@@ -589,6 +589,34 @@ func TestEffectiveUseForLayerPrecedence(t *testing.T) {
 	}
 }
 
+func TestPackageAtomMatchesSubslot(t *testing.T) {
+	if !PackageAtomMatches("dev-cpp/eigen:3/5.0", "dev-cpp/eigen-5.0.1", "3/5.0", "gentoo") {
+		t.Fatal("matching subslot was rejected")
+	}
+	if PackageAtomMatches("dev-cpp/eigen:3/5.0", "dev-cpp/eigen-3.4.0-r3", "3/3.4", "gentoo") {
+		t.Fatal("subslot-qualified rule matched a different subslot")
+	}
+}
+
+func TestEffectiveUseForPackagePolicyCanRemoveGlobalMask(t *testing.T) {
+	cfg := &Config{
+		UseStableMask: []string{"future-target", "still-masked"},
+		PackageUseMaskRules: []PackageUseRule{{
+			Atom: "dev-lang/python-exec", Flags: []string{"-future-target"},
+		}},
+		PackageUseForceRules: []PackageUseRule{{
+			Atom: "dev-lang/python-exec", Flags: []string{"future-target", "still-masked"},
+		}},
+	}
+	got := cfg.EffectiveUseForStability("dev-lang/python-exec-2.4.10", "2", "gentoo", true)
+	if !got["future-target"] {
+		t.Fatalf("package mask removal did not expose forced flag: %v", got)
+	}
+	if got["still-masked"] {
+		t.Fatalf("global mask did not override package force: %v", got)
+	}
+}
+
 func TestParsePackageUse_NegativeFlags(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "package.use")

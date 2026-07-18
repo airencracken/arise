@@ -14,8 +14,8 @@ func runState(args []string, dbPath, vdbPath string) {
 	if len(args) > 0 {
 		mode = args[0]
 	}
-	if mode != "json" && mode != "available" && mode != "installed" && mode != "available-cpv" && mode != "installed-cpv" {
-		fmt.Fprintf(os.Stderr, "state: expected json, available, installed, available-cpv, or installed-cpv\n")
+	if mode != "json" && mode != "fixture" && mode != "available" && mode != "installed" && mode != "available-cpv" && mode != "installed-cpv" {
+		fmt.Fprintf(os.Stderr, "state: expected json, fixture, available, installed, available-cpv, or installed-cpv\n")
 		return
 	}
 	db, err := ingest.OpenReadOnlyDB(dbPath)
@@ -30,6 +30,17 @@ func runState(args []string, dbPath, vdbPath string) {
 		return
 	}
 	switch mode {
+	case "fixture":
+		snapshot, err = snapshot.Portable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "state: make portable: %v\n", err)
+			return
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(snapshot); err != nil {
+			fmt.Fprintf(os.Stderr, "state: encode: %v\n", err)
+		}
 	case "available":
 		for _, record := range snapshot.Available {
 			fmt.Printf("%s::%s\n", record.CPV, record.Repository)

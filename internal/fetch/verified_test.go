@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,36 @@ func TestAcquireDownloadsVerifiesAndReusesDISTDIR(t *testing.T) {
 	}
 	if requests.Load() != 1 {
 		t.Fatalf("requests = %d, want 1", requests.Load())
+	}
+}
+
+func TestAcquireReportsDownloadVerificationAndCacheProgress(t *testing.T) {
+	content := []byte("progress artifact")
+	artifact := testArtifact(content, "https://one/source.tar")
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(content)), Header: make(http.Header)}, nil
+	})}
+	var events []Progress
+	config := FetchConfig{DistfilesDir: t.TempDir(), Progress: func(progress Progress) { events = append(events, progress) }}
+	fetcher := &Fetcher{Client: client}
+	if _, err := fetcher.Acquire(context.Background(), []distfiles.Artifact{artifact}, config); err != nil {
+		t.Fatal(err)
+	}
+	var stages []ProgressStage
+	for _, event := range events {
+		stages = append(stages, event.Stage)
+	}
+	for _, required := range []ProgressStage{ProgressChecking, ProgressDownload, ProgressVerifying, ProgressComplete} {
+		if !slices.Contains(stages, required) {
+			t.Errorf("progress stages %v omit %s", stages, required)
+		}
+	}
+	events = nil
+	if _, err := fetcher.Acquire(context.Background(), []distfiles.Artifact{artifact}, config); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Stage != ProgressChecking || events[1].Stage != ProgressCached {
+		t.Fatalf("cached progress = %#v", events)
 	}
 }
 

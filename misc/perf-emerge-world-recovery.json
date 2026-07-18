@@ -1,0 +1,24 @@
+{
+  "name": "recovery-world-dependency-resolution",
+  "warmups": 1,
+  "runs": 5,
+  "cases": [
+    {
+      "name": "world-keep-going-with-bdeps-complete-graph",
+      "normalize": "package-plan",
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["--json", "--color=n", "--db", "/tmp/arise-perf-data", "--repo", "/var/db/repos/gentoo", "--pretend", "--deep", "--newuse", "--keep-going", "--with-bdeps=y", "--complete-graph", "--backtrack=1000", "update", "@world"],
+        "version_args": ["--version"]
+      },
+      "reference": {
+        "tool": "emerge",
+        "path": "emerge",
+        "args": ["--color", "n", "--pretend", "--verbose", "--update", "--deep", "--newuse", "--keep-going", "--with-bdeps=y", "--complete-graph=y", "--backtrack=1000", "@world"],
+        "env": ["FEATURES=-news"],
+        "version_args": ["--version"]
+      }
+    }
+  ]
+}

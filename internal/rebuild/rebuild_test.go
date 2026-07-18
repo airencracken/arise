@@ -9,10 +9,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/airencracken/arise/internal/portage"
 )
 
 func TestFindEbuild(t *testing.T) {
@@ -612,6 +615,49 @@ DESCRIPTION="GM test package"
 	contentsPath := filepath.Join(vdbDir, "app-misc", "gmtest-1.0", "CONTENTS")
 	if _, err := os.Stat(contentsPath); err != nil {
 		t.Errorf("CONTENTS file not found: %v", err)
+	}
+}
+
+func TestRebuildPackagePhaseProtocolIntoDisposableRoot(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	root := filepath.Join(tmp, "root")
+	vdb := filepath.Join(root, "var", "db", "pkg")
+	work := filepath.Join(tmp, "work")
+	dist := filepath.Join(tmp, "distfiles")
+	packageDir := filepath.Join(repo, "app-misc", "protocol-test")
+	for _, directory := range []string{filepath.Join(repo, "eclass"), packageDir, root, vdb, work, dist} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuildContent := `EAPI=8
+S="${WORKDIR}/${P}"
+src_unpack() { mkdir -p "${S}"; printf 'protocol image\n' > "${S}/payload"; }
+src_install() { insinto /usr/share/protocol-test; doins payload; }
+pkg_postinst() { printf 'postinst\n' > "${ROOT}/postinst-marker"; }
+`
+	if err := os.WriteFile(filepath.Join(packageDir, "protocol-test-1.ebuild"), []byte(ebuildContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := RebuildConfig{
+		RepoDir: repo, DistfilesDir: dist, RootDir: root, VdbDir: vdb, WorkDirBase: work,
+		PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+	}
+	if err := RebuildPackage(context.Background(), "app-misc/protocol-test-1", &cfg); err != nil {
+		t.Fatalf("protocol rebuild: %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(root, "usr", "share", "protocol-test", "payload"),
+		filepath.Join(root, "postinst-marker"),
+		filepath.Join(vdb, "app-misc", "protocol-test-1", "CONTENTS"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected disposable-root result %s: %v", path, err)
+		}
 	}
 }
 

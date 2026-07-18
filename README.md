@@ -9,7 +9,8 @@ Bash and remains experimental.
 > package queries are usable foundations. The emerge-compatible resolver,
 > ebuild executor, transactional merge/unmerge, and maintenance operations are
 > experimental and are not yet safe replacements for Portage on a live system.
-> See [the current audit](AUDIT_2026-07-16.md) and [punch list](PUNCHLIST.md).
+> See [the latest development checkpoint](docs/audits/CHECKPOINT_2026-07-18.md),
+> [documentation index](docs/README.md), and [punch list](PUNCHLIST.md).
 > The moving-target test policy is documented in
 > [the compatibility contract](COMPATIBILITY.md).
 
@@ -38,6 +39,12 @@ Arise is therefore being built around these priorities:
 - **Unified direction**: one static tool is intended to offer familiar
   workflows from emerge, eix, equery, quickpkg, perl-cleaner, python-updater,
   dispatch-conf, env-update, revdep-rebuild, and eselect-news.
+- **Cohesive Gentoo toolbox**: Arise is intentionally broader than a narrowly
+  scoped command. Shared package atoms, configuration, snapshots, resolution,
+  repair, execution and audit primitives should compose into many focused
+  workflows without duplicating policy or requiring the normal runtime to be
+  healthy. Internally those primitives remain small, testable Go libraries;
+  dangerous operations cross explicit plan, verification and journal gates.
 - **Correctness gates**: deterministic tests and live differential corpora
   compare package state, policy, plans and benchmarks with Portage. Unsupported
   execution fails closed rather than reporting success.
@@ -248,12 +255,18 @@ make static         # static binary (CGO_ENABLED=0)
 make test           # run tests
 make test-race      # race detector
 make test-coverage  # coverage report
+make test-live-portage-compile # compile the opt-in host comparison lane
+make test-integration # read-only live Portage comparisons
 make vet            # static analysis
 make install        # install to /usr/local
 make clean          # remove artifacts
 ```
 
 Requirements: Go 1.26.3+, Linux (primary target).
+
+The default suite is hermetic: it does not invoke host Portage tools or open
+loopback listeners. Live comparisons are opt-in and timeout-bounded. See
+[`docs/testing/TEST_LANES.md`](docs/testing/TEST_LANES.md).
 
 ## Architecture
 

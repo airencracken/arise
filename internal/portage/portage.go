@@ -785,28 +785,42 @@ func (cfg *Config) EffectiveUseForStability(cpv, slot, repo string, stable bool)
 	}
 	applyChanges(cfg.USE)
 	applyChanges(cfg.PackageUseFor(cpv, slot, repo))
-	applyPolicy(cfg.UseForce, true)
-	applyPolicy(cfg.UseMask, false)
 
 	candidateCP := cpv
 	if candidate, err := atom.Parse(cpv); err == nil {
 		candidateCP = candidate.CP()
 	}
-	force := cfg.PackageUseForceFor(cpv, slot, repo)
-	if len(force) == 0 {
-		force = cfg.PackageUseForce[candidateCP]
+	force := append([]string(nil), cfg.UseForce...)
+	mask := append([]string(nil), cfg.UseMask...)
+	if stable {
+		force = applyOrderedChanges(force, cfg.UseStableForce)
+		mask = applyOrderedChanges(mask, cfg.UseStableMask)
 	}
-	mask := cfg.PackageUseMaskFor(cpv, slot, repo)
-	if len(mask) == 0 {
-		mask = cfg.PackageUseMask[candidateCP]
+	forceChanges := packagePolicyChangesFor(cfg.PackageUseForceRules, cpv, slot, repo)
+	if len(forceChanges) == 0 {
+		forceChanges = cfg.PackageUseForce[candidateCP]
+	}
+	maskChanges := packagePolicyChangesFor(cfg.PackageUseMaskRules, cpv, slot, repo)
+	if len(maskChanges) == 0 {
+		maskChanges = cfg.PackageUseMask[candidateCP]
+	}
+	force = applyOrderedChanges(force, forceChanges)
+	mask = applyOrderedChanges(mask, maskChanges)
+	if stable {
+		force = applyOrderedChanges(force, packagePolicyChangesFor(cfg.PackageUseStableForceRules, cpv, slot, repo))
+		mask = applyOrderedChanges(mask, packagePolicyChangesFor(cfg.PackageUseStableMaskRules, cpv, slot, repo))
 	}
 	applyPolicy(force, true)
 	applyPolicy(mask, false)
-	if stable {
-		applyPolicy(cfg.UseStableForce, true)
-		applyPolicy(cfg.UseStableMask, false)
-		applyPolicy(packagePolicyFlagsFor(cfg.PackageUseStableForceRules, cpv, slot, repo), true)
-		applyPolicy(packagePolicyFlagsFor(cfg.PackageUseStableMaskRules, cpv, slot, repo), false)
+	return result
+}
+
+func packagePolicyChangesFor(rules []PackageUseRule, cpv, slot, repo string) []string {
+	var result []string
+	for _, rule := range rules {
+		if PackageAtomMatches(rule.Atom, cpv, slot, repo) {
+			result = append(result, rule.Flags...)
+		}
 	}
 	return result
 }
@@ -1098,7 +1112,14 @@ func PackageAtomMatches(rawRule, cpv, slot, repo string) bool {
 	if rule.Repo != "" && rule.Repo != repo {
 		return false
 	}
-	if rule.Slot != "" && rule.Slot != slot {
+	candidateSlot, candidateSubslot := slot, ""
+	if before, after, found := strings.Cut(slot, "/"); found {
+		candidateSlot, candidateSubslot = before, after
+	}
+	if rule.Slot != "" && rule.Slot != candidateSlot {
+		return false
+	}
+	if rule.Subslot != "" && rule.Subslot != candidateSubslot {
 		return false
 	}
 	if rule.Version == nil {

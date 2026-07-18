@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "captured": "2026-07-17",
+  "host_context": "development laptop inside managed sandbox",
+  "measurements": [
+    {
+      "name": "portageq-best-visible-portage",
+      "command": ["portageq", "best_visible", "/", "sys-apps/portage"],
+      "status": 0,
+      "wall_seconds": 0.437,
+      "user_seconds": 0.396,
+      "system_seconds": 0.040
+    },
+    {
+      "name": "equery-belongs-installed-hit",
+      "command": ["equery", "belongs", "/usr/libexec/glib-pacrunner"],
+      "status": 0,
+      "wall_seconds": 14.688,
+      "user_seconds": 14.197,
+      "system_seconds": 0.474
+    },
+    {
+      "name": "equery-belongs-synthetic-miss",
+      "command": ["equery", "belongs", "/tmp/arise-synthetic-vdb/root/usr/bin/pkg-0"],
+      "status": 1,
+      "wall_seconds": 14.446,
+      "user_seconds": 13.981,
+      "system_seconds": 0.449
+    },
+    {
+      "name": "emerge-system-deep-newuse",
+      "command": ["emerge", "--color", "n", "--pretend", "--verbose", "--update", "--deep", "--newuse", "@system"],
+      "status": 1,
+      "wall_seconds": 34.200,
+      "user_seconds": 33.713,
+      "system_seconds": 0.444,
+      "note": "dependency plan completed; sandbox-blocked news-state chown made final status nonzero"
+    },
+    {
+      "name": "emerge-world-standard",
+      "command": ["emerge", "--color", "n", "--pretend", "--verbose", "--update", "--deep", "--newuse", "@world"],
+      "status": 1,
+      "wall_seconds": 56.110,
+      "user_seconds": 55.608,
+      "system_seconds": 0.424,
+      "note": "dependency plan completed; sandbox-blocked news-state chown made final status nonzero"
+    }
+  ]
+}

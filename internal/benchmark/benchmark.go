@@ -27,11 +27,22 @@ type Comparison struct {
 }
 
 func RunComparison(t testing.TB, name string, ariseFn func() error, emergeFn func() (string, error)) Comparison {
-	c := Comparison{Name: name, AriseCorrect: true}
-	n := 10
-
 	_ = t
+	return runComparisonN(name, 10, ariseFn, emergeFn)
+}
 
+// RunComparisonN makes repetition count explicit for expensive external-tool
+// comparisons. Live commands must first be measured once before choosing n.
+func RunComparisonN(t testing.TB, name string, n int, ariseFn func() error, emergeFn func() (string, error)) Comparison {
+	_ = t
+	return runComparisonN(name, n, ariseFn, emergeFn)
+}
+
+func runComparisonN(name string, n int, ariseFn func() error, emergeFn func() (string, error)) Comparison {
+	c := Comparison{Name: name, AriseCorrect: true}
+	if n <= 0 {
+		return c
+	}
 	ariseStart := time.Now()
 	for i := 0; i < n; i++ {
 		if err := ariseFn(); err != nil {
@@ -62,66 +73,21 @@ func RunComparison(t testing.TB, name string, ariseFn func() error, emergeFn fun
 	}
 	_ = emergeOut
 
-	if c.EmergeOps > 0 && c.AriseOps > 0 {
-		c.Speedup = float64(c.AriseOps) / float64(c.EmergeOps)
-	} else if c.EmergeOps > 0 {
-		c.Speedup = 0
-	} else if c.AriseOps > 0 {
+	if c.AriseTotal > 0 && c.EmergeTotal > 0 {
+		c.Speedup = float64(c.EmergeTotal) / float64(c.AriseTotal)
+	} else if c.AriseTotal > 0 && emergeFn == nil {
 		c.Speedup = math.Inf(1)
 	}
-
 	return c
 }
 
 func RunComparisonNoTB(name string, ariseFn func() error, emergeFn func() (string, error)) Comparison {
-	n := 10
-	return runComparisonN(name, n, ariseFn, emergeFn)
-}
-
-func runComparisonN(name string, n int, ariseFn func() error, emergeFn func() (string, error)) Comparison {
-	c := Comparison{Name: name, AriseCorrect: true}
-
-	ariseStart := time.Now()
-	for i := 0; i < n; i++ {
-		if err := ariseFn(); err != nil {
-			c.AriseCorrect = false
-		}
-	}
-	c.AriseTotal = time.Since(ariseStart)
-	if c.AriseTotal.Nanoseconds() > 0 {
-		c.AriseOps = int64(float64(n) / c.AriseTotal.Seconds())
-	}
-
-	if emergeFn == nil {
-		return c
-	}
-
-	emergeStart := time.Now()
-	for i := 0; i < n; i++ {
-		_, err := emergeFn()
-		if err != nil {
-			c.AriseCorrect = false
-		}
-	}
-	c.EmergeTotal = time.Since(emergeStart)
-	if c.EmergeTotal.Nanoseconds() > 0 {
-		c.EmergeOps = int64(float64(n) / c.EmergeTotal.Seconds())
-	}
-
-	if c.EmergeOps > 0 && c.AriseOps > 0 {
-		c.Speedup = float64(c.AriseOps) / float64(c.EmergeOps)
-	} else if c.EmergeOps > 0 {
-		c.Speedup = 0
-	} else if c.AriseOps > 0 {
-		c.Speedup = math.Inf(1)
-	}
-
-	return c
+	return runComparisonN(name, 10, ariseFn, emergeFn)
 }
 
 func FormatComparison(c Comparison) string {
 	spd := "-"
-	if c.EmergeOps > 0 && c.AriseOps > 0 {
+	if c.Speedup > 0 && !math.IsInf(c.Speedup, 0) {
 		spd = fmt.Sprintf("%.2fx", c.Speedup)
 	}
 	correct := "no"

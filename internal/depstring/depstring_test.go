@@ -177,6 +177,67 @@ func TestParseAtMostOneOfGroupRoundTrip(t *testing.T) {
 	}
 }
 
+func TestValidatePackageDependenciesSeparatesRequiredUseOperators(t *testing.T) {
+	for _, test := range []struct {
+		expression string
+		valid      bool
+	}{
+		{expression: "app-a/a || ( app-b/b ( app-c/c app-d/d ) )", valid: true},
+		{expression: "flag? ( app-a/a )", valid: true},
+		{expression: "^^ ( app-a/a app-b/b )"},
+		{expression: "?? ( app-a/a app-b/b )"},
+		{expression: "|| ( )"},
+		{expression: "flag? ( )"},
+		{expression: "( )"},
+	} {
+		t.Run(test.expression, func(t *testing.T) {
+			node, err := Parse(test.expression)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = ValidatePackageDependencies(node)
+			if test.valid && err != nil {
+				t.Fatalf("valid package dependency rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid package dependency accepted")
+			}
+		})
+	}
+}
+
+func TestValidatePackageDependenciesEnforcesEAPIAtomFeatures(t *testing.T) {
+	for _, test := range []struct {
+		eapi       string
+		expression string
+		valid      bool
+	}{
+		{eapi: "0", expression: "!app-a/a", valid: true},
+		{eapi: "0", expression: "!!app-a/a"},
+		{eapi: "2", expression: "!!app-a/a", valid: true},
+		{eapi: "0", expression: "app-a/a:0"},
+		{eapi: "1", expression: "app-a/a:0", valid: true},
+		{eapi: "4", expression: "app-a/a:="},
+		{eapi: "5", expression: "app-a/a:=", valid: true},
+		{eapi: "8", expression: "app-a/a::gentoo"},
+		{eapi: "9999", expression: "app-a/a::future", valid: true},
+	} {
+		t.Run("EAPI_"+test.eapi+"_"+test.expression, func(t *testing.T) {
+			node, err := Parse(test.expression)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = ValidatePackageDependenciesEAPI(node, test.eapi)
+			if test.valid && err != nil {
+				t.Fatalf("valid dependency rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid dependency accepted")
+			}
+		})
+	}
+}
+
 func TestAtMostOneOfGroupSatisfactionAndMetadata(t *testing.T) {
 	node, err := Parse("?? ( dev-libs/foo dev-libs/bar )")
 	if err != nil {
@@ -289,6 +350,29 @@ func TestAnyOfGroupNested(t *testing.T) {
 	}
 	if len(inner.Children) != 2 {
 		t.Fatalf("expected 2 children in inner any-of, got %d", len(inner.Children))
+	}
+}
+
+func TestCollectMetaNestedAnyOfReusesOuterGroup(t *testing.T) {
+	node, err := Parse("|| ( sys-apps/openrc kernel_linux? ( || ( sys-apps/s6-rc sys-process/runit ) ) )")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := CollectMeta(node)
+	if len(meta) != 3 {
+		t.Fatalf("metadata atoms = %d, want 3: %#v", len(meta), meta)
+	}
+	group := meta[0].AnyOfID
+	if group == 0 {
+		t.Fatal("outer any-of has no group identity")
+	}
+	for _, atom := range meta {
+		if atom.AnyOfID != group {
+			t.Fatalf("nested any-of became a second mandatory group: %#v", meta)
+		}
+	}
+	if meta[1].Condition != "kernel_linux" || meta[2].Condition != "kernel_linux" {
+		t.Fatalf("nested conditions were not preserved: %#v", meta)
 	}
 }
 

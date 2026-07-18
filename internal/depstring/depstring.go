@@ -4,6 +4,7 @@ package depstring
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
@@ -159,54 +160,142 @@ func collectAtoms(nodes []DepNode) []string {
 }
 
 type AtomMeta struct {
-	Atom       string
-	Condition  string
-	AnyOfGroup bool
-	AnyOfID    int // unique non-zero identifier within one CollectMeta call
-	Block      bool
-	WeakBlock  bool
+	Atom        string
+	Condition   string
+	AnyOfGroup  bool
+	AnyOfID     int // unique non-zero identifier within one CollectMeta call
+	AnyOfOption int // one-based conjunction alternative within AnyOfID
+	Block       bool
+	WeakBlock   bool
 }
 
 func CollectMeta(node DepNode) []AtomMeta {
 	nextID := 0
-	return collectMeta(node, "", false, 0, &nextID)
+	return collectMeta(node, "", false, 0, 0, &nextID, make(map[int]int))
 }
 
-func collectMeta(node DepNode, condition string, anyOf bool, anyOfID int, nextID *int) []AtomMeta {
+// ValidatePackageDependencies rejects syntax that the shared parser accepts
+// only for REQUIRED_USE. Package dependency fields support conjunction,
+// any-of groups and USE conditionals, but not ^^/?? cardinality operators.
+func ValidatePackageDependencies(node DepNode) error {
+	return ValidatePackageDependenciesEAPI(node, "")
+}
+
+func ValidatePackageDependenciesEAPI(node DepNode, rawEAPI string) error {
+	if node == nil {
+		return nil
+	}
+	eapi, eapiErr := strconv.Atoi(rawEAPI)
+	validateAtom := func(raw string) error {
+		parsed, err := atom.Parse(raw)
+		if err != nil {
+			return err
+		}
+		if eapiErr == nil {
+			if eapi < 1 && parsed.Slot != "" {
+				return fmt.Errorf("slot dependencies require EAPI 1 or newer")
+			}
+			if eapi < 5 && parsed.SlotOp != atom.SlotOpNone {
+				return fmt.Errorf("slot operators require EAPI 5 or newer")
+			}
+			if eapi <= 9 && parsed.Repo != "" {
+				return fmt.Errorf("repository-qualified atoms are not valid in EAPI %d package dependencies", eapi)
+			}
+		}
+		return nil
+	}
+	var validate func(DepNode) error
+	validate = func(current DepNode) error {
+		switch n := current.(type) {
+		case *AtomDep:
+			return validateAtom(n.Atom)
+		case *Block:
+			return validateAtom(n.Atom)
+		case *WeakBlock:
+			if eapiErr == nil && eapi < 2 {
+				return fmt.Errorf("strong blockers require EAPI 2 or newer")
+			}
+			return validateAtom(n.Atom)
+		case *AllOfGroup:
+			if !n.Implicit && len(n.Children) == 0 {
+				return fmt.Errorf("empty package dependency group")
+			}
+			for _, child := range n.Children {
+				if err := validate(child); err != nil {
+					return err
+				}
+			}
+			return nil
+		case *AnyOfGroup:
+			if len(n.Children) == 0 {
+				return fmt.Errorf("empty any-of package dependency group")
+			}
+			for _, child := range n.Children {
+				if err := validate(child); err != nil {
+					return err
+				}
+			}
+			return nil
+		case *UseConditional:
+			if len(n.Children) == 0 {
+				return fmt.Errorf("empty USE-conditional package dependency group")
+			}
+			for _, child := range n.Children {
+				if err := validate(child); err != nil {
+					return err
+				}
+			}
+			return nil
+		case *XorOfGroup:
+			return fmt.Errorf("^^ is valid in REQUIRED_USE, not package dependency fields")
+		case *AtMostOneOfGroup:
+			return fmt.Errorf("?? is valid in REQUIRED_USE, not package dependency fields")
+		default:
+			return fmt.Errorf("unsupported package dependency node %T", current)
+		}
+	}
+	return validate(node)
+}
+
+func collectMeta(node DepNode, condition string, anyOf bool, anyOfID, anyOfOption int, nextID *int, nextOption map[int]int) []AtomMeta {
 	if node == nil {
 		return nil
 	}
 	switch n := node.(type) {
 	case *AtomDep:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID}}
+		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption}}
 	case *Block:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, Block: true}}
+		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, Block: true}}
 	case *WeakBlock:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, WeakBlock: true}}
+		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, WeakBlock: true}}
 	case *AllOfGroup:
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf, anyOfID, nextID)...)
+			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, nextID, nextOption)...)
 		}
 		return result
 	case *AnyOfGroup:
-		*nextID++
-		groupID := *nextID
+		groupID := anyOfID
+		if !anyOf {
+			*nextID++
+			groupID = *nextID
+		}
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, true, groupID, nextID)...)
+			nextOption[groupID]++
+			result = append(result, collectMeta(child, condition, true, groupID, nextOption[groupID], nextID, nextOption)...)
 		}
 		return result
 	case *XorOfGroup:
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf, anyOfID, nextID)...)
+			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, nextID, nextOption)...)
 		}
 		return result
 	case *AtMostOneOfGroup:
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf, anyOfID, nextID)...)
+			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, nextID, nextOption)...)
 		}
 		return result
 	case *UseConditional:
@@ -216,7 +305,7 @@ func collectMeta(node DepNode, condition string, anyOf bool, anyOfID int, nextID
 		}
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, nextCond, anyOf, anyOfID, nextID)...)
+			result = append(result, collectMeta(child, nextCond, anyOf, anyOfID, anyOfOption, nextID, nextOption)...)
 		}
 		return result
 	default:

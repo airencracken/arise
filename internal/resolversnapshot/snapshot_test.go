@@ -15,7 +15,8 @@ func TestRoundTrip(t *testing.T) {
 	}
 	record := &metadata.PackageMetadata{
 		Repository: "gentoo", RepositoryPath: "/repo", Category: "cat", Package: "pkg", Version: "1.2.3",
-		SLOT: "0", KEYWORDS: "amd64", IUSE: "+ssl", RDEPEND: "dev-libs/foo", EAPI: "8", SRC_URI: "https://example/pkg.tar",
+		SLOT: "0", KEYWORDS: "amd64", IUSE: "+ssl", RDEPEND: "dev-libs/foo", EAPI: "7", SRC_URI: "https://example/pkg.tar",
+		EAPIDeprecated: true,
 	}
 	entries := make(chan *metadata.PackageMetadata, 1)
 	entries <- record
@@ -33,7 +34,7 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].CPV() != "cat/pkg-1.2.3" || got[0].RDEPEND != "dev-libs/foo" {
+	if len(got) != 1 || got[0].CPV() != "cat/pkg-1.2.3" || got[0].RDEPEND != "dev-libs/foo" || !got[0].EAPIDeprecated {
 		t.Fatalf("snapshot = %+v", got)
 	}
 }

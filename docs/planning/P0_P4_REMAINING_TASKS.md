@@ -1,5 +1,7 @@
 # P0-P4 remaining-task breakdown
 
+> Working development plan; reconcile with the root punch list before pruning.
+
 This is the executable breakdown behind the punch-list status as of
 2026-07-17. A task is not complete until its listed validation is automated.
 

@@ -1,6 +1,8 @@
 package phaseproto
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
@@ -14,6 +16,114 @@ import (
 
 	"github.com/airencracken/arise/internal/distfiles"
 )
+
+func TestBashWorkerImageAndArchiveHelperABI(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "source")
+	image := filepath.Join(directory, "image")
+	temporary := filepath.Join(directory, "temp")
+	for _, path := range []string{filepath.Join(source, "payload"), filepath.Join(source, "docs"), image, temporary} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(source, "payload", "program"), []byte("program"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write([]byte("changes\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "docs", "changes.gz"), compressed.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+S="${WORKDIR}"
+src_prepare() { default; unpack docs/changes.gz || die; }
+src_install() {
+  insinto /opt/example
+  doins payload/program changes
+  fperms +x /opt/example/program
+  dosym ../../opt/example/program /usr/bin/example
+}
+`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, phase := range []string{"src_prepare", "src_install"} {
+		request := Request{Protocol: Version, ID: "helpers-" + phase, Command: "run_phase", Phase: phase, EAPI: "8", Ebuild: ebuild, WorkDir: source, SourceDir: source, ImageDir: image, TempDir: temporary, UserPatchDirs: []string{filepath.Join(directory, "missing-patches")}}
+		// Missing patch directories are ignored by the worker's explicit list;
+		// policy construction filters them before production requests.
+		request.UserPatchDirs = nil
+		events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+		if err != nil {
+			t.Fatalf("%s: %v; events=%#v", phase, err, events)
+		}
+	}
+	program := filepath.Join(image, "opt", "example", "program")
+	info, err := os.Stat(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("program mode = %o, want executable", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(filepath.Join(image, "opt", "example", "changes"))
+	if err != nil || string(data) != "changes\n" {
+		t.Fatalf("installed changes = %q, error=%v", data, err)
+	}
+	target, err := os.Readlink(filepath.Join(image, "usr", "bin", "example"))
+	if err != nil || target != "../../opt/example/program" {
+		t.Fatalf("installed symlink = %q, error=%v", target, err)
+	}
+}
+
+func TestBashWorkerUnpackUsesWorkDirAndLifecycleDefaultsAreNoOps(t *testing.T) {
+	directory := t.TempDir()
+	work := filepath.Join(directory, "work")
+	source := filepath.Join(work, "pkg-1")
+	image := filepath.Join(directory, "image")
+	for _, path := range []string{work, image} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_unpack() { [[ $PWD == $WORKDIR ]] || return 41; mkdir -p \"$S\"; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := Request{Protocol: Version, EAPI: "8", Ebuild: ebuild, WorkDir: work, SourceDir: source, ImageDir: image}
+	for _, phase := range []string{"src_unpack", "pkg_setup", "pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm"} {
+		request := base
+		request.ID, request.Command, request.Phase = "directory-"+phase, "run_phase", phase
+		if events, err := RunBashWorker(context.Background(), request); err != nil {
+			t.Fatalf("%s: %v; events=%#v", phase, err, events)
+		}
+	}
+}
+
+func TestBashWorkerHasUsesExactArgumentMembership(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+src_compile() {
+  has 8 7 8 || return 31
+  ! has 8 7 80 || return 32
+  ! has 8 || return 33
+}`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "has-contract", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory}
+	if events, err := RunBashWorker(context.Background(), request); err != nil {
+		t.Fatalf("has contract: %v; events=%#v", err, events)
+	}
+}
 
 func TestRequestValidation(t *testing.T) {
 	request := Request{Protocol: Version, ID: "pkg-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: "/repo/cat/pkg/pkg-1.ebuild"}

@@ -1,5 +1,7 @@
 # Coverage Gaps by Package
 
+> Historical development audit; retain for context until superseded or pruned.
+
 ## Low Coverage Packages (< 80%)
 
 | Package | Coverage | Missing |

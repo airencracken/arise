@@ -120,7 +120,9 @@ func (f *Fetcher) acquireLeader(ctx context.Context, directory string, artifact 
 	}
 	defer unlock()
 	destination := filepath.Join(directory, artifact.Name)
+	reportProgress(cfg, Progress{Stage: ProgressChecking, Artifact: artifact.Name, Total: artifact.Size})
 	if err := distfiles.Verify(destination, artifact); err == nil {
+		reportProgress(cfg, Progress{Stage: ProgressCached, Artifact: artifact.Name, Downloaded: artifact.Size, Total: artifact.Size})
 		return nil
 	}
 	if len(artifact.Sources) == 0 {
@@ -161,6 +163,7 @@ func (f *Fetcher) downloadVerified(ctx context.Context, source, destination stri
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("download %s: HTTP %d", source, response.StatusCode)
 	}
+	reportProgress(cfg, Progress{Stage: ProgressDownload, Artifact: artifact.Name, Source: source, Total: artifact.Size})
 	temporary, err := os.CreateTemp(filepath.Dir(destination), "."+artifact.Name+".part-*")
 	if err != nil {
 		return fmt.Errorf("fetch: create temporary distfile: %w", err)
@@ -173,7 +176,8 @@ func (f *Fetcher) downloadVerified(ctx context.Context, source, destination stri
 			os.Remove(temporaryPath)
 		}
 	}()
-	if _, err := io.Copy(temporary, response.Body); err != nil {
+	reader := &progressReader{reader: response.Body, artifact: artifact, source: source, progress: cfg.Progress}
+	if _, err := io.Copy(temporary, reader); err != nil {
 		return fmt.Errorf("download %s: %w", source, err)
 	}
 	if err := temporary.Sync(); err != nil {
@@ -182,6 +186,7 @@ func (f *Fetcher) downloadVerified(ctx context.Context, source, destination stri
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("fetch: close temporary distfile: %w", err)
 	}
+	reportProgress(cfg, Progress{Stage: ProgressVerifying, Artifact: artifact.Name, Source: source, Downloaded: reader.downloaded, Total: artifact.Size})
 	if err := distfiles.Verify(temporaryPath, artifact); err != nil {
 		return fmt.Errorf("download %s: %w", source, err)
 	}
@@ -192,5 +197,29 @@ func (f *Fetcher) downloadVerified(ctx context.Context, source, destination stri
 		return fmt.Errorf("fetch: commit verified distfile: %w", err)
 	}
 	committed = true
+	reportProgress(cfg, Progress{Stage: ProgressComplete, Artifact: artifact.Name, Source: source, Downloaded: artifact.Size, Total: artifact.Size})
 	return nil
+}
+
+func reportProgress(cfg FetchConfig, progress Progress) {
+	if cfg.Progress != nil {
+		cfg.Progress(progress)
+	}
+}
+
+type progressReader struct {
+	reader     io.Reader
+	artifact   distfiles.Artifact
+	source     string
+	progress   func(Progress)
+	downloaded int64
+}
+
+func (r *progressReader) Read(buffer []byte) (int, error) {
+	count, err := r.reader.Read(buffer)
+	r.downloaded += int64(count)
+	if count != 0 && r.progress != nil {
+		r.progress(Progress{Stage: ProgressDownload, Artifact: r.artifact.Name, Source: r.source, Downloaded: r.downloaded, Total: r.artifact.Size})
+	}
+	return count, err
 }

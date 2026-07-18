@@ -78,7 +78,10 @@ func ReadInfo(path string) (*BinPkgInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("binpkg: could not open %s: %w", path, err)
 	}
-	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil { /* Best effort */
+		}
+	}()
 
 	meta, err := readXPAKMetadata(f, fi.Size())
 	if err != nil {
@@ -192,7 +195,10 @@ func Extract(ctx context.Context, pkgPath string, destDir string) error {
 	if err != nil {
 		return fmt.Errorf("binpkg: could not open %s: %w", pkgPath, err)
 	}
-	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil { /* Best effort */
+		}
+	}()
 
 	fi, err := f.Stat()
 	if err != nil {
@@ -309,7 +315,8 @@ func untar(r io.Reader, destDir string) error {
 				return fmt.Errorf("binpkg: could not create file %s while extracting: %w", target, err)
 			}
 			if _, err := io.Copy(f, tr); err != nil {
-				if cerr := f.Close(); cerr != nil { /* cleanup on error */ }
+				if cerr := f.Close(); cerr != nil { /* cleanup on error */
+				}
 				return fmt.Errorf("binpkg: failed writing extracted file %s: %w", target, err)
 			}
 			if err := f.Close(); err != nil {
@@ -319,10 +326,10 @@ func untar(r io.Reader, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return fmt.Errorf("binpkg: could not create parent directory during extraction: %w", err)
 			}
-		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("binpkg: could not remove %s before creating symlink: %w", target, err)
-		}
-		if err := os.Symlink(hdr.Linkname, target); err != nil {
+			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("binpkg: could not remove %s before creating symlink: %w", target, err)
+			}
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return fmt.Errorf("binpkg: could not create symlink %s -> %s: %w", target, hdr.Linkname, err)
 			}
 		}
@@ -398,7 +405,7 @@ func Create(ctx context.Context, vdbEntryPath string, rootDir string, pkgDir str
 				}
 				if err := tw.WriteHeader(hdr); err != nil {
 					cleanup(tw, bzWriter, tmpF)
-				return "", fmt.Errorf("binpkg: failed to write symlink entry for %s in package: %w", entry.Path, err)
+					return "", fmt.Errorf("binpkg: failed to write symlink entry for %s in package: %w", entry.Path, err)
 				}
 				continue
 			}
@@ -474,7 +481,8 @@ func Create(ctx context.Context, vdbEntryPath string, rootDir string, pkgDir str
 
 	trailer := xpakMagic + "\n" + offsetStr + "\n"
 	if _, err := tmpF.WriteString(trailer); err != nil {
-		if cerr := tmpF.Close(); cerr != nil { /* Best effort */ }
+		if cerr := tmpF.Close(); cerr != nil { /* Best effort */
+		}
 		return "", fmt.Errorf("binpkg: could not write package footer: %w", err)
 	}
 
@@ -767,9 +775,9 @@ func FindPackageMatchingUse(pkgDir string, atomStr string, useFlags map[string]b
 	}
 
 	type candidate struct {
-		pkg    *BinPkgInfo
-		ver    *atom.Version
-		useOk  bool
+		pkg   *BinPkgInfo
+		ver   *atom.Version
+		useOk bool
 	}
 
 	var candidates []candidate
@@ -877,11 +885,14 @@ func useFlagsCompatible(binUse, configUse map[string]bool) bool {
 
 // DownloadFromBinhost downloads binary packages from a remote HTTP server.
 func DownloadFromBinhost(ctx context.Context, binhostURL string, atomStrs []string, destDir string) ([]string, error) {
+	return downloadFromBinhost(ctx, &http.Client{Timeout: 120 * time.Second}, binhostURL, atomStrs, destDir)
+}
+
+func downloadFromBinhost(ctx context.Context, httpClient *http.Client, binhostURL string, atomStrs []string, destDir string) ([]string, error) {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return nil, fmt.Errorf("binpkg: could not create download destination directory: %w", err)
 	}
 
-	httpClient := &http.Client{Timeout: 120 * time.Second}
 	var downloaded []string
 
 	for _, atomStr := range atomStrs {
@@ -933,9 +944,12 @@ func DownloadFromBinhost(ctx context.Context, binhostURL string, atomStrs []stri
 		}
 
 		if _, err := io.Copy(fh, resp.Body); err != nil {
-			if cerr := fh.Close(); cerr != nil { /* cleanup on error */ }
-			if cerr := resp.Body.Close(); cerr != nil { /* cleanup on error */ }
-			if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) { /* cleanup on error */ }
+			if cerr := fh.Close(); cerr != nil { /* cleanup on error */
+			}
+			if cerr := resp.Body.Close(); cerr != nil { /* cleanup on error */
+			}
+			if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) { /* cleanup on error */
+			}
 			return downloaded, fmt.Errorf("binpkg: download from %s failed: %w", url, err)
 		}
 		if err := fh.Close(); err != nil {
@@ -947,7 +961,8 @@ func DownloadFromBinhost(ctx context.Context, binhostURL string, atomStrs []stri
 		}
 
 		if err := os.Rename(tmpPath, destPath); err != nil {
-			if rerr := os.Remove(tmpPath); rerr != nil && !os.IsNotExist(rerr) { /* cleanup on error */ }
+			if rerr := os.Remove(tmpPath); rerr != nil && !os.IsNotExist(rerr) { /* cleanup on error */
+			}
 			return downloaded, fmt.Errorf("binpkg: could not save downloaded file: %w", err)
 		}
 

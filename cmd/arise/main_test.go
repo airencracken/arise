@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/airencracken/arise/internal/fetch"
 	"github.com/airencracken/arise/internal/resolve"
 	"github.com/airencracken/arise/internal/search"
 )
@@ -19,6 +21,32 @@ func TestProgressFramesAreASCII(t *testing.T) {
 				t.Fatalf("progress frame %q is not ASCII", frame)
 			}
 		}
+	}
+}
+
+func TestFetchProgressNonTerminalStages(t *testing.T) {
+	var output bytes.Buffer
+	progress := newFetchProgress(true, &output)
+	progress.Report(fetch.Progress{Stage: fetch.ProgressChecking, Artifact: "source.tar", Total: 100})
+	progress.Report(fetch.Progress{Stage: fetch.ProgressDownload, Artifact: "source.tar", Source: "https://example/source.tar", Total: 100})
+	progress.Report(fetch.Progress{Stage: fetch.ProgressDownload, Artifact: "source.tar", Source: "https://example/source.tar", Downloaded: 100, Total: 100})
+	progress.Report(fetch.Progress{Stage: fetch.ProgressVerifying, Artifact: "source.tar", Downloaded: 100, Total: 100})
+	progress.Report(fetch.Progress{Stage: fetch.ProgressComplete, Artifact: "source.tar", Downloaded: 100, Total: 100})
+	got := output.String()
+	for _, text := range []string{"Checking source.tar", "Downloading https://example/source.tar", "Verifying source.tar against Manifest", "Fetched and verified source.tar"} {
+		if !strings.Contains(got, text) {
+			t.Errorf("fetch progress %q omits %q", got, text)
+		}
+	}
+}
+
+func TestFetchProgressQuietIsSilent(t *testing.T) {
+	var output bytes.Buffer
+	progress := newFetchProgress(false, &output)
+	progress.Report(fetch.Progress{Stage: fetch.ProgressDownload, Artifact: "source.tar", Source: "https://example/source.tar", Downloaded: 50, Total: 100})
+	progress.Report(fetch.Progress{Stage: fetch.ProgressComplete, Artifact: "source.tar", Downloaded: 100, Total: 100})
+	if output.Len() != 0 {
+		t.Fatalf("quiet fetch progress = %q", output.String())
 	}
 }
 
@@ -40,7 +68,7 @@ func TestDevelopmentVersionIsNotEmpty(t *testing.T) {
 
 func TestEmergeShortAliasesRegistered(t *testing.T) {
 	for short, long := range map[string]string{
-		"1": "oneshot", "O": "nodeps", "o": "onlydeps", "e": "emptytree",
+		"1": "oneshot", "u": "update", "O": "nodeps", "o": "onlydeps", "e": "emptytree",
 		"N": "newuse", "D": "deep", "p": "pretend", "a": "ask",
 		"q": "quiet", "v": "verbose", "t": "tree", "b": "buildpkg",
 		"B": "buildpkgonly", "k": "usepkg", "K": "usepkgonly",
@@ -68,6 +96,11 @@ func TestNormalizeEmergeArgs(t *testing.T) {
 			want: []string{"arise", "-a", "-v", "-p", "install", "net-im/signal-desktop-bin"},
 		},
 		{
+			name: "emerge update cluster without command",
+			in:   []string{"arise", "-uDN", "@world"},
+			want: []string{"arise", "-u", "-D", "-N", "@world"},
+		},
+		{
 			name: "options after command",
 			in:   []string{"arise", "install", "--pretend", "-j4", "net-im/signal-desktop-bin"},
 			want: []string{"arise", "--pretend", "-j", "4", "install", "net-im/signal-desktop-bin"},
@@ -83,6 +116,29 @@ func TestNormalizeEmergeArgs(t *testing.T) {
 			got := normalizeEmergeArgs(tt.in)
 			if strings.Join(got, "\x00") != strings.Join(tt.want, "\x00") {
 				t.Fatalf("normalizeEmergeArgs() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSelectCommandDefaultsToInstall(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantCmd  string
+		wantArgs []string
+	}{
+		{name: "atom", args: []string{"net-im/signal-desktop-bin"}, wantCmd: "install", wantArgs: []string{"net-im/signal-desktop-bin"}},
+		{name: "set", args: []string{"@world"}, wantCmd: "install", wantArgs: []string{"@world"}},
+		{name: "multiple targets", args: []string{"sys-apps/portage", "@preserved-rebuild"}, wantCmd: "install", wantArgs: []string{"sys-apps/portage", "@preserved-rebuild"}},
+		{name: "explicit install", args: []string{"install", "net-im/signal-desktop-bin"}, wantCmd: "install", wantArgs: []string{"net-im/signal-desktop-bin"}},
+		{name: "explicit query", args: []string{"query", "sys-apps/portage"}, wantCmd: "query", wantArgs: []string{"sys-apps/portage"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotCmd, gotArgs := selectCommand(tt.args)
+			if gotCmd != tt.wantCmd || strings.Join(gotArgs, "\x00") != strings.Join(tt.wantArgs, "\x00") {
+				t.Fatalf("selectCommand(%q) = (%q, %q), want (%q, %q)", tt.args, gotCmd, gotArgs, tt.wantCmd, tt.wantArgs)
 			}
 		})
 	}
@@ -208,6 +264,7 @@ func snapshotFlags() struct {
 	reinstall          bool
 	changedUse         bool
 	changedDeps        bool
+	dynamicDeps        bool
 	keepGoing          bool
 	fetchOnly          bool
 	buildPkgOnly       bool
@@ -244,6 +301,7 @@ func snapshotFlags() struct {
 		reinstall          bool
 		changedUse         bool
 		changedDeps        bool
+		dynamicDeps        bool
 		keepGoing          bool
 		fetchOnly          bool
 		buildPkgOnly       bool
@@ -279,6 +337,7 @@ func snapshotFlags() struct {
 		reinstall:          *reinstall,
 		changedUse:         *changedUse,
 		changedDeps:        *changedDeps,
+		dynamicDeps:        *dynamicDeps,
 		keepGoing:          *keepGoing,
 		fetchOnly:          *fetchOnly,
 		buildPkgOnly:       *buildPkgOnly,
@@ -317,6 +376,7 @@ func restoreFlags(orig struct {
 	reinstall          bool
 	changedUse         bool
 	changedDeps        bool
+	dynamicDeps        bool
 	keepGoing          bool
 	fetchOnly          bool
 	buildPkgOnly       bool
@@ -352,6 +412,7 @@ func restoreFlags(orig struct {
 	*reinstall = orig.reinstall
 	*changedUse = orig.changedUse
 	*changedDeps = orig.changedDeps
+	*dynamicDeps = orig.dynamicDeps
 	*keepGoing = orig.keepGoing
 	*fetchOnly = orig.fetchOnly
 	*buildPkgOnly = orig.buildPkgOnly
@@ -389,6 +450,7 @@ func resetAllFlags() {
 	*reinstall = false
 	*changedUse = false
 	*changedDeps = false
+	*dynamicDeps = true
 	*keepGoing = false
 	*fetchOnly = false
 	*buildPkgOnly = false
@@ -613,6 +675,22 @@ func TestActionLabel(t *testing.T) {
 				t.Errorf("actionLabel(%q) = %q, want %q", tt.action, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFetchOnlyUsesFetchPlanLanguage(t *testing.T) {
+	result := &resolve.ResolveResult{
+		Install:        []resolve.PkgAction{{Action: "install"}},
+		BacktrackLevel: 2,
+	}
+	if got, want := planHeading(result, true), "Fetch plan (1 package, 0 conflicts, backtrack 2):"; got != want {
+		t.Fatalf("heading = %q, want %q", got, want)
+	}
+	if got := displayedActionLabel("install", true); got != "[fetch]" {
+		t.Fatalf("fetch-only action label = %q", got)
+	}
+	if got := displayedActionLabel("update", false); got != "update" {
+		t.Fatalf("ordinary action label = %q", got)
 	}
 }
 

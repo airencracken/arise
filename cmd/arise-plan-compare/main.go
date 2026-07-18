@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/airencracken/arise/internal/plancompare"
@@ -29,6 +30,7 @@ func main() {
 	operation := flag.String("operation", "update", "Arise operation")
 	completeGraph := flag.Bool("complete-graph", true, "enable complete-graph resolution")
 	deep := flag.Bool("deep", false, "enable deep dependency traversal")
+	newUse := flag.Bool("newuse", false, "rebuild when USE configuration changed")
 	withBdeps := flag.String("with-bdeps", "auto", "build dependency mode: y, n, or auto")
 	backtrack := flag.Int("backtrack", 20, "backtrack limit for both resolvers")
 	jsonOutput := flag.Bool("json", false, "emit JSON")
@@ -50,6 +52,9 @@ func main() {
 	if *deep {
 		ariseArgs = append(ariseArgs, "--deep")
 	}
+	if *newUse {
+		ariseArgs = append(ariseArgs, "--newuse")
+	}
 	if *withBdeps != "auto" {
 		ariseArgs = append(ariseArgs, "--with-bdeps="+*withBdeps)
 	}
@@ -65,6 +70,9 @@ func main() {
 	}
 	if *deep {
 		emergeArgs = append(emergeArgs, "--deep")
+	}
+	if *newUse {
+		emergeArgs = append(emergeArgs, "--newuse")
 	}
 	if *withBdeps != "auto" {
 		emergeArgs = append(emergeArgs, "--with-bdeps="+*withBdeps)
@@ -125,6 +133,9 @@ func looksLikeEmergePlan(output string) bool {
 
 func run(path string, args []string) (string, error) {
 	cmd := exec.Command(path, args...)
+	if filepath.Base(path) == "emerge" {
+		cmd.Env = withoutNews(os.Environ())
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
@@ -134,6 +145,17 @@ func run(path string, args []string) (string, error) {
 		stdout.Write(stderr.Bytes())
 	}
 	return stdout.String(), err
+}
+
+func withoutNews(environment []string) []string {
+	result := append([]string(nil), environment...)
+	for i, entry := range result {
+		if strings.HasPrefix(entry, "FEATURES=") {
+			result[i] = entry + " -news"
+			return result
+		}
+	}
+	return append(result, "FEATURES=-news")
 }
 
 func fatal(err error) {

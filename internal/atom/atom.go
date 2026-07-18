@@ -180,6 +180,15 @@ func (v *Version) Compare(other *Version) int {
 			return 1
 		}
 	}
+	// PMS version components are significant even when an omitted component
+	// would have the numeric value zero. Portage therefore orders 1.0 before
+	// 1.0.0 instead of applying semver-style trailing-zero normalization.
+	if len(v.Numbers) < len(other.Numbers) {
+		return -1
+	}
+	if len(v.Numbers) > len(other.Numbers) {
+		return 1
+	}
 
 	if v.Letter < other.Letter {
 		return -1

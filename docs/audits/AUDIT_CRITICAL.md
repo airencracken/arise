@@ -1,5 +1,7 @@
 # Critical Issues
 
+> Historical development audit; retain for context until superseded or pruned.
+
 ## 1. Data Race in Parallel Rebuild — ✅ FIXED (2026-06-10)
 
 **File**: `internal/rebuild/rebuild.go:240-242`  

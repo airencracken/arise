@@ -42,12 +42,15 @@ func WalkCacheRoots(roots []string) (<-chan *metadata.PackageMetadata, <-chan er
 			repository = strings.TrimSpace(string(data))
 		}
 		masters := readRepositoryMasters(repositoryPath)
+		banned, deprecated := readRepositoryEAPIPolicy(repositoryPath)
 		rootResults, rootErrs := walkCacheDir(root, 0, repository, repositoryPath, overlayIndex)
 		go func() {
 			defer wg.Done()
 			for result := range rootResults {
 				result.RepositoryMasters = append([]string(nil), masters...)
 				result.RepositoryPriority = overlayIndex
+				result.EAPIBanned = banned[result.EAPI]
+				result.EAPIDeprecated = deprecated[result.EAPI]
 				results <- result
 			}
 		}()
@@ -78,6 +81,7 @@ func WalkUncachedEbuildRoots(cacheRoots []string) (<-chan *metadata.PackageMetad
 		for priority, cacheRoot := range cacheRoots {
 			repo := filepath.Dir(filepath.Dir(cacheRoot))
 			repoName := filepath.Base(repo)
+			banned, deprecated := readRepositoryEAPIPolicy(repo)
 			if data, err := os.ReadFile(filepath.Join(repo, "profiles", "repo_name")); err == nil && strings.TrimSpace(string(data)) != "" {
 				repoName = strings.TrimSpace(string(data))
 			}
@@ -132,6 +136,8 @@ func WalkUncachedEbuildRoots(cacheRoots []string) (<-chan *metadata.PackageMetad
 				}
 				m.Repository, m.RepositoryPath, m.RepositoryPriority, m.OverlayIndex = repoName, repo, priority, priority
 				m.RepositoryMasters = readRepositoryMasters(repo)
+				m.EAPIBanned = banned[m.EAPI]
+				m.EAPIDeprecated = deprecated[m.EAPI]
 				if m.Unknown == nil {
 					m.Unknown = map[string]string{}
 				}
@@ -185,6 +191,35 @@ func readRepositoryMasters(repositoryPath string) []string {
 		}
 	}
 	return nil
+}
+
+func readRepositoryEAPIPolicy(repositoryPath string) (map[string]bool, map[string]bool) {
+	banned := make(map[string]bool)
+	deprecated := make(map[string]bool)
+	data, err := os.ReadFile(filepath.Join(repositoryPath, "metadata", "layout.conf"))
+	if err != nil {
+		return banned, deprecated
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		var target map[string]bool
+		switch strings.TrimSpace(key) {
+		case "eapis-banned":
+			target = banned
+		case "eapis-deprecated":
+			target = deprecated
+		default:
+			continue
+		}
+		for _, eapi := range strings.Fields(value) {
+			target[eapi] = true
+		}
+	}
+	return banned, deprecated
 }
 
 // WalkCacheDir is like WalkCache but accepts an explicit number of worker

@@ -105,6 +105,15 @@ func collectCPV(actions []PkgAction) []string {
 	return out
 }
 
+func actionForCP(actions []PkgAction, cp string) bool {
+	for _, action := range actions {
+		if action.Atom != nil && action.Atom.CP() == cp {
+			return true
+		}
+	}
+	return false
+}
+
 func hasAction(actions []PkgAction, cpv, action string) bool {
 	for _, a := range actions {
 		cp := a.Atom.CP()
@@ -416,7 +425,8 @@ func TestResolvePreservesStrongBlockerOrderingRequirement(t *testing.T) {
 	parent.Rdepend = "!!app-misc/obsolete"
 	pkg(g, "app-misc/obsolete", "1", "0", "0", true, nil)
 
-	result, err := Resolve(g, []string{"app-misc/replacement"}, DefaultResolveConfig())
+	cfg := DefaultResolveConfig()
+	result, err := Resolve(g, []string{"app-misc/replacement"}, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1317,6 +1327,57 @@ func TestDependencyDomainsFollowPMSRoots(t *testing.T) {
 	}
 }
 
+func TestDependDomainFollowsEAPIRootSplit(t *testing.T) {
+	for _, test := range []struct {
+		eapi string
+		want DependencyDomain
+	}{
+		{eapi: "6", want: DomainBROOT},
+		{eapi: "7", want: DomainSYSROOT},
+		{eapi: "8", want: DomainSYSROOT},
+		{eapi: "9999", want: DomainSYSROOT},
+	} {
+		if got := dependencyDomainForEAPI(DepTypeDepend, test.eapi); got != test.want {
+			t.Errorf("EAPI %s DEPEND domain = %s, want %s", test.eapi, got, test.want)
+		}
+	}
+}
+
+func TestResolvePlansDependInEAPISpecificDomain(t *testing.T) {
+	for _, test := range []struct {
+		eapi string
+		want DependencyDomain
+	}{
+		{eapi: "6", want: DomainBROOT},
+		{eapi: "7", want: DomainSYSROOT},
+	} {
+		t.Run("EAPI "+test.eapi, func(t *testing.T) {
+			graph := makeGraph()
+			application := pkg(graph, "app-misc/application", "1", "0", "0", false, nil)
+			application.EAPI = test.eapi
+			application.Depend = "dev-build/tool"
+			pkg(graph, "dev-build/tool", "1", "0", "0", false, nil)
+			config := DefaultResolveConfig()
+			config.InstalledByDomain = map[DependencyDomain]*DepGraph{
+				DomainROOT: makeGraph(), DomainSYSROOT: makeGraph(), DomainBROOT: makeGraph(),
+			}
+			result, err := Resolve(graph, []string{"app-misc/application"}, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var domains []DependencyDomain
+			for _, action := range result.Install {
+				if action.Atom.CP() == "dev-build/tool" {
+					domains = append(domains, action.Domain)
+				}
+			}
+			if len(domains) != 1 || domains[0] != test.want {
+				t.Fatalf("EAPI %s DEPEND actions = %#v, domains=%v, want %s", test.eapi, result.Install, domains, test.want)
+			}
+		})
+	}
+}
+
 func TestBinaryMergeOmitsSourceOnlyDependencyClasses(t *testing.T) {
 	g := makeGraph()
 	node := g.AddPackage("app-misc/parent")
@@ -1348,6 +1409,229 @@ func TestBinaryMergeOmitsSourceOnlyDependencyClasses(t *testing.T) {
 		if !got[want] {
 			t.Errorf("binary merge omitted dependency class %v", want)
 		}
+	}
+}
+
+func TestBinaryMergeExplicitWithBdepsKeepsBuildDependencyClasses(t *testing.T) {
+	graph := makeGraph()
+	node := graph.AddPackage("app-misc/parent")
+	version := &VersionInfo{
+		Package: node, Version: mustParse("app-misc/parent-1").Version, Available: true, EAPI: "8",
+		Depend: "dev-libs/target", Rdepend: "dev-libs/runtime", Bdepend: "dev-build/native",
+	}
+	resolver := &resolver{
+		graph: graph, config: ResolveConfig{UsePkg: true, WithBdeps: "y"},
+		toInstall: make(map[string]*PkgAction), baseUseCache: make(map[string]map[string]bool),
+		useOverrides: make(map[string]map[string]bool),
+	}
+	resolver.toInstall[versionActionKey(node.Atom.CP(), version)] = &PkgAction{Atom: bestVersionAtom(node.Atom, version), MergeType: "binary"}
+	edges, err := resolver.dependenciesForVersion(node, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classes := make(map[DepType]bool)
+	for _, edge := range edges {
+		classes[edge.Type] = true
+	}
+	if !classes[DepTypeDepend] || !classes[DepTypeBuild] || !classes[DepTypeRuntime] {
+		t.Fatalf("explicit --with-bdeps=y binary classes = %#v", classes)
+	}
+}
+
+func TestBuildPkgOnlyDependencyClassesFollowDeepMode(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		deep bool
+	}{
+		{name: "shallow"},
+		{name: "deep", deep: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			graph := makeGraph()
+			node := graph.AddPackage("app-misc/parent")
+			version := &VersionInfo{
+				Package: node, Version: mustParse("app-misc/parent-1").Version, Available: true, EAPI: "8",
+				Depend: "dev-libs/target", Bdepend: "dev-build/native", Rdepend: "dev-libs/runtime",
+				Idepend: "app-admin/install-tool", Pdepend: "app-misc/post",
+			}
+			resolver := &resolver{
+				graph: graph, config: ResolveConfig{BuildPkgOnly: true, Deep: test.deep, WithBdeps: "y"},
+				toInstall: make(map[string]*PkgAction), baseUseCache: make(map[string]map[string]bool),
+				useOverrides: make(map[string]map[string]bool),
+			}
+			resolver.toInstall[versionActionKey(node.Atom.CP(), version)] = &PkgAction{Atom: bestVersionAtom(node.Atom, version), MergeType: "source"}
+			edges, err := resolver.dependenciesForVersion(node, version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			classes := make(map[DepType]bool)
+			for _, edge := range edges {
+				classes[edge.Type] = true
+			}
+			for _, buildClass := range []DepType{DepTypeDepend, DepTypeBuild} {
+				if !classes[buildClass] {
+					t.Errorf("buildpkgonly omitted build class %v", buildClass)
+				}
+			}
+			for _, installClass := range []DepType{DepTypeRuntime, DepTypeInstall, DepTypePost} {
+				if classes[installClass] != test.deep {
+					t.Errorf("deep=%t install class %v present=%t", test.deep, installClass, classes[installClass])
+				}
+			}
+		})
+	}
+}
+
+func TestEffectiveBdepsModeMatchesUsepkgAutoPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		config ResolveConfig
+		want   string
+	}{
+		{name: "source auto", config: ResolveConfig{WithBdeps: "auto"}, want: "y"},
+		{name: "usepkg auto", config: ResolveConfig{WithBdeps: "auto", UsePkg: true}, want: "n"},
+		{name: "usepkgonly auto", config: ResolveConfig{WithBdepsAuto: true, UsePkgOnly: true}, want: "n"},
+		{name: "explicit yes overrides usepkg", config: ResolveConfig{WithBdeps: "y", UsePkg: true}, want: "y"},
+		{name: "explicit no", config: ResolveConfig{WithBdeps: "n"}, want: "n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolver := &resolver{config: test.config}
+			if got := resolver.effectiveBdepsMode(); got != test.want {
+				t.Fatalf("effective bdeps mode = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestOnlyDepsRemovesTargetAndAppliesTargetScopedDependencyClasses(t *testing.T) {
+	graph := makeGraph()
+	target := pkg(graph, "app-misc/target", "1", "0", "0", false, nil)
+	target.EAPI = "8"
+	target.Depend = "dev-build/build"
+	target.Bdepend = "dev-build/native"
+	target.Rdepend = "dev-libs/runtime"
+	target.Pdepend = "app-misc/post"
+	target.Idepend = "app-admin/install-tool"
+	for _, cp := range []string{"dev-build/build", "dev-build/native", "dev-libs/runtime", "app-misc/post", "app-admin/install-tool"} {
+		pkg(graph, cp, "1", "0", "0", false, nil)
+	}
+	config := DefaultResolveConfig()
+	config.OnlyDeps = true
+	config.OnlyDepsWithRdeps = "n"
+	config.OnlyDepsWithIDeps = "y"
+	result, err := Resolve(graph, []string{"app-misc/target"}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := make(map[string]bool)
+	for _, action := range result.Install {
+		present[action.Atom.CP()] = true
+	}
+	for _, cp := range []string{"app-misc/target", "dev-libs/runtime", "app-misc/post"} {
+		if present[cp] {
+			t.Errorf("--onlydeps unexpectedly retained %s: %#v", cp, result.Install)
+		}
+	}
+	for _, cp := range []string{"dev-build/build", "dev-build/native", "app-admin/install-tool"} {
+		if !present[cp] {
+			t.Errorf("--onlydeps omitted %s: %#v", cp, result.Install)
+		}
+	}
+}
+
+func TestRootDepsRdepsFollowsEAPI7Boundary(t *testing.T) {
+	for _, test := range []struct {
+		eapi       string
+		wantDepend bool
+	}{
+		{eapi: "6", wantDepend: false},
+		{eapi: "7", wantDepend: true},
+	} {
+		t.Run("EAPI "+test.eapi, func(t *testing.T) {
+			graph := makeGraph()
+			target := pkg(graph, "app-misc/target", "1", "0", "0", false, nil)
+			target.EAPI = test.eapi
+			target.Depend = "dev-build/build"
+			target.Rdepend = "dev-libs/runtime"
+			pkg(graph, "dev-build/build", "1", "0", "0", false, nil)
+			pkg(graph, "dev-libs/runtime", "1", "0", "0", false, nil)
+			config := DefaultResolveConfig()
+			config.RootDeps = "rdeps"
+			result, err := Resolve(graph, []string{"app-misc/target"}, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			present := make(map[string]bool)
+			for _, action := range result.Install {
+				present[action.Atom.CP()] = true
+			}
+			if present["dev-build/build"] != test.wantDepend {
+				t.Errorf("DEPEND present=%t, want %t: %#v", present["dev-build/build"], test.wantDepend, result.Install)
+			}
+			if !present["dev-libs/runtime"] {
+				t.Errorf("RDEPEND omitted: %#v", result.Install)
+			}
+		})
+	}
+}
+
+func TestRootDepsTrueDuplicatesBuildAndInstallDependenciesIntoRoot(t *testing.T) {
+	graph := makeGraph()
+	target := pkg(graph, "app-misc/target", "1", "0", "0", false, nil)
+	target.EAPI = "8"
+	target.Depend = "dev-build/target-tool"
+	target.Bdepend = "dev-build/native-tool"
+	target.Idepend = "app-admin/install-tool"
+	for _, cp := range []string{"dev-build/target-tool", "dev-build/native-tool", "app-admin/install-tool"} {
+		pkg(graph, cp, "1", "0", "0", false, nil)
+	}
+	config := DefaultResolveConfig()
+	config.RootDeps = "True"
+	config.WithBdeps = "y"
+	config.InstalledByDomain = map[DependencyDomain]*DepGraph{
+		DomainROOT: makeGraph(), DomainSYSROOT: makeGraph(), DomainBROOT: makeGraph(),
+	}
+	result, err := Resolve(graph, []string{"app-misc/target"}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	domains := make(map[string]map[DependencyDomain]bool)
+	for _, action := range result.Install {
+		cp := action.Atom.CP()
+		if domains[cp] == nil {
+			domains[cp] = make(map[DependencyDomain]bool)
+		}
+		domains[cp][action.Domain] = true
+	}
+	for cp, native := range map[string]DependencyDomain{
+		"dev-build/target-tool":  DomainSYSROOT,
+		"dev-build/native-tool":  DomainBROOT,
+		"app-admin/install-tool": DomainBROOT,
+	} {
+		if !domains[cp][native] || !domains[cp][DomainROOT] {
+			t.Errorf("%s domains=%v, want %s and %s", cp, domains[cp], native, DomainROOT)
+		}
+	}
+}
+
+func TestRepositoryEAPIPolicyExcludesBannedAndWarnsDeprecated(t *testing.T) {
+	graph := makeGraph()
+	node := graph.AddPackage("app-misc/example")
+	banned := graph.AddVersionFromRepository("app-misc/example", "2", "0", "0", false, nil, "amd64", "gentoo")
+	banned.EAPI = "6"
+	banned.Available = false
+	deprecated := graph.AddVersionFromRepository("app-misc/example", "1", "0", "0", false, nil, "amd64", "gentoo")
+	deprecated.EAPI = "7"
+	deprecated.EAPIDeprecated = true
+	result, err := Resolve(graph, []string{node.Atom.CP()}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Install) != 1 || result.Install[0].Atom.Version.Raw != "1" {
+		t.Fatalf("selected actions = %#v, want deprecated but eligible EAPI 7 candidate", result.Install)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "deprecated EAPI 7") {
+		t.Fatalf("warnings = %v", result.Warnings)
 	}
 }
 
@@ -1964,6 +2248,26 @@ func TestEffectiveUseChangedIgnoresDisabledIUSEAddition(t *testing.T) {
 	}
 }
 
+func TestNewUseChangedIgnoresImplicitEffectiveUseDomain(t *testing.T) {
+	installed := &VersionInfo{
+		InstalledUseFlags:  map[string]bool{"split-usr": true, "gawk": true, "abi_x86_64": true, "elibc_glibc": true},
+		InstalledIUseFlags: map[string]bool{"split-usr": true, "gawk": true, "busybox": true},
+	}
+	candidate := &VersionInfo{UseFlags: map[string]bool{"split-usr": false, "gawk": true, "busybox": false}}
+	candidateFlags := map[string]bool{
+		"split-usr": true, "gawk": true, "busybox": false,
+		"abi_x86_64": true, "abi_x86_32": false, "elibc_glibc": true, "elibc_musl": false,
+	}
+	if newUseChanged(installed, candidate, candidateFlags) {
+		t.Fatal("implicit effective USE flags must not trigger --newuse")
+	}
+	candidate.UseFlags["new-flag"] = false
+	candidateFlags["new-flag"] = false
+	if !newUseChanged(installed, candidate, candidateFlags) {
+		t.Fatal("a disabled declared IUSE addition must trigger --newuse")
+	}
+}
+
 func TestResolve_NewUseAndChangedUseClassification(t *testing.T) {
 	makeCase := func() *DepGraph {
 		g := makeGraph()
@@ -1982,6 +2286,64 @@ func TestResolve_NewUseAndChangedUseClassification(t *testing.T) {
 	result, err = Resolve(makeCase(), []string{"app-misc/example"}, newUse)
 	if err != nil || len(result.Install) != 1 || result.Install[0].Action != "reinstall" {
 		t.Fatalf("--newuse did not rebuild for IUSE addition: %v %v", result, err)
+	}
+}
+
+func TestResolve_DeepNewUseRebuildsSatisfiedDependency(t *testing.T) {
+	g := makeGraph()
+	parent := pkg(g, "app-misc/parent", "1", "0", "0", true, nil)
+	parent.Available = true
+	parent.Rdepend = "app-misc/dependency"
+	dependency := pkg(g, "app-misc/dependency", "1", "0", "0", true, map[string]bool{"old_target": false, "new_target": true})
+	dependency.Available = true
+	dependency.InstalledUseFlags = map[string]bool{"old_target": true, "new_target": false}
+	dependency.InstalledIUseFlags = map[string]bool{"old_target": true, "new_target": true}
+
+	cfg := DefaultResolveConfig()
+	cfg.Deep = true
+	cfg.NewUse = true
+	result, err := Resolve(g, []string{"app-misc/parent"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !actionForCP(result.Install, "app-misc/dependency") {
+		t.Fatalf("--deep --newuse omitted satisfied dependency rebuild: %v", result.Install)
+	}
+}
+
+func TestResolve_DynamicDepsUsesCurrentMetadataWithoutRebuildingParent(t *testing.T) {
+	g := makeGraph()
+	parent := pkg(g, "acct-user/postmaster", "1", "0", "0", true, nil)
+	parent.Available = true
+	parent.InstalledRdepend = "acct-group/mail"
+	parent.Rdepend = "acct-group/mail acct-user/root"
+	pkg(g, "acct-group/mail", "1", "0", "0", true, nil)
+	pkg(g, "acct-user/root", "1", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+
+	result, err := Resolve(g, []string{"acct-user/postmaster"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root, parentRebuild bool
+	for _, action := range result.Install {
+		root = root || action.Atom.CP() == "acct-user/root"
+		parentRebuild = parentRebuild || action.Atom.CP() == "acct-user/postmaster"
+	}
+	if !root || parentRebuild {
+		t.Fatalf("dynamic dependency closure = %v; want root only", result.Install)
+	}
+
+	cfg.DynamicDeps = false
+	result, err = Resolve(g, []string{"acct-user/postmaster"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range result.Install {
+		if action.Atom.CP() == "acct-user/root" {
+			t.Fatalf("VDB dependency mode unexpectedly used current metadata: %v", result.Install)
+		}
 	}
 }
 
@@ -3382,6 +3744,11 @@ func TestVirtualPackage_BacktracksWhenPreferredProviderDepsFail(t *testing.T) {
 	}
 	if result.BacktrackLevel != 1 {
 		t.Fatalf("backtrack level = %d, want 1", result.BacktrackLevel)
+	}
+	if len(result.DecisionHistory) != 1 || result.DecisionHistory[0] != (BacktrackDecision{
+		Kind: "provider", Key: "provider:app-shells/consumer->virtual/editor", From: "app-editors/broken", To: "app-editors/working",
+	}) {
+		t.Fatalf("provider decision history = %#v", result.DecisionHistory)
 	}
 }
 
@@ -5000,6 +5367,7 @@ func TestResolve_PostSolveVerifierChecksAffectedRetainedPackage(t *testing.T) {
 	pkg(g, "app-misc/consumer", "1", "0", "0", false, nil)
 	cfg := DefaultResolveConfig()
 	cfg.Update = true
+	cfg.DynamicDeps = false
 
 	result, err := Resolve(g, []string{"dev-libs/library"}, cfg)
 	if err != nil {
@@ -5025,7 +5393,9 @@ func TestResolve_PostSolveVerifierChecksDependenciesBrokenByRemoval(t *testing.T
 	consumer.InstalledRdepend = "dev-libs/library"
 	pkg(g, "app-misc/consumer", "1", "0", "0", false, nil)
 
-	result, err := Resolve(g, []string{"app-misc/replacement"}, DefaultResolveConfig())
+	cfg := DefaultResolveConfig()
+	cfg.DynamicDeps = false
+	result, err := Resolve(g, []string{"app-misc/replacement"}, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5215,13 +5585,55 @@ func TestDependenciesForVersionKeepsInstalledEAPISeparateFromRepositoryCandidate
 	installed.InstalledEAPI = "6"
 	installed.InstalledRdepend = "dev-libs/runtime"
 	pkg(g, "dev-libs/runtime", "1", "0", "0", true, nil)
-	r := &resolver{graph: g, config: DefaultResolveConfig(), toInstall: make(map[string]*PkgAction)}
+	cfg := DefaultResolveConfig()
+	cfg.DynamicDeps = false
+	r := &resolver{graph: g, config: cfg, toInstall: make(map[string]*PkgAction)}
 	edges, err := r.dependenciesForVersion(g.Packages["x11-misc/example"], installed)
 	if err != nil {
 		t.Fatalf("repository EAPI/dependencies contaminated retained metadata: %v", err)
 	}
 	if len(edges) != 1 || edges[0].Type != DepTypeRuntime || edges[0].DepAtom.CP() != "dev-libs/runtime" {
 		t.Fatalf("retained dependency view = %#v", edges)
+	}
+}
+
+func TestResolve_SetRetainsInstalledVersionWithoutRepositoryCandidate(t *testing.T) {
+	g := makeGraph()
+	installed := pkg(g, "llvm-core/llvm", "23.0.0.9999", "23", "23.0", true, nil)
+	installed.InstalledEAPI = "8"
+	installed.InstalledRdepend = "sys-libs/runtime"
+	pkg(g, "llvm-core/llvm", "22.1", "22", "22.1", false, nil)
+	pkg(g, "sys-libs/runtime", "1", "0", "0", true, nil)
+	cfg := DefaultResolveConfig()
+	cfg.WorldSet = &WorldSet{Entries: []string{"=llvm-core/llvm-23.0.0.9999:23/23.0"}}
+
+	result, err := Resolve(g, []string{"@world"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified || len(result.Install) != 0 || !strings.Contains(strings.Join(result.Warnings, "\n"), "retaining installed package llvm-core/llvm-23.0.0.9999") {
+		t.Fatalf("installed live set member was not retained safely: %#v", result)
+	}
+}
+
+func TestResolve_SlotOperatorRebuildUsesVisibleCandidate(t *testing.T) {
+	g := makeGraph()
+	parent := pkg(g, "app-misc/parent", "1", "0", "0", true, nil)
+	parent.InstalledRdepend = "dev-libs/library:0="
+	pkgKeywords(g, "dev-libs/library", "1", "0", "1", true, nil, "amd64")
+	pkgKeywords(g, "dev-libs/library", "2", "0", "2", false, nil, "amd64")
+	pkgKeywords(g, "dev-libs/library", "9999", "0", "9999", false, nil, "amd64")
+	cfg := DefaultResolveConfig()
+	cfg.PortageConfig = &portage.Config{ACCEPT_KEYWORDS: []string{"amd64"}, PackageMask: []string{"=dev-libs/library-9999"}}
+
+	result, err := Resolve(g, []string{"app-misc/parent"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range result.Install {
+		if action.Atom.CP() == "dev-libs/library" && action.Atom.Version.Raw != "2" {
+			t.Fatalf("slot-operator rebuild selected masked raw-best candidate: %#v", action)
+		}
 	}
 }
 
@@ -5292,6 +5704,32 @@ func TestResolve_WorldCompleteGraphDoesNotRebuildUnselectedAvailableOrphan(t *te
 	for _, action := range result.Install {
 		if action.Atom.CP() == "app-misc/orphan" {
 			t.Fatalf("unselected orphan was pulled back into @world: %v", result.Install)
+		}
+	}
+}
+
+func TestResolve_WorldCompleteGraphScopesSelectionToPackageSlot(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-libs/tool", "1", "0", "0", true, nil)
+	pkg(g, "dev-libs/tool", "2", "0", "0", false, nil)
+	oldSlot := pkg(g, "dev-lang/runtime", "1", "1", "0", true, nil)
+	oldSlot.InstalledRdepend = "<dev-libs/tool-2"
+	pkg(g, "dev-lang/runtime", "1.1", "1", "0", false, nil)
+	selectedSlot := pkg(g, "dev-lang/runtime", "2", "2", "0", true, nil)
+	selectedSlot.Available = true
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.Deep = true
+	cfg.CompleteGraph = true
+	cfg.WorldSet = &WorldSet{Entries: []string{"dev-libs/tool", "dev-lang/runtime:2"}}
+
+	result, err := Resolve(g, []string{"@world"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range result.Install {
+		if action.Atom.CP() == "dev-lang/runtime" && action.Slot == "1" {
+			t.Fatalf("selected slot pulled unrelated installed slot into repair: %v", result.Install)
 		}
 	}
 }
@@ -5530,6 +5968,11 @@ func TestResolve_IntersectsConstraintsToOneCandidatePerSlot(t *testing.T) {
 	if result.BacktrackLevel != 1 {
 		t.Fatalf("backtrack level = %d, want 1", result.BacktrackLevel)
 	}
+	if len(result.DecisionHistory) != 1 || result.DecisionHistory[0] != (BacktrackDecision{
+		Kind: "version", Key: "dev-python/docutils:0", From: "0.23", To: "0.22.4",
+	}) {
+		t.Fatalf("version decision history = %#v", result.DecisionHistory)
+	}
 }
 
 func TestResolve_SlotConflictRetainsStructuredRequirements(t *testing.T) {
@@ -5647,6 +6090,212 @@ func TestResolve_AnyOfSkipsUnavailableAlternative(t *testing.T) {
 	}
 }
 
+func TestResolve_AnyOfPlansMutableUseRepair(t *testing.T) {
+	g := makeGraph()
+	consumer := pkg(g, "virtual/service-manager", "1", "0", "0", false, nil)
+	consumer.Rdepend = "|| ( sys-apps/s6-rc[system-init(-)] sys-process/runit[system-init(-)] )"
+	pkg(g, "sys-apps/s6-rc", "1", "0", "0", false, map[string]bool{"system-init": false})
+	pkg(g, "sys-process/runit", "1", "0", "0", false, map[string]bool{"system-init": false})
+
+	result, err := Resolve(g, []string{"virtual/service-manager"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Conflicts) != 1 || !strings.Contains(result.Conflicts[0], "USE changes are necessary to proceed:") {
+		t.Fatalf("mutable any-of USE requirement not preserved: %v", result.Conflicts)
+	}
+	var repaired int
+	for _, action := range result.Install {
+		if (action.Atom.CP() == "sys-apps/s6-rc" || action.Atom.CP() == "sys-process/runit") && action.UseFlags["system-init"] {
+			repaired++
+		}
+	}
+	if repaired != 1 {
+		t.Fatalf("planned repaired alternatives = %d, want exactly one: %v", repaired, result.Install)
+	}
+}
+
+func TestResolve_NestedAnyOfPrefersInstalledOuterAlternative(t *testing.T) {
+	g := makeGraph()
+	consumer := pkg(g, "virtual/service-manager", "1", "0", "0", false, map[string]bool{"systemd": false, "kernel_linux": true})
+	consumer.Rdepend = "!systemd? ( || ( sys-apps/openrc kernel_linux? ( || ( sys-apps/s6-rc[system-init(-)] sys-process/runit[system-init(-)] ) ) ) )"
+	pkg(g, "sys-apps/openrc", "1", "0", "0", true, nil)
+	pkg(g, "sys-apps/s6-rc", "1", "0", "0", false, map[string]bool{"system-init": false})
+	pkg(g, "sys-process/runit", "1", "0", "0", false, map[string]bool{"system-init": false})
+
+	result, err := Resolve(g, []string{"virtual/service-manager"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actionForCP(result.Install, "sys-apps/s6-rc") || actionForCP(result.Install, "sys-process/runit") {
+		t.Fatalf("nested any-of ignored installed outer alternative: %v", result.Install)
+	}
+	if len(result.Conflicts) != 0 {
+		t.Fatalf("installed OpenRC should avoid USE repair: %v", result.Conflicts)
+	}
+}
+
+func TestResolve_AnyOfPreservesAllOfAlternativeTuple(t *testing.T) {
+	g := makeGraph()
+	mesa := pkg(g, "media-libs/mesa", "1", "0", "0", false, nil)
+	mesa.Bdepend = "|| ( ( dev-lang/python:3.14 dev-python/mako[python_targets_python3_14(-)] dev-python/packaging[python_targets_python3_14(-)] ) ( dev-lang/python:3.13 dev-python/mako[python_targets_python3_13(-)] dev-python/packaging[python_targets_python3_13(-)] ) )"
+	pkg(g, "dev-lang/python", "3.14.1", "3.14", "0", false, nil)
+	pkg(g, "dev-lang/python", "3.13.1", "3.13", "0", true, nil)
+	pkg(g, "dev-python/mako", "0", "0", "0", true, map[string]bool{"python_targets_python3_14": false, "python_targets_python3_13": true})
+	pkg(g, "dev-python/mako", "1", "0", "0", false, map[string]bool{"python_targets_python3_14": true, "python_targets_python3_13": false})
+	pkg(g, "dev-python/packaging", "0", "0", "0", true, map[string]bool{"python_targets_python3_14": false, "python_targets_python3_13": true})
+	pkg(g, "dev-python/packaging", "1", "0", "0", false, map[string]bool{"python_targets_python3_14": true, "python_targets_python3_13": false})
+
+	result, err := Resolve(g, []string{"media-libs/mesa"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cp := range []string{"dev-lang/python", "dev-python/mako", "dev-python/packaging"} {
+		if !actionForCP(result.Install, cp) {
+			t.Fatalf("tuple member %s missing from plan: %v", cp, result.Install)
+		}
+	}
+	for _, action := range result.Install {
+		if action.Atom.CP() == "dev-lang/python" && action.Slot != "3.14" {
+			t.Fatalf("selected mismatched interpreter tuple: %v", result.Install)
+		}
+	}
+	if len(result.Conflicts) != 0 {
+		t.Fatalf("valid tuple produced conflicts: %v", result.Conflicts)
+	}
+}
+
+func TestResolve_RetractsDependenciesOwnedOnlyBySupersededParent(t *testing.T) {
+	g := makeGraph()
+	consumer := pkg(g, "app-misc/consumer", "1", "0", "0", false, nil)
+	consumer.Rdepend = "app-misc/parent[old]"
+	installedParent := pkg(g, "app-misc/parent", "1", "0", "0", true, map[string]bool{"old": true})
+	installedParent.InstalledRdepend = "app-misc/old-child"
+	newParent := pkg(g, "app-misc/parent", "2", "0", "0", false, map[string]bool{"old": false})
+	newParent.Rdepend = "app-misc/new-child"
+	pkg(g, "app-misc/old-child", "1", "0", "0", false, nil)
+	pkg(g, "app-misc/new-child", "1", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+
+	result, err := Resolve(g, []string{"app-misc/consumer", "app-misc/parent"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actionForCP(result.Install, "app-misc/old-child") {
+		t.Fatalf("superseded parent dependency survived: %v", result.Install)
+	}
+	if !actionForCP(result.Install, "app-misc/new-child") {
+		t.Fatalf("replacement dependency missing: %v", result.Install)
+	}
+}
+
+func TestResolve_SupersededParentPreservesSharedDependencyOwner(t *testing.T) {
+	g := makeGraph()
+	consumer := pkg(g, "app-misc/consumer", "1", "0", "0", false, nil)
+	consumer.Rdepend = "app-misc/parent[old]"
+	other := pkg(g, "app-misc/other", "1", "0", "0", false, nil)
+	other.Rdepend = "app-misc/shared"
+	installedParent := pkg(g, "app-misc/parent", "1", "0", "0", true, map[string]bool{"old": true})
+	installedParent.InstalledRdepend = "app-misc/shared"
+	newParent := pkg(g, "app-misc/parent", "2", "0", "0", false, map[string]bool{"old": false})
+	newParent.Rdepend = "app-misc/new-child"
+	pkg(g, "app-misc/shared", "1", "0", "0", false, nil)
+	pkg(g, "app-misc/new-child", "1", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+
+	result, err := Resolve(g, []string{"app-misc/consumer", "app-misc/other", "app-misc/parent"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !actionForCP(result.Install, "app-misc/shared") {
+		t.Fatalf("shared dependency was removed with one superseded owner: %v", result.Install)
+	}
+}
+
+func TestResolve_DependencyTraversalUsesScheduledReplacementOverlay(t *testing.T) {
+	g := makeGraph()
+	installedParent := pkg(g, "app-misc/parent", "1", "0", "0", true, nil)
+	installedParent.InstalledRdepend = "app-misc/old-child"
+	newParent := pkg(g, "app-misc/parent", "2", "0", "0", false, nil)
+	newParent.Rdepend = "app-misc/new-child"
+	wrapper := pkg(g, "virtual/parent", "1", "0", "0", false, nil)
+	wrapper.Rdepend = "app-misc/parent"
+	pkg(g, "app-misc/old-child", "1", "0", "0", false, nil)
+	pkg(g, "app-misc/new-child", "1", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+
+	result, err := Resolve(g, []string{"app-misc/parent", "virtual/parent"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actionForCP(result.Install, "app-misc/old-child") || !actionForCP(result.Install, "app-misc/new-child") {
+		t.Fatalf("dependency traversal ignored scheduled replacement: %v", result.Install)
+	}
+}
+
+func TestResolve_DeepUpdatePromotesInstalledAnyOfAlternative(t *testing.T) {
+	g := makeGraph()
+	parent := pkg(g, "app-misc/parent", "1", "0", "0", true, nil)
+	parent.Available = true
+	parent.Rdepend = "|| ( www-client/preferred www-client/fallback )"
+	pkg(g, "www-client/preferred", "1", "0", "0", true, nil)
+	pkg(g, "www-client/preferred", "2", "0", "0", false, nil)
+	pkg(g, "www-client/fallback", "1", "0", "0", true, nil)
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.Deep = true
+
+	result, err := Resolve(g, []string{"app-misc/parent"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var promoted bool
+	for _, action := range result.Install {
+		promoted = promoted || action.Atom.CP() == "www-client/preferred" && action.Atom.Version != nil && action.Atom.Version.Raw == "2"
+	}
+	if !promoted {
+		t.Fatalf("installed any-of alternative was not updated during deep traversal: %v", result.Install)
+	}
+}
+
+func TestRefreshCommittedDirectUpdatesRestoresRolledBackChildUpdate(t *testing.T) {
+	g := makeGraph()
+	parent := pkg(g, "virtual/parent", "1", "0", "0", true, nil)
+	parent.Available = true
+	parent.Rdepend = "virtual/child"
+	pkg(g, "virtual/child", "1", "0", "0", true, nil)
+	pkg(g, "virtual/child", "2", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.Deep = true
+	r := &resolver{
+		graph: g, config: cfg,
+		installed: make(map[string]*PkgAction), toInstall: make(map[string]*PkgAction),
+		actionOwners: make(map[string]map[string]bool), rootActionKeys: make(map[string]bool),
+		toUninstall: make(map[string]*PkgAction), seenDeps: make(map[string]bool),
+		activeDeps: make(map[string]int), cycleSeen: make(map[string]bool), selectedCPs: make(map[string]bool),
+		explicitTargets: make(map[string]bool), constraints: make(map[string][]*atom.Atom),
+		constraintCauses: make(map[string][]ConflictRequirement), useOverrides: make(map[string]map[string]bool),
+		useChangeSeen: make(map[string]bool), baseUseCache: make(map[string]map[string]bool),
+		maskCache: make(map[string]portage.MaskStatus), keywordCache: make(map[string]bool),
+		backtrackRemaining: cfg.Backtrack,
+	}
+	r.seenDeps[dependencyVersionKey("virtual/parent", parent.Version, parent.Slot, parent.Repository)] = true
+	if err := r.refreshCommittedDirectUpdates(); err != nil {
+		t.Fatal(err)
+	}
+	var updated bool
+	for _, action := range r.toInstall {
+		updated = updated || action.Atom.CP() == "virtual/child" && action.Atom.Version != nil && action.Atom.Version.Raw == "2"
+	}
+	if !updated {
+		t.Fatalf("committed parent did not restore direct child update: %v", r.toInstall)
+	}
+}
+
 func TestResolve_AnyOfBacktracksWhenFirstAlternativeDepsFail(t *testing.T) {
 	g := makeGraph()
 	consumer := pkg(g, "app-misc/consumer", "1", "0", "0", false, nil)
@@ -5672,6 +6321,193 @@ func TestResolve_AnyOfBacktracksWhenFirstAlternativeDepsFail(t *testing.T) {
 	}
 	if result.BacktrackLevel != 1 {
 		t.Fatalf("backtrack level = %d, want 1", result.BacktrackLevel)
+	}
+	if len(result.DecisionHistory) != 1 || result.DecisionHistory[0].Kind != "any-of" ||
+		result.DecisionHistory[0].From != "alternative 1" || result.DecisionHistory[0].To != "alternative 2" {
+		t.Fatalf("any-of decision history = %#v", result.DecisionHistory)
+	}
+}
+
+func TestBacktrackDecisionLedgerRollsBackWithSpeculativeTransaction(t *testing.T) {
+	r := &resolver{backtrackRemaining: 2}
+	tx := r.beginTransaction()
+	if err := r.consumeBacktrack("any-of", "parent->0", "alternative 1", "alternative 2"); err != nil {
+		t.Fatal(err)
+	}
+	if r.backtrackRemaining != 1 || len(r.decisionHistory) != 1 {
+		t.Fatalf("speculative decision was not recorded: remaining=%d history=%v", r.backtrackRemaining, r.decisionHistory)
+	}
+	r.rollbackTransaction(tx)
+	if r.backtrackRemaining != 2 || len(r.decisionHistory) != 0 {
+		t.Fatalf("rolled-back decision leaked: remaining=%d history=%v", r.backtrackRemaining, r.decisionHistory)
+	}
+}
+
+func TestResolveRewindsEarlierAnyOfAfterWholeStateConflict(t *testing.T) {
+	graph := makeGraph()
+	consumer := pkg(graph, "app-misc/consumer", "1", "0", "0", false, nil)
+	consumer.Rdepend = "|| ( app-misc/implementation-a app-misc/implementation-b )"
+	first := pkg(graph, "app-misc/implementation-a", "1", "0", "0", false, nil)
+	first.Rdepend = "=dev-libs/shared-1"
+	second := pkg(graph, "app-misc/implementation-b", "1", "0", "0", false, nil)
+	second.Rdepend = "=dev-libs/shared-2"
+	pkg(graph, "dev-libs/shared", "1", "0", "0", false, nil)
+	pkg(graph, "dev-libs/shared", "2", "0", "0", false, nil)
+
+	result, err := Resolve(graph, []string{"app-misc/consumer", "=dev-libs/shared-2"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified || len(result.Conflicts) != 0 {
+		t.Fatalf("rewound plan did not verify: conflicts=%v actions=%v", result.Conflicts, result.Install)
+	}
+	present := make(map[string]bool)
+	for _, action := range result.Install {
+		present[action.Atom.CP()] = true
+	}
+	if present["app-misc/implementation-a"] || !present["app-misc/implementation-b"] {
+		t.Fatalf("earlier any-of decision was not rewound: %v", result.Install)
+	}
+	foundRewind := false
+	for _, decision := range result.DecisionHistory {
+		foundRewind = foundRewind || decision.Kind == "conflict-rewind" && strings.Contains(decision.From, "implementation-a") && strings.Contains(decision.To, "implementation-b")
+	}
+	if !foundRewind {
+		t.Fatalf("conflict rewind missing from history: %#v", result.DecisionHistory)
+	}
+}
+
+func TestResolveRewindsEarlierProviderAfterLaterConstraint(t *testing.T) {
+	graph := makeGraph()
+	consumer := pkg(graph, "app-misc/consumer", "1", "0", "0", false, nil)
+	consumer.Rdepend = "virtual/implementation"
+	first := pkg(graph, "app-misc/provider-a", "1", "0", "0", false, nil)
+	first.Rdepend = "=dev-libs/shared-1"
+	second := pkg(graph, "app-misc/provider-b", "1", "0", "0", false, nil)
+	second.Rdepend = "=dev-libs/shared-2"
+	graph.AddProvider("virtual/implementation", "app-misc/provider-a")
+	graph.AddProvider("virtual/implementation", "app-misc/provider-b")
+	pkg(graph, "dev-libs/shared", "1", "0", "0", false, nil)
+	pkg(graph, "dev-libs/shared", "2", "0", "0", false, nil)
+
+	result, err := Resolve(graph, []string{"app-misc/consumer", "=dev-libs/shared-2"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified || len(result.Conflicts) != 0 {
+		t.Fatalf("provider rewind did not verify: conflicts=%v actions=%v", result.Conflicts, result.Install)
+	}
+	present := make(map[string]bool)
+	for _, action := range result.Install {
+		present[action.Atom.CP()] = true
+	}
+	if present["app-misc/provider-a"] || !present["app-misc/provider-b"] {
+		t.Fatalf("earlier provider was not rewound: %v", result.Install)
+	}
+	found := false
+	for _, decision := range result.DecisionHistory {
+		found = found || decision.Kind == "conflict-rewind" && decision.From == "app-misc/provider-a" && decision.To == "app-misc/provider-b"
+	}
+	if !found {
+		t.Fatalf("provider rewind missing from history: %#v", result.DecisionHistory)
+	}
+}
+
+func TestResolveRewindsEarlierVersionAfterLaterConstraint(t *testing.T) {
+	graph := makeGraph()
+	consumer := pkg(graph, "app-misc/consumer", "1", "0", "0", false, nil)
+	consumer.Rdepend = "app-misc/implementation"
+	older := pkg(graph, "app-misc/implementation", "1", "0", "0", false, nil)
+	older.Rdepend = "=dev-libs/shared-2"
+	newer := pkg(graph, "app-misc/implementation", "2", "0", "0", false, nil)
+	newer.Rdepend = "=dev-libs/shared-1"
+	pkg(graph, "dev-libs/shared", "1", "0", "0", false, nil)
+	pkg(graph, "dev-libs/shared", "2", "0", "0", false, nil)
+
+	result, err := Resolve(graph, []string{"app-misc/consumer", "=dev-libs/shared-2"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified || len(result.Conflicts) != 0 {
+		t.Fatalf("version rewind did not verify: conflicts=%v actions=%v", result.Conflicts, result.Install)
+	}
+	for _, action := range result.Install {
+		if action.Atom.CP() == "app-misc/implementation" && action.Atom.Version.Raw != "1" {
+			t.Fatalf("earlier version was not rewound: %v", result.Install)
+		}
+	}
+	found := false
+	for _, decision := range result.DecisionHistory {
+		found = found || decision.Kind == "conflict-rewind" && decision.From == "app-misc/implementation-2" && decision.To == "app-misc/implementation-1"
+	}
+	if !found {
+		t.Fatalf("version rewind missing from history: %#v", result.DecisionHistory)
+	}
+}
+
+func TestResolveSpeculatesReplayAlternativesAndCommitsPreferenceOrder(t *testing.T) {
+	graph := makeGraph()
+	consumer := pkg(graph, "app-misc/consumer", "1", "0", "0", false, nil)
+	consumer.Rdepend = "|| ( app-misc/first app-misc/second app-misc/third )"
+	for _, cp := range []string{"app-misc/first", "app-misc/second"} {
+		candidate := pkg(graph, cp, "1", "0", "0", false, nil)
+		candidate.Rdepend = "=dev-libs/shared-1"
+	}
+	third := pkg(graph, "app-misc/third", "1", "0", "0", false, nil)
+	third.Rdepend = "=dev-libs/shared-2"
+	pkg(graph, "dev-libs/shared", "1", "0", "0", false, nil)
+	pkg(graph, "dev-libs/shared", "2", "0", "0", false, nil)
+	config := DefaultResolveConfig()
+	config.Jobs = 3
+
+	result, err := Resolve(graph, []string{"app-misc/consumer", "=dev-libs/shared-2"}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified {
+		t.Fatalf("speculative replay did not verify: %v", result.Conflicts)
+	}
+	present := make(map[string]bool)
+	for _, action := range result.Install {
+		present[action.Atom.CP()] = true
+	}
+	if present["app-misc/first"] || present["app-misc/second"] || !present["app-misc/third"] {
+		t.Fatalf("wrong speculative winner: %v", result.Install)
+	}
+	found := false
+	for _, decision := range result.DecisionHistory {
+		found = found || decision.Kind == "conflict-rewind" && strings.Contains(decision.From, "first") && strings.Contains(decision.To, "third")
+	}
+	if !found {
+		t.Fatalf("speculative rewind missing from history: %#v", result.DecisionHistory)
+	}
+	if len(result.BranchEvaluations) != 2 || !strings.Contains(result.BranchEvaluations[0].Option, "second") ||
+		result.BranchEvaluations[0].Outcome == "verified" || !strings.Contains(result.BranchEvaluations[1].Option, "third") ||
+		result.BranchEvaluations[1].Outcome != "verified" {
+		t.Fatalf("branch evaluations = %#v", result.BranchEvaluations)
+	}
+}
+
+func TestResolveRejectsRequiredUseCardinalityOperatorsInDependencies(t *testing.T) {
+	for _, expression := range []string{
+		"^^ ( app-editors/vim app-editors/nano )",
+		"?? ( app-editors/vim app-editors/nano )",
+		"|| ( )",
+	} {
+		t.Run(expression, func(t *testing.T) {
+			graph := makeGraph()
+			consumer := pkg(graph, "app-misc/consumer", "1", "0", "0", false, nil)
+			consumer.Rdepend = expression
+			pkg(graph, "app-editors/vim", "1", "0", "0", false, nil)
+			pkg(graph, "app-editors/nano", "1", "0", "0", false, nil)
+			result, err := Resolve(graph, []string{"app-misc/consumer"}, DefaultResolveConfig())
+			if err == nil {
+				t.Fatalf("invalid package dependency resolved: %#v", result)
+			}
+			if !strings.Contains(err.Error(), "package dependency") && !strings.Contains(err.Error(), "dependency class") {
+				t.Fatalf("invalid dependency error = %v", err)
+			}
+		})
 	}
 }
 
@@ -6049,6 +6885,37 @@ func TestResolve_WithBdepsAuto_AlreadyInstalled(t *testing.T) {
 		if a.Atom.CP() == "dev-build/make" {
 			t.Error("make should NOT be installed (auto: already installed)")
 		}
+	}
+}
+
+func TestResolve_WithBdepsAutoUpdatesRetainedBuildDependencyForSourcePlan(t *testing.T) {
+	makeGraph := func() *DepGraph {
+		g := makeGraph()
+		parent := pkg(g, "app-shells/bash", "5.0", "0", "0", true, nil)
+		parent.Available = true
+		parent.Bdepend = ">=dev-build/make-4"
+		pkg(g, "dev-build/make", "4.4", "0", "0", true, nil)
+		pkg(g, "dev-build/make", "4.5", "0", "0", false, nil)
+		return g
+	}
+	cfg := DefaultResolveConfig()
+	cfg.Update, cfg.Deep = true, true
+
+	result, err := Resolve(makeGraph(), []string{"app-shells/bash"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !actionForCP(result.Install, "dev-build/make") {
+		t.Fatalf("source auto mode omitted retained BDEPEND update: %v", result.Install)
+	}
+
+	cfg.UsePkg = true
+	result, err = Resolve(makeGraph(), []string{"app-shells/bash"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actionForCP(result.Install, "dev-build/make") {
+		t.Fatalf("binary auto mode unexpectedly pulled retained BDEPEND: %v", result.Install)
 	}
 }
 

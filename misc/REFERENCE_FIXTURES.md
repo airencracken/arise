@@ -108,3 +108,18 @@ review and sanitize hostnames, repository paths, private overlay names, mirrors,
 proxy settings and local package policy. Immutable repository/profile/VDB
 fingerprints should be added during fixture promotion so outputs cannot be
 compared across different package-state snapshots accidentally.
+
+The resolver-state half of a promoted fixture is produced separately from the
+reference-tool transcript:
+
+```sh
+arise state fixture > resolver-state.json
+```
+
+This schema includes the dependency expressions, installed USE/IUSE, EAPI,
+slot/subslot, repository priority and visibility fields needed for an offline
+resolver replay. It replaces repository filesystem paths with stable relative
+identities and embeds a SHA-256 integrity fingerprint. Loading rejects unknown
+fields, incompatible schemas and any content whose fingerprint no longer
+matches. Repository names and package policy remain semantically significant;
+review private overlay names and local policy before promotion.

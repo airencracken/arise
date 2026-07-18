@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/airencracken/arise/internal/fetch"
 	"golang.org/x/term"
 )
 
@@ -50,4 +52,69 @@ func (p *terminalProgress) stop() {
 	close(p.done)
 	p.wait.Wait()
 	fmt.Print("\r\033[K")
+}
+
+type fetchProgress struct {
+	mu       sync.Mutex
+	writer   io.Writer
+	terminal bool
+	started  map[string]time.Time
+	last     map[string]time.Time
+	active   bool
+}
+
+func newFetchProgress(enabled bool, writer io.Writer) *fetchProgress {
+	progress := &fetchProgress{writer: writer, started: make(map[string]time.Time), last: make(map[string]time.Time)}
+	if file, ok := writer.(*os.File); ok {
+		progress.terminal = enabled && term.IsTerminal(int(file.Fd()))
+	}
+	if !enabled {
+		progress.writer = io.Discard
+	}
+	return progress
+}
+
+func (p *fetchProgress) Report(event fetch.Progress) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	switch event.Stage {
+	case fetch.ProgressChecking:
+		fmt.Fprintf(p.writer, ">>> Checking %s\n", event.Artifact)
+	case fetch.ProgressCached:
+		fmt.Fprintf(p.writer, ">>> Using verified distfile %s\n", event.Artifact)
+	case fetch.ProgressDownload:
+		if p.started[event.Artifact].IsZero() {
+			p.started[event.Artifact] = now
+			fmt.Fprintf(p.writer, ">>> Downloading %s\n", event.Source)
+		}
+		if !p.terminal || (event.Downloaded < event.Total && now.Sub(p.last[event.Artifact]) < 100*time.Millisecond) {
+			return
+		}
+		p.last[event.Artifact] = now
+		elapsed := now.Sub(p.started[event.Artifact]).Seconds()
+		rate := int64(0)
+		if elapsed > 0 {
+			rate = int64(float64(event.Downloaded) / elapsed)
+		}
+		percent := float64(0)
+		if event.Total > 0 {
+			percent = 100 * float64(event.Downloaded) / float64(event.Total)
+		}
+		fmt.Fprintf(p.writer, "\r    %6.2f%%  %s / %s  %s/s", percent, formatSize(event.Downloaded), formatSize(event.Total), formatSize(rate))
+		p.active = true
+	case fetch.ProgressVerifying:
+		p.finishLine()
+		fmt.Fprintf(p.writer, ">>> Verifying %s against Manifest\n", event.Artifact)
+	case fetch.ProgressComplete:
+		p.finishLine()
+		fmt.Fprintf(p.writer, ">>> Fetched and verified %s\n", event.Artifact)
+	}
+}
+
+func (p *fetchProgress) finishLine() {
+	if p.active {
+		fmt.Fprintln(p.writer)
+		p.active = false
+	}
 }

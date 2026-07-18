@@ -118,6 +118,17 @@ func TestParseCacheEntry_Basic(t *testing.T) {
 	}
 }
 
+func TestParseCacheEntryDerivesInheritedFromEclassCachePairs(t *testing.T) {
+	data := []byte("EAPI=8\n_eclasses_=toolchain\tabc123\tflag-o-matic\tdef456\tmultilib\t789abc\n")
+	m, err := ParseCacheEntry("sys-devel/gcc-15.3.0", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.INHERITED != "toolchain flag-o-matic multilib" {
+		t.Fatalf("INHERITED = %q", m.INHERITED)
+	}
+}
+
 func TestFingerprintDeterministicMapOrder(t *testing.T) {
 	a := &PackageMetadata{Category: "app-editors", Package: "vim", Unknown: map[string]string{"B": "2", "A": "1"}}
 	b := &PackageMetadata{Category: "app-editors", Package: "vim", Unknown: map[string]string{"A": "1", "B": "2"}}

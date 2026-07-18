@@ -1,5 +1,7 @@
 # Architecture Review
 
+> Historical development audit; retain for context until superseded or pruned.
+
 ## Strengths
 
 ### 1. Clean Package Separation (26 internal packages)

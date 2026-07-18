@@ -1,5 +1,6 @@
 {
   "schema": 1,
+  "document_class": "development-evidence",
   "captured_utc_date": "2026-07-17",
   "portage_version": "3.0.77",
   "gentoo_repository_commit": "6cab62289e9a2cb34ec66247cb739fe570b75e40",

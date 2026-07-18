@@ -1,5 +1,7 @@
 # Plan-completeness validation record
 
+> Development evidence record; retain until its cases are portable automated fixtures.
+
 This document records a promising result that is **not yet a verified product
 claim**. It exists to keep the observation, caveats, and required validation
 work together as the repository and laptop state change.

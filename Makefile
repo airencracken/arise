@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-unit test-adversarial test-mutation test-race test-bench test-integration test-coverage test-coverage-network test-coverage-benchmark vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
+.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -26,11 +26,18 @@ static:
 # Tests
 #
 
-test:
-	$(GO) test $$($(GO) list ./internal/... | grep -v /integration$$) -count=1 -timeout 120s
+test: test-worker
+	$(GO) test ./... -count=1 -timeout 120s
 
-test-v:
-	$(GO) test $$($(GO) list ./internal/... | grep -v /integration$$) -v -count=1 -timeout 120s
+test-v: test-worker
+	$(GO) test ./... -v -count=1 -timeout 120s
+
+test-worker:
+	bash -n internal/phaseproto/worker.sh
+
+# Optional richer analysis; unlike test-worker, this requires shellcheck.
+test-shellcheck:
+	shellcheck -s bash internal/phaseproto/worker.sh
 
 test-unit:
 	$(GO) test $$($(GO) list ./internal/... | grep -v /integration$$) -run 'Test[^P]|TestP[a-ln-z]' -count=1 -timeout 60s
@@ -47,10 +54,13 @@ test-race:
 test-integration:
 	@if [ -d /var/db/repos/gentoo/metadata/md5-cache ]; then \
 		echo "Running integration tests against live Gentoo tree..."; \
-		$(GO) test ./internal/integration/ -run 'TestAllComparisons' -count=1 -v -timeout 300s; \
+		$(GO) test -tags=live_portage ./internal/integration/ -count=1 -v -timeout 10m; \
 	else \
 		echo "No Gentoo tree found. Skipping."; \
 	fi
+
+test-live-portage-compile:
+	$(GO) test -tags=live_portage ./internal/integration ./internal/benchmark -run '^$$' -count=1
 
 test-coverage:
 	$(GO) test $(COVERAGE_CORE_PKGS) -coverpkg=./... -coverprofile=/tmp/arise-coverage.out -covermode=atomic -count=1 -timeout 60s
@@ -83,7 +93,7 @@ bench-quick:
 	$(GO) test ./internal/benchmark/ -bench=. -benchtime=100ms -count=1
 
 bench-compare:
-	$(GO) test ./internal/benchmark/ -run 'TestCompare' -v -count=1
+	$(GO) test -tags=live_portage ./internal/benchmark/ -run 'TestCompare' -v -count=1 -timeout 10m
 
 bench-json:
 	./$(BINARY) bench --json 2>/dev/null || $(GO) test ./internal/benchmark/ -bench=. -benchtime=1s

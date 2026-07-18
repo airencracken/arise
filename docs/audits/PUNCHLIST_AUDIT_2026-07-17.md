@@ -1,5 +1,7 @@
 # Punch-list audit — 2026-07-17
 
+> Historical development audit; retain for context until superseded or pruned.
+
 ## Findings
 
 1. P1 is complete at its stated model boundary. Portable corpus packaging is

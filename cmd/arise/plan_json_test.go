@@ -28,10 +28,11 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 			Slot: "0", Subslot: "2", Repository: "gentoo",
 			UseFlags: map[string]bool{"zeta": true, "alpha": true, "debug": false},
 		}},
-		BacktrackLevel: 1,
-		Warnings:       []string{"example warning"},
-		Verified:       true,
-		Verification:   resolve.VerificationVerified,
+		BacktrackLevel:  1,
+		DecisionHistory: []resolve.BacktrackDecision{{Kind: "version", Key: "dev-libs/example:0", From: "1", To: "2"}},
+		Warnings:        []string{"example warning"},
+		Verified:        true,
+		Verification:    resolve.VerificationVerified,
 	}
 	cfg := resolve.DefaultResolveConfig()
 	cfg.Update = true
@@ -56,6 +57,9 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 	}
 	if len(document.Actions) != 1 || document.Actions[0].Domain != string(resolve.DomainROOT) || !reflect.DeepEqual(document.Actions[0].UseEnabled, []string{"alpha", "zeta"}) || !reflect.DeepEqual(document.Actions[0].UseDisabled, []string{"debug"}) {
 		t.Fatalf("action = %#v", document.Actions)
+	}
+	if !reflect.DeepEqual(document.Resolution.Decisions, result.DecisionHistory) {
+		t.Fatalf("decisions = %#v", document.Resolution.Decisions)
 	}
 }
 

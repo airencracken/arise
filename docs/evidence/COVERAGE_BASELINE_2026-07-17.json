@@ -1,5 +1,6 @@
 {
   "schema": 1,
+  "document_class": "development-evidence",
   "date": "2026-07-17",
   "go_version": "1.26.3",
   "lanes": {

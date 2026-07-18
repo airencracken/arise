@@ -17,6 +17,8 @@ type PackageMetadata struct {
 	RepositoryPath     string
 	RepositoryMasters  []string
 	RepositoryPriority int
+	EAPIBanned         bool
+	EAPIDeprecated     bool
 	OverlayIndex       int
 	Category           string
 	Package            string
@@ -231,6 +233,19 @@ func (m *PackageMetadata) setField(key, value string) {
 		m.HOMEPAGE = value
 	case "INHERITED":
 		m.INHERITED = value
+	case "_eclasses_":
+		// PMS metadata caches encode the complete transitive eclass closure as
+		// alternating name/hash fields. Modern Gentoo caches generally omit the
+		// legacy INHERITED key, so derive it without retaining hash tokens.
+		fields := strings.Fields(value)
+		if len(fields) == 0 {
+			break
+		}
+		inherited := make([]string, 0, (len(fields)+1)/2)
+		for i := 0; i < len(fields); i += 2 {
+			inherited = append(inherited, fields[i])
+		}
+		m.INHERITED = strings.Join(inherited, " ")
 	case "_md5_":
 		m._md5_ = value
 	case "_mtime_":

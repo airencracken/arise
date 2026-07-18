@@ -24,19 +24,21 @@ type jsonPlan struct {
 }
 
 type jsonResolution struct {
-	Verified        bool   `json:"verified"`
-	Verification    string `json:"verification"`
-	DurationNS      int64  `json:"duration_ns"`
-	BacktrackUsed   int    `json:"backtrack_used"`
-	BacktrackLimit  int    `json:"backtrack_limit"`
-	IndexNS         int64  `json:"index_ns"`
-	StateNS         int64  `json:"state_ns"`
-	GraphNS         int64  `json:"graph_ns"`
-	SolverNS        int64  `json:"solver_ns"`
-	SearchNS        int64  `json:"search_ns"`
-	CompleteGraphNS int64  `json:"complete_graph_ns"`
-	VerificationNS  int64  `json:"verification_ns"`
-	SortNS          int64  `json:"sort_ns"`
+	Verified        bool                        `json:"verified"`
+	Verification    string                      `json:"verification"`
+	DurationNS      int64                       `json:"duration_ns"`
+	BacktrackUsed   int                         `json:"backtrack_used"`
+	BacktrackLimit  int                         `json:"backtrack_limit"`
+	Decisions       []resolve.BacktrackDecision `json:"decisions"`
+	Branches        []resolve.BranchEvaluation  `json:"branches"`
+	IndexNS         int64                       `json:"index_ns"`
+	StateNS         int64                       `json:"state_ns"`
+	GraphNS         int64                       `json:"graph_ns"`
+	SolverNS        int64                       `json:"solver_ns"`
+	SearchNS        int64                       `json:"search_ns"`
+	CompleteGraphNS int64                       `json:"complete_graph_ns"`
+	VerificationNS  int64                       `json:"verification_ns"`
+	SortNS          int64                       `json:"sort_ns"`
 }
 
 type jsonAction struct {
@@ -71,7 +73,9 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 		Resolution: jsonResolution{
 			Verified: result.Verified, Verification: result.Verification,
 			DurationNS: timings.Total.Nanoseconds(), BacktrackUsed: result.BacktrackLevel, BacktrackLimit: cfg.Backtrack,
-			IndexNS: timings.Index.Nanoseconds(), StateNS: timings.State.Nanoseconds(), GraphNS: timings.Graph.Nanoseconds(), SolverNS: timings.Solver.Nanoseconds(),
+			Decisions: append([]resolve.BacktrackDecision(nil), result.DecisionHistory...),
+			Branches:  append([]resolve.BranchEvaluation(nil), result.BranchEvaluations...),
+			IndexNS:   timings.Index.Nanoseconds(), StateNS: timings.State.Nanoseconds(), GraphNS: timings.Graph.Nanoseconds(), SolverNS: timings.Solver.Nanoseconds(),
 			SearchNS: result.Metrics.Search.Nanoseconds(), CompleteGraphNS: result.Metrics.CompleteGraph.Nanoseconds(),
 			VerificationNS: result.Metrics.Verification.Nanoseconds(), SortNS: result.Metrics.Sort.Nanoseconds(),
 		},
@@ -81,6 +85,12 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 	}
 	if document.Actions == nil {
 		document.Actions = []jsonAction{}
+	}
+	if document.Resolution.Decisions == nil {
+		document.Resolution.Decisions = []resolve.BacktrackDecision{}
+	}
+	if document.Resolution.Branches == nil {
+		document.Resolution.Branches = []resolve.BranchEvaluation{}
 	}
 	if document.Conflicts == nil {
 		document.Conflicts = []string{}

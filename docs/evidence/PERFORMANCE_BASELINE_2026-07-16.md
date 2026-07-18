@@ -1,5 +1,7 @@
 # Arise performance baseline — 2026-07-16
 
+> Historical development baseline; current claims live in the README and benchmark matrix.
+
 This is the first correctness-gated end-to-end baseline produced by
 `arise-perf`. It is a development baseline, not a release performance claim.
 

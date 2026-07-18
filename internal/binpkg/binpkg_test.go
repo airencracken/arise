@@ -4,14 +4,32 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func testHTTPClient(handler func(*http.Request) (int, []byte)) *http.Client {
+	return &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		status, body := handler(request)
+		return &http.Response{
+			StatusCode: status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+			Request:    request,
+		}, nil
+	})}
+}
 
 func createMockVDB(t *testing.T, baseDir string) (vdbPath string, rootDir string) {
 	t.Helper()
@@ -1244,21 +1262,17 @@ func TestFindPackageMatchingUse(t *testing.T) {
 
 func TestDownloadFromBinhost_HTTP(t *testing.T) {
 	pkgContent := []byte("fake binary package")
-
-	// We test the URL construction logic indirectly through httptest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/sys-devel/testpkg-1.0.tbz2" {
-			w.Write(pkgContent)
-		} else {
-			w.WriteHeader(http.StatusNotFound)
+	client := testHTTPClient(func(request *http.Request) (int, []byte) {
+		if request.URL.Path == "/sys-devel/testpkg-1.0.tbz2" {
+			return http.StatusOK, pkgContent
 		}
-	}))
-	defer srv.Close()
+		return http.StatusNotFound, nil
+	})
 
 	destDir := filepath.Join(t.TempDir(), "dest")
-	url := srv.URL + "/"
+	url := "https://binhost.invalid/"
 
-	downloaded, err := DownloadFromBinhost(context.Background(), url, []string{"=sys-devel/testpkg-1.0"}, destDir)
+	downloaded, err := downloadFromBinhost(context.Background(), client, url, []string{"=sys-devel/testpkg-1.0"}, destDir)
 	if err != nil {
 		t.Fatalf("DownloadFromBinhost error: %v", err)
 	}
@@ -1281,31 +1295,24 @@ func TestDownloadFromBinhost_HTTP(t *testing.T) {
 }
 
 func TestDownloadFromBinhost_404(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
+	client := testHTTPClient(func(*http.Request) (int, []byte) { return http.StatusNotFound, nil })
 
 	destDir := filepath.Join(t.TempDir(), "dest")
-	url := srv.URL + "/"
+	url := "https://binhost.invalid/"
 
-	_, err := DownloadFromBinhost(context.Background(), url, []string{"=sys-devel/testpkg-1.0"}, destDir)
+	_, err := downloadFromBinhost(context.Background(), client, url, []string{"=sys-devel/testpkg-1.0"}, destDir)
 	if err == nil {
 		t.Error("expected error for 404")
 	}
 }
 
 func TestDownloadFromBinhost_NoVersion(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write([]byte("fake"))
-	}))
-	defer srv.Close()
+	client := testHTTPClient(func(*http.Request) (int, []byte) { return http.StatusOK, []byte("fake") })
 
 	destDir := filepath.Join(t.TempDir(), "dest")
-	url := srv.URL + "/"
+	url := "https://binhost.invalid/"
 
-	downloaded, err := DownloadFromBinhost(context.Background(), url, []string{"sys-devel/testpkg"}, destDir)
+	downloaded, err := downloadFromBinhost(context.Background(), client, url, []string{"sys-devel/testpkg"}, destDir)
 	if err != nil {
 		t.Fatalf("DownloadFromBinhost error: %v", err)
 	}

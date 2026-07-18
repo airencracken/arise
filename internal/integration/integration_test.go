@@ -1,3 +1,5 @@
+//go:build live_portage
+
 package integration
 
 import "testing"

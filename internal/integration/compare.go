@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,14 +11,59 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/depstring"
 	"github.com/airencracken/arise/internal/ebuild"
+	"github.com/airencracken/arise/internal/eclass"
 	"github.com/airencracken/arise/internal/metadata"
 	ariseportage "github.com/airencracken/arise/internal/portage"
 )
+
+func liveCommand(t *testing.T, name string, args ...string) *exec.Cmd {
+	t.Helper()
+	deadline := 30 * time.Second
+	switch name {
+	case "portageq":
+		deadline = 10 * time.Second
+	case "equery":
+		deadline = 45 * time.Second
+	case "emerge":
+		deadline = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, name, args...)
+	if name == "emerge" {
+		cmd.Env = withoutNews(os.Environ())
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	return cmd
+}
+
+func withoutNews(environment []string) []string {
+	result := append([]string(nil), environment...)
+	for i, entry := range result {
+		if strings.HasPrefix(entry, "FEATURES=") {
+			result[i] = entry + " -news"
+			return result
+		}
+	}
+	return append(result, "FEATURES=-news")
+}
 
 // atomTestCases are pairs of version strings used to compare arise's version
 // comparison against portage's vercmp.
@@ -59,8 +105,12 @@ var portageMetadataFields = []string{
 }
 
 func runPortageq(t *testing.T, args ...string) string {
+	return strings.TrimSpace(runPortageqRaw(t, args...))
+}
+
+func runPortageqRaw(t *testing.T, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("portageq", args...)
+	cmd := liveCommand(t, "portageq", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -68,12 +118,12 @@ func runPortageq(t *testing.T, args ...string) string {
 	if err != nil {
 		t.Fatalf("portageq %s: %v (stderr: %s)", strings.Join(args, " "), err, stderr.String())
 	}
-	return strings.TrimSpace(stdout.String())
+	return stdout.String()
 }
 
 func runPython(t *testing.T, script string) string {
 	t.Helper()
-	cmd := exec.Command("python", "-c", script)
+	cmd := liveCommand(t, "python", "-c", script)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -86,7 +136,7 @@ func runPython(t *testing.T, script string) string {
 
 func runEmergeInfo(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("emerge", "--info")
+	cmd := liveCommand(t, "emerge", "--info")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -99,14 +149,14 @@ func runEmergeInfo(t *testing.T) string {
 
 func runPortageqAtomMatch(t *testing.T, atomStr string) bool {
 	t.Helper()
-	cmd := exec.Command("portageq", "match", "/", atomStr)
+	cmd := liveCommand(t, "portageq", "match", "/", atomStr)
 	err := cmd.Run()
 	return err == nil
 }
 
 func runPortageqBestVersion(t *testing.T, atomStr string) string {
 	t.Helper()
-	cmd := exec.Command("portageq", "best_visible", "/", atomStr)
+	cmd := liveCommand(t, "portageq", "best_visible", "/", atomStr)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -115,6 +165,21 @@ func runPortageqBestVersion(t *testing.T, atomStr string) string {
 		return ""
 	}
 	return strings.TrimSpace(stdout.String())
+}
+
+func runPortageqMetadata(t *testing.T, cpv string) string {
+	t.Helper()
+	args := []string{"metadata", "/", "ebuild", cpv}
+	args = append(args, portageMetadataFields...)
+	values := strings.Split(strings.TrimSuffix(runPortageqRaw(t, args...), "\n"), "\n")
+	var result strings.Builder
+	for i, key := range portageMetadataFields {
+		if i >= len(values) {
+			break
+		}
+		fmt.Fprintf(&result, "%s=%s\n", key, values[i])
+	}
+	return result.String()
 }
 
 func parseUseFromEmergeInfo(t *testing.T, info string) map[string]bool {
@@ -220,7 +285,7 @@ func CompareMetadata(t *testing.T) {
 			catPkg := cp[:strings.IndexByte(cp, '/')+1] + strings.TrimPrefix(best, "=:")
 			_ = catPkg
 
-			portageOutput := runPortageq(t, "metadata", "/", best)
+			portageOutput := runPortageqMetadata(t, best)
 
 			md5cachePath := filepath.Join("/var/db/repos/gentoo/metadata/md5-cache", best)
 			data, err := os.ReadFile(md5cachePath)
@@ -372,9 +437,14 @@ func CompareEbuildParsing(t *testing.T) {
 		return
 	}
 
-	ebuildPath := runPortageq(t, "ebuild_path", "/", best)
-	if ebuildPath == "" {
-		t.Skipf("could not find ebuild path for %s", best)
+	category, pkg, version, err := metadata.ParseCPV(best)
+	if err != nil {
+		t.Fatalf("parse selected CPV %s: %v", best, err)
+	}
+	repositoryPath := runPortageq(t, "get_repo_path", "/", "gentoo")
+	ebuildPath := filepath.Join(repositoryPath, category, pkg, pkg+"-"+version+".ebuild")
+	if _, err := os.Stat(ebuildPath); err != nil {
+		t.Skipf("could not find ebuild path for %s: %v", best, err)
 		return
 	}
 
@@ -383,7 +453,7 @@ func CompareEbuildParsing(t *testing.T) {
 		t.Fatalf("arise ebuild.ParseEbuild(%s): %v", ebuildPath, err)
 	}
 
-	portageOutput := runPortageq(t, "metadata", "/", best)
+	portageOutput := runPortageqMetadata(t, best)
 	portageParsed := parsePortageMetadata(portageOutput)
 
 	if e.EAPI != portageParsed["EAPI"] {
@@ -391,7 +461,11 @@ func CompareEbuildParsing(t *testing.T) {
 	}
 
 	portageInherited := splitSortDedup(portageParsed["INHERITED"])
-	gmInherited := sortedDedup(e.Inherit)
+	resolvedInherit, err := eclass.ResolveInheritWithVariables(e.Inherit, repositoryPath, e.Variables)
+	if err != nil {
+		t.Fatalf("resolve inherited eclasses for %s: %v", best, err)
+	}
+	gmInherited := sortedDedup(resolvedInherit)
 
 	// portage metadata Inherited is space-separated, arise collects inherit lines
 	if len(portageInherited) > 0 || len(gmInherited) > 0 {
@@ -635,7 +709,7 @@ func CompareUseFlags(t *testing.T) {
 		satEnabled, _ := depstring.Satisfy(tree, installed, map[string]bool{"foo": true})
 		satDisabled, _ := depstring.Satisfy(tree, installed, map[string]bool{"foo": false})
 
-		if satEnabled {
+		if !satEnabled {
 			t.Error("negated USE conditional with foo enabled should skip the condition")
 		}
 		if !satDisabled {
@@ -756,7 +830,7 @@ for cp in sorted(db.cp_all()):
         if not reason:
             continue
         slot, repo = db.aux_get(cpv, ['SLOT', 'repository'])
-        records.append({'cpv': cpv, 'slot': slot.split('/', 1)[0], 'repo': repo, 'reason': reason})
+        records.append({'cpv': cpv, 'slot': slot, 'repo': repo, 'reason': reason})
         if len(records) == 25:
             break
     if len(records) == 25:

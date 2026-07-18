@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -481,12 +482,54 @@ func portageAvailable() bool {
 	return true
 }
 
+func liveCommand(t *testing.T, name string, args ...string) *exec.Cmd {
+	t.Helper()
+	deadline := 30 * time.Second
+	switch name {
+	case "portageq":
+		deadline = 10 * time.Second
+	case "equery":
+		deadline = 45 * time.Second
+	case "emerge":
+		deadline = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, name, args...)
+	if name == "emerge" {
+		cmd.Env = withoutNews(os.Environ())
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 2 * time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+	return cmd
+}
+
+func withoutNews(environment []string) []string {
+	result := append([]string(nil), environment...)
+	for i, entry := range result {
+		if strings.HasPrefix(entry, "FEATURES=") {
+			result[i] = entry + " -news"
+			return result
+		}
+	}
+	return append(result, "FEATURES=-news")
+}
+
 func mustParseVersion(ver string) *atom.Version {
 	v, _ := atom.ParseVersion(ver)
 	return v
 }
 
-func TestCompareAtomSpeed(t *testing.T) {
+func liveCompareAtomSpeed(t *testing.T) {
 	if !portageAvailable() {
 		t.Skip("portage not available")
 	}
@@ -506,7 +549,7 @@ func TestCompareAtomSpeed(t *testing.T) {
 			return nil
 		},
 		func() (string, error) {
-			out, err := exec.Command("portageq", "atom_compare", ">=sys-devel/gcc-12.2.0", "sys-devel/gcc-13.1.0").Output()
+			out, err := liveCommand(t, "portageq", "atom_compare", ">=sys-devel/gcc-12.2.0", "sys-devel/gcc-13.1.0").Output()
 			if err != nil {
 				return "", err
 			}
@@ -517,7 +560,7 @@ func TestCompareAtomSpeed(t *testing.T) {
 	t.Log(FormatComparison(Comparison))
 }
 
-func TestCompareSearchSpeed(t *testing.T) {
+func liveCompareSearchSpeed(t *testing.T) {
 	if !portageAvailable() {
 		t.Skip("portage not available")
 	}
@@ -527,7 +570,7 @@ func TestCompareSearchSpeed(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	Comparison := RunComparison(t, "search-pkg",
+	Comparison := RunComparisonN(t, "search-pkg", 3,
 		func() error {
 			r, err := search.Search(db, search.SearchConfig{Query: "pkg-500", Exact: true})
 			if err != nil {
@@ -539,7 +582,7 @@ func TestCompareSearchSpeed(t *testing.T) {
 			return nil
 		},
 		func() (string, error) {
-			out, err := exec.Command("emerge", "--search", "pkg-500").Output()
+			out, err := liveCommand(t, "emerge", "--search", "pkg-500").Output()
 			if err != nil {
 				return "", err
 			}
@@ -549,7 +592,7 @@ func TestCompareSearchSpeed(t *testing.T) {
 	t.Log(FormatComparison(Comparison))
 }
 
-func TestCompareResolveSpeed(t *testing.T) {
+func liveCompareResolveSpeed(t *testing.T) {
 	if !portageAvailable() {
 		t.Skip("portage not available")
 	}
@@ -566,40 +609,36 @@ func TestCompareResolveSpeed(t *testing.T) {
 	cfg.Quiet = true
 	cfg.Pretend = true
 
-	Comparison := RunComparison(t, "resolve",
+	Comparison := RunComparisonN(t, "resolve", 1,
 		func() error {
 			_, err := resolve.Resolve(rg, []string{"app-admin/pkg-0"}, cfg)
 			return err
 		},
 		func() (string, error) {
-			out, err := exec.Command("emerge", "--pretend", "app-admin/pkg-0").Output()
+			out, err := liveCommand(t, "emerge", "--pretend", "app-admin/pkg-0").Output()
 			return string(out), err
 		},
 	)
 	t.Log(FormatComparison(Comparison))
 }
 
-func TestCompareEqueryBelongs(t *testing.T) {
+func liveCompareEqueryBelongs(t *testing.T) {
 	if !portageAvailable() {
 		t.Skip("portage not available")
 	}
-	vdbPath, refFiles, err := CreateTempVDB()
-	if err != nil {
-		t.Fatalf("create temp vdb: %v", err)
+	vdbPath := "/var/db/pkg"
+	filePath := "/usr/libexec/glib-pacrunner"
+	if _, err := os.Stat(filePath); err != nil {
+		t.Skipf("reference installed file unavailable: %v", err)
 	}
-	defer os.RemoveAll(vdbPath)
-	if len(refFiles) == 0 {
-		t.Skip("no reference files")
-	}
-	filePath := refFiles[0]
 
-	Comparison := RunComparison(t, "equery-belongs",
+	Comparison := RunComparisonN(t, "equery-belongs", 1,
 		func() error {
 			_, err := equery.Belongs(vdbPath, filePath)
 			return err
 		},
 		func() (string, error) {
-			out, err := exec.Command("equery", "belongs", filePath).Output()
+			out, err := liveCommand(t, "equery", "belongs", filePath).Output()
 			if err != nil {
 				return "", err
 			}
@@ -717,24 +756,39 @@ func TestRunComparison_NoEmerge(t *testing.T) {
 	}
 }
 
-func TestCompareEqueryFiles(t *testing.T) {
+func TestRunComparisonDerivesSpeedupFromDurations(t *testing.T) {
+	c := runComparisonN("slow-reference", 1,
+		func() error { return nil },
+		func() (string, error) {
+			time.Sleep(2 * time.Millisecond)
+			return "", nil
+		},
+	)
+	if c.Speedup <= 1 {
+		t.Fatalf("Speedup = %f, want duration-derived speedup above one", c.Speedup)
+	}
+	if !strings.Contains(FormatComparison(c), "x") {
+		t.Fatalf("formatted comparison omitted duration-derived speedup: %q", FormatComparison(c))
+	}
+}
+
+func liveCompareEqueryFiles(t *testing.T) {
 	if !portageAvailable() {
 		t.Skip("portage not available")
 	}
-	vdbPath, _, err := CreateTempVDB()
-	if err != nil {
-		t.Fatalf("create temp vdb: %v", err)
+	vdbPath := "/var/db/pkg"
+	atomStr := "net-libs/glib-networking-2.80.1"
+	if _, err := os.Stat(filepath.Join(vdbPath, "net-libs", "glib-networking-2.80.1")); err != nil {
+		t.Skipf("reference installed package unavailable: %v", err)
 	}
-	defer os.RemoveAll(vdbPath)
-	atomStr := "app-admin/pkg-0-1.0"
 
-	Comparison := RunComparison(t, "equery-files",
+	Comparison := RunComparisonN(t, "equery-files", 1,
 		func() error {
 			_, err := equery.Files(vdbPath, atomStr)
 			return err
 		},
 		func() (string, error) {
-			out, err := exec.Command("equery", "files", atomStr).Output()
+			out, err := liveCommand(t, "equery", "files", atomStr).Output()
 			if err != nil {
 				return "", err
 			}

@@ -1,5 +1,7 @@
 # arise Codebase Audit - Overview
 
+> Historical development audit; retain for context until superseded or pruned.
+
 **Date**: 2026-06-10  
 **Status**: 3 of 4 critical issues fixed; error messages modernized; all tests passing with race detector  
 **Project**: arise — Gentoo Package Manager  

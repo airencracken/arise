@@ -1,5 +1,7 @@
 # Errcheck Warnings (27 Total)
 
+> Historical development audit; retain for context until superseded or pruned.
+
 ## internal/binpkg/binpkg.go (9 warnings)
 
 | Line | Call | Risk |

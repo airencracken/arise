@@ -973,6 +973,24 @@ func TestReadRepositoryMasters(t *testing.T) {
 	}
 }
 
+func TestReadRepositoryEAPIPolicy(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "metadata"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := "eapis-banned = 0 1 2 3 4 5 6 # historical\neapis-deprecated = 7\n"
+	if err := os.WriteFile(filepath.Join(repo, "metadata", "layout.conf"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	banned, deprecated := readRepositoryEAPIPolicy(repo)
+	if !banned["0"] || !banned["6"] || banned["7"] {
+		t.Fatalf("banned policy = %v", banned)
+	}
+	if !deprecated["7"] || deprecated["8"] {
+		t.Fatalf("deprecated policy = %v", deprecated)
+	}
+}
+
 func TestWalkUncachedEbuildRootsMarksStaticMetadataIncomplete(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "profiles"), 0755); err != nil {

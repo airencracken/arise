@@ -16,6 +16,7 @@
         "tool": "emerge",
         "path": "emerge",
         "args": ["--color", "n", "--pretend", "--verbose", "net-im/signal-desktop-bin"],
+        "env": ["FEATURES=-news"],
         "version_args": ["--version"]
       }
     }

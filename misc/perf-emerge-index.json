@@ -18,7 +18,7 @@
         "tool": "emerge --metadata",
         "path": "emerge",
         "args": ["--metadata", "--quiet"],
-        "env": ["PORTAGE_DEPCACHEDIR=/tmp/emerge-index-bench"],
+        "env": ["PORTAGE_DEPCACHEDIR=/tmp/emerge-index-bench", "FEATURES=-news"],
         "version_args": ["--version"],
         "cache_paths": ["/tmp/emerge-index-bench"],
         "reset_paths": ["/tmp/emerge-index-bench"]

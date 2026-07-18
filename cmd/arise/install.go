@@ -29,7 +29,7 @@ func runInstall(args []string, dbPath, repoDir string) {
 		fmt.Fprintf(os.Stderr, "install: missing package atom arguments\n")
 		os.Exit(1)
 	}
-	runResolveAndRebuild(args, dbPath, repoDir, false, false)
+	runResolveAndRebuild(args, dbPath, repoDir, *updateMode, false)
 }
 
 func colorActionAtom(action resolve.PkgAction) string {
@@ -123,10 +123,14 @@ func resolveFlagsToConfig(update, deepParam bool) resolve.ResolveConfig {
 		Oneshot:                     *oneshot,
 		NoDeps:                      *nodeps,
 		OnlyDeps:                    *onlydeps,
+		OnlyDepsWithRdeps:           *onlydepsWithRdeps,
+		OnlyDepsWithIDeps:           *onlydepsWithIDeps,
+		RootDeps:                    *rootDeps,
 		EmptyTree:                   *emptytree,
 		Reinstall:                   *reinstall,
 		ChangedUse:                  *changedUse,
 		ChangedDeps:                 *changedDeps,
+		DynamicDeps:                 *dynamicDeps,
 		KeepGoing:                   *keepGoing,
 		FetchOnly:                   *fetchOnly,
 		BuildPkgOnly:                *buildPkgOnly,
@@ -404,15 +408,14 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	}
 
 	if !cfg.Quiet {
-		fmt.Printf("\nProposed actions (%d install, %d uninstall, %d conflicts, backtrack %d):\n",
-			len(result.Install), len(result.Uninstall), len(result.Conflicts), result.BacktrackLevel)
+		fmt.Printf("\n%s\n", planHeading(result, cfg.FetchOnly))
 
-		if cfg.Tree {
+		if cfg.Tree && !cfg.FetchOnly {
 			fmt.Print(resolve.FormatTree(result.Install, rg))
 		} else {
 			for _, a := range result.Install {
-				actionLabel := actionLabel(a.Action)
-				fmt.Printf("  %s %s\n", colorIcon(a.Action, actionLabel), colorActionAtom(a))
+				label := displayedActionLabel(a.Action, cfg.FetchOnly)
+				fmt.Printf("  %s %s\n", colorIcon(a.Action, label), colorActionAtom(a))
 				if cfg.Verbose {
 					if a.Reason != "" {
 						fmt.Printf("           reason: %s\n", a.Reason)
@@ -427,7 +430,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				fmt.Printf("  [%s] %s\n", color.Red(a.Action), a.Atom)
 			}
 		}
-		printActionTotals(result.Install, *distfilesDir, cfg.Verbose)
+		printActionTotals(result.Install, *distfilesDir, cfg.Verbose, cfg.FetchOnly)
 	}
 
 	if len(result.Conflicts) > 0 {
@@ -442,14 +445,18 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				resolve.AutoUnmask(result.Conflicts, *portageConfigRoot)
 				resolve.AutoAcceptLicense(result.Conflicts, *portageConfigRoot)
 				resolve.AutoUseChanges(result.Conflicts, *portageConfigRoot)
-				fmt.Printf("Auto-unmask entries written to %s/package.unmask/ and %s/package.license/\n", *portageConfigRoot, *portageConfigRoot)
-				fmt.Println("Re-run with the same command to continue.")
+				if !jsonMode {
+					fmt.Printf("Auto-unmask entries written to %s/package.unmask/ and %s/package.license/\n", *portageConfigRoot, *portageConfigRoot)
+					fmt.Println("Re-run with the same command to continue.")
+				}
 			}
-			fmt.Println("\nCannot proceed with unresolved conflicts.")
+			if !jsonMode {
+				fmt.Println("\nCannot proceed with unresolved conflicts.")
+			}
 			os.Exit(1)
 		}
 		// KeepGoing: with partial results, ask user if they want to proceed
-		if cfg.KeepGoing && len(result.Install) > 0 {
+		if !jsonMode && cfg.KeepGoing && len(result.Install) > 0 {
 			if !cfg.Ask {
 				fmt.Println("\nProceeding with partial results (--keep-going).")
 			} else if cfg.Ask {
@@ -481,7 +488,8 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		os.Exit(1)
 	}
 	if cfg.FetchOnly {
-		if err := fetchPlanActions(context.Background(), result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"])}, &fetch.Fetcher{}); err != nil {
+		progress := newFetchProgress(!cfg.Quiet, os.Stdout)
+		if err := fetchPlanActions(context.Background(), result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: progress.Report}, &fetch.Fetcher{}); err != nil {
 			fmt.Fprintf(os.Stderr, "arise: fetch-only failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -496,6 +504,26 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	// that was not executed, including fetch-only requests.
 	fmt.Fprintln(os.Stderr, unsupportedExecutionMessage(cfg))
 	os.Exit(1)
+}
+
+func planHeading(result *resolve.ResolveResult, fetchOnly bool) string {
+	if fetchOnly {
+		word := "packages"
+		if len(result.Install) == 1 {
+			word = "package"
+		}
+		return fmt.Sprintf("Fetch plan (%d %s, %d conflicts, backtrack %d):",
+			len(result.Install), word, len(result.Conflicts), result.BacktrackLevel)
+	}
+	return fmt.Sprintf("Proposed actions (%d install, %d uninstall, %d conflicts, backtrack %d):",
+		len(result.Install), len(result.Uninstall), len(result.Conflicts), result.BacktrackLevel)
+}
+
+func displayedActionLabel(action string, fetchOnly bool) string {
+	if fetchOnly {
+		return "[fetch]"
+	}
+	return actionLabel(action)
 }
 
 func planExecutionVerificationError(result *resolve.ResolveResult) error {
@@ -558,7 +586,7 @@ func sortedUseFlags(flags map[string]bool) ([]string, []string) {
 	return enabled, disabled
 }
 
-func printActionTotals(actions []resolve.PkgAction, distdir string, verbose bool) {
+func printActionTotals(actions []resolve.PkgAction, distdir string, verbose, fetchOnly bool) {
 	counts := make(map[string]int)
 	var downloadBytes int64
 	for _, action := range actions {
@@ -586,7 +614,9 @@ func printActionTotals(actions []resolve.PkgAction, distdir string, verbose bool
 		}
 	}
 	fmt.Printf("Total: %d %s", len(actions), packageWord)
-	if len(details) > 0 {
+	if fetchOnly {
+		fmt.Print(" to fetch")
+	} else if len(details) > 0 {
 		fmt.Printf(" (%s)", strings.Join(details, ", "))
 	}
 	fmt.Printf(", Size of downloads: %s KiB\n", formatInteger((downloadBytes+1023)/1024))
