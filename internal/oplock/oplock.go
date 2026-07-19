@@ -24,7 +24,16 @@ func PortageLockPath(directory string) string {
 
 // TryAcquireVDB acquires Portage's VDB mutation lock without waiting.
 func TryAcquireVDB(vdbDirectory string) (*Lock, error) {
-	path := PortageLockPath(vdbDirectory)
+	return tryAcquire(PortageLockPath(vdbDirectory))
+}
+
+// TryAcquirePath acquires Portage's sibling lock for a mutable state path,
+// such as /var/lib/portage/world.
+func TryAcquirePath(path string) (*Lock, error) {
+	return tryAcquire(PortageLockPath(path))
+}
+
+func tryAcquire(path string) (*Lock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("operation lock: create parent: %w", err)
 	}

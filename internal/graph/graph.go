@@ -522,6 +522,7 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 			vi.Bdepend, vi.Idepend, vi.Pdepend = m.BDEPEND, m.IDEPEND, m.PDEPEND
 			vi.RequiredUse, vi.License = m.REQUIRED_USE, m.LICENSE
 			vi.RepositoryPath, vi.SrcURI, vi.EAPI = m.RepositoryPath, m.SRC_URI, m.EAPI
+			vi.DependencyMetadataKnown = true
 		}
 		for _, installed := range node.InstalledVersions {
 			use := make(map[string]bool)
@@ -542,6 +543,7 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 			}
 			vi.InstalledDepend, vi.InstalledRdepend = installed.Depend, installed.RDepend
 			vi.InstalledBdepend, vi.InstalledIdepend, vi.InstalledPdepend = installed.BDepend, installed.IDepend, installed.PDepend
+			vi.DependencyMetadataKnown = true
 			if vi.Depend == "" && vi.Rdepend == "" && vi.Bdepend == "" && vi.Idepend == "" && vi.Pdepend == "" {
 				vi.Depend, vi.Rdepend = installed.Depend, installed.RDepend
 				vi.Bdepend, vi.Idepend, vi.Pdepend = installed.BDepend, installed.IDepend, installed.PDepend

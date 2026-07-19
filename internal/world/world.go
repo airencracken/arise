@@ -9,11 +9,53 @@ import (
 	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/oplock"
 	"github.com/airencracken/arise/internal/preserved"
 )
 
 type WorldSet struct {
 	Atoms []string
+}
+
+// Update holds Portage's world-file lock across load, mutation and atomic save,
+// preventing concurrent package-manager operations from losing entries.
+func Update(path string, mutate func(*WorldSet) error) (returnErr error) {
+	if mutate == nil {
+		return fmt.Errorf("world: update callback is required")
+	}
+	lock, err := oplock.TryAcquirePath(path)
+	if err != nil {
+		return fmt.Errorf("world: %w", err)
+	}
+	defer func() {
+		if releaseErr := lock.Release(); releaseErr != nil && returnErr == nil {
+			returnErr = fmt.Errorf("world: %w", releaseErr)
+		}
+	}()
+	set, err := LoadWorld(path)
+	if err != nil {
+		return err
+	}
+	before := append([]string(nil), set.Atoms...)
+	if err := mutate(set); err != nil {
+		return err
+	}
+	if equalAtoms(before, set.Atoms) {
+		return nil
+	}
+	return set.Save(path)
+}
+
+func equalAtoms(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func LoadWorld(path string) (*WorldSet, error) {
@@ -110,15 +152,28 @@ func (ws *WorldSet) Save(path string) error {
 		return fmt.Errorf("world: cannot save nil WorldSet")
 	}
 
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("world: could not create file %s: %w", path, err)
+	directory := filepath.Dir(path)
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("world: could not inspect file %s: %w", path, err)
 	}
+	f, err := os.CreateTemp(directory, ".world-arise-*")
+	if err != nil {
+		return fmt.Errorf("world: could not create temporary file beside %s: %w", path, err)
+	}
+	temporary := f.Name()
+	committed := false
 	defer func() {
-		if cerr := f.Close(); cerr != nil {
-			/* Best effort */
+		f.Close()
+		if !committed {
+			os.Remove(temporary)
 		}
 	}()
+	if err := f.Chmod(mode); err != nil {
+		return fmt.Errorf("world: could not set temporary file mode: %w", err)
+	}
 
 	sorted := make([]string, len(ws.Atoms))
 	copy(sorted, ws.Atoms)
@@ -129,8 +184,28 @@ func (ws *WorldSet) Save(path string) error {
 			return fmt.Errorf("world: could not write to file %s: %w", path, err)
 		}
 	}
-
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("world: could not sync temporary file: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("world: could not close temporary file: %w", err)
+	}
+	if err := os.Rename(temporary, path); err != nil {
+		return fmt.Errorf("world: could not atomically replace %s: %w", path, err)
+	}
+	committed = true
+	dir, err := os.Open(directory)
+	if err != nil {
+		return fmt.Errorf("world: could not open parent directory for sync: %w", err)
+	}
+	if err := dir.Sync(); err != nil {
+		dir.Close()
+		return fmt.Errorf("world: could not sync parent directory: %w", err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("world: could not close parent directory: %w", err)
+	}
+	return nil
 }
 
 func (ws *WorldSet) Contains(atom string) bool {

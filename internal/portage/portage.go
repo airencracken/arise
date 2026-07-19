@@ -8,12 +8,32 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/profile"
 )
 
 var refPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+type cachedPolicyAtomEntry struct {
+	atom  *atom.Atom
+	valid bool
+}
+
+var policyAtomCache sync.Map
+
+func cachedPolicyAtom(raw string) (*atom.Atom, bool) {
+	if cached, found := policyAtomCache.Load(raw); found {
+		entry := cached.(cachedPolicyAtomEntry)
+		return entry.atom, entry.valid
+	}
+	parsed, err := atom.Parse(raw)
+	entry := cachedPolicyAtomEntry{atom: parsed, valid: err == nil}
+	actual, _ := policyAtomCache.LoadOrStore(raw, entry)
+	entry = actual.(cachedPolicyAtomEntry)
+	return entry.atom, entry.valid
+}
 
 type Config struct {
 	MakeConf map[string]string
@@ -1092,15 +1112,15 @@ func (cfg *Config) PackageUseFor(cpv, slot, repo string) []string {
 // PackageAtomMatches reports whether a configuration atom applies to a
 // concrete CPV and its selected slot/repository.
 func PackageAtomMatches(rawRule, cpv, slot, repo string) bool {
-	candidate, err := atom.Parse(cpv)
-	if err != nil {
-		return false
-	}
 	if rawRule == "*/*" {
 		return true
 	}
-	rule, err := atom.Parse(rawRule)
-	if err != nil {
+	candidate, valid := cachedPolicyAtom(cpv)
+	if !valid {
+		return false
+	}
+	rule, valid := cachedPolicyAtom(rawRule)
+	if !valid {
 		return false
 	}
 	if rule.Category != "*" && rule.Category != candidate.Category {

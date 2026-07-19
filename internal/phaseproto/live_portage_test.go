@@ -15,6 +15,14 @@ import (
 	"github.com/airencracken/arise/internal/distfiles"
 )
 
+func signalPackageIdentity() PackageIdentity {
+	return PackageIdentity{
+		Category: "net-im", PN: "signal-desktop-bin", PV: "8.18.0", PR: "r0",
+		P: "signal-desktop-bin-8.18.0", PVR: "8.18.0", PF: "signal-desktop-bin-8.18.0",
+		Slot: "0", Repository: "gentoo",
+	}
+}
+
 func TestLiveSignalEclassPhaseDiscovery(t *testing.T) {
 	ebuild := os.Getenv("ARISE_LIVE_SIGNAL_EBUILD")
 	if ebuild == "" {
@@ -27,11 +35,7 @@ func TestLiveSignalEclassPhaseDiscovery(t *testing.T) {
 	request := Request{
 		Protocol: Version, ID: "live-signal-discovery", Command: "discover_phases", EAPI: "8", Ebuild: ebuild,
 		EclassDirs: []string{filepath.Join(repository, "eclass")},
-		Env: map[string]string{
-			"CATEGORY": "net-im", "PN": "signal-desktop-bin", "PV": "8.18.0",
-			"P": "signal-desktop-bin-8.18.0", "PF": "signal-desktop-bin-8.18.0",
-			"PVR": "8.18.0", "PR": "r0", "SLOT": "0", "USE": "",
-		},
+		Package:    signalPackageIdentity(), Env: map[string]string{"USE": ""},
 	}
 	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
 	if err != nil {
@@ -46,6 +50,37 @@ func TestLiveSignalEclassPhaseDiscovery(t *testing.T) {
 	want := []string{"src_unpack", "src_prepare", "src_install", "pkg_preinst", "pkg_postinst", "pkg_postrm"}
 	if !reflect.DeepEqual(phases, want) {
 		t.Fatalf("Signal phases = %v, want %v", phases, want)
+	}
+}
+
+func TestLiveApulseEclassPhaseDiscovery(t *testing.T) {
+	repository := os.Getenv("ARISE_LIVE_GENTOO_REPO")
+	if repository == "" {
+		repository = "/var/db/repos/gentoo"
+	}
+	ebuild := filepath.Join(repository, "media-sound", "apulse", "apulse-0.1.14.ebuild")
+	if _, err := os.Stat(ebuild); err != nil {
+		t.Skipf("apulse ebuild unavailable: %v", err)
+	}
+	request := Request{
+		Protocol: Version, ID: "live-apulse-discovery", Command: "discover_phases", EAPI: "8", Ebuild: ebuild,
+		EclassDirs: []string{filepath.Join(repository, "eclass")},
+		Package:    PackageIdentity{Category: "media-sound", PN: "apulse", PV: "0.1.14", PR: "r0", P: "apulse-0.1.14", PVR: "0.1.14", PF: "apulse-0.1.14", Slot: "0", Repository: "gentoo"},
+		Env:        map[string]string{"USE": "abi_x86_64", "ABI": "amd64", "DEFAULT_ABI": "amd64", "CHOST": "x86_64-pc-linux-gnu"},
+	}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("apulse phase discovery: %v; events=%#v", err, events)
+	}
+	var phases []string
+	for _, event := range events {
+		if event.Kind == "phase" {
+			phases = append(phases, event.Message)
+		}
+	}
+	want := []string{"src_prepare", "src_configure", "src_compile", "src_test", "src_install"}
+	if !reflect.DeepEqual(phases, want) {
+		t.Fatalf("apulse phases = %v, want %v", phases, want)
 	}
 }
 
@@ -104,11 +139,7 @@ func TestLiveSignalPrepareAndInstallRehearsal(t *testing.T) {
 		Protocol: Version, EAPI: "8", Ebuild: ebuild,
 		EclassDirs: []string{filepath.Join(repository, "eclass")}, WorkDir: source,
 		SourceDir: source, ImageDir: image, TempDir: temporary,
-		Env: map[string]string{
-			"CATEGORY": "net-im", "PN": "signal-desktop-bin", "PV": "8.18.0",
-			"P": "signal-desktop-bin-8.18.0", "PF": "signal-desktop-bin-8.18.0",
-			"PVR": "8.18.0", "PR": "r0", "SLOT": "0", "USE": "", "A": "",
-		},
+		Package: signalPackageIdentity(), Env: map[string]string{"USE": "", "A": ""},
 	}
 	for _, phase := range []string{"src_prepare", "src_install"} {
 		request := base
@@ -163,12 +194,7 @@ func TestLiveSignalVerifiedDistfileImage(t *testing.T) {
 		EclassDirs: []string{filepath.Join(repository, "eclass")}, WorkDir: work,
 		SourceDir: work, ImageDir: image, TempDir: temporary,
 		Distfiles: &distfiles.VerifiedSet{Directory: filepath.Dir(distfile), Artifacts: artifacts},
-		Env: map[string]string{
-			"CATEGORY": "net-im", "PN": "signal-desktop-bin", "PV": "8.18.0",
-			"P": "signal-desktop-bin-8.18.0", "PF": "signal-desktop-bin-8.18.0",
-			"PVR": "8.18.0", "PR": "r0", "SLOT": "0", "USE": "",
-			"A": artifacts[0].Name,
-		},
+		Package:   signalPackageIdentity(), Env: map[string]string{"USE": "", "A": artifacts[0].Name},
 	}
 	for _, phase := range []string{"src_unpack", "src_prepare", "src_install"} {
 		request := base

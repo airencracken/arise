@@ -1,0 +1,61 @@
+{
+  "captured_at": "2026-07-18",
+  "host": "theshire",
+  "scope": "sanitized timing and resolver shape; no user configuration contents",
+  "portage": {
+    "command": "emerge -pavuDN --complete-graph --with-bdeps=y --keep-going @world",
+    "dependency_resolution_seconds": 47.39,
+    "backtrack_used": 3,
+    "backtrack_budget": 20,
+    "source": "user-observed terminal output",
+    "high_budget_probe": {
+      "backtrack_budget": 10000,
+      "backtrack_used": 3,
+      "dependency_resolution_seconds": 49.07,
+      "interpretation": "backtrack is a ceiling; the resolver stopped after the same three explored branches"
+    }
+  },
+  "arise": {
+    "command": "arise install --pretend --update --deep --newuse --complete-graph --with-bdeps=y --keep-going --backtrack=20 --json @world",
+    "result": "terminated after exceeding 120 seconds without emitting a plan",
+    "exit_status": 130,
+    "five_minute_profile": {
+      "elapsed_seconds": 301,
+      "phase_at_timeout": "direct-update-refresh",
+      "search_seconds": 32.37,
+      "backtracks_used": 1,
+      "allocations": 432915344,
+      "allocated_bytes": 25571461424,
+      "candidate_cache_hits": 13001,
+      "candidate_cache_misses": 3865,
+      "primary_root_cause": "repeated effective USE policy matching reparsed CPVs and package rule atoms, causing extreme allocation and GC pressure",
+      "profile_hotspots": [
+        "portage.Config.EffectiveUseForStability",
+        "portage.PackageAtomMatches",
+        "atom.Parse",
+        "resolver.effectiveNodeUseFlags",
+        "runtime GC scanning"
+      ],
+      "optimized_rerun": {
+        "evidence_directory": "/tmp/arise-p3-profile.bbbeuE",
+        "elapsed_seconds": 25,
+        "verified": false,
+        "verification": "failed",
+        "backtracks_reported": 21,
+        "backtrack_budget": 20,
+        "allocations": 8255049,
+        "allocated_bytes": 626982600,
+        "candidate_cache_hits": 21159,
+        "candidate_cache_misses": 4714,
+        "interpretation": "policy and effective-USE caching removed the timeout-scale allocation failure; the run exposed a separate hard-ceiling accounting bug and substantive verifier conflicts",
+        "follow_up": "zero-budget replay attempts no longer inherit the public ten-backtrack default; a regression asserts that reported use cannot exceed the configured ceiling"
+      }
+    }
+  },
+  "portable_fixture": "internal/resolve/testdata/broken_python_transition.json",
+  "installed_python_shape": {
+    "slots": ["3.9", "3.10", "3.12", "3.13", "3.14"],
+    "python_virtuals": ["virtual/python-cffi-1"],
+    "stale_reverse_dependency_fanout": "large; fixture preserves the minimal newuse/current-vs-installed dependency transition"
+  }
+}

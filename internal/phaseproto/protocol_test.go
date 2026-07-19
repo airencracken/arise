@@ -7,12 +7,17 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/airencracken/arise/internal/distfiles"
 )
@@ -107,6 +112,45 @@ func TestBashWorkerUnpackUsesWorkDirAndLifecycleDefaultsAreNoOps(t *testing.T) {
 	}
 }
 
+func TestBashWorkerPhaseBatchPreservesEclassStateAndDieIsTerminal(t *testing.T) {
+	directory := t.TempDir()
+	work, source, image := filepath.Join(directory, "work"), filepath.Join(directory, "source"), filepath.Join(directory, "image")
+	for _, path := range []string{work, source, image} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuild, []byte(`EAPI=8
+src_prepare() { PREPARED=yes; }
+src_configure() { [[ ${PREPARED-} == yes ]] || die "prepare state lost"; }
+src_compile() { printf compiled > "${T}/compiled"; }
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "phase-batch", Command: "run_phases", Phases: []string{"src_prepare", "src_configure", "src_compile"}, EAPI: "8", Ebuild: ebuild, WorkDir: work, SourceDir: source, ImageDir: image, TempDir: directory}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("stateful phase batch: %v; events=%#v", err, events)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "compiled")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_prepare() { die fatal; printf leaked > \"${T}/leaked\"; }\nsrc_configure() { printf later > \"${T}/later\"; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request.ID = "phase-batch-die"
+	if _, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err == nil {
+		t.Fatal("die returned successful batch")
+	}
+	for _, name := range []string{"leaked", "later"} {
+		if _, err := os.Stat(filepath.Join(directory, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s executed after die: %v", name, err)
+		}
+	}
+}
+
 func TestBashWorkerHasUsesExactArgumentMembership(t *testing.T) {
 	directory := t.TempDir()
 	ebuild := filepath.Join(directory, "pkg-1.ebuild")
@@ -179,6 +223,50 @@ func TestDefaultPhasesDeclareSupportedEAPIs(t *testing.T) {
 	}
 }
 
+func TestSupportedEAPIDefaultAndLifecycleMatrix(t *testing.T) {
+	for _, eapi := range []string{"7", "8"} {
+		t.Run("EAPI-"+eapi, func(t *testing.T) {
+			directory := t.TempDir()
+			work := filepath.Join(directory, "work")
+			source := filepath.Join(work, "pkg-1")
+			image := filepath.Join(directory, "image")
+			for _, path := range []string{work, source, image} {
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ebuild := filepath.Join(directory, "pkg-1.ebuild")
+			if err := os.WriteFile(ebuild, []byte("EAPI="+eapi+"\nA=\nPF=pkg-1\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			phases, err := DefaultPhases(eapi)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, phase := range phases {
+				request := Request{
+					Protocol:  Version,
+					ID:        "matrix-" + eapi + "-" + phase,
+					Command:   "run_phase",
+					Phase:     phase,
+					EAPI:      eapi,
+					Ebuild:    ebuild,
+					WorkDir:   work,
+					SourceDir: source,
+					ImageDir:  image,
+				}
+				events, runErr := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+				if runErr != nil {
+					t.Fatalf("%s: %v; events=%#v", phase, runErr, events)
+				}
+				if len(events) != 2 || events[0].Kind != "phase" || events[0].Message != phase || events[1].Kind != "result" || events[1].ExitCode == nil || *events[1].ExitCode != 0 {
+					t.Fatalf("%s events = %#v", phase, events)
+				}
+			}
+		})
+	}
+}
+
 func TestDecoderRequiresOrderedTerminalResult(t *testing.T) {
 	stream := strings.NewReader("" +
 		`{"protocol":1,"id":"pkg-1","sequence":0,"kind":"phase","message":"src_compile"}` + "\n" +
@@ -208,6 +296,35 @@ func TestDecoderRejectsCrossTalkAndSequenceGaps(t *testing.T) {
 	}
 }
 
+func TestWorkerProtocolRequiresExactlyOneTerminalResult(t *testing.T) {
+	request := Request{Protocol: Version, ID: "terminal-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: "/tmp/pkg.ebuild"}
+	event := func(sequence int, kind string, exit string) string {
+		field := ""
+		if exit != "" {
+			field = `,"exit_code":` + exit
+		}
+		return fmt.Sprintf(`{"protocol":1,"id":"terminal-1","sequence":%d,"kind":"%s"%s}`, sequence, kind, field)
+	}
+	tests := []struct {
+		name   string
+		output string
+	}{
+		{name: "missing result", output: event(0, "phase", "")},
+		{name: "duplicate result", output: event(0, "result", "0") + "\n" + event(1, "result", "0")},
+		{name: "trailing garbage", output: event(0, "result", "0") + "\nnot-json"},
+		{name: "status mismatch", output: event(0, "result", "7")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command := exec.CommandContext(context.Background(), "bash", "-c", "printf '%s' \"$PAYLOAD\"")
+			request.Env = map[string]string{"PAYLOAD": tt.output}
+			if events, err := runWorkerCommand(command, request); err == nil {
+				t.Fatalf("invalid terminal stream accepted: %#v", events)
+			}
+		})
+	}
+}
+
 func TestBashWorkerHandshakeAndOrderedLogs(t *testing.T) {
 	ebuild := filepath.Join(t.TempDir(), "pkg-1.ebuild")
 	content := "EAPI=8\nsrc_compile() { printf 'hello from phase\\n'; }\n"
@@ -222,6 +339,111 @@ func TestBashWorkerHandshakeAndOrderedLogs(t *testing.T) {
 	}
 	if len(events) != 3 || events[0].Kind != "phase" || events[1].Kind != "log" || events[1].Message != "hello from phase" || events[2].Kind != "result" || events[2].ExitCode == nil || *events[2].ExitCode != 0 {
 		t.Fatalf("worker events = %#v", events)
+	}
+}
+
+func TestBashWorkerEmitsTypedElogClasses(t *testing.T) {
+	ebuild := filepath.Join(t.TempDir(), "pkg-1.ebuild")
+	content := "EAPI=8\nsrc_compile() { einfo info; elog log; ewarn warn; eerror error; eqawarn qa; }\n"
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "elog-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var classes []string
+	for _, event := range events {
+		if event.Kind == "elog" {
+			classes = append(classes, event.Class+":"+event.Message)
+		}
+	}
+	want := []string{"INFO:info", "LOG:log", "WARN:warn", "ERROR:error", "QA:qa"}
+	if !reflect.DeepEqual(classes, want) {
+		t.Fatalf("elog classes = %#v, want %#v; events=%#v", classes, want, events)
+	}
+}
+
+func TestEveryDeclaredPhaseFailurePreservesDurableLog(t *testing.T) {
+	phases, err := DefaultPhases("8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, phaseName := range phases {
+		t.Run(phaseName, func(t *testing.T) {
+			directory := t.TempDir()
+			ebuild := filepath.Join(directory, "pkg-1.ebuild")
+			content := fmt.Sprintf("EAPI=8\n%s() { printf 'before failure in %s\\n'; return 23; }\n", phaseName, phaseName)
+			if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			request := Request{Protocol: Version, ID: "failure-" + phaseName, Command: "run_phase", Phase: phaseName, EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: filepath.Join(directory, "image"), TempDir: filepath.Join(directory, "temp")}
+			for _, path := range []string{request.ImageDir, request.TempDir} {
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			events, runErr := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+			if runErr == nil {
+				t.Fatal("failing phase returned success")
+			}
+			manager, err := NewPackageLog(PackageLogOptions{Root: filepath.Join(directory, "logs"), TempDir: request.TempDir, Category: "cat", PF: "pkg-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, persistErr := persistWorkerEvents(request, events, runErr, WorkerOptions{DurableLog: manager, FinalizeLog: true})
+			if persistErr == nil || !strings.Contains(persistErr.Error(), manager.Path()) {
+				t.Fatalf("persist error = %v", persistErr)
+			}
+			contentBytes, err := os.ReadFile(manager.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(contentBytes), "before failure in "+phaseName) || !strings.Contains(string(contentBytes), "exit_code=23") || !strings.Contains(string(contentBytes), "terminal-error") {
+				t.Fatalf("durable failure log = %s", contentBytes)
+			}
+		})
+	}
+}
+
+func TestBashWorkerCancellationKillsProcessGroup(t *testing.T) {
+	directory := t.TempDir()
+	pidFile := filepath.Join(directory, "child.pid")
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := "EAPI=8\nsrc_compile() { ( trap '' TERM; printf '%s\\n' \"$BASHPID\" > \"$PID_FILE\"; while :; do sleep 1; done ) \u0026 wait; }\n"
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	request := Request{Protocol: Version, ID: "cancel-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild, Env: map[string]string{"PID_FILE": pidFile}}
+	started := time.Now()
+	_, err := runWorkerCommandWithCancelGrace(exec.CommandContext(ctx, "bash", "--noprofile", "--norc", "-c", bashWorker), request, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("cancelled worker returned success")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("worker cancellation took %s", elapsed)
+	}
+	rawPID, readErr := os.ReadFile(pidFile)
+	if readErr != nil {
+		t.Fatalf("child did not record PID: %v", readErr)
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(rawPID)))
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		probeErr := syscall.Kill(pid, 0)
+		if probeErr == syscall.ESRCH {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker descendant %d survived cancellation (probe error %v)", pid, probeErr)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -580,11 +802,79 @@ func TestFilesystemSandboxHidesUnboundHostFiles(t *testing.T) {
 }
 
 func TestBashWorkerRejectsReservedEnvironment(t *testing.T) {
-	for _, name := range []string{"BASH_ENV", "ROOT", "SYSROOT", "BROOT", "HOME", "TMPDIR"} {
+	for _, name := range []string{"BASH_ENV", "ROOT", "SYSROOT", "BROOT", "HOME", "TMPDIR", "PORTAGE_LOG_FILE", "CATEGORY", "PF", "SLOT", "PORTAGE_REPO_NAME"} {
 		request := Request{Protocol: Version, ID: "pkg-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: "/tmp/pkg.ebuild", Env: map[string]string{name: "/tmp/inject"}}
 		if _, err := RunBashWorker(context.Background(), request); err == nil {
 			t.Fatalf("reserved environment %s accepted", name)
 		}
+	}
+}
+
+func TestRequestRequiresAbsolutePortageLogFile(t *testing.T) {
+	request := Request{Protocol: Version, ID: "log-path", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: "/tmp/pkg.ebuild", LogFile: "relative.log"}
+	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "PORTAGE_LOG_FILE") {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
+func TestWorkerEnvironmentIsMinimalAndExplicit(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+src_compile() {
+  printf 'leak=%s custom=%s path=%s locale=%s id=%s phase=%s\n' \
+    "${HOST_ENV_LEAK-unset}" "${EXPLICIT_VALUE-unset}" "$PATH" "$LC_ALL" "$ARISE_ID" "$ARISE_PHASE"
+}
+`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Protocol: Version,
+		ID:       "environment-1",
+		Command:  "run_phase",
+		Phase:    "src_compile",
+		EAPI:     "8",
+		Ebuild:   ebuild,
+		Env:      map[string]string{"EXPLICIT_VALUE": "present"},
+	}
+	command := exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker)
+	command.Env = append(os.Environ(), "HOST_ENV_LEAK=poison")
+	events, err := runWorkerCommand(command, request)
+	if err != nil {
+		t.Fatalf("minimal environment worker: %v; events=%#v", err, events)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %#v, want phase, log, result", events)
+	}
+	want := "leak=unset custom=present path=/usr/bin:/bin locale=C id=environment-1 phase=src_compile"
+	if events[1].Kind != "log" || events[1].Message != want {
+		t.Fatalf("environment log = %#v, want %q", events[1], want)
+	}
+}
+
+func TestWorkerExposesProtocolOwnedPackageIdentity(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "python-3.13.7-r2.ebuild")
+	content := `EAPI=8
+src_compile() {
+  printf '%s|%s|%s|%s|%s|%s|%s|%s|%s\n' "$CATEGORY" "$PN" "$PV" "$PR" "$P" "$PVR" "$PF" "$SLOT" "$PORTAGE_REPO_NAME"
+}
+`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Protocol: Version, ID: "identity-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild,
+		Package: PackageIdentity{Category: "dev-lang", PN: "python", PV: "3.13.7", PR: "r2", P: "python-3.13.7", PVR: "3.13.7-r2", PF: "python-3.13.7-r2", Slot: "3.13/3.13", Repository: "gentoo"},
+	}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("identity worker: %v; events=%#v", err, events)
+	}
+	want := "dev-lang|python|3.13.7|r2|python-3.13.7|3.13.7-r2|python-3.13.7-r2|3.13/3.13|gentoo"
+	if len(events) != 3 || events[1].Message != want {
+		t.Fatalf("identity events = %#v, want log %q", events, want)
 	}
 }
 

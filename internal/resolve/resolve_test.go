@@ -592,6 +592,30 @@ func TestSortPlannedActionsPlacesPdependAfterParent(t *testing.T) {
 	}
 }
 
+func TestSortPlannedActionsCondensesDependencyCycleBeforeDependent(t *testing.T) {
+	g := makeGraph()
+	a := pkg(g, "dev-libs/a", "1", "0", "0", false, nil)
+	b := pkg(g, "dev-libs/b", "1", "0", "0", false, nil)
+	consumer := pkg(g, "app-misc/consumer", "1", "0", "0", false, nil)
+	a.Rdepend = "dev-libs/b"
+	b.Rdepend = "dev-libs/a"
+	consumer.Rdepend = "dev-libs/a"
+	r := &resolver{graph: g}
+	actions := []PkgAction{
+		{Atom: mustParse("app-misc/consumer-1"), Slot: "0"},
+		{Atom: mustParse("dev-libs/a-1"), Slot: "0"},
+		{Atom: mustParse("dev-libs/b-1"), Slot: "0"},
+	}
+	sorted := r.sortPlannedActions(actions)
+	if sorted[2].Atom.CP() != "app-misc/consumer" {
+		t.Fatalf("cyclic dependency component was not placed before its dependent: %v", collectCPV(sorted))
+	}
+	r.validatePlanOrder(sorted)
+	if len(r.conflicts) != 0 {
+		t.Fatalf("unavoidable intra-component order was treated as a conflict: %v", r.conflicts)
+	}
+}
+
 func TestSortPlannedActionsMatchesDependencySlot(t *testing.T) {
 	g := makeGraph()
 	parent := pkg(g, "app-misc/parent", "1", "0", "0", false, nil)
@@ -1729,11 +1753,14 @@ func TestTildeMatch(t *testing.T) {
 		v, c string
 		want bool
 	}{
-		{"3.11.5", "3.11", true},
-		{"3.11.5-r1", "3.11", true},
+		{"3.11.5", "3.11", false},
+		{"3.11.5-r1", "3.11", false},
 		{"3.12.0", "3.11", false},
 		{"3.11", "3.11", true},
-		{"3.11.0", "3.11", true},
+		{"3.11-r7", "3.11", true},
+		{"3.11.0", "3.11", false},
+		{"3.11_alpha1-r2", "3.11_alpha1", true},
+		{"3.11_alpha2", "3.11_alpha1", false},
 		{"4.0", "3.11", false},
 	}
 	for _, tt := range tests {
@@ -2846,6 +2873,37 @@ func BenchmarkResolve_ForcedBacktracking(b *testing.B) {
 	}
 }
 
+func TestResolve_BacktrackLimitIsHardCeiling(t *testing.T) {
+	g := benchmarkBacktrackingGraph(3)
+	cfg := DefaultResolveConfig()
+	cfg.Backtrack = 1
+	cfg.KeepGoing = true
+	result, err := Resolve(g, []string{"app-misc/root"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BacktrackLevel > cfg.Backtrack {
+		t.Fatalf("backtrack level %d exceeded configured ceiling %d", result.BacktrackLevel, cfg.Backtrack)
+	}
+}
+
+func TestResolveEmptyTreeSkipsInstalledParentRefresh(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "app-misc/target", "1", "0", "0", true, nil)
+	pkg(g, "app-misc/target", "1", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.EmptyTree = true
+	cfg.Update = true
+	cfg.NewUse = true
+	result, err := Resolve(g, []string{"app-misc/target"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Metrics.DirectUpdateRefresh != 0 {
+		t.Fatalf("empty-tree ran installed-parent refresh: %s", result.Metrics.DirectUpdateRefresh)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Ensure sort is imported (used in SortByDeps and elsewhere)
 // ---------------------------------------------------------------------------
@@ -2908,8 +2966,8 @@ func TestResolve_MaskedPackage(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for masked package")
 	}
-	if result != nil {
-		t.Error("expected nil result when error returned")
+	if result == nil || result.Verified || result.Verification != VerificationIncomplete || len(result.Conflicts) == 0 {
+		t.Errorf("expected non-executable result retaining masked-package conflict, got %#v", result)
 	}
 }
 
@@ -5538,11 +5596,76 @@ func TestVerifyTransactionRemovalMatrix(t *testing.T) {
 		}
 	})
 
+	t.Run("repository identity is completed before multi removal overlay", func(t *testing.T) {
+		g := makeGraph()
+		library := g.AddVersionFromRepository("dev-libs/library", "1", "0", "1", true, nil, "amd64", "gentoo")
+		consumer := g.AddVersionFromRepository("app-misc/consumer", "1", "0", "0", true, nil, "amd64", "gentoo")
+		consumer.InstalledRdepend = "dev-libs/library"
+		_ = library
+		result, err := VerifyTransaction(g, nil, []PkgAction{
+			{Atom: mustParse("app-misc/consumer-1"), Action: "uninstall"},
+			{Atom: mustParse("dev-libs/library-1"), Action: "uninstall"},
+		}, DefaultResolveConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Verified || len(result.Conflicts) != 0 {
+			t.Fatalf("complete repository-qualified closure rejected: %#v", result)
+		}
+		for _, action := range result.Uninstall {
+			if action.Repository != "gentoo" || action.Slot != "0" {
+				t.Fatalf("incomplete removal identity: %#v", action)
+			}
+		}
+	})
+
 	t.Run("nil action atom fails closed", func(t *testing.T) {
 		if _, err := VerifyTransaction(makeGraph(), nil, []PkgAction{{Action: "uninstall"}}, DefaultResolveConfig()); err == nil {
 			t.Fatal("invalid removal action was accepted")
 		}
 	})
+}
+
+func TestVerifyTransactionConstraintMutationMatrix(t *testing.T) {
+	tests := []struct {
+		name       string
+		dependency string
+		wantOK     bool
+	}{
+		{name: "baseline dependency", dependency: ">=dev-libs/library-1:0[-feature]", wantOK: true},
+		{name: "mutated version", dependency: ">=dev-libs/library-2:0[-feature]"},
+		{name: "mutated slot", dependency: ">=dev-libs/library-1:1[-feature]"},
+		{name: "mutated USE", dependency: ">=dev-libs/library-1:0[feature]"},
+		{name: "inverted to blocker", dependency: "!dev-libs/library"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := makeGraph()
+			library := pkg(g, "dev-libs/library", "1", "0", "0", true, map[string]bool{"feature": false})
+			library.InstalledIUseFlags = map[string]bool{"feature": true}
+			application := pkg(g, "app-misc/application", "1", "0", "0", false, nil)
+			application.EAPI = "8"
+			application.Rdepend = tt.dependency
+			result, err := VerifyTransaction(g, []PkgAction{{
+				Atom: mustParse("app-misc/application-1"), Action: "install", Slot: "0", Domain: DomainROOT,
+			}}, nil, DefaultResolveConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantOK {
+				if !result.Verified || result.Verification != VerificationVerified {
+					t.Fatalf("valid baseline failed verification: %#v", result)
+				}
+				return
+			}
+			if result.Verified || result.Verification != VerificationFailed {
+				t.Fatalf("constraint mutation escaped verification: %#v", result)
+			}
+			if len(result.ConflictDetails) == 0 || result.ConflictDetails[len(result.ConflictDetails)-1].Kind != "post-solve-verification" {
+				t.Fatalf("constraint mutation lacks structured verifier detail: %#v", result.ConflictDetails)
+			}
+		})
+	}
 }
 
 func TestResolve_PlansSamePackageIndependentlyAcrossRootDomains(t *testing.T) {
@@ -5789,6 +5912,47 @@ func TestResolve_CompleteGraphRepairsAffectedRetainedPackage(t *testing.T) {
 	}
 	if !result.Verified || result.Verification != VerificationVerified {
 		t.Fatalf("repaired overlay verification = %t/%q", result.Verified, result.Verification)
+	}
+}
+
+func TestResolve_CompleteGraphRepairsPerlVirtualTransition(t *testing.T) {
+	makeFixture := func() *DepGraph {
+		g := makeGraph()
+		pkg(g, "dev-lang/perl", "1", "0", "1", true, nil)
+		pkg(g, "dev-lang/perl", "2", "0", "2", false, nil)
+		oldVirtual := pkg(g, "virtual/perl-parent", "1", "0", "0", true, nil)
+		oldVirtual.Rdepend = "=dev-lang/perl-1* dev-lang/perl:0/1="
+		newVirtual := pkg(g, "virtual/perl-parent", "2", "0", "0", false, nil)
+		newVirtual.Rdepend = "=dev-lang/perl-2* dev-lang/perl:0/2="
+		return g
+	}
+
+	cfg := DefaultResolveConfig()
+	cfg.Deep = false
+	cfg.CompleteGraph = false
+	result, err := Resolve(makeFixture(), []string{"dev-lang/perl"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verified || result.Verification != VerificationFailed {
+		t.Fatalf("unrepaired Perl virtual transition passed verification: %#v", result)
+	}
+
+	cfg.CompleteGraph = true
+	result, err = Resolve(makeFixture(), []string{"dev-lang/perl"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified || len(result.Install) != 2 {
+		t.Fatalf("complete graph did not repair Perl virtual transition: %#v", result)
+	}
+	versions := collectCPV(result.Install)
+	seen := make(map[string]bool, len(versions))
+	for _, version := range versions {
+		seen[version] = true
+	}
+	if !seen["dev-lang/perl-2"] || !seen["virtual/perl-parent-2"] {
+		t.Fatalf("repaired Perl plan = %v", versions)
 	}
 }
 
@@ -6328,6 +6492,59 @@ func TestResolve_AnyOfBacktracksWhenFirstAlternativeDepsFail(t *testing.T) {
 	}
 }
 
+func TestResolve_AnyOfFailureRetainsStructuredBranchCauses(t *testing.T) {
+	g := makeGraph()
+	consumer := pkg(g, "app-misc/consumer", "1", "0", "0", false, nil)
+	consumer.Rdepend = "|| ( media-plugins/first media-plugins/second )"
+	first := pkg(g, "media-plugins/first", "1", "0", "0", false, nil)
+	first.Rdepend = "<dev-libs/shared-2 >=dev-libs/shared-2"
+	second := pkg(g, "media-plugins/second", "1", "0", "0", false, nil)
+	second.Rdepend = "<dev-libs/shared-2 >=dev-libs/shared-2"
+	pkg(g, "dev-libs/shared", "1", "0", "0", false, nil)
+	pkg(g, "dev-libs/shared", "2", "0", "0", false, nil)
+
+	result, err := Resolve(g, []string{"app-misc/consumer"}, DefaultResolveConfig())
+	if err == nil {
+		t.Fatal("expected every any-of alternative to fail")
+	}
+	if result == nil {
+		t.Fatalf("expected incomplete result with structured causes: %v", err)
+	}
+	var slotConflicts int
+	for _, detail := range result.ConflictDetails {
+		if detail.Kind == "slot-conflict" && detail.Package == "dev-libs/shared" {
+			slotConflicts++
+			if len(detail.Requirements) != 2 {
+				t.Fatalf("slot conflict requirements = %#v, want both competing atoms", detail.Requirements)
+			}
+		}
+	}
+	if slotConflicts != 2 {
+		t.Fatalf("retained slot conflicts = %d, want one per failed alternative: %#v", slotConflicts, result.ConflictDetails)
+	}
+}
+
+func TestResolve_AnyOfDoesNotReplayAlternativeIncompatibleWithCommittedConstraints(t *testing.T) {
+	g := makeGraph()
+	consumer := pkg(g, "app-misc/consumer", "1", "0", "0", false, nil)
+	consumer.Rdepend = "=dev-libs/shared-1 || ( =dev-libs/shared-2 =dev-libs/shared-1 )"
+	pkg(g, "dev-libs/shared", "1", "0", "0", false, nil)
+	pkg(g, "dev-libs/shared", "2", "0", "0", false, nil)
+
+	result, err := Resolve(g, []string{"app-misc/consumer"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified || result.BacktrackLevel != 0 {
+		t.Fatalf("known-incompatible any-of branch consumed search: verified=%v backtracks=%d conflicts=%v", result.Verified, result.BacktrackLevel, result.Conflicts)
+	}
+	for _, decision := range result.retryChoices {
+		if decision.depKey == "app-misc/consumer->1" && len(decision.order) != 1 {
+			t.Fatalf("known-incompatible alternative remained replayable: %#v", decision)
+		}
+	}
+}
+
 func TestBacktrackDecisionLedgerRollsBackWithSpeculativeTransaction(t *testing.T) {
 	r := &resolver{backtrackRemaining: 2}
 	tx := r.beginTransaction()
@@ -6340,6 +6557,22 @@ func TestBacktrackDecisionLedgerRollsBackWithSpeculativeTransaction(t *testing.T
 	r.rollbackTransaction(tx)
 	if r.backtrackRemaining != 2 || len(r.decisionHistory) != 0 {
 		t.Fatalf("rolled-back decision leaked: remaining=%d history=%v", r.backtrackRemaining, r.decisionHistory)
+	}
+}
+
+func TestConsumeBacktrackDoesNotRechargeDecisionPaidByEarlierReplay(t *testing.T) {
+	decision := BacktrackDecision{Kind: "version", Key: "dev-python/docutils:0", From: "0.23", To: "0.22.4"}
+	r := &resolver{
+		backtrackRemaining: 1,
+		chargedDecisions: map[string]bool{
+			backtrackDecisionKey(decision.Kind, decision.Key, decision.From, decision.To): true,
+		},
+	}
+	if err := r.consumeBacktrack(decision.Kind, decision.Key, decision.From, decision.To); err != nil {
+		t.Fatal(err)
+	}
+	if r.backtrackRemaining != 1 || len(r.decisionHistory) != 0 {
+		t.Fatalf("replayed decision was charged again: remaining=%d history=%v", r.backtrackRemaining, r.decisionHistory)
 	}
 }
 
@@ -6442,6 +6675,33 @@ func TestResolveRewindsEarlierVersionAfterLaterConstraint(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("version rewind missing from history: %#v", result.DecisionHistory)
+	}
+}
+
+func TestResolveExplicitUpdateCannotReplayToInstalledNoop(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "app-misc/target", "0", "0", "0", false, nil)
+	pkg(g, "app-misc/target", "1", "0", "0", true, nil)
+	target := pkg(g, "app-misc/target", "2", "0", "0", false, nil)
+	target.Rdepend = ">=dev-libs/library-2"
+	pkg(g, "dev-libs/library", "1", "0", "0", true, nil)
+	pkg(g, "dev-libs/library", "2", "0", "0", false, nil)
+	consumer := pkg(g, "app-misc/consumer", "1", "0", "0", true, nil)
+	consumer.InstalledRdepend = "<dev-libs/library-2"
+
+	cfg := DefaultResolveConfig()
+	cfg.Deep = false
+	cfg.DynamicDeps = false
+	result, err := Resolve(g, []string{"app-misc/target"}, cfg)
+	if err == nil && result.Verified && len(result.Install) == 0 {
+		t.Fatalf("explicit update silently replayed to installed no-op: %#v", result)
+	}
+	if result != nil {
+		for _, decision := range result.DecisionHistory {
+			if decision.Key == "version:app-misc/target:0" && (decision.To == "app-misc/target-1" || decision.To == "app-misc/target-0") {
+				t.Fatalf("explicit target replayed at or below installed version: %#v", result.DecisionHistory)
+			}
+		}
 	}
 }
 
@@ -6787,7 +7047,7 @@ func TestResolve_NewPackageAlwaysIncludesBdeps(t *testing.T) {
 	}
 }
 
-func TestResolve_InstalledBdepTraversesRuntimeClosure(t *testing.T) {
+func TestResolve_NonDeepInstalledBdepDoesNotPromoteRuntimeClosure(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "app-misc/target", "1", "0", "0", false, nil)
 	pkg(g, "dev-build/tool", "1", "0", "0", true, nil)
@@ -6796,21 +7056,19 @@ func TestResolve_InstalledBdepTraversesRuntimeClosure(t *testing.T) {
 	depWithType(g, "app-misc/target", "dev-build/tool", DepTypeBuild)
 	depWithType(g, "dev-build/tool", "dev-python/helper[python_targets_python3_14]", DepTypeRuntime)
 
-	result, err := Resolve(g, []string{"app-misc/target"}, DefaultResolveConfig())
+	cfg := DefaultResolveConfig()
+	cfg.Deep = false
+	result, err := Resolve(g, []string{"app-misc/target"}, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
 	for _, action := range result.Install {
 		if action.Atom.CP() == "dev-python/helper" {
-			found = true
-			if action.Atom.Version == nil || action.Atom.Version.Raw != "2" {
-				t.Fatalf("selected helper = %#v", action)
-			}
+			t.Fatalf("non-deep installed BDEPEND promoted current runtime metadata: %#v", result.Install)
 		}
 	}
-	if !found {
-		t.Fatalf("runtime closure of installed BDEPEND omitted: %#v", result.Install)
+	if !result.Verified {
+		t.Fatalf("installed build tool did not satisfy non-deep plan: %#v", result)
 	}
 }
 
@@ -7026,6 +7284,116 @@ func TestResolve_IgnoreSlotOps_N(t *testing.T) {
 	}
 	if !foundBash {
 		t.Error("bash should be rebuilt (ignore-built-slot-operator-deps=n)")
+	}
+}
+
+func TestCandidateUseFlagsSharesImmutableBaseAndIsolatesOverrides(t *testing.T) {
+	version, err := atom.ParseVersion("1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vi := &VersionInfo{Version: version, Slot: "0", Repository: "gentoo", UseFlags: map[string]bool{"foo": false, "bar": true}}
+	node := &PkgNode{Atom: mustParseAtom("cat/pkg"), Versions: map[string]*VersionInfo{"1": vi}}
+	vi.Package = node
+	r := &resolver{useOverrides: make(map[string]map[string]bool)}
+
+	base := r.candidateUseFlags(node, vi)
+	if base["foo"] || !base["bar"] {
+		t.Fatalf("unexpected base USE: %#v", base)
+	}
+	r.setUseOverride(r.versionKey(node, vi), "foo", true)
+	overridden := r.candidateUseFlags(node, vi)
+	if !overridden["foo"] || !overridden["bar"] {
+		t.Fatalf("override not applied: %#v", overridden)
+	}
+	if base["foo"] || vi.UseFlags["foo"] {
+		t.Fatalf("override mutated immutable base: base=%#v metadata=%#v", base, vi.UseFlags)
+	}
+}
+
+func TestTerminalSetTargetConflictStopsReplay(t *testing.T) {
+	if !hasTerminalTargetConflict([]string{"no installable version of cat/pkg satisfies cat/pkg (world target)"}) {
+		t.Fatal("world target conflict must be terminal")
+	}
+	if !hasTerminalTargetConflict([]string{"no installable version of cat/pkg satisfies cat/pkg (system target)"}) {
+		t.Fatal("system target conflict must be terminal")
+	}
+	if hasTerminalTargetConflict([]string{"post-solve verification: cat/dep required by cat/pkg is not satisfied"}) {
+		t.Fatal("transitive conflict may still be replayable")
+	}
+}
+
+func TestTerminalVerificationFailureRequiresOnlyStructuredVerifierCauses(t *testing.T) {
+	verifiedFailure := &ResolveResult{
+		Conflicts:       []string{"post-solve verification: broken"},
+		ConflictDetails: []ConflictDetail{{Kind: "post-solve-verification", Message: "post-solve verification: broken"}},
+	}
+	if !terminalVerificationFailure(verifiedFailure) {
+		t.Fatal("pure verifier failure must be terminal without complete-graph repair")
+	}
+	verifiedFailure.ConflictDetails = append(verifiedFailure.ConflictDetails, ConflictDetail{Kind: "slot-conflict", Message: "slot conflict"})
+	if terminalVerificationFailure(verifiedFailure) {
+		t.Fatal("mixed candidate and verifier failures must remain replayable")
+	}
+}
+
+func TestNextReplayChoiceRetainsDeterministicFallback(t *testing.T) {
+	first := replayDecision{depKey: "cat/first->0", chosen: 0, order: []int{0, 1}}
+	last := replayDecision{depKey: "cat/last->0", chosen: 0, order: []int{0, 1}}
+	decision, next, ok := nextReplayChoice([]replayDecision{first, last})
+	if !ok || decision.depKey != last.depKey || next != 1 {
+		t.Fatalf("selected %q option %d, want last deterministic fallback", decision.depKey, next)
+	}
+}
+
+func TestNextUnvisitedReplayStateSkipsCycleAndRewindsParent(t *testing.T) {
+	first := replayDecision{depKey: "cat/first->0", chosen: 0, order: []int{0, 1}}
+	last := replayDecision{depKey: "cat/last->0", chosen: 0, order: []int{0, 1}}
+	visited := map[string]bool{
+		replayStateKey(map[string]int{"cat/first->0": 0, "cat/last->0": 1}): true,
+	}
+	decision, next, prefix, state, ok := nextUnvisitedReplayState([]replayDecision{first, last}, visited)
+	if !ok || decision.depKey != first.depKey || next != 1 {
+		t.Fatalf("selected %q option %d, want unvisited parent fallback", decision.depKey, next)
+	}
+	if len(prefix) != 0 || !reflect.DeepEqual(state, map[string]int{"cat/first->0": 1}) {
+		t.Fatalf("rewound replay state leaked child overrides: prefix=%v state=%v", prefix, state)
+	}
+}
+
+func TestReplayStateKeyIsMapOrderIndependent(t *testing.T) {
+	left := map[string]int{"cat/a->0": 1, "cat/b->0": 2}
+	right := map[string]int{"cat/b->0": 2, "cat/a->0": 1}
+	if replayStateKey(left) != replayStateKey(right) {
+		t.Fatalf("equivalent override maps produced different state keys: %q != %q", replayStateKey(left), replayStateKey(right))
+	}
+}
+
+func TestDomainRemovalsRetainsRepositoryQualifiedRootKey(t *testing.T) {
+	rootKey := "perl-core/Compress-Raw-Zlib-2.213.0\x00gentoo"
+	brootKey := string(DomainBROOT) + "\x00dev-lang/perl-5.42.2\x00gentoo"
+	filtered := domainRemovals(map[string]bool{rootKey: true, brootKey: true}, DomainROOT)
+	if !filtered[rootKey] {
+		t.Fatalf("repository-qualified ROOT removal was discarded: %#v", filtered)
+	}
+	if filtered[brootKey] {
+		t.Fatalf("BROOT removal leaked into ROOT: %#v", filtered)
+	}
+}
+
+func TestDependenciesForVersionHonorsKnownEmptyMetadata(t *testing.T) {
+	g := makeGraph()
+	node := g.AddPackage("dev-libs/released")
+	g.AddDep("dev-libs/released", "dev-build/live-only", "dev-build/live-only", DepTypeBuild, "", false)
+	version := g.AddVersion("dev-libs/released", "1", "0", "0", false, nil, "amd64")
+	version.DependencyMetadataKnown = true
+	r := &resolver{graph: g, useOverrides: make(map[string]map[string]bool)}
+	edges, err := r.dependenciesForVersion(node, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edges) != 0 {
+		t.Fatalf("known empty metadata inherited package-level live edges: %#v", edges)
 	}
 }
 

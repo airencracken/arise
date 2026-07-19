@@ -1,18 +1,87 @@
 #!/usr/bin/env bash
 
 exec 3>&1
-sequence=0
+sequence_file=$(mktemp)
+printf '0\n' > "$sequence_file"
 declare -A ARISE_INHERITING=()
 declare -A ARISE_INHERITED=()
 escape_json() { local s=$1; s=${s//\\/\\\\}; s=${s//\"/\\\"}; printf '%s' "$s"; }
-emit() { printf '{"protocol":1,"id":"%s","sequence":%d,%s}\n' "$ARISE_ID" "$sequence" "$1" >&3; sequence=$((sequence+1)); }
-die() { printf '%s\n' "${*:-die called}"; return 1; }
+emit() {
+  local sequence
+  sequence=$(<"$sequence_file")
+  printf '{"protocol":1,"id":"%s","sequence":%d,%s}\n' "$ARISE_ID" "$sequence" "$1" >&3
+  printf '%d\n' "$((sequence+1))" > "$sequence_file"
+}
+die() { printf '%s\n' "${*:-die called}"; exit 1; }
+arise_elog() { local class=$1; shift; printf '\036ARISE_ELOG|%s|%s\n' "$class" "$*"; }
+einfo() { arise_elog INFO "$@"; }
+elog() { arise_elog LOG "$@"; }
+ewarn() { arise_elog WARN "$@"; }
+eerror() { arise_elog ERROR "$@"; }
+eqawarn() { arise_elog QA "$@"; }
 has() {
   local needle=${1-} candidate
   (( $# > 0 )) || return 1
   shift
   for candidate in "$@"; do [[ $candidate == "$needle" ]] && return 0; done
   return 1
+}
+debug-print() { :; }
+debug-print-function() { :; }
+use() {
+  local flag=${1-}
+  [[ $flag ]] || return 1
+  [[ " ${USE-} " == *" $flag "* ]]
+}
+usex() {
+  local flag=${1-} yes=${2-yes} no=${3-no}
+  use "$flag" && printf '%s' "$yes" || printf '%s' "$no"
+}
+has_version() {
+  while [[ ${1-} == -* ]]; do shift; done
+  local query=${1-} line
+  [[ $query ]] || return 2
+  while IFS= read -r line; do
+    [[ ${line%%$'\t'*} == "$query" ]] || continue
+    [[ ${line##*$'\t'} == 1 ]]
+    return
+  done <<< "${ARISE_HAS_VERSION-}"
+  printf 'has_version query was not preflighted: %s\n' "$query"
+  return 2
+}
+ver_test() {
+  local left=${1-} op=${2-} right=${3-}
+  [[ $left && $op && $right ]] || return 2
+  local first
+  first=$(printf '%s\n%s\n' "$left" "$right" | sort -V | head -n1) || return
+  case $op in
+    -eq) [[ $left == "$right" ]] ;;
+    -ne) [[ $left != "$right" ]] ;;
+    -lt) [[ $left != "$right" && $first == "$left" ]] ;;
+    -le) [[ $left == "$right" || $first == "$left" ]] ;;
+    -gt) [[ $left != "$right" && $first == "$right" ]] ;;
+    -ge) [[ $left == "$right" || $first == "$right" ]] ;;
+    *) return 2 ;;
+  esac
+}
+get_libdir() {
+  case ${ABI-} in
+    amd64|x86_64) printf 'lib64' ;;
+    x86) printf 'lib32' ;;
+    *) [[ ${DEFAULT_ABI-} == amd64 ]] && printf 'lib64' || printf 'lib' ;;
+  esac
+}
+dobin() {
+  [[ ${ED-} ]] || { printf 'dobin requires ED\n'; return 1; }
+  local source destination=$ED/usr/bin
+  mkdir -p "$destination" || return
+  for source in "$@"; do install -m 0755 -- "$source" "$destination/${source##*/}" || return; done
+}
+newbin() {
+  [[ $# == 2 ]] || { printf 'newbin requires source and name\n'; return 1; }
+  [[ ${ED-} ]] || { printf 'newbin requires ED\n'; return 1; }
+  mkdir -p "$ED/usr/bin" || return
+  install -m 0755 -- "$1" "$ED/usr/bin/$2"
 }
 inherit() {
   local name directory path old_eclass=${ECLASS-}
@@ -190,31 +259,55 @@ if (( status == 0 )) && [[ ${EAPI-} != "$ARISE_EAPI" ]]; then
   printf 'ebuild EAPI %s does not match preflight EAPI %s\n' "${EAPI-<unset>}" "$ARISE_EAPI" >>"$log_file"
   status=126
 fi
+run_one_phase() {
+  local phase_name=$1 phase_directory old_directory=$PWD phase_status=0
+  emit '"kind":"phase","message":"'"$phase_name"'"'
+  EBUILD_PHASE=$phase_name
+  phase_directory=${S:-${WORKDIR:-.}}
+  case $phase_name in
+    src_unpack|pkg_*) phase_directory=${WORKDIR:-.} ;;
+  esac
+  cd "$phase_directory" || return
+  if declare -F "$phase_name" >/dev/null; then
+    "$phase_name" || phase_status=$?
+  else
+    case $phase_name in
+      src_unpack|src_prepare|src_configure|src_compile|src_test|src_install|pkg_setup|pkg_preinst|pkg_postinst|pkg_prerm|pkg_postrm)
+        "default_$phase_name" || phase_status=$? ;;
+      *) printf 'phase function %s is not defined\n' "$phase_name"; phase_status=127 ;;
+    esac
+  fi
+  cd "$old_directory" || return
+  return "$phase_status"
+}
+
 if (( status == 0 )) && [[ $ARISE_COMMAND == discover_phases ]]; then
   for phase in pkg_setup src_unpack src_prepare src_configure src_compile src_test src_install pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
     declare -F "$phase" >/dev/null && emit '"kind":"phase","message":"'"$phase"'"'
   done
-elif (( status == 0 )); then
-  emit '"kind":"phase","message":"'"$ARISE_PHASE"'"'
-  EBUILD_PHASE=$ARISE_PHASE
-  phase_directory=${S:-${WORKDIR:-.}}
-  case $ARISE_PHASE in
-    src_unpack|pkg_*) phase_directory=${WORKDIR:-.} ;;
-  esac
-  if declare -F "$ARISE_PHASE" >/dev/null; then
-    ( cd "$phase_directory" && "$ARISE_PHASE" ) >>"$log_file" 2>&1 || status=$?
-  else
-    case $ARISE_PHASE in
-      src_unpack|src_prepare|src_configure|src_compile|src_test|src_install|pkg_setup|pkg_preinst|pkg_postinst|pkg_prerm|pkg_postrm)
-        ( cd "$phase_directory" && "default_$ARISE_PHASE" ) >>"$log_file" 2>&1 || status=$? ;;
-      *) printf 'phase function %s is not defined\n' "$ARISE_PHASE" >>"$log_file"; status=127 ;;
-    esac
-  fi
+elif (( status == 0 )) && [[ $ARISE_COMMAND == run_phase ]]; then
+	  ( run_one_phase "$ARISE_PHASE" ) >>"$log_file" 2>&1 || status=$?
+elif (( status == 0 )) && [[ $ARISE_COMMAND == run_phases ]]; then
+	  (
+	    while IFS= read -r phase_name; do
+	      [[ $phase_name ]] || continue
+	      run_one_phase "$phase_name" || exit $?
+	    done <<< "${ARISE_PHASES-}"
+	  ) >>"$log_file" 2>&1 || status=$?
 fi
 while IFS= read -r line; do
+  if [[ $line == $'\036ARISE_ELOG|'* ]]; then
+    payload=${line#$'\036ARISE_ELOG|'}
+    class=${payload%%|*}
+    message=${payload#*|}
+    escaped=$(escape_json "$message")
+    emit '"kind":"elog","class":"'"$class"'","message":"'"$escaped"'"'
+    continue
+  fi
   escaped=$(escape_json "$line")
   emit '"kind":"log","stream":"stdout","message":"'"$escaped"'"'
 done <"$log_file"
 rm -f "$log_file"
 emit '"kind":"result","exit_code":'"$status"
+rm -f "$sequence_file"
 exit "$status"

@@ -3,11 +3,13 @@ package rebuild
 import (
 	"archive/tar"
 	"bytes"
+	"compress/bzip2"
 	"compress/gzip"
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/airencracken/arise/internal/phaseproto"
 	"github.com/airencracken/arise/internal/portage"
 )
 
@@ -659,6 +662,25 @@ pkg_postinst() { printf 'postinst\n' > "${ROOT}/postinst-marker"; }
 			t.Errorf("expected disposable-root result %s: %v", path, err)
 		}
 	}
+	vdbEntry := filepath.Join(vdb, "app-misc", "protocol-test-1")
+	for name, want := range map[string]string{"CATEGORY": "app-misc", "PF": "protocol-test-1", "EAPI": "8", "repository": "test"} {
+		data, err := os.ReadFile(filepath.Join(vdbEntry, name))
+		if err != nil || strings.TrimSpace(string(data)) != want {
+			t.Errorf("VDB %s=%q err=%v", name, data, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(vdbEntry, "protocol-test-1.ebuild")); err != nil {
+		t.Errorf("VDB ebuild missing: %v", err)
+	}
+	compressed, err := os.Open(filepath.Join(vdbEntry, "environment.bz2"))
+	if err != nil {
+		t.Fatalf("VDB environment missing: %v", err)
+	}
+	environment, err := io.ReadAll(bzip2.NewReader(compressed))
+	compressed.Close()
+	if err != nil || !strings.Contains(string(environment), "export PF='protocol-test-1'") || !strings.Contains(string(environment), "export ROOT='") {
+		t.Fatalf("VDB environment=%q err=%v", environment, err)
+	}
 }
 
 func TestRebuildPackageUsesVerifiedCachedDISTDIR(t *testing.T) {
@@ -841,5 +863,13 @@ func mkdirAll(t *testing.T, dirs ...string) {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestProtocolBuildPhasesHonorTestPolicy(t *testing.T) {
+	without := strings.Join(protocolBuildPhases(phaseproto.ExecutionPolicy{Configured: true}), " ")
+	with := strings.Join(protocolBuildPhases(phaseproto.ExecutionPolicy{Configured: true, Tests: true}), " ")
+	if strings.Contains(without, "src_test") || !strings.Contains(with, "src_test") {
+		t.Fatalf("without=%q with=%q", without, with)
 	}
 }

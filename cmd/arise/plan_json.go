@@ -10,35 +10,51 @@ import (
 )
 
 type jsonPlan struct {
-	Schema     int                      `json:"schema"`
-	Operation  string                   `json:"operation"`
-	Targets    []string                 `json:"targets"`
-	Complete   bool                     `json:"complete"`
-	Resolution jsonResolution           `json:"resolution"`
-	Actions    []jsonAction             `json:"actions"`
-	Uninstall  []jsonAction             `json:"uninstall,omitempty"`
-	Conflicts  []string                 `json:"conflicts"`
-	Details    []resolve.ConflictDetail `json:"conflict_details,omitempty"`
-	Warnings   []string                 `json:"warnings"`
-	Error      string                   `json:"error,omitempty"`
+	Schema      int                      `json:"schema"`
+	Operation   string                   `json:"operation"`
+	Targets     []string                 `json:"targets"`
+	Complete    bool                     `json:"complete"`
+	Resolution  jsonResolution           `json:"resolution"`
+	Actions     []jsonAction             `json:"actions"`
+	Uninstall   []jsonAction             `json:"uninstall,omitempty"`
+	Conflicts   []string                 `json:"conflicts"`
+	Details     []resolve.ConflictDetail `json:"conflict_details,omitempty"`
+	Warnings    []string                 `json:"warnings"`
+	Error       string                   `json:"error,omitempty"`
+	PlanSHA256  string                   `json:"plan_sha256,omitempty"`
+	StateSHA256 string                   `json:"state_sha256,omitempty"`
 }
 
 type jsonResolution struct {
-	Verified        bool                        `json:"verified"`
-	Verification    string                      `json:"verification"`
-	DurationNS      int64                       `json:"duration_ns"`
-	BacktrackUsed   int                         `json:"backtrack_used"`
-	BacktrackLimit  int                         `json:"backtrack_limit"`
-	Decisions       []resolve.BacktrackDecision `json:"decisions"`
-	Branches        []resolve.BranchEvaluation  `json:"branches"`
-	IndexNS         int64                       `json:"index_ns"`
-	StateNS         int64                       `json:"state_ns"`
-	GraphNS         int64                       `json:"graph_ns"`
-	SolverNS        int64                       `json:"solver_ns"`
-	SearchNS        int64                       `json:"search_ns"`
-	CompleteGraphNS int64                       `json:"complete_graph_ns"`
-	VerificationNS  int64                       `json:"verification_ns"`
-	SortNS          int64                       `json:"sort_ns"`
+	Verified              bool                        `json:"verified"`
+	Verification          string                      `json:"verification"`
+	DurationNS            int64                       `json:"duration_ns"`
+	BacktrackUsed         int                         `json:"backtrack_used"`
+	BacktrackLimit        int                         `json:"backtrack_limit"`
+	Decisions             []resolve.BacktrackDecision `json:"decisions"`
+	Branches              []resolve.BranchEvaluation  `json:"branches"`
+	IndexNS               int64                       `json:"index_ns"`
+	StateNS               int64                       `json:"state_ns"`
+	GraphNS               int64                       `json:"graph_ns"`
+	SolverNS              int64                       `json:"solver_ns"`
+	StateFingerprintNS    int64                       `json:"state_fingerprint_ns"`
+	SearchNS              int64                       `json:"search_ns"`
+	DirectUpdateRefreshNS int64                       `json:"direct_update_refresh_ns"`
+	CompleteGraphNS       int64                       `json:"complete_graph_ns"`
+	VerificationNS        int64                       `json:"verification_ns"`
+	SortNS                int64                       `json:"sort_ns"`
+	Incomplete            *resolve.IncompleteCause    `json:"incomplete,omitempty"`
+	CompleteGraphPasses   uint64                      `json:"complete_graph_passes"`
+	CandidateEvaluations  uint64                      `json:"candidate_evaluations"`
+	ReplayBranches        uint64                      `json:"replay_branches"`
+	VerifierPasses        uint64                      `json:"verifier_passes"`
+	VerifierRepairs       uint64                      `json:"verifier_repairs"`
+	UndoLogOperations     uint64                      `json:"undo_log_operations"`
+	CancellationChecks    uint64                      `json:"cancellation_checks"`
+	Allocations           uint64                      `json:"allocations"`
+	AllocatedBytes        uint64                      `json:"allocated_bytes"`
+	CandidateCacheHits    uint64                      `json:"candidate_cache_hits"`
+	CandidateCacheMisses  uint64                      `json:"candidate_cache_misses"`
 }
 
 type jsonAction struct {
@@ -57,6 +73,9 @@ type jsonAction struct {
 
 type planTimings struct {
 	Total, Index, State, Graph, Solver time.Duration
+	StateFingerprint                   time.Duration
+	StateSHA256                        string
+	Operation                          string
 }
 
 func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult, resolveErr error, timings planTimings) error {
@@ -67,6 +86,9 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 	if cfg.Update {
 		operation = "update"
 	}
+	if timings.Operation != "" {
+		operation = timings.Operation
+	}
 	document := jsonPlan{
 		Schema: 1, Operation: operation, Targets: append([]string(nil), targets...),
 		Complete: resolveErr == nil && result.Verified && len(result.Conflicts) == 0,
@@ -76,12 +98,30 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 			Decisions: append([]resolve.BacktrackDecision(nil), result.DecisionHistory...),
 			Branches:  append([]resolve.BranchEvaluation(nil), result.BranchEvaluations...),
 			IndexNS:   timings.Index.Nanoseconds(), StateNS: timings.State.Nanoseconds(), GraphNS: timings.Graph.Nanoseconds(), SolverNS: timings.Solver.Nanoseconds(),
-			SearchNS: result.Metrics.Search.Nanoseconds(), CompleteGraphNS: result.Metrics.CompleteGraph.Nanoseconds(),
-			VerificationNS: result.Metrics.Verification.Nanoseconds(), SortNS: result.Metrics.Sort.Nanoseconds(),
+			StateFingerprintNS: timings.StateFingerprint.Nanoseconds(),
+			SearchNS:           result.Metrics.Search.Nanoseconds(), CompleteGraphNS: result.Metrics.CompleteGraph.Nanoseconds(),
+			DirectUpdateRefreshNS: result.Metrics.DirectUpdateRefresh.Nanoseconds(),
+			VerificationNS:        result.Metrics.Verification.Nanoseconds(), SortNS: result.Metrics.Sort.Nanoseconds(),
+			Incomplete:           result.Incomplete,
+			CompleteGraphPasses:  result.Metrics.CompleteGraphPasses,
+			CandidateEvaluations: result.Metrics.CandidateEvaluations,
+			ReplayBranches:       result.Metrics.ReplayBranches,
+			VerifierPasses:       result.Metrics.VerifierPasses,
+			VerifierRepairs:      result.Metrics.VerifierRepairs,
+			UndoLogOperations:    result.Metrics.UndoLogOperations,
+			CancellationChecks:   result.Metrics.CancellationChecks,
+			Allocations:          result.Metrics.Allocations,
+			AllocatedBytes:       result.Metrics.AllocatedBytes,
+			CandidateCacheHits:   result.Metrics.CandidateCacheHits,
+			CandidateCacheMisses: result.Metrics.CandidateCacheMisses,
 		},
 		Actions: jsonActions(result.Install), Uninstall: jsonActions(result.Uninstall),
 		Conflicts: append([]string(nil), result.Conflicts...), Details: append([]resolve.ConflictDetail(nil), result.ConflictDetails...),
 		Warnings: append([]string(nil), result.Warnings...),
+	}
+	document.StateSHA256 = timings.StateSHA256
+	if document.Complete && timings.StateSHA256 != "" {
+		document.PlanSHA256 = canonicalPlanSHA256(targets, cfg, result, timings.StateSHA256)
 	}
 	if document.Actions == nil {
 		document.Actions = []jsonAction{}

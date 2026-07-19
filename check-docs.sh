@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -u
+set -o pipefail
+
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+status=0
+
+for script in misc/arise-completion.bash internal/phaseproto/worker.sh profile-p3-matrix.sh profile-p3-world.sh; do
+  if ! bash -n "$repo_dir/$script"; then
+    status=1
+  fi
+done
+
+if command -v makeinfo >/dev/null 2>&1; then
+  info_output=$(mktemp /tmp/arise-info.XXXXXX)
+  if ! makeinfo --no-split -o "$info_output" "$repo_dir/arise.texi"; then
+    status=1
+  fi
+  rm -f "$info_output"
+else
+  echo "check-docs: makeinfo unavailable; skipped Texinfo compilation" >&2
+fi
+
+if command -v mandoc >/dev/null 2>&1; then
+  if ! mandoc -T lint "$repo_dir/arise.1"; then
+    status=1
+  fi
+else
+  echo "check-docs: mandoc unavailable; skipped man-page lint" >&2
+fi
+
+if ! git -C "$repo_dir" diff --check; then
+  status=1
+fi
+
+exit "$status"

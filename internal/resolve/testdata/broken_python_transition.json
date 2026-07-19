@@ -1,0 +1,49 @@
+{
+  "name": "sanitized-broken-python-transition",
+  "targets": ["@world", "dev-lang/python:3.14"],
+  "world": ["app-misc/python-consumer"],
+  "config": {
+    "update": true,
+    "deep": true,
+    "newUse": true,
+    "completeGraph": true,
+    "backtrack": 20
+  },
+  "expectations": {
+    "Arise": {
+      "actions": ["app-misc/python-consumer-1", "dev-lang/python-3.14.4_p1"],
+      "verified": true
+    },
+    "Portage": {
+      "actions": ["dev-lang/python-3.14.4_p1"],
+      "verified": false,
+      "partial": true
+    }
+  },
+  "versions": [
+    {
+      "CP": "dev-lang/python", "Version": "3.12.9", "Slot": "3.12", "Subslot": "3.12",
+      "Repository": "gentoo", "Installed": true, "Available": false,
+      "InstalledEAPI": "8"
+    },
+    {
+      "CP": "dev-lang/python", "Version": "3.14.4_p1", "Slot": "3.14", "Subslot": "3.14",
+      "Repository": "gentoo", "Installed": false, "Available": true, "EAPI": "8"
+    },
+    {
+      "CP": "app-misc/python-consumer", "Version": "1", "Slot": "0", "Subslot": "0",
+      "Repository": "gentoo", "Installed": true, "Available": true,
+      "Use": {"python_targets_python3_14": true},
+      "InstalledUse": {"python_targets_python3_12": true},
+      "InstalledIUse": {"python_targets_python3_12": true, "python_targets_python3_14": true},
+      "Rdepend": "python_targets_python3_14? ( dev-lang/python:3.14 )",
+      "InstalledRdepend": "python_targets_python3_12? ( dev-lang/python:3.12 )",
+      "EAPI": "8", "InstalledEAPI": "8"
+    },
+    {
+      "CP": "dev-python/removed-leaf", "Version": "1", "Slot": "0", "Subslot": "0",
+      "Repository": "gentoo", "Installed": true, "Available": false,
+      "InstalledRdepend": "dev-lang/python:3.12", "InstalledEAPI": "7"
+    }
+  ]
+}

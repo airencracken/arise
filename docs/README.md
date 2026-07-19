@@ -12,7 +12,14 @@ they may describe an older revision and do not override the root documents or
 automated tests.
 
 The latest consolidated state record is
-[`audits/CHECKPOINT_2026-07-18.md`](audits/CHECKPOINT_2026-07-18.md).
+[`audits/CHECKPOINT_P3_P6_2026-07-18.md`](audits/CHECKPOINT_P3_P6_2026-07-18.md).
+Earlier dated checkpoints and audits are historical snapshots and must not be
+read as current implementation status.
+
+The maintained
+[`compatibility/PORTAGE_COMPATIBILITY_MATRIX.md`](compatibility/PORTAGE_COMPATIBILITY_MATRIX.md)
+tracks man-page-derived CLI options, environment variables, and Portage
+configuration files together with their enforcement status.
 
 ## Audits
 
@@ -39,6 +46,11 @@ before pruning a planning document.
 Operational and implementation guides currently remain under [`misc/`](../misc/)
 alongside their scripts and workload definitions. They can move into dedicated
 guide/reference directories once their interfaces stabilize.
+
+Run `./check-docs.sh` after documentation or CLI changes. It always checks Bash
+syntax and whitespace, compiles `arise.texi` when `makeinfo` exists, and lints
+`arise.1` when `mandoc` exists. Missing optional documentation tools are
+reported and skipped rather than invoked blindly.
 
 ## Pruning checklist
 

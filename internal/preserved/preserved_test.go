@@ -513,15 +513,47 @@ func TestScanBrokenLinks_SkipsNonELF(t *testing.T) {
 	}
 }
 
-func TestScanBrokenLinks_LDDNotAvailable(t *testing.T) {
+func TestScanBrokenLinks_DoesNotRequireLDD(t *testing.T) {
 	orig := lddPath
 	defer func() { lddPath = orig }()
 	lddPath = "/nonexistent/definitely/not/ldd"
 
 	root := t.TempDir()
-	_, err := ScanBrokenLinks(root)
-	if err == nil {
-		t.Error("expected error when ldd is not available")
+	result, err := ScanBrokenLinks(root)
+	if err != nil {
+		t.Fatalf("native scan unexpectedly required ldd: %v", err)
+	}
+	if len(result) != 0 {
+		t.Fatalf("empty native scan = %v", result)
+	}
+}
+
+func TestLoaderLibraryNamesReadsConfiguredAndIncludedDirectories(t *testing.T) {
+	root := t.TempDir()
+	for _, path := range []string{"opt/lib/libcustom.so.1", "vendor/lib/libvendor.so.2"} {
+		full := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, nil, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	confDir := filepath.Join(root, "etc/ld.so.conf.d")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/ld.so.conf"), []byte("/opt/lib\ninclude /etc/ld.so.conf.d/*.conf\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "vendor.conf"), []byte("/vendor/lib\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	available := loaderLibraryNames(root)
+	for _, library := range []string{"libcustom.so.1", "libvendor.so.2"} {
+		if !available[library] {
+			t.Errorf("configured loader library %s was not discovered", library)
+		}
 	}
 }
 
@@ -556,6 +588,35 @@ func TestScanPreservedLibs(t *testing.T) {
 	}
 	if len(result) < len(files) {
 		t.Errorf("expected at least %d preserved libs, got %d", len(files), len(result))
+	}
+}
+
+func TestScanPreservedLibsUsesRegistryInsteadOfFilenameHeuristics(t *testing.T) {
+	root := t.TempDir()
+	registered := filepath.Join(root, "usr/lib/libold.so.1.2")
+	unregistered := filepath.Join(root, "usr/lib/libnormal.so.2.3")
+	if err := os.MkdirAll(filepath.Dir(registered), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{registered, unregistered} {
+		if err := os.WriteFile(path, []byte("not an ELF"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry := filepath.Join(root, "var/lib/portage/preserved_libs_registry")
+	if err := os.MkdirAll(filepath.Dir(registry), 0755); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"dev-libs/example:0":["dev-libs/example-1","7",["/usr/lib/libold.so.1.2"]]}`
+	if err := os.WriteFile(registry, []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := ScanPreservedLibs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result) != 1 || result[0].Path != registered || result[0].OwningPkg != "dev-libs/example-1" {
+		t.Fatalf("registry-backed preserved libraries = %#v", result)
 	}
 }
 
@@ -644,7 +705,7 @@ func TestRebuildNeeded_NoChanges(t *testing.T) {
 	}
 }
 
-func TestRebuildNeeded_WithBrokenLink(t *testing.T) {
+func TestRebuildNeeded_DoesNotIncludeGeneralBrokenLinks(t *testing.T) {
 	if err := checkLDD(); err != nil {
 		t.Skipf("ldd not available: %v", err)
 	}
@@ -671,8 +732,9 @@ func TestRebuildNeeded_WithBrokenLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// On a normal system, /bin/sh's libraries are available so no rebuild needed
-	_ = result
+	if len(result) != 0 {
+		t.Fatalf("general broken-link scan leaked into preserved rebuild: %v", result)
+	}
 }
 
 func TestRebuildNeeded_EmptyVDB(t *testing.T) {
@@ -692,7 +754,7 @@ func TestRebuildNeeded_EmptyVDB(t *testing.T) {
 	}
 }
 
-func TestRebuildNeeded_MissingLDD(t *testing.T) {
+func TestRebuildNeeded_DoesNotRequireLDD(t *testing.T) {
 	orig := lddPath
 	defer func() { lddPath = orig }()
 	lddPath = "/nonexistent/ldd"
@@ -700,9 +762,61 @@ func TestRebuildNeeded_MissingLDD(t *testing.T) {
 	root := t.TempDir()
 	vdb := t.TempDir()
 
-	_, err := RebuildNeeded(root, vdb)
-	if err == nil {
-		t.Error("expected error when ldd is not available")
+	result, err := RebuildNeeded(root, vdb)
+	if err != nil {
+		t.Fatalf("native rebuild scan unexpectedly required ldd: %v", err)
+	}
+	if len(result) != 0 {
+		t.Fatalf("empty native rebuild scan = %v", result)
+	}
+}
+
+func TestReverseELFConsumers(t *testing.T) {
+	vdb := t.TempDir()
+	writeNeeded := func(cpv, contents string) {
+		path := filepath.Join(vdb, filepath.FromSlash(cpv))
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "NEEDED.ELF.2"), []byte(contents), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeNeeded("dev-qt/qtcore-5", "X86_64;/usr/lib64/libQt5Core.so.5;libQt5Core.so.5;;libc.so.6;x86_64\n")
+	writeNeeded("dev-qt/qtgui-5", "X86_64;/usr/lib64/libQt5Gui.so.5;libQt5Gui.so.5;;libQt5Core.so.5,libc.so.6;x86_64\n")
+	writeNeeded("app-misc/unrelated-1", "X86_64;/usr/bin/unrelated;;;libc.so.6;x86_64\n")
+
+	got, err := ReverseELFConsumers(vdb, "dev-qt/qtcore-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"dev-qt/qtgui-5"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReverseELFConsumers()=%v, want %v", got, want)
+	}
+}
+
+func TestReverseELFRemovalClosureConsumerFirst(t *testing.T) {
+	vdb := t.TempDir()
+	write := func(cpv, metadata string) {
+		dir := filepath.Join(vdb, filepath.FromSlash(cpv))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "NEEDED.ELF.2"), []byte(metadata), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("cat/core-1", "X;/lib/core;libcore.so;;;x\n")
+	write("cat/middle-1", "X;/lib/middle;libmiddle.so;;libcore.so;x\n")
+	write("cat/leaf-1", "X;/bin/leaf;;;libmiddle.so;x\n")
+	got, err := ReverseELFRemovalClosure(vdb, "cat/core-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cat/leaf-1", "cat/middle-1", "cat/core-1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("closure=%v want=%v", got, want)
 	}
 }
 
@@ -784,7 +898,7 @@ func TestRevdepRebuild_WithRealBinaries(t *testing.T) {
 	}
 }
 
-func TestRevdepRebuild_MissingLDD(t *testing.T) {
+func TestRevdepRebuild_DoesNotRequireLDD(t *testing.T) {
 	orig := lddPath
 	defer func() { lddPath = orig }()
 	lddPath = "/nonexistent/ldd"
@@ -792,9 +906,12 @@ func TestRevdepRebuild_MissingLDD(t *testing.T) {
 	root := t.TempDir()
 	vdb := t.TempDir()
 
-	_, err := RevdepRebuild(root, vdb)
-	if err == nil {
-		t.Error("expected error when ldd is not available")
+	result, err := RevdepRebuild(root, vdb)
+	if err != nil {
+		t.Fatalf("native reverse dependency scan unexpectedly required ldd: %v", err)
+	}
+	if len(result) != 0 {
+		t.Fatalf("empty native reverse dependency scan = %v", result)
 	}
 }
 

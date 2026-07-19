@@ -1,6 +1,7 @@
 package world
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -200,6 +201,67 @@ func TestSave(t *testing.T) {
 	}
 	if lines[0] != "app-shells/bash" || lines[1] != "sys-apps/portage" {
 		t.Errorf("saved file content = %q", string(data))
+	}
+}
+
+func TestSaveAtomicallyReplacesAndPreservesMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "world")
+	if err := os.WriteFile(path, []byte("old/value\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&WorldSet{Atoms: []string{"new/value"}}).Save(path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "new/value\n" {
+		t.Fatalf("world=%q err=%v", data, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode=%v err=%v", info.Mode().Perm(), err)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, ".world-arise-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("temporary files=%v err=%v", matches, err)
+	}
+}
+
+func TestUpdateLocksLoadMutateAndSave(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "world")
+	if err := os.WriteFile(path, []byte("cat/old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Update(path, func(set *WorldSet) error {
+		Remove(set, "cat/old")
+		Add(set, "cat/new")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || string(data) != "cat/new\n" {
+		t.Fatalf("world=%q err=%v", data, err)
+	}
+}
+
+func TestUpdateCallbackFailurePreservesWorld(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "world")
+	if err := os.WriteFile(path, []byte("cat/original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Update(path, func(set *WorldSet) error {
+		Add(set, "cat/uncommitted")
+		return fmt.Errorf("injected")
+	})
+	if err == nil {
+		t.Fatal("expected callback failure")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || string(data) != "cat/original\n" {
+		t.Fatalf("world=%q err=%v", data, readErr)
 	}
 }
 

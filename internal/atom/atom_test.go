@@ -157,6 +157,7 @@ func TestParse_VersionSuffixes(t *testing.T) {
 		{"1.0_p5", []int{1, 0}, []string{"_p", "5"}, -1},
 		{"1.0-r1", []int{1, 0}, nil, 1},
 		{"1.0_alpha1_p2", []int{1, 0}, []string{"_alpha", "1", "_p", "2"}, -1},
+		{"1.0p", []int{1, 0}, nil, -1},
 	}
 
 	for _, tt := range tests {
@@ -192,6 +193,56 @@ func TestComparePreservesTrailingNumericComponents(t *testing.T) {
 	}
 	if got := long.Compare(short); got != 1 {
 		t.Fatalf("1.0.0 Compare 1.0 = %d, want 1", got)
+	}
+}
+
+func TestComparePreservesLeadingZeroComponentPrecision(t *testing.T) {
+	tests := []struct {
+		left, right string
+		want        int
+	}{
+		{"1.01", "1.1", -1},
+		{"1.001", "1.01", -1},
+		{"1.010", "1.01", 0},
+		{"1.1", "1.01", 1},
+		{"1.0", "1.00", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.left+"_vs_"+tt.right, func(t *testing.T) {
+			left, err := ParseVersion(tt.left)
+			if err != nil {
+				t.Fatal(err)
+			}
+			right, err := ParseVersion(tt.right)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := left.Compare(right); got != tt.want {
+				t.Fatalf("Compare(%q, %q) = %d, want %d", tt.left, tt.right, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompareNormalizesImplicitSuffixAndRevisionZero(t *testing.T) {
+	for _, pair := range [][2]string{
+		{"1.0", "1.0-r0"},
+		{"1.0_alpha", "1.0_alpha0"},
+		{"1.0_p", "1.0_p0"},
+		{"1.0_alpha0", "1.0_alpha00"},
+		{"1.0_alpha1", "1.0_alpha01"},
+	} {
+		left, err := ParseVersion(pair[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		right, err := ParseVersion(pair[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := left.Compare(right); got != 0 {
+			t.Errorf("Compare(%q, %q) = %d, want 0", pair[0], pair[1], got)
+		}
 	}
 }
 
@@ -327,6 +378,24 @@ func TestParse_Errors(t *testing.T) {
 		"sys-devel/",
 		"sys-devel/gcc-",
 		"sys-devel/gcc-!invalid",
+		"!sys-devel/gcc",
+		"!!sys-devel/gcc",
+		"sys-devel/gcc::",
+		"sys-devel/gcc[]",
+		"sys-devel/gcc[foo,]",
+		"sys-devel/gcc[,foo]",
+		"sys-devel/gcc[foo,,bar]",
+		"sys-devel/gcc[foo",
+		"sys-devel/gcc[foo]trailing",
+		"sys-devel/gcc::gentoo:trailing",
+		"sys-devel/gcc:*:",
+		"sys-devel/gcc:=:",
+		"sys-devel/gcc\x00trailing",
+		"sys-devel/gcc\n",
+		"sys-devel/gcc:0/*",
+		"sys-devel/gcc:0/=",
+		"sys-devel/gcc-1.0_foo",
+		"sys-devel/gcc-1.0_alpha1x",
 	}
 	for _, input := range tests {
 		t.Run("error_"+input, func(t *testing.T) {
@@ -336,6 +405,58 @@ func TestParse_Errors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzAtomRoundTrip(f *testing.F) {
+	for _, seed := range []string{
+		"sys-apps/portage",
+		"=sys-apps/portage-3.0.51-r1:0/0::gentoo[doc,-test]",
+		"~dev-lang/python-3.13.5-r2:3.13[tcltk(+)]",
+		"dev-libs/boost:0/1.88=",
+		"virtual/libcrypt:*",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		parsed, err := Parse(input)
+		if err != nil {
+			return
+		}
+		rendered := parsed.String()
+		reparsed, err := Parse(rendered)
+		if err != nil {
+			t.Fatalf("Parse(%q) succeeded but reparsing %q failed: %v", input, rendered, err)
+		}
+		if got := reparsed.String(); got != rendered {
+			t.Fatalf("atom rendering is not idempotent: first %q, second %q", rendered, got)
+		}
+	})
+}
+
+func FuzzVersionCompareInvariants(f *testing.F) {
+	for _, seed := range [][2]string{
+		{"1.0", "1.0-r1"},
+		{"1.0_alpha1", "1.0_beta1"},
+		{"1.0", "1.0.0"},
+		{"9999", "15.3.0_p1"},
+	} {
+		f.Add(seed[0], seed[1])
+	}
+	f.Fuzz(func(t *testing.T, left, right string) {
+		a, err := ParseVersion(left)
+		if err != nil {
+			return
+		}
+		b, err := ParseVersion(right)
+		if err != nil {
+			return
+		}
+		ab := a.Compare(b)
+		ba := b.Compare(a)
+		if (ab < 0 && ba != 1) || (ab > 0 && ba != -1) || (ab == 0 && ba != 0) {
+			t.Fatalf("comparison is not antisymmetric: %q vs %q = %d, reverse = %d", left, right, ab, ba)
+		}
+	})
 }
 
 func TestParse_Adversarial(t *testing.T) {

@@ -4,8 +4,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"runtime/pprof"
+	runtimeTrace "runtime/trace"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/ingest"
@@ -33,19 +39,23 @@ func commandRootPath(path string) string {
 }
 
 var (
-	showVersion = flag.Bool("version", false, "print version and exit")
-	dbPath      = flag.String("db", "/var/lib/arise/data", "database path")
-	repoPath    = flag.String("repo", commandEnv("PORTDIR", "/var/db/repos/gentoo"), "repository path")
-	repoURL     = flag.String("repo-url", "", "remote repository URL for sync")
+	finalizeRuntimeProfiles = func() {}
+	showVersion             = flag.Bool("version", false, "print version and exit")
+	dbPath                  = flag.String("db", "/var/lib/arise/data", "database path")
+	repoPath                = flag.String("repo", commandEnv("PORTDIR", "/var/db/repos/gentoo"), "repository path")
+	repoURL                 = flag.String("repo-url", "", "remote repository URL for sync")
 
 	// Filesystem path configuration
-	distfilesDir      = flag.String("distfiles-dir", commandEnv("DISTDIR", "/var/cache/distfiles"), "path to distfiles directory")
-	vdbDir            = flag.String("vdb-dir", commandRootPath("/var/db/pkg"), "path to VDB (var/db/pkg)")
-	workDir           = flag.String("work-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise"), "path to working directory")
-	binpkgDir         = flag.String("binpkg-dir", commandEnv("PKGDIR", "/var/cache/binpkgs"), "path to binary package directory")
-	portageConfigRoot = flag.String("portage-config-root", commandConfigRoot(), "path to portage configuration directory")
-	worldFile         = flag.String("world-file", commandRootPath("/var/lib/portage/world"), "path to world set file")
-	resumeFile        = flag.String("resume-file", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "resume"), "path to resume state file")
+	distfilesDir             = flag.String("distfiles-dir", commandEnv("DISTDIR", "/var/cache/distfiles"), "path to distfiles directory")
+	vdbDir                   = flag.String("vdb-dir", commandRootPath("/var/db/pkg"), "path to VDB (var/db/pkg)")
+	workDir                  = flag.String("work-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise"), "path to working directory")
+	binpkgDir                = flag.String("binpkg-dir", commandEnv("PKGDIR", "/var/cache/binpkgs"), "path to binary package directory")
+	portageConfigRoot        = flag.String("portage-config-root", commandConfigRoot(), "path to portage configuration directory")
+	worldFile                = flag.String("world-file", commandRootPath("/var/lib/portage/world"), "path to world set file")
+	resumeFile               = flag.String("resume-file", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "resume"), "path to resume state file")
+	journalDir               = flag.String("journal-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "journal"), "path to durable operation journals")
+	experimentalLiveMutation = flag.Bool("experimental-live-mutation", false, "authorize the gated live-mutation canary path")
+	approvePlanSHA256        = flag.String("approve-plan-sha256", "", "authorize exactly the canonical verified plan with this SHA-256 digest")
 
 	// Logging
 	logLevel = flag.String("log-level", "info", "log level: debug, info, warn, error")
@@ -68,6 +78,7 @@ var (
 	deep               = flag.Bool("deep", false, "-D, consider full dependency tree")
 	completeGraph      = flag.Bool("complete-graph", false, "rebuild reverse deps when packages change")
 	backtrackVal       = flag.Int("backtrack", 20, "--backtrack=INT, max backtrack levels")
+	resolverTimeout    = flag.Duration("resolver-timeout", 5*time.Minute, "wall-clock resolver limit (0 disables)")
 	jobsVal            = flag.Int("jobs", 0, "-j, parallel jobs")
 	loadAverage        = flag.Float64("load-average", 0, "--load-average=LOAD")
 	pretend            = flag.Bool("pretend", false, "-p, dry run")
@@ -167,6 +178,9 @@ func init() {
 }
 
 func main() {
+	stopRuntimeProfiles := startRuntimeProfilesFromEnvironment()
+	finalizeRuntimeProfiles = stopRuntimeProfiles
+	defer stopRuntimeProfiles()
 	os.Args = normalizeEmergeArgs(os.Args)
 	flag.Parse()
 	ingest.WriterVersion = version
@@ -188,7 +202,7 @@ func main() {
 	args := flag.Args()
 	if len(args) == 0 && *deselectArg == "" {
 		fmt.Fprintf(os.Stderr, "Usage: arise [flags] <command> [args...]\n")
-		fmt.Fprintf(os.Stderr, "Commands: sync, index, install, update, uninstall, query, state, search, installed, info, audit, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench\n")
+		fmt.Fprintf(os.Stderr, "Commands: sync, index, install, update, uninstall, select, recover, query, state, search, installed, info, audit, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 		os.Exit(1)
@@ -226,6 +240,8 @@ func main() {
 		runResolveAndRebuild(cmdArgs, *dbPath, *repoPath, true, false)
 	case "uninstall":
 		runUninstall(cmdArgs, *dbPath, *repoPath)
+	case "recover":
+		runRecover(cmdArgs)
 	case "audit":
 		runAudit(cmdArgs, *repoPath)
 	case "dispatch-conf":
@@ -262,6 +278,12 @@ func main() {
 			os.Exit(1)
 		}
 		runDeselect(cmdArgs[0])
+	case "select":
+		if len(cmdArgs) != 1 {
+			fmt.Fprintln(os.Stderr, "select: require exactly one installed atom")
+			os.Exit(1)
+		}
+		runSelect(cmdArgs[0])
 	case "equery":
 		runEquery(cmdArgs, *dbPath, *repoPath, *vdbDir)
 	case "bench":
@@ -273,13 +295,104 @@ func main() {
 	}
 }
 
+func exitAfterRuntimeProfiles(code int) {
+	finalizeRuntimeProfiles()
+	os.Exit(code)
+}
+
+func startRuntimeProfilesFromEnvironment() func() {
+	var cpuProfile, goTrace *os.File
+	if path := os.Getenv("ARISE_CPU_PROFILE"); path != "" {
+		profile, err := os.Create(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "profile: create CPU profile: %v\n", err)
+		} else if err := pprof.StartCPUProfile(profile); err != nil {
+			fmt.Fprintf(os.Stderr, "profile: start CPU profile: %v\n", err)
+			_ = profile.Close()
+		} else {
+			cpuProfile = profile
+		}
+	}
+	if path := os.Getenv("ARISE_GO_TRACE"); path != "" {
+		traceFile, err := os.Create(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "profile: create Go trace: %v\n", err)
+		} else if err := runtimeTrace.Start(traceFile); err != nil {
+			fmt.Fprintf(os.Stderr, "profile: start Go trace: %v\n", err)
+			_ = traceFile.Close()
+		} else {
+			goTrace = traceFile
+		}
+	}
+	heapPath, allocsPath := os.Getenv("ARISE_HEAP_PROFILE"), os.Getenv("ARISE_ALLOCS_PROFILE")
+	if cpuProfile == nil && goTrace == nil && heapPath == "" && allocsPath == "" {
+		return func() {}
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			signal.Stop(signals)
+			if goTrace != nil {
+				runtimeTrace.Stop()
+				if err := goTrace.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "profile: close Go trace: %v\n", err)
+				}
+			}
+			if cpuProfile != nil {
+				pprof.StopCPUProfile()
+			}
+			if heapPath != "" {
+				writeRuntimeProfile(heapPath, "heap")
+			}
+			if allocsPath != "" {
+				writeRuntimeProfile(allocsPath, "allocs")
+			}
+			if cpuProfile != nil {
+				if err := cpuProfile.Close(); err != nil {
+					fmt.Fprintf(os.Stderr, "profile: close CPU profile: %v\n", err)
+				}
+			}
+		})
+	}
+	go func() {
+		received := <-signals
+		stop()
+		if received == os.Interrupt {
+			os.Exit(130)
+		}
+		os.Exit(143)
+	}()
+	return stop
+}
+
+func writeRuntimeProfile(path, name string) {
+	profile := pprof.Lookup(name)
+	if profile == nil {
+		fmt.Fprintf(os.Stderr, "profile: runtime profile %q is unavailable\n", name)
+		return
+	}
+	output, err := os.Create(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "profile: create %s profile: %v\n", name, err)
+		return
+	}
+	if err := profile.WriteTo(output, 0); err != nil {
+		fmt.Fprintf(os.Stderr, "profile: write %s profile: %v\n", name, err)
+	}
+	if err := output.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "profile: close %s profile: %v\n", name, err)
+	}
+}
+
 func selectCommand(args []string) (string, []string) {
 	if len(args) == 0 {
 		return "", nil
 	}
 	commands := map[string]bool{
 		"sync": true, "index": true, "query": true, "state": true,
-		"install": true, "update": true, "uninstall": true, "audit": true,
+		"install": true, "update": true, "uninstall": true, "select": true, "recover": true, "audit": true,
 		"dispatch-conf": true, "quickpkg": true, "depclean": true, "prune": true,
 		"search": true, "installed": true, "info": true, "preserved-rebuild": true,
 		"revdep-rebuild": true, "env-update": true, "ldconfig": true, "config": true,

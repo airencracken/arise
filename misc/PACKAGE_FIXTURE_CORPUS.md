@@ -1,6 +1,7 @@
 # Package fixture corpus
 
-Signal remains the binary-only, large-job-count and user-patch regression. The
+Signal remains a binary-only, large-job-count and user-patch regression, not a
+representative resolver or execution benchmark. The
 additional corpus is selected by distinct package-manager behavior; adding more
 packages with the same behavior is lower value than deepening these fixtures.
 

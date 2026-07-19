@@ -65,6 +65,9 @@ _arise() {
         sync|index|info|dispatch-conf|depclean|prune|env-update|ldconfig|preserved-rebuild|revdep-rebuild|bench)
             _arise_flags
             ;;
+        recover)
+            COMPREPLY=($(compgen -W "status rollback --all-active" -- "$cur"))
+            ;;
     esac
 }
 
@@ -75,22 +78,23 @@ _arise_flags() {
         --ask --quiet --verbose --tree --buildpkg --buildpkgonly --usepkg
         --usepkgonly --fetchonly --noreplace --getbinpkg --getbinpkgonly
         --jobs --load-average
-        -ask -autounmask-write -backtrack -binpkg-respect-use -buildpkg
-        -buildpkgonly -changed-deps -changed-use -color -compact
-        -complete-graph -db -deep -desc -deselect -emptytree -exact
-        -fetchonly -getbinpkg -getbinpkgonly
-        -ignore-built-slot-operator-deps -jobs -keep-going -load-average
-        -name-only -newuse -nodeps -noreplace -oneshot -onlydeps -pretend
-        -quiet -regex -reinstall -repo -repo-url -resume
-        -search-and -search-brief -search-care -search-category
-        -search-count-only -search-depends-on -search-dump -search-duplicates
-        -search-format -search-has-use -search-has-version -search-installed
-        -search-json -search-keywords -search-license -search-masked
-        -search-name -search-not -search-only-names -search-overflow
-        -search-print -search-required-by -search-slot -search-sort
-        -search-stable -search-system -search-testing -search-use
-        -search-versions -search-world -skipfirst -tree
-        -unordered-display -usepkg -usepkgonly -verbose -with-bdeps
+        --ask --autounmask-write --backtrack --binpkg-respect-use --buildpkg
+        --buildpkgonly --changed-deps --changed-use --color --compact
+        --complete-graph --db --deep --desc --deselect --exact
+        --fetchonly --getbinpkg --getbinpkgonly
+        --ignore-built-slot-operator-deps --jobs --keep-going --load-average
+        --name-only --newuse --nodeps --noreplace --oneshot --onlydeps --pretend
+        --quiet --regex --reinstall --repo --repo-url --resolver-timeout --resume
+        --experimental-live-mutation --approve-plan-sha256 --journal-dir
+        --search-and --search-brief --search-care --search-category
+        --search-count-only --search-depends-on --search-dump --search-duplicates
+        --search-format --search-has-use --search-has-version --search-installed
+        --search-json --search-keywords --search-license --search-masked
+        --search-name --search-not --search-only-names --search-overflow
+        --search-print --search-required-by --search-slot --search-sort
+        --search-stable --search-system --search-testing --search-use
+        --search-versions --search-world --skipfirst --tree
+        --unordered-display --usepkg --usepkgonly --verbose --with-bdeps
     )
     COMPREPLY=($(compgen -W "${flags[*]}" -- "$cur"))
 }

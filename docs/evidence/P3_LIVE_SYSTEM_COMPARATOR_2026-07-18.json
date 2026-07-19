@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "captured": "2026-07-18",
+  "case": "deep-newuse-complete-graph-system",
+  "arise_actions": 159,
+  "portage_actions": 143,
+  "equivalent": false,
+  "arise_verified": true,
+  "portage_resolved": false,
+  "comparison_class": "verified-repair-vs-unresolved-partial",
+  "difference_count": 16,
+  "equivalence_speedup_eligible": false,
+  "recovery_diagnostic_eligible": true,
+  "note": "Current live repository/configuration rerun. Preserve normalized differences as repair evidence; publish timing only as a separately labeled recovery diagnostic."
+}

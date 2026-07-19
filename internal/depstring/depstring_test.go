@@ -671,6 +671,35 @@ func TestRoundTripComplexRealWorld(t *testing.T) {
 	}
 }
 
+func FuzzDependencyExpressionRoundTrip(f *testing.F) {
+	for _, seed := range []string{
+		"dev-libs/openssl",
+		">=dev-lang/python-3.11:3.11[ssl]",
+		"|| ( app-misc/a ( app-misc/b app-misc/c ) )",
+		"python? ( dev-lang/python ) !test? ( !app-misc/conflict )",
+		"!!sys-libs/old-lib virtual/libc",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		parsed, err := Parse(input)
+		if err != nil || parsed == nil {
+			return
+		}
+		rendered := parsed.String()
+		reparsed, err := Parse(rendered)
+		if err != nil {
+			t.Fatalf("Parse(%q) succeeded but reparsing %q failed: %v", input, rendered, err)
+		}
+		if reparsed == nil {
+			t.Fatalf("Parse(%q) rendered to an empty dependency expression", input)
+		}
+		if got := reparsed.String(); got != rendered {
+			t.Fatalf("dependency rendering is not idempotent: first %q, second %q", rendered, got)
+		}
+	})
+}
+
 func TestEmptyString(t *testing.T) {
 	tests := []string{"", "   ", "\n\t  "}
 

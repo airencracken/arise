@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "captured": "2026-07-18",
+  "architecture": "x86_64",
+  "repository_commit": "dbc31827cd0aab0d3b90114899a2eb2136dcb726",
+  "portage_version": "3.0.77",
+  "arise_binary_sha256": "0f0d00999d2dbc97b04e1e98b19a2d0716a02d1558eff32dcadccd010b6f5749",
+  "case": "deep-newuse-complete-graph-system-with-bdeps",
+  "arise_command": ["arise", "--json", "--pretend", "--backtrack=20", "--complete-graph", "--deep", "--newuse", "--with-bdeps=y", "update", "@system"],
+  "portage_command": ["emerge", "--pretend", "--verbose", "--color=n", "--backtrack=20", "--update", "--complete-graph=y", "--deep", "--newuse", "--with-bdeps=y", "@system"],
+  "arise": {
+    "wall_seconds": [2.050188, 2.089977, 2.037806],
+    "median_seconds": 2.050188,
+    "exit_codes": [0, 0, 0],
+    "actions": 159,
+    "verified": true,
+    "conflicts": 0,
+    "actual_backtracks": 0
+  },
+  "portage": {
+    "wall_seconds": [27.259606, 27.741651, 27.335409],
+    "median_seconds": 27.335409,
+    "exit_codes": [1, 1, 1],
+    "displayed_actions": 143,
+    "verified": false,
+    "blocks": 7,
+    "unsatisfied_blocks": 4,
+    "reported_backtracks": 4,
+    "slot_conflicts": true
+  },
+  "wall_time_ratio": 13.33,
+  "comparison_class": "verified-repair-vs-unresolved-partial",
+  "equivalent_outcomes": false,
+  "speedup_claim_eligible": false,
+  "note": "The wall-time ratio is a damaged-state recovery diagnostic, not a correctness-equivalent speedup."
+}

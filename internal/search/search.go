@@ -2,7 +2,9 @@ package search
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -205,6 +207,12 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 	}
 
 	queryLower := strings.ToLower(cfg.Query)
+	queryGlob := hasGlobMeta(cfg.Query)
+	if queryGlob {
+		if _, err := path.Match(queryLower, ""); err != nil {
+			return nil, fmt.Errorf("invalid search glob %q: %w", cfg.Query, err)
+		}
+	}
 	parsedUse := parseUseFilter(cfg.Use)
 	queryTokens := parseQueryTokens(cfg.Query, cfg.And)
 
@@ -238,16 +246,19 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 			nameMatch := false
 			descMatch := false
 
-			if cfg.And {
+			if queryGlob {
+				nameMatch = matchPackageGlob(queryLower, strings.ToLower(m.Category), strings.ToLower(m.Package))
+			} else if cfg.And {
 				nameMatch = matchAllTokens(strings.ToLower(m.Category), strings.ToLower(m.Package), queryTokens, cfg.Exact)
 				descMatch = matchAllTokens(strings.ToLower(m.DESCRIPTION), "", queryTokens, cfg.Exact)
 			} else if !cfg.Exact {
 				nameMatch = strings.Contains(strings.ToLower(m.Category), queryLower) ||
-					strings.Contains(strings.ToLower(m.Package), queryLower)
+					strings.Contains(strings.ToLower(m.Package), queryLower) ||
+					strings.Contains(strings.ToLower(m.Category+"/"+m.Package), queryLower)
 				descMatch = cfg.Description && strings.Contains(strings.ToLower(m.DESCRIPTION), queryLower)
 			} else {
 				nameMatch = strings.EqualFold(m.Category, cfg.Query) ||
-					strings.EqualFold(m.Package, cfg.Query)
+					strings.EqualFold(m.Package, cfg.Query) || strings.EqualFold(m.Category+"/"+m.Package, cfg.Query)
 				descMatch = cfg.Description && strings.EqualFold(m.DESCRIPTION, cfg.Query)
 			}
 
@@ -271,12 +282,14 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 			}
 			category, pkg := strings.ToLower(parts[0]), strings.ToLower(parts[1])
 			matches := false
-			if cfg.And {
+			if queryGlob {
+				matches = matchPackageGlob(queryLower, category, pkg)
+			} else if cfg.And {
 				matches = matchAllTokens(category, pkg, queryTokens, cfg.Exact)
 			} else if cfg.Exact {
-				matches = strings.EqualFold(parts[0], cfg.Query) || strings.EqualFold(parts[1], cfg.Query)
+				matches = strings.EqualFold(parts[0], cfg.Query) || strings.EqualFold(parts[1], cfg.Query) || strings.EqualFold(cp, cfg.Query)
 			} else {
-				matches = strings.Contains(category, queryLower) || strings.Contains(pkg, queryLower)
+				matches = strings.Contains(category, queryLower) || strings.Contains(pkg, queryLower) || strings.Contains(category+"/"+pkg, queryLower)
 			}
 			if matches {
 				candidates = append(candidates, cp)
@@ -346,6 +359,20 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 	populateDepFields(db, results)
 
 	return results, nil
+}
+
+func hasGlobMeta(query string) bool {
+	return strings.ContainsAny(query, "*?[")
+}
+
+func matchPackageGlob(pattern, category, pkg string) bool {
+	if strings.Contains(pattern, "/") {
+		matched, _ := path.Match(pattern, category+"/"+pkg)
+		return matched
+	}
+	categoryMatch, _ := path.Match(pattern, category)
+	packageMatch, _ := path.Match(pattern, pkg)
+	return categoryMatch || packageMatch
 }
 
 func searchRequiredBy(db *badger.DB, cfg SearchConfig, installed map[string][]InstalledVersion) ([]SearchResult, error) {

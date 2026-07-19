@@ -1,6 +1,7 @@
 package phaseproto
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -73,6 +74,30 @@ func TestApplyPackagePolicyComposesPackageEnvironment(t *testing.T) {
 	}
 }
 
+func TestApplyPackagePolicyDerivesCanonicalPackageIdentity(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "eclass"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "identity-policy", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: filepath.Join(root, "pkg.ebuild")}
+	got, err := ApplyPackagePolicy(request, PackagePolicy{
+		Repositories: []portage.RepoEntry{{Name: "gentoo", Location: repo}},
+		Repository:   "gentoo", ConfigRoot: root, CPV: "dev-lang/python-3.13.7-r2", Slot: "3.13/3.13",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := PackageIdentity{
+		Category: "dev-lang", PN: "python", PV: "3.13.7", PR: "r2",
+		P: "python-3.13.7", PVR: "3.13.7-r2", PF: "python-3.13.7-r2",
+		Slot: "3.13/3.13", Repository: "gentoo",
+	}
+	if got.Package != want {
+		t.Fatalf("package identity = %#v, want %#v", got.Package, want)
+	}
+}
+
 func TestApplyPackagePolicyRejectsPackageEnvironmentStartupInjection(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")
@@ -108,13 +133,43 @@ func TestApplyPackagePolicyCopiesRootAndScratchDirectories(t *testing.T) {
 	if err := os.WriteFile(ebuild, []byte("EAPI=8\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dirs := []string{filepath.Join(root, "target"), filepath.Join(root, "sysroot"), filepath.Join(root, "broot"), filepath.Join(root, "temp"), filepath.Join(root, "home")}
+	dirs := []string{filepath.Join(root, "target"), filepath.Join(root, "sysroot"), filepath.Join(root, "broot"), filepath.Join(root, "temp"), filepath.Join(root, "home"), filepath.Join(root, "logs", "cat:pkg:timestamp.log")}
 	request := Request{Protocol: Version, ID: "roots-policy", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild}
-	got, err := ApplyPackagePolicy(request, PackagePolicy{Repositories: []portage.RepoEntry{{Name: "gentoo", Location: repo}}, Repository: "gentoo", ConfigRoot: root, RootDir: dirs[0], SysrootDir: dirs[1], BrootDir: dirs[2], TempDir: dirs[3], HomeDir: dirs[4]})
+	got, err := ApplyPackagePolicy(request, PackagePolicy{Repositories: []portage.RepoEntry{{Name: "gentoo", Location: repo}}, Repository: "gentoo", ConfigRoot: root, RootDir: dirs[0], SysrootDir: dirs[1], BrootDir: dirs[2], TempDir: dirs[3], HomeDir: dirs[4], LogFile: dirs[5]})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.RootDir != dirs[0] || got.SysrootDir != dirs[1] || got.BrootDir != dirs[2] || got.TempDir != dirs[3] || got.HomeDir != dirs[4] {
+	if got.RootDir != dirs[0] || got.SysrootDir != dirs[1] || got.BrootDir != dirs[2] || got.TempDir != dirs[3] || got.HomeDir != dirs[4] || got.LogFile != dirs[5] {
 		t.Fatalf("policy directory contract = %#v", got)
+	}
+}
+
+func TestEvaluateExecutionPolicyAppliesUseConditionalRestrictions(t *testing.T) {
+	policy, err := EvaluateExecutionPolicy("sandbox network-sandbox ipc-sandbox pid-sandbox mount-sandbox test nostrip", "minimal? ( network-sandbox test ) !minimal? ( strip )", "", map[string]bool{"minimal": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.Configured || !policy.Sandbox || policy.NetworkSandbox || !policy.IPCSandbox || !policy.PIDSandbox || !policy.MountSandbox || policy.Tests || policy.Strip {
+		t.Fatalf("policy = %#v", policy)
+	}
+}
+
+func TestEvaluateExecutionPolicyRejectsUnsupportedEnabledBehavior(t *testing.T) {
+	for _, test := range []struct{ features, restrict, properties, want string }{
+		{features: "unknown-feature", want: "FEATURE"},
+		{restrict: "unknown-restrict", want: "RESTRICT"},
+		{properties: "interactive", want: "PROPERTY"},
+	} {
+		if _, err := EvaluateExecutionPolicy(test.features, test.restrict, test.properties, nil); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("EvaluateExecutionPolicy(%q,%q,%q) error = %v", test.features, test.restrict, test.properties, err)
+		}
+	}
+}
+
+func TestRunWorkerRejectsUserprivBeforeWorkerStartup(t *testing.T) {
+	request := Request{Protocol: Version, ID: "policy-userpriv", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: filepath.Join(t.TempDir(), "missing.ebuild"), Policy: ExecutionPolicy{Configured: true, UserPriv: true}}
+	_, err := RunBashWorkerWithOptions(context.Background(), request, WorkerOptions{Isolation: IsolationPortage})
+	if err == nil || !strings.Contains(err.Error(), "userpriv") {
+		t.Fatalf("worker error = %v", err)
 	}
 }

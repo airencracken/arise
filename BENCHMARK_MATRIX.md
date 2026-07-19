@@ -33,10 +33,10 @@ loss does not fail the build.
 | Sync | No-change sync | emerge --sync | eix-sync | cloned repos | workload needed |
 | Sync | Incremental sync | emerge --sync | eix-sync | cloned repos | workload needed |
 | Resolution | Single installed package plan | emerge -p | — | immutable snapshot | workload needed |
-| Resolution | New package dependency plan | emerge -p | — | immutable snapshot | Signal action/USE plan equivalent; 1.30s vs 3.30s (2.54x) |
+| Resolution | New package dependency plan | emerge -p | — | immutable snapshot | explicit-package matrix verified; current same-snapshot timing publication pending |
 | Resolution | Multi-target plan | emerge -p | — | immutable snapshot | workload needed |
-| Resolution | Shallow @system plan | emerge -pu @system | — | live read-only snapshot | exact 11/11 action plan; 2.26s vs 6.42s (2.84x) |
-| Resolution | Deep @system plan | emerge -puDN @system | — | immutable snapshot | correctness-gated workload added; parity required before timing claim |
+| Resolution | Shallow @system plan | emerge -pu @system | — | live read-only snapshot | exact 11/11 across five runs; 1.43s vs 6.48s (4.52x) |
+| Resolution | Deep @system plan | emerge -puDN @system | — | immutable snapshot | damaged-state diagnostic: verified 159-action Arise repair 2.05s median vs unresolved 143-action Portage partial 27.34s; not an equivalence speedup |
 | Resolution | Standard @world plan | emerge -puDN @world | — | immutable snapshot | correctness-gated workload added; live parity remains open |
 | Resolution | Recovery @world plan | emerge -puDN --keep-going --with-bdeps=y --complete-graph --backtrack=1000 @world | — | immutable snapshot | correctness-gated workload added; current deep complete-graph diagnostic is 313 vs 317 actions |
 | Resolution | Backtracking/slot conflict | emerge -p | — | fixture snapshot | workload needed |
@@ -46,13 +46,13 @@ loss does not fail the build.
 | Build | Independent build DAG | emerge --jobs | — | isolated ROOT | implementation needed |
 | Binary packages | Local binary install | emerge -K | — | isolated ROOT | implementation needed |
 | Binary packages | Remote binhost install | emerge -G | — | isolated ROOT/binhost | implementation needed |
-| Install | New package transaction | emerge | — | isolated ROOT | implementation needed |
-| Install | Upgrade/reinstall/slot coexistence | emerge | — | isolated ROOT | implementation needed |
-| Removal | Uninstall | emerge -C | — | isolated ROOT | implementation needed |
+| Install | New package transaction | emerge | — | isolated ROOT | journaled merge/VDB prototype exists; lifecycle differential gate open |
+| Install | Upgrade/reinstall/slot coexistence | emerge | — | isolated ROOT | replacement payload/VDB rollback covered; lifecycle and preserve-libs open |
+| Removal | Uninstall | emerge -C | — | isolated ROOT | explicit-ROOT journaled removal covered; lifecycle differential gate open |
 | Removal | Depclean calculation | emerge -pc | — | immutable snapshot | workload needed |
 | Removal | Depclean execution | emerge -c | — | isolated ROOT | implementation needed |
 | Recovery | Resume after build failure | emerge --resume | — | isolated ROOT | implementation needed |
-| Recovery | Crash recovery during merge | Portage safety behavior | — | isolated ROOT | implementation needed |
+| Recovery | Crash recovery during merge | Portage safety behavior | — | isolated ROOT | durable recovery implemented; exhaustive kill-boundary matrix open |
 | Maintenance | Preserved rebuild scan | emerge @preserved-rebuild | revdep-rebuild | isolated/live read-only | workload needed |
 | Maintenance | News/config/env queries | Portage tools | eselect/dispatch-conf | isolated ROOT | workload needed |
 

@@ -1,16 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/ebuild"
 	"github.com/airencracken/arise/internal/env"
+	"github.com/airencracken/arise/internal/metadata"
+	"github.com/airencracken/arise/internal/oplock"
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/world"
 )
@@ -108,25 +112,167 @@ func runConfig(args []string, repoDir string) {
 
 func runDeselect(atomStr string) {
 	worldPath := *worldFile
-	ws, err := world.LoadWorld(worldPath)
+	current, err := world.LoadWorld(worldPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: loading world: %v\n", color.Red("deselect"), err)
+		fmt.Fprintf(os.Stderr, "deselect: read world: %v\n", err)
 		os.Exit(1)
 	}
-
-	if !ws.Contains(atomStr) {
+	if !current.Contains(atomStr) {
+		fmt.Printf("%s: %s is not in the world set\n", color.Yellow("deselect"), atomStr)
+		return
+	}
+	stateSHA256, err := worldStateSHA256(worldPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "deselect: fingerprint world: %v\n", err)
+		os.Exit(1)
+	}
+	planSHA256 := worldMutationPlanSHA256("deselect", atomStr, stateSHA256)
+	if *pretend {
+		if *jsonOutput {
+			document := map[string]any{"schema": 1, "operation": "deselect", "atom": atomStr, "complete": true, "state_sha256": stateSHA256, "plan_sha256": planSHA256}
+			if err := json.NewEncoder(os.Stdout).Encode(document); err != nil {
+				fmt.Fprintf(os.Stderr, "deselect: encode plan: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Printf("Would remove %s from world set.\nPlan SHA-256: %s\n", atomStr, planSHA256)
+		}
+		return
+	}
+	if !*experimentalLiveMutation || strings.TrimSpace(*approvePlanSHA256) == "" {
+		fmt.Fprintln(os.Stderr, "deselect: refusing mutation: require --experimental-live-mutation and --approve-plan-sha256")
+		os.Exit(1)
+	}
+	if err := validatePlanAuthorization(*experimentalLiveMutation, *approvePlanSHA256, planSHA256); err != nil {
+		fmt.Fprintf(os.Stderr, "deselect: refusing mutation: %v\n", err)
+		os.Exit(1)
+	}
+	found := false
+	err = world.Update(worldPath, func(ws *world.WorldSet) error {
+		lockedStateSHA256, err := worldStateSHA256(worldPath)
+		if err != nil {
+			return err
+		}
+		if lockedStateSHA256 != stateSHA256 {
+			return fmt.Errorf("world changed after approval; generate a new plan")
+		}
+		if !ws.Contains(atomStr) {
+			return nil
+		}
+		found = true
+		ws.Deselect(atomStr)
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: updating world: %v\n", color.Red("deselect"), err)
+		os.Exit(1)
+	}
+	if !found {
 		fmt.Printf("%s: %s is not in the world set\n", color.Yellow("deselect"), atomStr)
 		return
 	}
 
-	ws.Deselect(atomStr)
+	fmt.Printf("%s: removed %s from world set\n", color.Green("deselect"), color.Bold(atomStr))
+}
 
-	if err := ws.Save(worldPath); err != nil {
-		fmt.Fprintf(os.Stderr, "%s: saving world: %v\n", color.Red("deselect"), err)
+// runSelect implements the state-only equivalent of emerge --noreplace for an
+// already installed package: no build or merge occurs, and only world changes.
+func runSelect(atomStr string) {
+	a, err := atom.Parse(atomStr)
+	if err != nil || a.Category == "" || a.Package == "" {
+		fmt.Fprintf(os.Stderr, "select: invalid package atom %q\n", atomStr)
 		os.Exit(1)
 	}
+	worldAtom := a.CP()
+	installed, err := installedVDBForCP(*vdbDir, a.Category, a.Package)
+	if err != nil || len(installed) == 0 {
+		fmt.Fprintf(os.Stderr, "select: %s is not installed\n", worldAtom)
+		os.Exit(1)
+	}
+	current, err := world.LoadWorld(*worldFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "select: read world: %v\n", err)
+		os.Exit(1)
+	}
+	if current.Contains(worldAtom) {
+		fmt.Printf("select: %s is already in the world set\n", worldAtom)
+		return
+	}
+	stateSHA256, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "select: fingerprint state: %v\n", err)
+		os.Exit(1)
+	}
+	planSHA256 := worldMutationPlanSHA256("select", worldAtom, stateSHA256)
+	if *pretend {
+		if *jsonOutput {
+			document := map[string]any{"schema": 1, "operation": "select", "atom": worldAtom, "complete": true, "installed_vdb": installed, "state_sha256": stateSHA256, "plan_sha256": planSHA256}
+			if err := json.NewEncoder(os.Stdout).Encode(document); err != nil {
+				fmt.Fprintf(os.Stderr, "select: encode plan: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Printf("Would add %s to world without rebuilding it.\nPlan SHA-256: %s\n", worldAtom, planSHA256)
+		}
+		return
+	}
+	if !*experimentalLiveMutation || strings.TrimSpace(*approvePlanSHA256) == "" {
+		fmt.Fprintln(os.Stderr, "select: refusing mutation: require --experimental-live-mutation and --approve-plan-sha256")
+		os.Exit(1)
+	}
+	if err := validatePlanAuthorization(true, *approvePlanSHA256, planSHA256); err != nil {
+		fmt.Fprintf(os.Stderr, "select: refusing mutation: %v\n", err)
+		os.Exit(1)
+	}
+	vdbLock, err := oplock.TryAcquireVDB(*vdbDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "select: acquire VDB lock: %v\n", err)
+		os.Exit(1)
+	}
+	defer vdbLock.Release()
+	err = world.Update(*worldFile, func(ws *world.WorldSet) error {
+		lockedState, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, nil)
+		if err != nil {
+			return err
+		}
+		if lockedState != stateSHA256 {
+			return fmt.Errorf("package/world state changed after approval; generate a new plan")
+		}
+		world.Add(ws, worldAtom)
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "select: update world: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("select: added %s to world without rebuilding it\n", worldAtom)
+}
 
-	fmt.Printf("%s: removed %s from world set\n", color.Green("deselect"), color.Bold(atomStr))
+// installedVDBForCP returns only VDB entries whose parsed category/package is
+// an exact match. A glob such as "bind-*" also matches "bind-tools-*", which
+// is unsafe when deciding whether a package may be selected into world.
+func installedVDBForCP(vdbDir, category, packageName string) ([]string, error) {
+	categoryDir := filepath.Join(vdbDir, category)
+	entries, err := os.ReadDir(categoryDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var matches []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		parsedCategory, parsedPackage, version, err := metadata.ParseCPV(category + "/" + entry.Name())
+		if err != nil || version == "" || parsedCategory != category || parsedPackage != packageName {
+			continue
+		}
+		matches = append(matches, filepath.Join(categoryDir, entry.Name()))
+	}
+	sort.Strings(matches)
+	return matches, nil
 }
 
 func runInfo() {

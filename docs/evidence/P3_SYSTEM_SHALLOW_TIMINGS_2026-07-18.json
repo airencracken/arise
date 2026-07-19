@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "captured": "2026-07-18",
+  "architecture": "x86_64",
+  "repository_commit": "dbc31827cd0aab0d3b90114899a2eb2136dcb726",
+  "portage_version": "3.0.77",
+  "arise_binary_sha256": "0f0d00999d2dbc97b04e1e98b19a2d0716a02d1558eff32dcadccd010b6f5749",
+  "case": "shallow-system-update",
+  "arise_command": ["arise", "--json", "--pretend", "--backtrack=20", "update", "@system"],
+  "portage_command": ["emerge", "--pretend", "--verbose", "--color=n", "--backtrack=20", "--update", "@system"],
+  "equivalent_outcomes": true,
+  "normalized_actions": 11,
+  "normalized_differences": 0,
+  "arise": {
+    "wall_seconds": [1.433196, 1.428632, 1.467807, 1.418955, 1.459851],
+    "median_seconds": 1.433196,
+    "exit_codes": [0, 0, 0, 0, 0],
+    "verified": true,
+    "conflicts": 0,
+    "actual_backtracks": 0
+  },
+  "portage": {
+    "wall_seconds": [6.457180, 6.488352, 6.458076, 6.520051, 6.477488],
+    "median_seconds": 6.477488,
+    "exit_codes": [0, 0, 0, 0, 0]
+  },
+  "speedup": 4.52,
+  "comparison_class": "correctness-equivalent"
+}

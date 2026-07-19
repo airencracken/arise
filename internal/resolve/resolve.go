@@ -4,6 +4,7 @@
 package resolve
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -75,6 +76,10 @@ type ResolveConfig struct {
 	// Planned actions are overlaid from the transaction graph in every domain;
 	// action placement becomes explicit when the cross-root scheduler lands.
 	InstalledByDomain map[DependencyDomain]*DepGraph
+	// exactBacktrackBudget is set by ResolveContext for replay attempts. It
+	// distinguishes an exhausted zero budget from the public zero value, which
+	// retains the historical default of ten backtracks.
+	exactBacktrackBudget bool
 }
 
 func (c *ResolveConfig) Defaults() {
@@ -94,9 +99,21 @@ type ResolveResult struct {
 	BranchEvaluations []BranchEvaluation
 	Metrics           ResolveMetrics
 	ConflictDetails   []ConflictDetail
-	Verified          bool   // final installed-state overlay passed whole-state verification
-	Verification      string // verified, failed, skipped-nodeps, or incomplete
+	Verified          bool             // final installed-state overlay passed whole-state verification
+	Verification      string           // verified, failed, skipped-nodeps, or incomplete
+	Incomplete        *IncompleteCause `json:"incomplete,omitempty"`
 	retryChoices      []replayDecision
+}
+
+// IncompleteCause explains why resolution stopped before it could produce an
+// executable, whole-state-verified plan.
+type IncompleteCause struct {
+	Kind           string        `json:"kind"`
+	Phase          string        `json:"phase"`
+	Elapsed        time.Duration `json:"elapsed"`
+	DecisionsUsed  int           `json:"decisions_used"`
+	BacktracksUsed int           `json:"backtracks_used"`
+	Message        string        `json:"message"`
 }
 
 // BacktrackDecision records one rejected preference and the deterministic
@@ -151,8 +168,22 @@ type ConflictCandidate struct {
 	Rejects    []string `json:"rejects,omitempty"`
 }
 
+func cloneConflictDetails(src []ConflictDetail) []ConflictDetail {
+	dst := append([]ConflictDetail(nil), src...)
+	for i := range dst {
+		dst[i].Requirements = append([]ConflictRequirement(nil), src[i].Requirements...)
+		dst[i].Candidates = append([]ConflictCandidate(nil), src[i].Candidates...)
+	}
+	return dst
+}
+
 type ResolveMetrics struct {
-	Search, CompleteGraph, Verification, Sort time.Duration
+	Search, DirectUpdateRefresh, CompleteGraph, Verification, Sort time.Duration
+	CompleteGraphPasses, CandidateEvaluations                      uint64
+	ReplayBranches, VerifierPasses, VerifierRepairs                uint64
+	UndoLogOperations, CancellationChecks                          uint64
+	Allocations, AllocatedBytes                                    uint64
+	CandidateCacheHits, CandidateCacheMisses                       uint64
 }
 
 // PkgAction describes a single package action (install, update, uninstall, etc.)
@@ -184,36 +215,37 @@ type PkgNode struct {
 
 // VersionInfo holds per-version data for a package.
 type VersionInfo struct {
-	Package            *PkgNode
-	Version            *atom.Version
-	Slot               string
-	Subslot            string
-	UseFlags           map[string]bool
-	InstalledUseFlags  map[string]bool
-	InstalledIUseFlags map[string]bool
-	Installed          bool
-	Available          bool   // version exists in a configured repository
-	DepStr             string // raw dependency string (combined)
-	Depend             string // DEPEND value
-	Rdepend            string // RDEPEND value
-	Bdepend            string // BDEPEND value
-	Idepend            string // IDEPEND value
-	Pdepend            string // PDEPEND value
-	InstalledDepend    string
-	InstalledRdepend   string
-	InstalledBdepend   string
-	InstalledIdepend   string
-	InstalledPdepend   string
-	InstalledEAPI      string
-	Keywords           string // ebuild keywords (e.g. "amd64 ~x86")
-	RequiredUse        string // REQUIRED_USE constraint
-	License            string // LICENSE value
-	Repository         string // repository selected for this version
-	RepositoryPriority int
-	RepositoryPath     string
-	EAPIDeprecated     bool
-	SrcURI             string
-	EAPI               string
+	Package                 *PkgNode
+	Version                 *atom.Version
+	Slot                    string
+	Subslot                 string
+	UseFlags                map[string]bool
+	InstalledUseFlags       map[string]bool
+	InstalledIUseFlags      map[string]bool
+	Installed               bool
+	Available               bool   // version exists in a configured repository
+	DepStr                  string // raw dependency string (combined)
+	Depend                  string // DEPEND value
+	Rdepend                 string // RDEPEND value
+	Bdepend                 string // BDEPEND value
+	Idepend                 string // IDEPEND value
+	Pdepend                 string // PDEPEND value
+	InstalledDepend         string
+	InstalledRdepend        string
+	InstalledBdepend        string
+	InstalledIdepend        string
+	InstalledPdepend        string
+	DependencyMetadataKnown bool // empty dependency strings are authoritative, not a package-edge fallback
+	InstalledEAPI           string
+	Keywords                string // ebuild keywords (e.g. "amd64 ~x86")
+	RequiredUse             string // REQUIRED_USE constraint
+	License                 string // LICENSE value
+	Repository              string // repository selected for this version
+	RepositoryPriority      int
+	RepositoryPath          string
+	EAPIDeprecated          bool
+	SrcURI                  string
+	EAPI                    string
 }
 
 // DepEdge represents a dependency relationship between packages.
@@ -632,23 +664,61 @@ func DefaultResolveConfig() ResolveConfig {
 // targets. It implements the full backtracking algorithm equivalent to
 // emerge's --backtrack functionality.
 func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResult, error) {
+	return ResolveContext(context.Background(), g, targets, config)
+}
+
+// ResolveContext performs dependency resolution and cooperatively stops when
+// ctx is cancelled. Cancellation returns an incomplete result, not a partial
+// executable plan.
+func ResolveContext(ctx context.Context, g *DepGraph, targets []string, config ResolveConfig) (*ResolveResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	started := time.Now()
 	limit := config.Backtrack
 	if limit <= 0 {
 		limit = 10
 	}
 	overrides := make(map[string]int)
+	chargedDecisions := make(map[string]bool)
+	visitedReplayStates := make(map[string]bool)
 	var history []BacktrackDecision
 	remaining := limit
 	for {
+		visitedReplayStates[replayStateKey(overrides)] = true
 		attemptConfig := config
 		attemptConfig.Backtrack = remaining
-		result, err := resolveAttempt(g, targets, attemptConfig, overrides)
+		attemptConfig.exactBacktrackBudget = true
+		result, err := resolveAttempt(ctx, g, targets, attemptConfig, overrides, chargedDecisions, started)
 		if result == nil {
 			return result, err
 		}
+		if result.Incomplete != nil {
+			return result, nil
+		}
 		remaining -= result.BacktrackLevel
 		history = append(history, result.DecisionHistory...)
+		for _, charged := range result.DecisionHistory {
+			chargedDecisions[backtrackDecisionKey(charged.Kind, charged.Key, charged.From, charged.To)] = true
+		}
 		if err == nil && (result.Verified || len(result.Conflicts) == 0) {
+			result.BacktrackLevel = limit - remaining
+			result.DecisionHistory = append([]BacktrackDecision(nil), history...)
+			return result, nil
+		}
+		if hasTerminalTargetConflict(result.Conflicts) {
+			// A missing direct set member cannot be repaired by changing an any-of,
+			// provider, or transitive version choice. Preserve the complete first-pass
+			// diagnostics instead of replaying the whole graph until the budget expires.
+			result.BacktrackLevel = limit - remaining
+			result.DecisionHistory = append([]BacktrackDecision(nil), history...)
+			return result, nil
+		}
+		if !config.CompleteGraph && terminalVerificationFailure(result) {
+			// Verification has already proved the planned installed state invalid.
+			// Candidate replay cannot schedule the reverse-dependency repairs that
+			// are intentionally gated by --complete-graph, so return the explained,
+			// non-executable result instead of exploring unrelated preferences.
 			result.BacktrackLevel = limit - remaining
 			result.DecisionHistory = append([]BacktrackDecision(nil), history...)
 			return result, nil
@@ -657,21 +727,21 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 			result.BacktrackLevel = limit - remaining
 			result.DecisionHistory = append([]BacktrackDecision(nil), history...)
 			if err != nil {
-				return nil, err
+				return result, err
 			}
 			return result, nil
 		}
-		decision, next, ok := nextReplayChoice(result.retryChoices)
+		decision, next, replayPrefix, nextOverrides, ok := nextUnvisitedReplayState(result.retryChoices, visitedReplayStates)
 		if !ok {
 			result.BacktrackLevel = limit - remaining
 			result.DecisionHistory = append([]BacktrackDecision(nil), history...)
 			if err != nil {
-				return nil, err
+				return result, err
 			}
 			return result, nil
 		}
 		if config.Jobs > 1 {
-			if speculative, chosen, used, evaluations, ok := speculateReplayAlternatives(g, targets, config, overrides, decision, remaining); ok {
+			if speculative, chosen, used, evaluations, ok := speculateReplayAlternatives(ctx, g, targets, config, replayPrefix, chargedDecisions, decision, remaining, started); ok {
 				history = append(history, BacktrackDecision{
 					Kind: "conflict-rewind", Key: decision.depKey,
 					From: decision.label(decision.chosen), To: decision.label(chosen),
@@ -684,7 +754,7 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 				return speculative, nil
 			}
 		}
-		overrides[decision.depKey] = next
+		overrides = nextOverrides
 		remaining--
 		history = append(history, BacktrackDecision{
 			Kind: "conflict-rewind", Key: decision.depKey,
@@ -693,13 +763,34 @@ func Resolve(g *DepGraph, targets []string, config ResolveConfig) (*ResolveResul
 	}
 }
 
+func terminalVerificationFailure(result *ResolveResult) bool {
+	if result == nil || len(result.Conflicts) == 0 || len(result.ConflictDetails) == 0 {
+		return false
+	}
+	for _, detail := range result.ConflictDetails {
+		if detail.Kind != "post-solve-verification" {
+			return false
+		}
+	}
+	return true
+}
+
+func hasTerminalTargetConflict(conflicts []string) bool {
+	for _, conflict := range conflicts {
+		if strings.Contains(conflict, "(world target)") || strings.Contains(conflict, "(system target)") {
+			return true
+		}
+	}
+	return false
+}
+
 type speculativeReplayResult struct {
 	option int
 	result *ResolveResult
 	err    error
 }
 
-func speculateReplayAlternatives(g *DepGraph, targets []string, config ResolveConfig, overrides map[string]int, decision replayDecision, budget int) (*ResolveResult, int, int, []BranchEvaluation, bool) {
+func speculateReplayAlternatives(ctx context.Context, g *DepGraph, targets []string, config ResolveConfig, overrides map[string]int, chargedDecisions map[string]bool, decision replayDecision, budget int, started time.Time) (*ResolveResult, int, int, []BranchEvaluation, bool) {
 	var alternatives []int
 	found := false
 	for _, option := range decision.order {
@@ -733,7 +824,7 @@ func speculateReplayAlternatives(g *DepGraph, targets []string, config ResolveCo
 				branchOverrides[decision.depKey] = option
 				branchConfig := config
 				branchConfig.Backtrack = budget - 1
-				result, err := resolveAttempt(g, targets, branchConfig, branchOverrides)
+				result, err := resolveAttempt(ctx, g, targets, branchConfig, branchOverrides, chargedDecisions, started)
 				results <- speculativeReplayResult{option: option, result: result, err: err}
 			}
 		}()
@@ -772,54 +863,67 @@ func speculateReplayAlternatives(g *DepGraph, targets []string, config ResolveCo
 			used += candidate.result.BacktrackLevel
 		}
 		if candidate.err == nil && candidate.result != nil && candidate.result.Verified && used <= budget {
+			candidate.result.Metrics.ReplayBranches += uint64(len(alternatives))
 			return candidate.result, option, used, evaluations, true
 		}
 	}
 	return nil, 0, 0, evaluations, false
 }
 
-func resolveAttempt(g *DepGraph, targets []string, config ResolveConfig, choiceOverrides map[string]int) (*ResolveResult, error) {
+func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config ResolveConfig, choiceOverrides map[string]int, chargedDecisions map[string]bool, started time.Time) (*ResolveResult, error) {
 	if g == nil {
 		return nil, fmt.Errorf("resolve: no dependency graph provided (internal error)")
 	}
+	if config.Backtrack <= 0 && !config.exactBacktrackBudget {
+		config.Backtrack = 10
+	}
 
 	r := &resolver{
-		graph:            g,
-		config:           config,
-		installed:        make(map[string]*PkgAction),
-		toInstall:        make(map[string]*PkgAction),
-		actionOwners:     make(map[string]map[string]bool),
-		rootActionKeys:   make(map[string]bool),
-		toUninstall:      make(map[string]*PkgAction),
-		conflicts:        []string{},
-		seenDeps:         make(map[string]bool),
-		activeDeps:       make(map[string]int),
-		cycleSeen:        make(map[string]bool),
-		selectedCPs:      make(map[string]bool),
-		explicitTargets:  make(map[string]bool),
-		onlyDepsTargets:  make(map[string]bool),
-		constraints:      make(map[string][]*atom.Atom),
-		constraintCauses: make(map[string][]ConflictRequirement),
-		useOverrides:     make(map[string]map[string]bool),
-		useChangeSeen:    make(map[string]bool),
-		baseUseCache:     make(map[string]map[string]bool),
-		maskCache:        make(map[string]portage.MaskStatus),
-		keywordCache:     make(map[string]bool),
-		portageConfig:    config.PortageConfig,
-		choiceOverrides:  choiceOverrides,
-		worldSet:         config.WorldSet,
-		systemSet:        config.SystemSet,
+		ctx:                   ctx,
+		started:               started,
+		phase:                 "target-expansion",
+		graph:                 g,
+		config:                config,
+		installed:             make(map[string]*PkgAction),
+		toInstall:             make(map[string]*PkgAction),
+		actionOwners:          make(map[string]map[string]bool),
+		rootActionKeys:        make(map[string]bool),
+		toUninstall:           make(map[string]*PkgAction),
+		conflicts:             []string{},
+		seenDeps:              make(map[string]bool),
+		activeDeps:            make(map[string]int),
+		cycleSeen:             make(map[string]bool),
+		selectedCPs:           make(map[string]bool),
+		explicitTargets:       make(map[string]bool),
+		onlyDepsTargets:       make(map[string]bool),
+		constraints:           make(map[string][]*atom.Atom),
+		constraintCauses:      make(map[string][]ConflictRequirement),
+		useOverrides:          make(map[string]map[string]bool),
+		useChangeSeen:         make(map[string]bool),
+		baseUseByVersion:      make(map[*VersionInfo]map[string]bool),
+		effectiveNodeUseCache: make(map[string]map[string]bool),
+		maskCache:             make(map[string]portage.MaskStatus),
+		keywordCache:          make(map[string]bool),
+		candidateCache:        make(map[string]candidateCacheEntry),
+		portageConfig:         config.PortageConfig,
+		choiceOverrides:       choiceOverrides,
+		chargedDecisions:      chargedDecisions,
+		worldSet:              config.WorldSet,
+		systemSet:             config.SystemSet,
 	}
+	var allocationStart runtime.MemStats
+	runtime.ReadMemStats(&allocationStart)
+	r.allocationStartCount, r.allocationStartBytes = allocationStart.Mallocs, allocationStart.TotalAlloc
 	for _, target := range targets {
 		if target == "@world" || target == "@system" {
 			r.setScoped = true
 		}
 	}
 
-	if config.Backtrack <= 0 {
-		config.Backtrack = 10
-	}
 	r.backtrackRemaining = config.Backtrack
+	if err := r.checkContext(); err != nil {
+		return r.incompleteResult(err), nil
+	}
 
 	if config.EmptyTree {
 		for _, pkg := range g.Packages {
@@ -899,22 +1003,33 @@ func resolveAttempt(g *DepGraph, targets []string, config ResolveConfig, choiceO
 
 	// step 2-6: build the install plan with backtracking
 	phaseStarted := time.Now()
+	r.phase = "candidate-search"
 	err = r.resolveTargets(targetAtoms)
 	r.metrics.Search = time.Since(phaseStarted)
 	if err != nil {
+		if ctx.Err() != nil {
+			return r.incompleteResult(ctx.Err()), nil
+		}
 		if config.KeepGoing {
 			return r.buildResult()
 		}
 		result, _ := r.buildResult()
 		return result, fmt.Errorf("resolve: dependency resolution failed: %w", err)
 	}
-	if config.Deep && (config.Update || config.NewUse || config.ChangedUse || config.ChangedDeps) {
+	if !config.EmptyTree && config.Deep && (config.Update || config.NewUse || config.ChangedUse || config.ChangedDeps) {
+		r.phase = "direct-update-refresh"
+		phaseStarted = time.Now()
 		if err := r.refreshCommittedDirectUpdates(); err != nil {
+			r.metrics.DirectUpdateRefresh = time.Since(phaseStarted)
+			if ctx.Err() != nil {
+				return r.incompleteResult(ctx.Err()), nil
+			}
 			if !config.KeepGoing {
 				return nil, fmt.Errorf("resolve: refresh committed dependency updates: %w", err)
 			}
 			r.conflicts = append(r.conflicts, err.Error())
 		}
+		r.metrics.DirectUpdateRefresh = time.Since(phaseStarted)
 	}
 	if config.OnlyDeps {
 		for key, action := range r.toInstall {
@@ -938,22 +1053,35 @@ func resolveAttempt(g *DepGraph, targets []string, config ResolveConfig, choiceO
 
 	// step 5: CompleteGraph — rebuild reverse deps when packages change
 	if config.CompleteGraph {
+		r.phase = "complete-graph"
 		phaseStarted = time.Now()
 		r.processCompleteGraph()
 		r.metrics.CompleteGraph = time.Since(phaseStarted)
+		if ctx.Err() != nil {
+			return r.incompleteResult(ctx.Err()), nil
+		}
 	}
 
 	// A candidate search is not a proof that the resulting installed state is
 	// coherent. Validate the overlaid transaction before it can be executed.
 	phaseStarted = time.Now()
+	r.phase = "verification"
 	r.verifyPlannedState()
 	r.metrics.Verification = time.Since(phaseStarted)
+	if ctx.Err() != nil {
+		return r.incompleteResult(ctx.Err()), nil
+	}
 
 	// step 6: topologically sort install actions
 	phaseStarted = time.Now()
+	r.phase = "plan-ordering"
 	install := r.sortPlannedActions(mapToSlice(r.toInstall))
 	r.validatePlanOrder(install)
 	r.metrics.Sort = time.Since(phaseStarted)
+	if ctx.Err() != nil {
+		return r.incompleteResult(ctx.Err()), nil
+	}
+	r.snapshotAllocations()
 
 	return &ResolveResult{
 		Install:         install,
@@ -973,6 +1101,52 @@ func resolveAttempt(g *DepGraph, targets []string, config ResolveConfig, choiceO
 		}(),
 		retryChoices: append([]replayDecision(nil), r.replayChoices...),
 	}, nil
+}
+
+func (r *resolver) checkContext() error {
+	r.metrics.CancellationChecks++
+	if r.ctx == nil {
+		return nil
+	}
+	return r.ctx.Err()
+}
+
+func (r *resolver) snapshotAllocations() {
+	if r.allocationStartCount == 0 && r.allocationStartBytes == 0 {
+		return
+	}
+	var current runtime.MemStats
+	runtime.ReadMemStats(&current)
+	if current.Mallocs >= r.allocationStartCount {
+		r.metrics.Allocations = current.Mallocs - r.allocationStartCount
+	}
+	if current.TotalAlloc >= r.allocationStartBytes {
+		r.metrics.AllocatedBytes = current.TotalAlloc - r.allocationStartBytes
+	}
+}
+
+func (r *resolver) incompleteResult(cause error) *ResolveResult {
+	r.snapshotAllocations()
+	backtracks := r.config.Backtrack - r.backtrackRemaining
+	if backtracks < 0 {
+		backtracks = 0
+	}
+	kind := "cancelled"
+	if cause == context.DeadlineExceeded {
+		kind = "timeout"
+	}
+	return &ResolveResult{
+		Conflicts:       []string{fmt.Sprintf("resolver %s during %s: %v", kind, r.phase, cause)},
+		Warnings:        append([]string(nil), r.warnings...),
+		BacktrackLevel:  backtracks,
+		DecisionHistory: append([]BacktrackDecision(nil), r.decisionHistory...),
+		Metrics:         r.metrics,
+		ConflictDetails: append([]ConflictDetail(nil), r.conflictDetails...),
+		Verified:        false,
+		Verification:    VerificationIncomplete,
+		Incomplete: &IncompleteCause{Kind: kind, Phase: r.phase, Elapsed: time.Since(r.started),
+			DecisionsUsed: len(r.decisionHistory), BacktracksUsed: backtracks, Message: cause.Error()},
+	}
 }
 
 // VerifyTransaction validates an already constructed install/removal overlay.
@@ -1000,7 +1174,6 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 		constraintCauses: make(map[string][]ConflictRequirement),
 		useOverrides:     make(map[string]map[string]bool),
 		useChangeSeen:    make(map[string]bool),
-		baseUseCache:     make(map[string]map[string]bool),
 		maskCache:        make(map[string]portage.MaskStatus),
 		keywordCache:     make(map[string]bool),
 		portageConfig:    config.PortageConfig,
@@ -1016,11 +1189,13 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 		r.toInstall[actionVersionKey(&action)] = &action
 	}
 	for i := range removals {
-		action := removals[i]
-		if action.Atom == nil {
+		if removals[i].Atom == nil {
 			return nil, fmt.Errorf("resolve: removal action %d has no atom", i)
 		}
-		r.toUninstall[actionVersionKey(&action)] = &action
+		if err := completeRemovalIdentity(g, &removals[i]); err != nil {
+			return nil, fmt.Errorf("resolve: removal action %d: %w", i, err)
+		}
+		r.toUninstall[actionVersionKey(&removals[i])] = &removals[i]
 	}
 	started := time.Now()
 	r.verifyPlannedState()
@@ -1039,55 +1214,104 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 	}, nil
 }
 
+func completeRemovalIdentity(g *DepGraph, action *PkgAction) error {
+	if g == nil || action == nil || action.Atom == nil || action.Atom.Version == nil {
+		return fmt.Errorf("exact installed package identity is required")
+	}
+	node := g.Packages[action.Atom.CP()]
+	if node == nil {
+		return fmt.Errorf("package %s is not installed", action.Atom.CP())
+	}
+	var matches []*VersionInfo
+	for _, vi := range node.Versions {
+		if vi == nil || !vi.Installed || vi.Version == nil || vi.Version.Raw != action.Atom.Version.Raw {
+			continue
+		}
+		if action.Repository != "" && vi.Repository != action.Repository {
+			continue
+		}
+		if action.Slot != "" && vi.Slot != action.Slot {
+			continue
+		}
+		matches = append(matches, vi)
+	}
+	if len(matches) != 1 {
+		return fmt.Errorf("exact removal %s matched %d installed repository/slot identities", action.Atom, len(matches))
+	}
+	action.Repository = matches[0].Repository
+	action.Slot = matches[0].Slot
+	action.Subslot = matches[0].Subslot
+	return nil
+}
+
 type resolver struct {
-	graph              *DepGraph
-	config             ResolveConfig
-	worldSet           *WorldSet
-	systemSet          *WorldSet
-	targetAtoms        []*atom.Atom
-	installed          map[string]*PkgAction      // CPV -> action
-	toInstall          map[string]*PkgAction      // CPV -> action
-	toUninstall        map[string]*PkgAction      // CPV -> action
-	actionOwners       map[string]map[string]bool // action key -> parent version dependency keys
-	rootActionKeys     map[string]bool            // exact actions selected at target depth
-	conflicts          []string
-	warnings           []string
-	seenDeps           map[string]bool
-	activeDeps         map[string]int
-	dependencyPath     []string
-	cycleSeen          map[string]bool
-	selectedCPs        map[string]bool // final target/dependency closure
-	explicitTargets    map[string]bool // atoms named directly, excluding expanded sets
-	onlyDepsTargets    map[string]bool // argument packages receiving --onlydeps policy
-	backtrackRemaining int
-	decisionHistory    []BacktrackDecision
-	choiceOverrides    map[string]int
-	replayChoices      []replayDecision
-	constraints        map[string][]*atom.Atom // accumulated requirements by CP|slot
-	constraintCauses   map[string][]ConflictRequirement
-	conflictDetails    []ConflictDetail
-	useOverrides       map[string]map[string]bool
-	useChangeSeen      map[string]bool
-	baseUseCache       map[string]map[string]bool
-	maskCache          map[string]portage.MaskStatus
-	keywordCache       map[string]bool
-	pendingConstraint  *atom.Atom // unpinned dependency behind an internally pinned candidate
-	pendingReason      string
-	pendingDomain      DependencyDomain
-	portageConfig      *portage.Config
-	metrics            ResolveMetrics
-	transactions       []*resolverTransaction
-	setScoped          bool // @world/@system excludes unrelated installed orphans
-	strictWholeState   bool // explicit transaction verification cannot downgrade breakage to depclean advice
+	ctx                   context.Context
+	started               time.Time
+	phase                 string
+	allocationStartCount  uint64
+	allocationStartBytes  uint64
+	graph                 *DepGraph
+	config                ResolveConfig
+	worldSet              *WorldSet
+	systemSet             *WorldSet
+	targetAtoms           []*atom.Atom
+	installed             map[string]*PkgAction      // CPV -> action
+	toInstall             map[string]*PkgAction      // CPV -> action
+	toUninstall           map[string]*PkgAction      // CPV -> action
+	actionOwners          map[string]map[string]bool // action key -> parent version dependency keys
+	rootActionKeys        map[string]bool            // exact actions selected at target depth
+	conflicts             []string
+	warnings              []string
+	seenDeps              map[string]bool
+	activeDeps            map[string]int
+	dependencyPath        []string
+	cycleSeen             map[string]bool
+	selectedCPs           map[string]bool // final target/dependency closure
+	explicitTargets       map[string]bool // atoms named directly, excluding expanded sets
+	onlyDepsTargets       map[string]bool // argument packages receiving --onlydeps policy
+	backtrackRemaining    int
+	decisionHistory       []BacktrackDecision
+	choiceOverrides       map[string]int
+	chargedDecisions      map[string]bool
+	replayChoices         []replayDecision
+	constraints           map[string][]*atom.Atom // accumulated requirements by CP|slot
+	constraintCauses      map[string][]ConflictRequirement
+	conflictDetails       []ConflictDetail
+	useOverrides          map[string]map[string]bool
+	useChangeSeen         map[string]bool
+	baseUseByVersion      map[*VersionInfo]map[string]bool
+	baseUseCache          map[string]map[string]bool // retained for fixture/source compatibility; superseded by baseUseByVersion
+	versionKeyCache       map[*VersionInfo]string
+	effectiveNodeUseCache map[string]map[string]bool
+	maskCache             map[string]portage.MaskStatus
+	keywordCache          map[string]bool
+	candidateCache        map[string]candidateCacheEntry
+	useOverrideGeneration uint64
+	pendingConstraint     *atom.Atom // unpinned dependency behind an internally pinned candidate
+	pendingReason         string
+	pendingDomain         DependencyDomain
+	portageConfig         *portage.Config
+	metrics               ResolveMetrics
+	transactions          []*resolverTransaction
+	setScoped             bool // @world/@system excludes unrelated installed orphans
+	strictWholeState      bool // explicit transaction verification cannot downgrade breakage to depclean advice
 }
 
 func (r *resolver) consumeBacktrack(kind, key, from, to string) error {
+	decisionKey := backtrackDecisionKey(kind, key, from, to)
+	if r.chargedDecisions[decisionKey] {
+		return nil
+	}
 	if r.backtrackRemaining <= 0 {
 		return fmt.Errorf("backtrack limit exhausted while revising %s from %s to %s", key, from, to)
 	}
 	r.backtrackRemaining--
 	r.decisionHistory = append(r.decisionHistory, BacktrackDecision{Kind: kind, Key: key, From: from, To: to})
 	return nil
+}
+
+func backtrackDecisionKey(kind, key, from, to string) string {
+	return kind + "\x00" + key + "\x00" + from + "\x00" + to
 }
 
 type replayDecision struct {
@@ -1115,6 +1339,57 @@ func nextReplayChoice(decisions []replayDecision) (replayDecision, int, bool) {
 		}
 	}
 	return replayDecision{}, 0, false
+}
+
+// nextUnvisitedReplayState advances the deepest decision that has an
+// unexplored alternative. Overrides below that decision are discarded: they
+// belong to the branch being rewound and must not leak into its sibling.
+func nextUnvisitedReplayState(decisions []replayDecision, visited map[string]bool) (replayDecision, int, map[string]int, map[string]int, bool) {
+	for i := len(decisions) - 1; i >= 0; i-- {
+		decision := decisions[i]
+		position := slices.Index(decision.order, decision.chosen)
+		if position < 0 {
+			continue
+		}
+		prefix := make(map[string]int, i)
+		for _, ancestor := range decisions[:i] {
+			prefix[ancestor.depKey] = ancestor.chosen
+		}
+		for _, option := range decision.order[position+1:] {
+			candidate := cloneChoiceOverrides(prefix)
+			candidate[decision.depKey] = option
+			if !visited[replayStateKey(candidate)] {
+				return decision, option, prefix, candidate, true
+			}
+		}
+	}
+	return replayDecision{}, 0, nil, nil, false
+}
+
+func cloneChoiceOverrides(src map[string]int) map[string]int {
+	dst := make(map[string]int, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func replayStateKey(overrides map[string]int) string {
+	keys := make([]string, 0, len(overrides))
+	for key := range overrides {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var state strings.Builder
+	for _, key := range keys {
+		state.WriteString(strconv.Itoa(len(key)))
+		state.WriteByte(':')
+		state.WriteString(key)
+		state.WriteByte('=')
+		state.WriteString(strconv.Itoa(overrides[key]))
+		state.WriteByte(';')
+	}
+	return state.String()
 }
 
 func (r *resolver) recordReplayChoice(decision replayDecision) {
@@ -1211,6 +1486,7 @@ func (r *resolver) rollbackTransaction(tx *resolverTransaction) {
 		panic("resolve: transaction rollback out of order")
 	}
 	r.transactions = r.transactions[:len(r.transactions)-1]
+	r.metrics.UndoLogOperations += uint64(len(tx.install) + len(tx.uninstall) + len(tx.seenDeps) + len(tx.selectedCPs) + len(tx.constraints) + len(tx.constraintCauses) + len(tx.useOverrides) + len(tx.useChangeSeen) + len(tx.actionOwners))
 	for key, undo := range tx.install {
 		if undo.exists {
 			r.toInstall[key] = undo.value
@@ -1259,6 +1535,9 @@ func (r *resolver) rollbackTransaction(tx *resolverTransaction) {
 		} else {
 			delete(r.useOverrides, key)
 		}
+	}
+	if len(tx.useOverrides) != 0 {
+		r.useOverrideGeneration++
 	}
 	for key, undo := range tx.useChangeSeen {
 		if undo.exists {
@@ -1402,6 +1681,7 @@ func (r *resolver) setUseOverride(key, flag string, value bool) {
 		r.useOverrides[key] = make(map[string]bool)
 	}
 	r.useOverrides[key][flag] = value
+	r.useOverrideGeneration++
 }
 
 func (r *resolver) setUseChangeSeen(key string, value bool) {
@@ -1542,6 +1822,9 @@ func (r *resolver) refreshCommittedDirectUpdates() error {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
+		if err := r.checkContext(); err != nil {
+			return err
+		}
 		entry := versions[key]
 		if entry.vi == nil {
 			continue
@@ -1578,6 +1861,9 @@ func (r *resolver) resolveTargets(targetAtoms []*atom.Atom) error {
 }
 
 func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) error {
+	if err := r.checkContext(); err != nil {
+		return err
+	}
 	if depth > 100 {
 		return fmt.Errorf("resolve: dependency chain is too deep for %s — there may be a circular dependency", target.CP())
 	}
@@ -1678,8 +1964,15 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			constrained := versionChoices[0]
 			decisionKey := "version:" + cp + ":" + vi.Slot
 			var replayVersions []*VersionInfo
+			installedInSlot := node.GetInstalledVersionForSlot(vi.Slot)
+			explicitNewerRoot := depth == 0 && r.explicitTargets[cp] && installedInSlot != nil &&
+				vi.Version != nil && installedInSlot.Version != nil && vi.Version.Compare(installedInSlot.Version) > 0
 			for _, candidate := range versionChoices {
 				if candidate.Available {
+					if explicitNewerRoot && candidate.Version != nil && installedInSlot.Version != nil &&
+						candidate.Version.Compare(installedInSlot.Version) <= 0 && candidate.Slot == installedInSlot.Slot {
+						continue
+					}
 					replayVersions = append(replayVersions, candidate)
 				}
 			}
@@ -1694,7 +1987,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 				}
 			}
 			vi = constrained
-			if len(replayVersions) > 1 {
+			if len(replayVersions) > 1 && depth > 0 {
 				chosen := 0
 				labels := make(map[int]string, len(replayVersions))
 				order := make([]int, len(replayVersions))
@@ -2064,7 +2357,7 @@ func (r *resolver) processDeps(node *PkgNode, vi *VersionInfo, parent string, de
 // synthetic/test graphs; using them for repository packages can accidentally
 // resolve the dependencies of a different (often live) version.
 func (r *resolver) dependenciesForVersion(node *PkgNode, vi *VersionInfo) ([]*DepEdge, error) {
-	if vi == nil || (vi.Depend == "" && vi.Rdepend == "" && vi.Bdepend == "" && vi.Idepend == "" && vi.Pdepend == "" &&
+	if vi == nil || (!vi.DependencyMetadataKnown && vi.Depend == "" && vi.Rdepend == "" && vi.Bdepend == "" && vi.Idepend == "" && vi.Pdepend == "" &&
 		vi.InstalledDepend == "" && vi.InstalledRdepend == "" && vi.InstalledBdepend == "" && vi.InstalledIdepend == "" && vi.InstalledPdepend == "") {
 		return node.Deps, nil
 	}
@@ -2308,6 +2601,9 @@ func validateUseDependencyEAPI(dependency *atom.Atom, rawEAPI string) error {
 }
 
 func (r *resolver) processEdge(edge *DepEdge, depth int) error {
+	if err := r.checkContext(); err != nil {
+		return err
+	}
 	// handle USE conditionals
 	if edge.UseCond != "" {
 		flags := r.effectiveNodeUseFlags(edge.From)
@@ -2412,10 +2708,6 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 				return r.planPackage(bestVersionAtom(toNode.Atom, best), reason, depth)
 			}
 		}
-		// A build tool that participates in the current transaction must have a
-		// usable runtime closure even without --deep. processEdge still applies
-		// --with-bdeps to the installed tool's own historical BDEPEND, so this
-		// does not turn --with-bdeps=n into an unrestricted deep traversal.
 		if r.config.Deep {
 			// Deep traversal applies update and rebuild policy throughout the
 			// selected closure, not only to explicit set members. In particular,
@@ -2432,9 +2724,6 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 					return r.planDependencyInDomain(bestVersionAtom(toNode.Atom, best), depAtom, reason, depth, edge.Domain)
 				}
 			}
-			return r.processDeps(toNode, installed, depAtom.String(), depth+1, edge.Domain)
-		}
-		if edge.Type == DepTypeBuild {
 			return r.processDeps(toNode, installed, depAtom.String(), depth+1, edge.Domain)
 		}
 		return nil
@@ -2539,6 +2828,7 @@ func (r *resolver) processProviderDependency(parent *PkgNode, depAtom *atom.Atom
 	}
 
 	var failures []string
+	var failureDetails []ConflictDetail
 	for index, candidate := range candidates {
 		tx := r.beginTransaction()
 		var err error
@@ -2564,6 +2854,7 @@ func (r *resolver) processProviderDependency(parent *PkgNode, depAtom *atom.Atom
 		} else {
 			failures = append(failures, fmt.Sprintf("%s: %s", candidate.node.Atom.CP(), strings.Join(r.conflicts[tx.conflictsLen:], "; ")))
 		}
+		failureDetails = append(failureDetails, cloneConflictDetails(r.conflictDetails[tx.conflictDetailsLen:])...)
 		r.rollbackTransaction(tx)
 		if index+1 < len(candidates) {
 			if err := r.consumeBacktrack("provider", decisionKey, candidate.node.Atom.CP(), candidates[index+1].node.Atom.CP()); err != nil {
@@ -2574,6 +2865,7 @@ func (r *resolver) processProviderDependency(parent *PkgNode, depAtom *atom.Atom
 
 	msg := fmt.Sprintf("no provider of %s produced a valid plan: %s", depAtom.CP(), strings.Join(failures, "; "))
 	r.conflicts = append(r.conflicts, msg)
+	r.conflictDetails = append(r.conflictDetails, failureDetails...)
 	if r.config.KeepGoing {
 		return nil
 	}
@@ -2695,6 +2987,20 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 				feasible = false
 				break
 			}
+			constraintVersion := best
+			if constraintVersion == nil {
+				constraintVersion = inst
+			}
+			if constraintVersion != nil {
+				constraintKey := resolvedOpt.Atom.CP() + "|" + constraintVersion.Slot
+				if existing := r.constraints[constraintKey]; len(existing) > 0 {
+					combined := append(append([]*atom.Atom(nil), existing...), resolvedOpt.Atom)
+					if len(r.versionsSatisfyingAll(toNode, constraintVersion.Slot, combined)) == 0 {
+						feasible = false
+						break
+					}
+				}
+			}
 			candidate.installed = candidate.installed && inst != nil
 			candidate.members = append(candidate.members, member{depAtom: &resolvedOpt, installedVI: inst, best: best, needsUseChange: needsUseChange})
 		}
@@ -2764,6 +3070,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 	}
 
 	var failures []string
+	var failureDetails []ConflictDetail
 	for candidateIndex, chosen := range candidates {
 		tx := r.beginTransaction()
 		r.replayChoices = append(r.replayChoices, replayDecision{
@@ -2827,6 +3134,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 		} else {
 			failures = append(failures, fmt.Sprintf("alternative %d: %s", chosen.idx+1, strings.Join(r.conflicts[tx.conflictsLen:], "; ")))
 		}
+		failureDetails = append(failureDetails, cloneConflictDetails(r.conflictDetails[tx.conflictDetailsLen:])...)
 		r.rollbackTransaction(tx)
 
 		if candidateIndex+1 < len(candidates) {
@@ -2838,6 +3146,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 
 	msg := fmt.Sprintf("none of the alternative dependencies required by %s produced a valid plan: %s", node.Atom.CP(), strings.Join(failures, "; "))
 	r.conflicts = append(r.conflicts, msg)
+	r.conflictDetails = append(r.conflictDetails, failureDetails...)
 	if r.config.KeepGoing {
 		return nil
 	}
@@ -3000,6 +3309,10 @@ func (r *resolver) processCompleteGraph() {
 	processed := make(map[string]bool)
 
 	for {
+		if r.checkContext() != nil {
+			return
+		}
+		r.metrics.CompleteGraphPasses++
 		found := false
 		installKeys := make([]string, 0, len(r.toInstall))
 		for key := range r.toInstall {
@@ -3007,6 +3320,9 @@ func (r *resolver) processCompleteGraph() {
 		}
 		sort.Strings(installKeys)
 		for _, key := range installKeys {
+			if r.checkContext() != nil {
+				return
+			}
 			a := r.toInstall[key]
 			cp := a.Atom.CP()
 			if processed[cp] {
@@ -3087,11 +3403,16 @@ func (r *resolver) verifyPlannedState() {
 		persistentSeen[conflict] = true
 	}
 	for attempt := 0; attempt < 100; attempt++ {
+		if r.checkContext() != nil {
+			return
+		}
+		r.metrics.VerifierPasses++
 		r.conflicts = append(r.conflicts[:0], persistent...)
 		r.conflictDetails = r.conflictDetails[:baseDetailsLen]
 		if !r.verifyPlannedStatePass() {
 			return
 		}
+		r.metrics.VerifierRepairs++
 		// Verification findings describe the current intermediate plan and are
 		// recomputed after a repair. Policy changes discovered while resolving
 		// that repair (USE, masks, licenses, etc.) remain requirements of every
@@ -3207,7 +3528,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 		}
 	}
 	repairDependency := func(dep *atom.Atom, parentCP string) bool {
-		if !r.config.CompleteGraph || dep == nil {
+		if r.config.EmptyTree || !r.config.CompleteGraph || dep == nil {
 			return false
 		}
 		node := r.graph.Packages[dep.CP()]
@@ -3232,7 +3553,12 @@ func (r *resolver) verifyPlannedStatePass() bool {
 	// has tens of thousands of CPs, while the installed set is usually around a
 	// thousand, and complete-graph repair may run several verification passes.
 	packageCPs := make([]string, 0, len(r.toInstall)+len(r.graph.Packages)/32)
+	packageScan := 0
 	for cp, node := range r.graph.Packages {
+		packageScan++
+		if packageScan%256 == 0 && r.checkContext() != nil {
+			return false
+		}
 		if !changed[cp] && (node == nil || !node.Installed) {
 			continue
 		}
@@ -3240,6 +3566,9 @@ func (r *resolver) verifyPlannedStatePass() bool {
 	}
 	sort.Strings(packageCPs)
 	for _, cp := range packageCPs {
+		if r.checkContext() != nil {
+			return false
+		}
 		node := r.graph.Packages[cp]
 		if r.setScoped && r.config.CompleteGraph && !changed[cp] && !r.selectedCPs[cp] && node != nil && node.GetBestVersion() != nil {
 			// Portage completes the selected @world/@system graph, not every
@@ -3252,6 +3581,9 @@ func (r *resolver) verifyPlannedStatePass() bool {
 			continue
 		}
 		for _, vi := range versions {
+			if r.checkContext() != nil {
+				return false
+			}
 			parentChanging := r.packageVersionScheduled(node, vi)
 			versionKey := dependencyVersionKey(cp, vi.Version, vi.Slot, vi.Repository)
 			if r.setScoped && r.config.CompleteGraph && !parentChanging {
@@ -3271,6 +3603,9 @@ func (r *resolver) verifyPlannedStatePass() bool {
 				continue
 			}
 			for _, edge := range edges {
+				if r.checkContext() != nil {
+					return false
+				}
 				// Build/install-time dependencies of retained packages need not remain
 				// installed. They are mandatory for packages in this transaction.
 				if !parentChanging && (edge.Type == DepTypeBuild || edge.Type == DepTypeDepend || edge.Type == DepTypeInstall) {
@@ -3399,11 +3734,13 @@ func (r *resolver) finalVersions(node *PkgNode, removed map[string]bool) []*Vers
 	}
 	bySlot := make(map[string]*VersionInfo)
 	for _, vi := range node.Versions {
+		r.metrics.CandidateEvaluations++
 		if vi != nil && vi.Installed && !removed[versionActionKey(node.Atom.CP(), vi)] {
 			bySlot[vi.Slot] = vi
 		}
 	}
 	for _, vi := range node.Versions {
+		r.metrics.CandidateEvaluations++
 		if vi == nil || vi.Version == nil {
 			continue
 		}
@@ -3487,7 +3824,10 @@ func domainRemovals(removed map[string]bool, domain DependencyDomain) map[string
 	prefix := string(domain) + "\x00"
 	for key := range removed {
 		if domain == DomainROOT {
-			if !strings.Contains(key, "\x00") {
+			// ROOT action keys may contain the version/repository separator. Only
+			// explicit non-ROOT domain prefixes exclude an action from ROOT.
+			if !strings.HasPrefix(key, string(DomainBROOT)+"\x00") &&
+				!strings.HasPrefix(key, string(DomainSYSROOT)+"\x00") {
 				result[key] = true
 			}
 			continue
@@ -3583,6 +3923,13 @@ func (r *resolver) effectiveNodeUseFlags(node *PkgNode) map[string]bool {
 	if node == nil {
 		return flags
 	}
+	cacheKey := node.Atom.CP()
+	if r.effectiveNodeUseCache == nil {
+		r.effectiveNodeUseCache = make(map[string]map[string]bool)
+	}
+	if cached, found := r.effectiveNodeUseCache[cacheKey]; found {
+		return cached
+	}
 	best := node.GetBestVersion()
 	if best != nil {
 		for name, enabled := range best.UseFlags {
@@ -3608,6 +3955,7 @@ func (r *resolver) effectiveNodeUseFlags(node *PkgNode) map[string]bool {
 			}
 		}
 	}
+	r.effectiveNodeUseCache[cacheKey] = flags
 	return flags
 }
 
@@ -3711,13 +4059,60 @@ func (r *resolver) sortPlannedActions(actions []PkgAction) []PkgAction {
 	if len(actions) <= 1 {
 		return actions
 	}
+	out := r.plannedOrderGraph(actions)
+	componentOf, components := stronglyConnectedPlanComponents(out, len(actions))
+	componentOut := make(map[int][]int)
+	componentInDegree := make([]int, len(components))
+	seenComponentEdge := make(map[[2]int]bool)
+	for before, afters := range out {
+		for _, after := range afters {
+			from, to := componentOf[before], componentOf[after]
+			pair := [2]int{from, to}
+			if from == to || seenComponentEdge[pair] {
+				continue
+			}
+			seenComponentEdge[pair] = true
+			componentOut[from] = append(componentOut[from], to)
+			componentInDegree[to]++
+		}
+	}
+	componentKey := make([]int, len(components))
+	for component := range components {
+		sort.Ints(components[component])
+		componentKey[component] = components[component][0]
+	}
+	queue := make([]int, 0, len(components))
+	for component, degree := range componentInDegree {
+		if degree == 0 {
+			queue = append(queue, component)
+		}
+	}
+	sort.Slice(queue, func(i, j int) bool { return componentKey[queue[i]] < componentKey[queue[j]] })
+	result := make([]PkgAction, 0, len(actions))
+	for len(queue) > 0 {
+		component := queue[0]
+		queue = queue[1:]
+		for _, actionIndex := range components[component] {
+			result = append(result, actions[actionIndex])
+		}
+		for _, next := range componentOut[component] {
+			componentInDegree[next]--
+			if componentInDegree[next] == 0 {
+				queue = append(queue, next)
+				sort.Slice(queue, func(i, j int) bool { return componentKey[queue[i]] < componentKey[queue[j]] })
+			}
+		}
+	}
+	return result
+}
+
+func (r *resolver) plannedOrderGraph(actions []PkgAction) map[int][]int {
 	index := make(map[string][]int, len(actions))
 	for i := range actions {
 		if actions[i].Atom != nil {
 			index[actions[i].Atom.CP()] = append(index[actions[i].Atom.CP()], i)
 		}
 	}
-	inDegree := make([]int, len(actions))
 	out := make(map[int][]int)
 	seen := make(map[[2]int]bool)
 	add := func(before, after int) {
@@ -3727,7 +4122,6 @@ func (r *resolver) sortPlannedActions(actions []PkgAction) []PkgAction {
 		}
 		seen[pair] = true
 		out[before] = append(out[before], after)
-		inDegree[after]++
 	}
 	for parentIndex := range actions {
 		action := &actions[parentIndex]
@@ -3768,37 +4162,60 @@ func (r *resolver) sortPlannedActions(actions []PkgAction) []PkgAction {
 			}
 		}
 	}
-	queue := make([]int, 0, len(actions))
-	for i, degree := range inDegree {
-		if degree == 0 {
-			queue = append(queue, i)
-		}
+	return out
+}
+
+func stronglyConnectedPlanComponents(out map[int][]int, count int) ([]int, [][]int) {
+	indices := make([]int, count)
+	lowLink := make([]int, count)
+	onStack := make([]bool, count)
+	for i := range indices {
+		indices[i] = -1
 	}
-	sort.Ints(queue)
-	result := make([]PkgAction, 0, len(actions))
-	emitted := make([]bool, len(actions))
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		if emitted[current] {
-			continue
-		}
-		emitted[current] = true
-		result = append(result, actions[current])
-		for _, next := range out[current] {
-			inDegree[next]--
-			if inDegree[next] == 0 {
-				queue = append(queue, next)
-				sort.Ints(queue)
+	stack := make([]int, 0, count)
+	nextIndex := 0
+	componentOf := make([]int, count)
+	var components [][]int
+	var visit func(int)
+	visit = func(node int) {
+		indices[node], lowLink[node] = nextIndex, nextIndex
+		nextIndex++
+		stack = append(stack, node)
+		onStack[node] = true
+		for _, next := range out[node] {
+			if indices[next] == -1 {
+				visit(next)
+				if lowLink[next] < lowLink[node] {
+					lowLink[node] = lowLink[next]
+				}
+			} else if onStack[next] && indices[next] < lowLink[node] {
+				lowLink[node] = indices[next]
 			}
 		}
+		if lowLink[node] != indices[node] {
+			return
+		}
+		component := len(components)
+		var members []int
+		for {
+			last := len(stack) - 1
+			member := stack[last]
+			stack = stack[:last]
+			onStack[member] = false
+			componentOf[member] = component
+			members = append(members, member)
+			if member == node {
+				break
+			}
+		}
+		components = append(components, members)
 	}
-	for i := range actions {
-		if !emitted[i] {
-			result = append(result, actions[i])
+	for node := 0; node < count; node++ {
+		if indices[node] == -1 {
+			visit(node)
 		}
 	}
-	return result
+	return componentOf, components
 }
 
 func (r *resolver) versionForAction(action *PkgAction) (*VersionInfo, *PkgNode) {
@@ -3845,6 +4262,7 @@ func plannedDependencyIndices(actions []PkgAction, index map[string][]int, depen
 }
 
 func (r *resolver) validatePlanOrder(actions []PkgAction) {
+	componentOf, _ := stronglyConnectedPlanComponents(r.plannedOrderGraph(actions), len(actions))
 	positions := make(map[string][]int, len(actions))
 	for i := range actions {
 		if actions[i].Atom != nil {
@@ -3880,6 +4298,9 @@ func (r *resolver) validatePlanOrder(actions []PkgAction) {
 			}
 			for _, dependency := range dependencies {
 				for _, depIndex := range plannedDependencyIndices(actions, positions, dependency, r.effectiveDomain(edge.Domain)) {
+					if componentOf[depIndex] == componentOf[parentIndex] {
+						continue
+					}
 					invalid := edge.Type == DepTypePost && depIndex < parentIndex
 					invalid = invalid || (edge.Type != DepTypePost && depIndex > parentIndex)
 					if invalid {
@@ -4018,17 +4439,17 @@ func resolveUseDependencies(input *atom.Atom, parentUse map[string]bool) *atom.A
 }
 
 // tildeMatch checks if version v satisfies the ~ operator constraint c.
-// ~x.y.z matches x.y.z through x.y.* (same prefix of all numbers in c).
+// Gentoo's ~ operator ignores only the package revision: ~pkg-1.2 matches
+// pkg-1.2 and pkg-1.2-rN, but it must not admit pkg-1.2.1.
 func tildeMatch(v, c *atom.Version) bool {
-	if v == nil || c == nil || len(v.Numbers) < len(c.Numbers) {
+	if v == nil || c == nil {
 		return false
 	}
-	for i := 0; i < len(c.Numbers); i++ {
-		if v.Numbers[i] != c.Numbers[i] {
-			return false
-		}
-	}
-	return true
+	vBase := *v
+	cBase := *c
+	vBase.Revision = -1
+	cBase.Revision = -1
+	return vBase.Compare(&cBase) == 0
 }
 
 // globMatch checks if version v satisfies the =* operator constraint c.
@@ -4238,7 +4659,7 @@ func (r *resolver) versionKeywordAccepted(node *PkgNode, vi *VersionInfo) bool {
 	if r.keywordCache == nil {
 		r.keywordCache = make(map[string]bool)
 	}
-	cacheKey := useOverrideKey(node, vi)
+	cacheKey := r.versionKey(node, vi)
 	if accepted, found := r.keywordCache[cacheKey]; found {
 		return accepted
 	}
@@ -4307,9 +4728,29 @@ func gentooRuntimeArch(goarch string) string {
 	return goarch
 }
 
+type candidateCacheEntry struct {
+	version  *VersionInfo
+	versions []*VersionInfo
+}
+
 func (r *resolver) findMatchingVersion(node *PkgNode, constraint *atom.Atom) *VersionInfo {
+	if node == nil || constraint == nil {
+		return nil
+	}
+	cacheKey := "one\x00" + node.Atom.CP() + "\x00" + constraint.String() + "\x00" + strconv.FormatUint(r.useOverrideGeneration, 10)
+	if r.candidateCache == nil {
+		r.candidateCache = make(map[string]candidateCacheEntry)
+	}
+	if cached, found := r.candidateCache[cacheKey]; found {
+		r.metrics.CandidateCacheHits++
+		return cached.version
+	}
+	r.metrics.CandidateCacheMisses++
 	var best *VersionInfo
 	for _, vi := range node.Versions {
+		if r.checkContext() != nil {
+			return nil
+		}
 		if vi == nil {
 			continue
 		}
@@ -4326,6 +4767,7 @@ func (r *resolver) findMatchingVersion(node *PkgNode, constraint *atom.Atom) *Ve
 			best = vi
 		}
 	}
+	r.candidateCache[cacheKey] = candidateCacheEntry{version: best}
 	return best
 }
 
@@ -4338,8 +4780,27 @@ func (r *resolver) findVersionSatisfyingAll(node *PkgNode, slot string, constrai
 }
 
 func (r *resolver) versionsSatisfyingAll(node *PkgNode, slot string, constraints []*atom.Atom) []*VersionInfo {
+	if node == nil {
+		return nil
+	}
+	keyParts := []string{"all", node.Atom.CP(), slot, strconv.FormatUint(r.useOverrideGeneration, 10)}
+	for _, constraint := range constraints {
+		keyParts = append(keyParts, constraint.String())
+	}
+	cacheKey := strings.Join(keyParts, "\x00")
+	if r.candidateCache == nil {
+		r.candidateCache = make(map[string]candidateCacheEntry)
+	}
+	if cached, found := r.candidateCache[cacheKey]; found {
+		r.metrics.CandidateCacheHits++
+		return cached.versions
+	}
+	r.metrics.CandidateCacheMisses++
 	var result []*VersionInfo
 	for _, vi := range node.Versions {
+		if r.checkContext() != nil {
+			return nil
+		}
 		if vi == nil || vi.Slot != slot || (!vi.Installed && !vi.Available) || r.versionMaskStatus(node, vi).Masked {
 			continue
 		}
@@ -4358,6 +4819,7 @@ func (r *resolver) versionsSatisfyingAll(node *PkgNode, slot string, constraints
 		}
 	}
 	sort.SliceStable(result, func(i, j int) bool { return betterVersionCandidate(result[i], result[j]) })
+	r.candidateCache[cacheKey] = candidateCacheEntry{versions: result}
 	return result
 }
 
@@ -4414,11 +4876,10 @@ func (r *resolver) candidateUseFlags(node *PkgNode, vi *VersionInfo) map[string]
 	if node == nil {
 		return cloneBoolMap(vi.UseFlags)
 	}
-	if r.baseUseCache == nil {
-		r.baseUseCache = make(map[string]map[string]bool)
+	if r.baseUseByVersion == nil {
+		r.baseUseByVersion = make(map[*VersionInfo]map[string]bool)
 	}
-	key := useOverrideKey(node, vi)
-	base, found := r.baseUseCache[key]
+	base, found := r.baseUseByVersion[vi]
 	if !found {
 		base = cloneBoolMap(vi.UseFlags)
 		cpv := node.Atom.CP()
@@ -4450,10 +4911,18 @@ func (r *resolver) candidateUseFlags(node *PkgNode, vi *VersionInfo) map[string]
 				}
 			}
 		}
-		r.baseUseCache[key] = base
+		r.baseUseByVersion[vi] = base
+	}
+	key := r.versionKey(node, vi)
+	overrides := r.useOverrides[key]
+	if len(overrides) == 0 {
+		// Base candidate USE maps are immutable after construction. Returning the
+		// shared map avoids cloning the complete IUSE domain for every read-only
+		// constraint check; callers that apply a hypothetical override clone below.
+		return base
 	}
 	flags := cloneBoolMap(base)
-	for name, enabled := range r.useOverrides[useOverrideKey(node, vi)] {
+	for name, enabled := range overrides {
 		flags[name] = enabled
 	}
 	return flags
@@ -4472,7 +4941,7 @@ func implicitUseExpandFlag(config *portage.Config, flag string) bool {
 	return false
 }
 
-func useOverrideKey(node *PkgNode, vi *VersionInfo) string {
+func versionKey(node *PkgNode, vi *VersionInfo) string {
 	if node == nil || node.Atom == nil || vi == nil {
 		return ""
 	}
@@ -4481,6 +4950,21 @@ func useOverrideKey(node *PkgNode, vi *VersionInfo) string {
 		key += "|" + vi.Version.Raw
 	}
 	key += "|" + vi.Repository
+	return key
+}
+
+func (r *resolver) versionKey(node *PkgNode, vi *VersionInfo) string {
+	if vi == nil {
+		return ""
+	}
+	if key, found := r.versionKeyCache[vi]; found {
+		return key
+	}
+	if r.versionKeyCache == nil {
+		r.versionKeyCache = make(map[*VersionInfo]string)
+	}
+	key := versionKey(node, vi)
+	r.versionKeyCache[vi] = key
 	return key
 }
 
@@ -4502,7 +4986,7 @@ func (r *resolver) findMatchingVersionWithUseChanges(node *PkgNode, constraint *
 	if best == nil {
 		return nil
 	}
-	key := useOverrideKey(node, best)
+	key := r.versionKey(node, best)
 	var rendered []string
 	for flag, enabled := range bestChanges {
 		r.setUseOverride(key, flag, enabled)
@@ -4597,7 +5081,7 @@ func (r *resolver) versionMaskStatus(node *PkgNode, vi *VersionInfo) portage.Mas
 	if r.maskCache == nil {
 		r.maskCache = make(map[string]portage.MaskStatus)
 	}
-	key := useOverrideKey(node, vi)
+	key := r.versionKey(node, vi)
 	if status, found := r.maskCache[key]; found {
 		return status
 	}
@@ -4622,6 +5106,7 @@ func (r *resolver) matchingMaskStatuses(node *PkgNode, constraint *atom.Atom) []
 }
 
 func (r *resolver) buildResult() (*ResolveResult, error) {
+	r.snapshotAllocations()
 	install := mapToSlice(r.toInstall)
 	if !r.config.UnsortedDisplay {
 		install = SortByDeps(install, r.graph)

@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "date": "2026-07-19",
+  "operation": "deep-newuse-system-post-qt5-repair",
+  "arguments": ["--pretend", "--update", "--deep", "--newuse", "--with-bdeps=y", "--backtrack=20", "@system"],
+  "elapsed_ns": 2128778469,
+  "verified": false,
+  "verification": "failed",
+  "proposed_actions": 158,
+  "proposed_uninstalls": 0,
+  "backtracks_used": 0,
+  "backtrack_limit": 20,
+  "candidate_evaluations": 5910,
+  "verifier_passes": 1,
+  "verifier_repairs": 0,
+  "conflicts": [
+    ">=sys-apps/portage-3.0.57[python_targets_python3_13(-)] required by app-portage/gentoolkit",
+    "dev-lang/python-exec[python_targets_python3_10(-)] required by dev-lang/python",
+    "dev-lang/python-exec[python_targets_python3_9(-)] required by dev-lang/python",
+    "dev-python/jaraco-text[python_targets_python3_12(-)] required by dev-python/jaraco-collections",
+    ">=dev-python/pyproject-metadata-0.7.1[python_targets_python3_13(-)] required by dev-python/meson-python",
+    ">=dev-python/typing-extensions-4.1.0[python_targets_python3_10(-)] required by dev-python/pydantic",
+    "dev-python/packaging[python_targets_python3_12(-)] required by dev-python/pyqt-builder",
+    ">=dev-python/vcs-versioning-1.0.0[python_targets_python3_14(-)] required by dev-python/setuptools-scm",
+    "dev-python/packaging[python_targets_python3_12(-)] required by dev-python/sip",
+    "dev-python/setuptools[python_targets_python3_12(-)] required by dev-python/sip",
+    "<dev-python/docutils-0.23[python_targets_python3_14(-)] required by dev-python/sphinx",
+    "dev-python/pygobject:3[python_targets_python3_13(-)] required by net-print/hplip",
+    "no alternative dependency of virtual/perl-parent is satisfied"
+  ]
+}

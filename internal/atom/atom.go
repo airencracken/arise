@@ -160,6 +160,8 @@ func (v *Version) Compare(other *Version) int {
 		return 1
 	}
 
+	vRawNumbers := rawNumberComponents(v.Raw)
+	oRawNumbers := rawNumberComponents(other.Raw)
 	maxN := len(v.Numbers)
 	if len(other.Numbers) > maxN {
 		maxN = len(other.Numbers)
@@ -172,6 +174,25 @@ func (v *Version) Compare(other *Version) int {
 		}
 		if i < len(other.Numbers) {
 			on = other.Numbers[i]
+		}
+		// After the first component, PMS treats a component with a leading
+		// zero as a decimal fraction. Preserve its textual precision: 1.01 is
+		// older than 1.1, and 1.001 is older than 1.01.
+		if i > 0 && i < len(vRawNumbers) && i < len(oRawNumbers) &&
+			(strings.HasPrefix(vRawNumbers[i], "0") || strings.HasPrefix(oRawNumbers[i], "0")) {
+			width := len(vRawNumbers[i])
+			if len(oRawNumbers[i]) > width {
+				width = len(oRawNumbers[i])
+			}
+			left := vRawNumbers[i] + strings.Repeat("0", width-len(vRawNumbers[i]))
+			right := oRawNumbers[i] + strings.Repeat("0", width-len(oRawNumbers[i]))
+			if left < right {
+				return -1
+			}
+			if left > right {
+				return 1
+			}
+			continue
 		}
 		if vn < on {
 			return -1
@@ -247,6 +268,9 @@ func (v *Version) Compare(other *Version) int {
 	if len(aSuf) > minS {
 		// v has more suffixes
 		next := aSuf[minS]
+		if suffixRemainderIsZero(aSuf[minS:]) {
+			goto revisions
+		}
 		if isNegativeSuffix(next) {
 			return -1 // v is older (has _alpha/etc where other has none)
 		}
@@ -262,6 +286,9 @@ func (v *Version) Compare(other *Version) int {
 	if len(bSuf) > minS {
 		// other has more suffixes
 		next := bSuf[minS]
+		if suffixRemainderIsZero(bSuf[minS:]) {
+			goto revisions
+		}
 		if isNegativeSuffix(next) {
 			return 1 // v is newer
 		}
@@ -274,14 +301,47 @@ func (v *Version) Compare(other *Version) int {
 		return -1
 	}
 
-	if v.Revision < other.Revision {
+revisions:
+	vRevision := v.Revision
+	if vRevision < 0 {
+		vRevision = 0
+	}
+	oRevision := other.Revision
+	if oRevision < 0 {
+		oRevision = 0
+	}
+	if vRevision < oRevision {
 		return -1
 	}
-	if v.Revision > other.Revision {
+	if vRevision > oRevision {
 		return 1
 	}
 
 	return 0
+}
+
+func suffixRemainderIsZero(suffixes []string) bool {
+	if len(suffixes) == 0 {
+		return false
+	}
+	for _, suffix := range suffixes {
+		n, ok := parseSuffixNum(suffix)
+		if !ok || n != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func rawNumberComponents(raw string) []string {
+	end := 0
+	for end < len(raw) && (raw[end] == '.' || raw[end] >= '0' && raw[end] <= '9') {
+		end++
+	}
+	if end == 0 {
+		return nil
+	}
+	return strings.Split(raw[:end], ".")
 }
 
 func parseSuffixNum(s string) (int, bool) {
@@ -335,6 +395,11 @@ func Parse(raw string) (*Atom, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("empty atom string")
 	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < 0x21 || raw[i] > 0x7e {
+			return nil, fmt.Errorf("invalid atom byte 0x%02x at position %d", raw[i], i+1)
+		}
+	}
 
 	p := &parser{input: raw, pos: 0}
 	atom, err := p.parse()
@@ -347,6 +412,11 @@ func Parse(raw string) (*Atom, error) {
 func ParseVersion(raw string) (*Version, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("empty version string")
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] < 0x21 || raw[i] > 0x7e {
+			return nil, fmt.Errorf("invalid version byte 0x%02x at position %d", raw[i], i+1)
+		}
 	}
 	return parseVersionString(raw)
 }

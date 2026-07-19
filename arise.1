@@ -1,9 +1,9 @@
 .\" arise(1) - Gentoo Package Manager
-.\" Generated for arise version 0.1.0-dev
-.TH arise 1 "2026-05-20" "arise 0.1.0-dev" "Gentoo Package Manager"
+.\" Maintained for the development command surface
+.TH ARISE 1 "2026-07-19" "arise development" "Gentoo Package Manager"
 
 .SH NAME
-arise \- a high-performance, self-healing package manager for Gentoo Linux
+arise \- an experimental recovery-oriented package manager for Gentoo Linux
 
 .SH SYNOPSIS
 .B arise
@@ -11,7 +11,8 @@ arise \- a high-performance, self-healing package manager for Gentoo Linux
 
 .SH DESCRIPTION
 .B arise
-is a statically-linked Go binary that replaces
+is an experimental statically-linked Go control plane that aims to provide
+compatible workflows for
 .BR emerge (1),
 .BR eix (1),
 .BR equery (1),
@@ -27,7 +28,16 @@ and
 It stores package metadata in a BadgerDB key-value store and operates directly
 against the Gentoo repository tree and VDB, without depending on Python or Bash
 for core operations. Build phases that require shell scripts execute via
-\fBos/exec\fR to the appropriate build tools (make, bash, patch, etc.).
+\fBos/exec\fR to the appropriate build tools (make, bash, patch, etc.). General
+live-root install, update, removal, depclean and rebuild execution remains
+disabled until the execution-ABI and transaction acceptance gates pass.
+
+The design priorities are correctness, usefulness, performance, and
+reliability.  Repair planning is intended to derive and verify a complete
+ordered closure instead of requiring administrators to widen manual
+\fB\-\-oneshot \-\-nodeps\fR batches by trial and error.  Indexed immutable
+state and Go concurrency are used to reduce control-plane latency without
+weakening determinism or final-state verification.
 
 .SH OPTIONS
 
@@ -55,7 +65,7 @@ Skip dependency resolution. Install only the specified packages.
 \fB\-o\fR, \fB\-onlydeps\fR
 Only install dependencies, not the target packages themselves.
 .TP
-\fB\-e\fR, \fB\-emptytree\fR
+\fB\-e\fR, \fB\-\-emptytree\fR
 Rebuild the entire dependency tree as if nothing is installed.
 .TP
 \fB\-D\fR, \fB\-deep\fR
@@ -100,13 +110,30 @@ Only build binary packages, do not install.
 \fB\-f\fR, \fB\-fetchonly\fR
 Only fetch source files, do not build.
 .TP
-\fB\-backtrack\fR \fIN\fR
-Maximum backtracking levels for dependency resolution (default: 10).
+\fB\-\-backtrack\fR \fIN\fR
+Maximum backtracking decisions for dependency resolution (default: 20).
 .TP
-\fB\-complete-graph\fR
+\fB\-\-resolver-timeout\fR \fIDURATION\fR
+Wall-clock resolver deadline (default: \fI5m\fR). A value of \fI0\fR disables
+the wall-clock limit without changing the independent backtrack ceiling.
+.TP
+\fB\-\-experimental-live-mutation\fR
+Enable the development mutation path. This is not sufficient authorization by
+itself. Live root is limited to the additive single-package canary eligibility
+rules; general mutation remains disabled.
+.TP
+\fB\-\-approve-plan-sha256\fR \fIDIGEST\fR
+Authorize exactly the displayed canonical verified-plan digest. The digest is
+bound to VDB, world, configuration, selected recipes and inherited eclasses;
+state drift before execution fails closed.
+.TP
+\fB\-\-journal-dir\fR \fIPATH\fR
+Directory containing durable package transaction journals.
+.TP
+\fB\-\-complete-graph\fR
 Rebuild reverse dependencies when packages change.
 .TP
-\fB\-keep-going\fR
+\fB\-\-keep-going\fR
 Continue as much as possible after an error.
 .TP
 \fB\-reinstall\fR
@@ -131,7 +158,8 @@ Resume the last interrupted operation.
 Skip the first package when resuming (used with \fB\-resume\fR).
 .TP
 \fB\-autounmask-write\fR
-Write necessary package.unmask and package.license entries when resolution fails.
+Write necessary package.unmask and package.license entries when resolution
+fails.
 .TP
 \fB\-color\fR \fIy|n\fR
 Enable or disable colored output (default: terminal auto-detect).
@@ -270,36 +298,43 @@ Dump output in eix-compatible format.
 
 .TP
 \fBinstall\fR [\fIflags\fR] \fIatoms...\fR
-Install one or more packages. Resolves dependencies and builds from source.
-Accepts all package flags listed above.
+Resolve one or more packages. General execution is gated; use \fB\-\-pretend\fR.
+Manifest-verified \fB\-\-fetchonly\fR is the bounded non-pretend exception.
 
 .TP
 \fBupdate\fR [\fIflags\fR] [\fIatoms...\fR]
-Update installed packages. If no atoms specified, updates @world.
-Equivalent to \fBinstall \-u @world\fR with the specified flags.
+Resolve updates. If no atoms are specified, resolve @world. General execution
+is gated; use \fB\-\-pretend\fR.
 
 .TP
 \fBuninstall\fR [\fIflags\fR] \fIatoms...\fR
-Remove installed packages without dependency checking.
+Propose removal. Live removal remains gated; use \fB\-\-pretend\fR.
 
 .TP
 \fBdepclean\fR [\fIflags\fR]
-Remove orphaned packages that are not in the @world set or its dependency tree.
+Propose orphan removal without mutation.
 
 .TP
 \fBprune\fR [\fIflags\fR]
-Remove old versions of installed packages, keeping only the newest per slot.
+Propose old-version removal without mutation.
 
 .TP
 \fBdeselect\fR \fIatom\fR
 Remove a package from the @world set without uninstalling it.
+.TP
+\fBrecover status\fR
+List durable package transaction journals and their states.
+.TP
+\fBrecover rollback\fR \fIid\fR
+Roll back one active journal while holding the VDB mutation lock. Use
+\fB\-\-all-active\fR instead of an identifier to recover every active journal.
 
 .SS Query and Information
 
 .TP
 \fBsearch\fR [\fIflags\fR] [\fIquery\fR]
-Search the package database. Accepts all search flags listed above.
-Replaces \fBeix\fR and \fBemerge \-\-search\fR.
+Search the package database. Accepts all search flags listed above and provides
+an experimental eix/emerge-search-compatible workflow.
 
 .TP
 \fBinstalled\fR [\fIall|repo|no-repo|buildtime|no-buildtime\fR]

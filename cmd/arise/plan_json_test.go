@@ -55,6 +55,9 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 	if document.Schema != 1 || !document.Complete || !document.Resolution.Verified || document.Resolution.Verification != resolve.VerificationVerified || document.Operation != "update" || document.Resolution.DurationNS != int64(2*time.Second) {
 		t.Fatalf("document header = %#v", document)
 	}
+	if document.PlanSHA256 != "" || document.StateSHA256 != "" {
+		t.Fatalf("unbound test plan unexpectedly authorized: %#v", document)
+	}
 	if len(document.Actions) != 1 || document.Actions[0].Domain != string(resolve.DomainROOT) || !reflect.DeepEqual(document.Actions[0].UseEnabled, []string{"alpha", "zeta"}) || !reflect.DeepEqual(document.Actions[0].UseDisabled, []string{"debug"}) {
 		t.Fatalf("action = %#v", document.Actions)
 	}
@@ -78,6 +81,30 @@ func TestWritePlanJSONPreservesConflictedPartialPlan(t *testing.T) {
 	}
 	if document.Complete || document.Error != "resolve failed" || len(document.Conflicts) != 1 || len(document.Details) != 1 || document.Actions == nil {
 		t.Fatalf("partial plan = %#v", document)
+	}
+}
+
+func TestWritePlanJSONPreservesStructuredIncompleteTelemetry(t *testing.T) {
+	cause := &resolve.IncompleteCause{Kind: "timeout", Phase: "verification", Elapsed: time.Second, DecisionsUsed: 2, BacktracksUsed: 1, Message: "context deadline exceeded"}
+	result := &resolve.ResolveResult{Verification: resolve.VerificationIncomplete, Incomplete: cause,
+		Metrics: resolve.ResolveMetrics{CandidateEvaluations: 42, VerifierPasses: 3, CancellationChecks: 9, Allocations: 12, AllocatedBytes: 3456, CandidateCacheHits: 8, CandidateCacheMisses: 2}}
+	var output bytes.Buffer
+	if err := writePlanJSON(&output, []string{"@world"}, resolve.DefaultResolveConfig(), result, nil, planTimings{}); err != nil {
+		t.Fatal(err)
+	}
+	var document jsonPlan
+	if err := json.Unmarshal(output.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Complete || document.Resolution.Incomplete == nil || document.Resolution.Incomplete.Kind != "timeout" ||
+		document.Resolution.CandidateEvaluations != 42 || document.Resolution.VerifierPasses != 3 || document.Resolution.CancellationChecks != 9 {
+		t.Fatalf("incomplete telemetry = %#v", document.Resolution)
+	}
+	if document.Resolution.Allocations != 12 || document.Resolution.AllocatedBytes != 3456 {
+		t.Fatalf("allocation telemetry = %#v", document.Resolution)
+	}
+	if document.Resolution.CandidateCacheHits != 8 || document.Resolution.CandidateCacheMisses != 2 {
+		t.Fatalf("cache telemetry = %#v", document.Resolution)
 	}
 }
 

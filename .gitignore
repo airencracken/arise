@@ -7,6 +7,28 @@
 *.out
 *.test
 
+# Host-specific profiler output. Keep harnesses and curated summaries/JSON
+# evidence, but never commit raw traces or command captures.
+*.pprof
+*.trace
+*.cprofile
+perf.data
+perf.data.*
+*.strace
+*.strace.*
+*.elapsed-seconds
+*.cpu.txt
+*.cpu.*.txt
+*.heap.txt
+*.heap.*.txt
+*.allocs.txt
+*.allocs.*.txt
+*.trace-*.txt
+*.stdout
+*.stderr
+/profile-output/
+/perf-output/
+
 # IDE
 .idea/
 .vscode/

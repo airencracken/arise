@@ -38,7 +38,7 @@ func (p *parser) parse() (*Atom, error) {
 	}
 
 	if p.peek() == '!' {
-		p.advance()
+		return nil, fmt.Errorf("blocker prefix belongs to a dependency expression, not an atom")
 	}
 
 	cp, err := p.parseCP()
@@ -75,6 +75,9 @@ func (p *parser) parse() (*Atom, error) {
 			// ::repo
 			p.pos += 2
 			a.Repo = p.parseRepo()
+			if a.Repo == "" {
+				return nil, fmt.Errorf("empty repository")
+			}
 		} else {
 			p.advance()
 			if err := p.parseSlot(a); err != nil {
@@ -92,6 +95,9 @@ func (p *parser) parse() (*Atom, error) {
 		if p.pos+1 < len(p.input) && p.input[p.pos+1] == ':' {
 			p.pos += 2
 			a.Repo = p.parseRepo()
+			if a.Repo == "" {
+				return nil, fmt.Errorf("empty repository")
+			}
 		}
 	}
 
@@ -107,6 +113,9 @@ func (p *parser) parse() (*Atom, error) {
 			return nil, fmt.Errorf("use flags: %w", err)
 		}
 		a.UseFlags = flags
+	}
+	if p.peek() != 0 {
+		return nil, fmt.Errorf("unexpected trailing input %q at position %d", p.input[p.pos:], p.pos+1)
 	}
 
 	return a, nil
@@ -217,7 +226,7 @@ func parseVersionString(raw string) (*Version, error) {
 		return nil, fmt.Errorf("no numeric components in version %q", raw)
 	}
 
-	if len(remain) > 0 && unicode.IsLetter(rune(remain[0])) && remain[0] != 'p' {
+	if len(remain) > 0 && remain[0] >= 'a' && remain[0] <= 'z' {
 		v.Letter = remain[:1]
 		remain = remain[1:]
 	}
@@ -268,9 +277,7 @@ func parseVersionString(raw string) (*Version, error) {
 				continue
 			}
 
-			// unknown suffix token
-			v.Suffixes = append(v.Suffixes, token)
-			remain = remain[end:]
+			return nil, fmt.Errorf("unknown version suffix %q in version %q", token, raw)
 		} else if remain[0] == '-' {
 			if len(remain) > 2 && remain[1] == 'r' {
 				rest := remain[2:]
@@ -306,16 +313,19 @@ func (p *parser) parseSlot(a *Atom) error {
 	if b == '=' {
 		a.SlotOp = SlotOpEq
 		p.advance()
-		// If next is '[' or end, we have just := operator
-		if p.peek() == 0 || p.peek() == '[' {
+		// A leading operator is the complete slot dependency. A named slot
+		// places its operator after the slot/subslot instead.
+		if p.peek() == 0 || p.peek() == '[' || (p.peek() == ':' && p.pos+1 < len(p.input) && p.input[p.pos+1] == ':') {
 			return nil
 		}
+		return fmt.Errorf("unexpected input after standalone := operator")
 	} else if b == '*' {
 		a.SlotOp = SlotOpStar
 		p.advance()
-		if p.peek() == 0 || p.peek() == '[' {
+		if p.peek() == 0 || p.peek() == '[' || (p.peek() == ':' && p.pos+1 < len(p.input) && p.input[p.pos+1] == ':') {
 			return nil
 		}
+		return fmt.Errorf("unexpected input after standalone :* operator")
 	}
 
 	// Parse slot value
@@ -358,12 +368,18 @@ func (p *parser) parseSlot(a *Atom) error {
 				break
 			}
 			if b == '=' {
+				if p.pos == start {
+					return fmt.Errorf("empty subslot before '=' operator")
+				}
 				a.SlotOp = SlotOpEq
 				a.Subslot = p.input[start:p.pos]
 				p.pos++
 				break
 			}
 			if b == '*' {
+				if p.pos == start {
+					return fmt.Errorf("empty subslot before '*' operator")
+				}
 				a.SlotOp = SlotOpStar
 				a.Subslot = p.input[start:p.pos]
 				p.pos++
@@ -393,14 +409,22 @@ func (p *parser) parseRepo() string {
 
 func (p *parser) parseUseFlags() ([]UseFlag, error) {
 	var flags []UseFlag
+	expectFlag := true
 	for p.pos < len(p.input) {
 		b := p.input[p.pos]
 		if b == ']' {
+			if expectFlag {
+				return nil, fmt.Errorf("empty USE dependency")
+			}
 			p.advance()
 			return flags, nil
 		}
 		if b == ',' {
+			if expectFlag {
+				return nil, fmt.Errorf("empty USE dependency")
+			}
 			p.advance()
+			expectFlag = true
 			continue
 		}
 		flag, err := p.parseUseFlag()
@@ -408,8 +432,9 @@ func (p *parser) parseUseFlags() ([]UseFlag, error) {
 			return nil, err
 		}
 		flags = append(flags, flag)
+		expectFlag = false
 	}
-	return flags, nil
+	return nil, fmt.Errorf("unterminated USE dependency list")
 }
 
 func (p *parser) parseUseFlag() (UseFlag, error) {

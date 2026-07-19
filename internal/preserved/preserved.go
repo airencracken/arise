@@ -3,14 +3,17 @@ package preserved
 import (
 	"bufio"
 	"debug/elf"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // BrokenLink represents an ELF binary that requires a shared library
@@ -28,6 +31,19 @@ type PreservedLib struct {
 	Soname    string
 	Version   string
 	OwningPkg string
+}
+
+// RebuildReason explains one concrete ELF edge that requires an installed
+// package to be rebuilt. Preserved-library edges are kept distinct from
+// generally missing SONAMEs so callers cannot mistake a damaged installation
+// for a normal preserve-libs transition.
+type RebuildReason struct {
+	Package        string `json:"package"`
+	Binary         string `json:"binary"`
+	Needed         string `json:"needed"`
+	Kind           string `json:"kind"`
+	PreservedPath  string `json:"preserved_path,omitempty"`
+	PreservedOwner string `json:"preserved_owner,omitempty"`
 }
 
 // lddNotFoundRE matches ldd output lines like:
@@ -75,34 +91,151 @@ var libSearchPaths = []string{
 // shared libraries that are no longer available.
 // root is the root directory to scan (typically "/").
 func ScanBrokenLinks(root string) ([]BrokenLink, error) {
-	if err := checkLDD(); err != nil {
-		return nil, err
-	}
+	available := loaderLibraryNames(root)
 
-	var broken []BrokenLink
+	paths := make(map[string]bool)
 	for _, dir := range elfScanDirs {
 		fullDir := filepath.Join(root, dir)
 		_ = filepath.Walk(fullDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() || !info.Mode().IsRegular() {
 				return nil
 			}
-			if !isELF(path) {
-				return nil
-			}
-			missing, ldErr := lddMissing(path)
-			if ldErr != nil {
-				return nil
-			}
-			for _, lib := range missing {
-				broken = append(broken, BrokenLink{
-					Binary: path,
-					Needs:  lib,
-				})
-			}
+			paths[path] = true
 			return nil
 		})
 	}
+	jobs := make(chan string)
+	results := make(chan []BrokenLink)
+	workers := runtime.GOMAXPROCS(0)
+	if workers < 1 {
+		workers = 1
+	} else if workers > 16 {
+		workers = 16
+	}
+	var workerGroup sync.WaitGroup
+	for range workers {
+		workerGroup.Add(1)
+		go func() {
+			defer workerGroup.Done()
+			for path := range jobs {
+				if !isELF(path) {
+					continue
+				}
+				needed, err := elfNeededLibraries(path)
+				if err != nil {
+					continue
+				}
+				var found []BrokenLink
+				for _, library := range needed {
+					if !available[library] {
+						found = append(found, BrokenLink{Binary: path, Needs: library})
+					}
+				}
+				if len(found) > 0 {
+					results <- found
+				}
+			}
+		}()
+	}
+	go func() {
+		for path := range paths {
+			jobs <- path
+		}
+		close(jobs)
+		workerGroup.Wait()
+		close(results)
+	}()
+	var broken []BrokenLink
+	for found := range results {
+		broken = append(broken, found...)
+	}
+	sort.Slice(broken, func(i, j int) bool {
+		if broken[i].Binary != broken[j].Binary {
+			return broken[i].Binary < broken[j].Binary
+		}
+		return broken[i].Needs < broken[j].Needs
+	})
 	return broken, nil
+}
+
+func loaderLibraryNames(root string) map[string]bool {
+	directories := make(map[string]bool)
+	for _, relative := range libSearchPaths {
+		directories[filepath.Join(root, relative)] = true
+	}
+	readLoaderConfig(filepath.Join(root, "etc/ld.so.conf"), root, directories, make(map[string]bool))
+	available := make(map[string]bool)
+	for directory := range directories {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				// glibc hardware-capability directories are part of the loader's
+				// search beneath an otherwise configured directory.
+				if entry.Name() == "glibc-hwcaps" {
+					collectLibraryNames(filepath.Join(directory, entry.Name()), available, true)
+				}
+				continue
+			}
+			available[entry.Name()] = true
+		}
+	}
+	return available
+}
+
+func collectLibraryNames(directory string, available map[string]bool, recursive bool) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && recursive {
+			collectLibraryNames(filepath.Join(directory, entry.Name()), available, true)
+			continue
+		}
+		if !entry.IsDir() {
+			available[entry.Name()] = true
+		}
+	}
+}
+
+func readLoaderConfig(path, root string, directories, visited map[string]bool) {
+	if visited[path] {
+		return
+	}
+	visited[path] = true
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(strings.SplitN(raw, "#", 2)[0])
+		if line == "" {
+			continue
+		}
+		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == "include" {
+			pattern := fields[1]
+			if filepath.IsAbs(pattern) {
+				pattern = filepath.Join(root, strings.TrimPrefix(pattern, string(filepath.Separator)))
+			} else {
+				pattern = filepath.Join(filepath.Dir(path), pattern)
+			}
+			matches, _ := filepath.Glob(pattern)
+			for _, match := range matches {
+				readLoaderConfig(match, root, directories, visited)
+			}
+			continue
+		}
+		directory := line
+		if filepath.IsAbs(directory) {
+			directory = filepath.Join(root, strings.TrimPrefix(directory, string(filepath.Separator)))
+		} else {
+			directory = filepath.Join(root, directory)
+		}
+		directories[filepath.Clean(directory)] = true
+	}
 }
 
 // checkLDD verifies that ldd is available on the system.
@@ -144,6 +277,11 @@ func parseLDDMissing(output string) []string {
 
 // ScanPreservedLibs scans /usr/lib and /usr/lib64 for preserved libraries.
 func ScanPreservedLibs(root string) ([]PreservedLib, error) {
+	registryPath := filepath.Join(root, "var/lib/portage/preserved_libs_registry")
+	if registered, found, err := scanPreservedRegistry(root, registryPath); found || err != nil {
+		return registered, err
+	}
+
 	var preserved []PreservedLib
 
 	libDirs := []string{
@@ -172,6 +310,54 @@ func ScanPreservedLibs(root string) ([]PreservedLib, error) {
 		})
 	}
 	return preserved, nil
+}
+
+func scanPreservedRegistry(root, path string) ([]PreservedLib, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, true, fmt.Errorf("could not read preserved library registry %q: %w", path, err)
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil, true, nil
+	}
+	var records map[string][]json.RawMessage
+	if err := json.Unmarshal(data, &records); err != nil {
+		return nil, true, fmt.Errorf("could not parse preserved library registry %q: %w", path, err)
+	}
+	seen := make(map[string]bool)
+	var preserved []PreservedLib
+	for _, record := range records {
+		if len(record) != 3 {
+			continue
+		}
+		var owner string
+		var paths []string
+		if json.Unmarshal(record[0], &owner) != nil || json.Unmarshal(record[2], &paths) != nil {
+			continue
+		}
+		for _, registeredPath := range paths {
+			fullPath := filepath.Join(root, strings.TrimPrefix(registeredPath, string(filepath.Separator)))
+			if seen[fullPath] {
+				continue
+			}
+			if _, err := os.Lstat(fullPath); err != nil {
+				continue
+			}
+			seen[fullPath] = true
+			soname, err := elfSoname(fullPath)
+			if err != nil || soname == "" {
+				soname = sonameFromPath(fullPath)
+			}
+			preserved = append(preserved, PreservedLib{
+				Path: fullPath, Soname: soname, Version: versionFromSONAME(soname), OwningPkg: owner,
+			})
+		}
+	}
+	sort.Slice(preserved, func(i, j int) bool { return preserved[i].Path < preserved[j].Path })
+	return preserved, true, nil
 }
 
 // isPreservedCandidate checks whether a file looks like a preserved library.
@@ -358,63 +544,193 @@ func vdbContentsMap(vdbRoot string) (map[string]string, error) {
 	return m, nil
 }
 
+// ReverseELFConsumers returns installed packages other than installedCPV whose
+// VDB linkage metadata requires a SONAME supplied by installedCPV. This guards
+// removals that dependency strings alone cannot safely model during package
+// renames, repository transitions, or stale dynamic-deps metadata.
+func ReverseELFConsumers(vdbRoot, installedCPV string) ([]string, error) {
+	target := filepath.Join(vdbRoot, filepath.FromSlash(installedCPV), "NEEDED.ELF.2")
+	data, err := os.ReadFile(target)
+	if err != nil {
+		return nil, fmt.Errorf("read linkage metadata for %s: %w", installedCPV, err)
+	}
+	provided := make(map[string]bool)
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ";")
+		if len(fields) >= 3 && fields[2] != "" {
+			provided[fields[2]] = true
+		}
+	}
+	if len(provided) == 0 {
+		return []string{}, nil
+	}
+	entries, err := os.ReadDir(vdbRoot)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool)
+	for _, category := range entries {
+		if !category.IsDir() {
+			continue
+		}
+		packages, err := os.ReadDir(filepath.Join(vdbRoot, category.Name()))
+		if err != nil {
+			continue
+		}
+		for _, pkg := range packages {
+			if !pkg.IsDir() {
+				continue
+			}
+			cpv := category.Name() + "/" + pkg.Name()
+			if cpv == installedCPV {
+				continue
+			}
+			consumerData, err := os.ReadFile(filepath.Join(vdbRoot, category.Name(), pkg.Name(), "NEEDED.ELF.2"))
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(consumerData), "\n") {
+				fields := strings.Split(line, ";")
+				if len(fields) < 5 {
+					continue
+				}
+				for _, needed := range strings.Split(fields[4], ",") {
+					if provided[needed] {
+						seen[cpv] = true
+					}
+				}
+			}
+		}
+	}
+	consumers := make([]string, 0, len(seen))
+	for cpv := range seen {
+		consumers = append(consumers, cpv)
+	}
+	sort.Strings(consumers)
+	return consumers, nil
+}
+
+// ReverseELFRemovalClosure expands a provider through all installed ELF
+// consumers and returns a deterministic consumer-first removal order. Every
+// prefix of the result is linkage-safe relative to the remaining packages.
+func ReverseELFRemovalClosure(vdbRoot, seed string) ([]string, error) {
+	closure := map[string]bool{seed: true}
+	for changed := true; changed; {
+		changed = false
+		current := make([]string, 0, len(closure))
+		for cpv := range closure {
+			current = append(current, cpv)
+		}
+		sort.Strings(current)
+		for _, provider := range current {
+			consumers, err := ReverseELFConsumers(vdbRoot, provider)
+			if err != nil {
+				return nil, err
+			}
+			for _, consumer := range consumers {
+				if !closure[consumer] {
+					closure[consumer], changed = true, true
+				}
+			}
+		}
+	}
+	consumerEdges := make(map[string][]string, len(closure))
+	for provider := range closure {
+		consumers, err := ReverseELFConsumers(vdbRoot, provider)
+		if err != nil {
+			return nil, err
+		}
+		for _, consumer := range consumers {
+			if closure[consumer] {
+				consumerEdges[provider] = append(consumerEdges[provider], consumer)
+			}
+		}
+	}
+	remaining := make(map[string]bool, len(closure))
+	for cpv := range closure {
+		remaining[cpv] = true
+	}
+	order := make([]string, 0, len(closure))
+	for len(remaining) > 0 {
+		var leaves []string
+		for provider := range remaining {
+			hasConsumer := false
+			for _, consumer := range consumerEdges[provider] {
+				if remaining[consumer] {
+					hasConsumer = true
+					break
+				}
+			}
+			if !hasConsumer {
+				leaves = append(leaves, provider)
+			}
+		}
+		if len(leaves) == 0 {
+			return nil, fmt.Errorf("reverse ELF removal closure contains a cycle")
+		}
+		sort.Strings(leaves)
+		order = append(order, leaves...)
+		for _, leaf := range leaves {
+			delete(remaining, leaf)
+		}
+	}
+	return order, nil
+}
+
 // ---------------------------------------------------------------------------
 // RebuildNeeded
 // ---------------------------------------------------------------------------
 
-// RebuildNeeded returns the list of atom strings for packages that need
-// to be rebuilt based on broken links and preserved libraries.
+// RebuildNeeded returns installed packages that consume libraries recorded in
+// Portage's preserve-libs registry. General missing-library detection belongs
+// to RevdepRebuild and must not expand @preserved-rebuild.
 func RebuildNeeded(root, vdbRoot string) ([]string, error) {
-	broken, err := ScanBrokenLinks(root)
+	reasons, err := RebuildReasons(root, vdbRoot)
 	if err != nil {
-		return nil, fmt.Errorf("could not scan for broken library links: %w", err)
+		return nil, err
 	}
+	seen := make(map[string]bool)
+	var atoms []string
+	for _, reason := range reasons {
+		if !seen[reason.Package] {
+			seen[reason.Package] = true
+			atoms = append(atoms, reason.Package)
+		}
+	}
+	sort.Strings(atoms)
+	return atoms, nil
+}
 
+// RebuildReasons returns deterministic, actionable evidence for every package
+// selected by RebuildNeeded.
+func RebuildReasons(root, vdbRoot string) ([]RebuildReason, error) {
 	preserved, err := ScanPreservedLibs(root)
 	if err != nil {
 		return nil, fmt.Errorf("could not scan for preserved libraries: %w", err)
 	}
 
 	seen := make(map[string]bool)
-	var atoms []string
-
-	// Broken links: need to rebuild the package owning the binary
-	var binaryFiles []string
-	for _, bl := range broken {
-		binaryFiles = append(binaryFiles, bl.Binary)
-	}
-	if len(binaryFiles) > 0 {
-		owning, ferr := FindOwningPackages(vdbRoot, binaryFiles)
-		if ferr != nil {
-			return nil, fmt.Errorf("could not find owning packages for broken binaries: %w", ferr)
-		}
-		for _, bl := range broken {
-			if pkg, ok := owning[bl.Binary]; ok {
-				if !seen[pkg] {
-					seen[pkg] = true
-					atoms = append(atoms, pkg)
-				}
-			}
+	var reasons []RebuildReason
+	add := func(reason RebuildReason) {
+		key := reason.Kind + "\x00" + reason.Package + "\x00" + reason.Binary + "\x00" + reason.Needed + "\x00" + reason.PreservedPath
+		if !seen[key] {
+			seen[key] = true
+			reasons = append(reasons, reason)
 		}
 	}
 
-	// Preserved libs: need to rebuild packages that own or link to them
-	for _, pl := range preserved {
-		if pl.OwningPkg != "" && !seen[pl.OwningPkg] {
-			seen[pl.OwningPkg] = true
-			atoms = append(atoms, pl.OwningPkg)
-		}
-	}
-
-	// Also check which packages link to preserved libs
+	// Rebuild consumers of preserved libraries. The package recorded as owner
+	// supplied the old object and is not itself evidence of a broken consumer.
 	if len(preserved) > 0 {
 		contentsMap, cerr := vdbContentsMap(vdbRoot)
 		if cerr != nil {
 			return nil, fmt.Errorf("could not read installed package database contents: %w", cerr)
 		}
 		preservedPaths := make(map[string]bool)
+		preservedBySONAME := make(map[string][]PreservedLib)
 		for _, pl := range preserved {
 			preservedPaths[pl.Path] = true
+			preservedBySONAME[pl.Soname] = append(preservedBySONAME[pl.Soname], pl)
 		}
 		// Walk ELF binaries in VDB and check their NEEDED libs
 		for filePath, pkgKey := range contentsMap {
@@ -430,20 +746,30 @@ func RebuildNeeded(root, vdbRoot string) ([]string, error) {
 				continue
 			}
 			for _, n := range needed {
-				for _, pl := range preserved {
-					if pl.Soname == n {
-						if !seen[pkgKey] {
-							seen[pkgKey] = true
-							atoms = append(atoms, pkgKey)
-						}
-					}
+				for _, pl := range preservedBySONAME[n] {
+					add(RebuildReason{Package: pkgKey, Binary: fullPath, Needed: n, Kind: "preserved-library", PreservedPath: pl.Path, PreservedOwner: pl.OwningPkg})
 				}
 			}
 		}
 	}
 
-	sort.Strings(atoms)
-	return atoms, nil
+	sort.Slice(reasons, func(i, j int) bool {
+		a, b := reasons[i], reasons[j]
+		if a.Package != b.Package {
+			return a.Package < b.Package
+		}
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		if a.Binary != b.Binary {
+			return a.Binary < b.Binary
+		}
+		if a.Needed != b.Needed {
+			return a.Needed < b.Needed
+		}
+		return a.PreservedPath < b.PreservedPath
+	})
+	return reasons, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -453,28 +779,28 @@ func RebuildNeeded(root, vdbRoot string) ([]string, error) {
 // RevdepRebuild performs a full reverse dependency scan, checking all
 // installed packages for broken shared library links.
 func RevdepRebuild(root, vdbRoot string) ([]string, error) {
-	if err := checkLDD(); err != nil {
-		return nil, err
-	}
-
 	contentsMap, err := vdbContentsMap(vdbRoot)
 	if err != nil {
 		return nil, fmt.Errorf("could not read installed package database contents: %w", err)
 	}
 
 	needRebuild := make(map[string]bool)
+	available := loaderLibraryNames(root)
 
 	for filePath, pkgKey := range contentsMap {
 		fullPath := filepath.Join(root, filePath)
 		if !isELF(fullPath) {
 			continue
 		}
-		missing, ldErr := lddMissing(fullPath)
-		if ldErr != nil {
+		needed, elfErr := elfNeededLibraries(fullPath)
+		if elfErr != nil {
 			continue
 		}
-		if len(missing) > 0 {
-			needRebuild[pkgKey] = true
+		for _, library := range needed {
+			if !available[library] {
+				needRebuild[pkgKey] = true
+				break
+			}
 		}
 	}
 

@@ -84,6 +84,58 @@ func TestEmergeShortAliasesRegistered(t *testing.T) {
 	}
 }
 
+func TestP3CanonicalResolverFlagsRegistered(t *testing.T) {
+	// This manifest intentionally uses Portage's canonical spellings. Short or
+	// legacy aliases do not satisfy the live-operation compatibility gate.
+	for _, name := range []string{
+		"pretend", "update", "deep", "newuse", "complete-graph",
+		"with-bdeps", "keep-going", "backtrack", "emptytree",
+		"changed-use", "changed-deps", "dynamic-deps", "nodeps",
+		"onlydeps", "root-deps", "usepkg", "usepkgonly",
+		"binpkg-respect-use", "resolver-timeout", "jobs", "load-average",
+	} {
+		if flag.Lookup(name) == nil {
+			t.Errorf("P3 canonical option --%s is not registered", name)
+		}
+	}
+}
+
+func TestBashCompletionUsesCanonicalResolverSpellings(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "misc", "arise-completion.bash"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion := string(data)
+	for _, spelling := range []string{"-e", "--emptytree", "--resolver-timeout", "--backtrack", "--complete-graph"} {
+		if !strings.Contains(completion, spelling) {
+			t.Errorf("completion missing %s", spelling)
+		}
+	}
+	for _, deprecated := range []string{" -emptytree ", " -backtrack ", " -complete-graph "} {
+		if strings.Contains(completion, deprecated) {
+			t.Errorf("completion advertises non-canonical spelling %q", strings.TrimSpace(deprecated))
+		}
+	}
+}
+
+func TestEmptyTreeLongAndShortFlagsShareState(t *testing.T) {
+	original := *emptytree
+	defer func() { *emptytree = original }()
+	*emptytree = false
+	if err := flag.Lookup("e").Value.Set("true"); err != nil {
+		t.Fatal(err)
+	}
+	if !*emptytree {
+		t.Fatal("-e did not enable the resolver empty-tree policy")
+	}
+	if err := flag.Lookup("emptytree").Value.Set("false"); err != nil {
+		t.Fatal(err)
+	}
+	if *emptytree {
+		t.Fatal("--emptytree does not share -e state")
+	}
+}
+
 func TestNormalizeEmergeArgs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -133,6 +185,7 @@ func TestSelectCommandDefaultsToInstall(t *testing.T) {
 		{name: "multiple targets", args: []string{"sys-apps/portage", "@preserved-rebuild"}, wantCmd: "install", wantArgs: []string{"sys-apps/portage", "@preserved-rebuild"}},
 		{name: "explicit install", args: []string{"install", "net-im/signal-desktop-bin"}, wantCmd: "install", wantArgs: []string{"net-im/signal-desktop-bin"}},
 		{name: "explicit query", args: []string{"query", "sys-apps/portage"}, wantCmd: "query", wantArgs: []string{"sys-apps/portage"}},
+		{name: "recover status", args: []string{"recover", "status"}, wantCmd: "recover", wantArgs: []string{"status"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

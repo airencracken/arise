@@ -1,37 +1,166 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/graph"
+	"github.com/airencracken/arise/internal/ingest"
+	"github.com/airencracken/arise/internal/merge"
+	"github.com/airencracken/arise/internal/oplock"
+	"github.com/airencracken/arise/internal/portage"
+	"github.com/airencracken/arise/internal/preserved"
+	"github.com/airencracken/arise/internal/resolve"
 )
 
 func runUninstall(args []string, dbPath, repoDir string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "uninstall: missing package atom arguments\n")
+		fmt.Fprintln(os.Stderr, "uninstall: require at least one exact package atom")
 		os.Exit(1)
 	}
+	var atoms []*atom.Atom
+	var vdbPaths, installedCPVs []string
+	for _, target := range args {
+		a, err := atom.Parse(target)
+		if err != nil || a.Version == nil || a.Version.Raw == "" {
+			fmt.Fprintf(os.Stderr, "uninstall: require exact installed CPV, got %q\n", target)
+			os.Exit(1)
+		}
+		vdbPath := filepath.Join(*vdbDir, a.Category, a.Package+"-"+a.Version.Raw)
+		if err := validateUninstallVDB(vdbPath); err != nil {
+			fmt.Fprintf(os.Stderr, "uninstall: %s: %v\n", target, err)
+			os.Exit(1)
+		}
+		atoms = append(atoms, a)
+		vdbPaths = append(vdbPaths, vdbPath)
+		installedCPVs = append(installedCPVs, a.Category+"/"+a.Package+"-"+a.Version.Raw)
+	}
+	if err := validateELFRemovalOrder(*vdbDir, installedCPVs); err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: refusing removal: %v\n", err)
+		os.Exit(1)
+	}
+	db, err := ingest.OpenReadOnlyDB(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: open metadata: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	g, err := graph.BuildFromState(db, *vdbDir, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: build state graph: %v\n", err)
+		os.Exit(1)
+	}
+	portageConfig, _ := portage.LoadEffectiveConfig(*portageConfigRoot)
+	removals := make([]resolve.PkgAction, 0, len(atoms))
+	for _, a := range atoms {
+		removals = append(removals, resolve.PkgAction{Atom: a, Action: "uninstall", Domain: resolve.DomainROOT})
+	}
+	result, err := resolve.VerifyTransaction(g.ToResolveGraph(), nil, removals, resolve.ResolveConfig{PortageConfig: portageConfig, Backtrack: *backtrackVal})
+	if err != nil || result == nil || !result.Verified || len(result.Conflicts) != 0 {
+		var conflicts []string
+		if result != nil {
+			conflicts = result.Conflicts
+		}
+		fmt.Fprintf(os.Stderr, "uninstall: whole-state verification failed: %v conflicts=%v\n", err, conflicts)
+		os.Exit(1)
+	}
+	stateSHA256, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Uninstall)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: fingerprint state: %v\n", err)
+		os.Exit(1)
+	}
+	planSHA256 := canonicalPlanSHA256(args, resolve.ResolveConfig{Backtrack: *backtrackVal}, result, stateSHA256)
+	if *pretend {
+		if *jsonOutput {
+			if err := writePlanJSON(os.Stdout, args, resolve.ResolveConfig{Backtrack: *backtrackVal}, result, nil, planTimings{StateSHA256: stateSHA256, Operation: "uninstall"}); err != nil {
+				fmt.Fprintf(os.Stderr, "uninstall: encode plan: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			fmt.Printf("Proposed uninstall (%d packages):\n", len(vdbPaths))
+			for _, path := range vdbPaths {
+				fmt.Printf("  %s\n", path)
+			}
+			fmt.Printf("Plan SHA-256: %s\n", planSHA256)
+		}
+		return
+	}
+	if !*experimentalLiveMutation || strings.TrimSpace(*approvePlanSHA256) == "" {
+		fmt.Fprintln(os.Stderr, "uninstall: refusing mutation: require --experimental-live-mutation and --approve-plan-sha256")
+		os.Exit(1)
+	}
+	if err := validatePlanAuthorization(true, *approvePlanSHA256, planSHA256); err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: refusing mutation: %v\n", err)
+		os.Exit(1)
+	}
+	lock, err := oplock.TryAcquireVDB(*vdbDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: acquire operation VDB lock: %v\n", err)
+		os.Exit(1)
+	}
+	defer lock.Release()
+	locked, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Uninstall)
+	if err != nil || locked != stateSHA256 {
+		fmt.Fprintln(os.Stderr, "uninstall: package state or policy changed after approval")
+		os.Exit(1)
+	}
+	for index, path := range vdbPaths {
+		if err := merge.UnmergeWithConfig(context.Background(), merge.UnmergeConfig{RootDir: commandEnv("ROOT", "/"), VDBDir: *vdbDir, PackagePath: path, JournalDir: *journalDir, AllowLiveRoot: true, VDBLockHeld: true}); err != nil {
+			fmt.Fprintf(os.Stderr, "uninstall: after %d/%d committed removals: %v\n", index, len(vdbPaths), err)
+			os.Exit(1)
+		}
+		fmt.Printf("Removed %s with a committed package journal.\n", atoms[index])
+	}
+}
 
-	for _, arg := range args {
-		a, err := atom.Parse(arg)
+func validateUninstallVDB(vdbPath string) error {
+	if _, err := os.Stat(filepath.Join(vdbPath, "CONTENTS")); err != nil {
+		return fmt.Errorf("installed VDB entry: %w", err)
+	}
+	storedEbuilds, _ := filepath.Glob(filepath.Join(vdbPath, "*.ebuild"))
+	if len(storedEbuilds) != 1 {
+		return fmt.Errorf("expected exactly one stored ebuild")
+	}
+	stored, err := os.ReadFile(storedEbuilds[0])
+	if err != nil {
+		return fmt.Errorf("read stored ebuild: %w", err)
+	}
+	for _, phase := range []string{"pkg_prerm()", "pkg_postrm()"} {
+		if strings.Contains(string(stored), phase) {
+			return fmt.Errorf("certified lane forbids custom %s", strings.TrimSuffix(phase, "()"))
+		}
+	}
+	return nil
+}
+
+func validateELFRemovalOrder(vdbDir string, cpvs []string) error {
+	positions := make(map[string]int, len(cpvs))
+	for index, cpv := range cpvs {
+		if _, duplicate := positions[cpv]; duplicate {
+			return fmt.Errorf("duplicate package %s", cpv)
+		}
+		positions[cpv] = index
+	}
+	for providerIndex, cpv := range cpvs {
+		consumers, err := preserved.ReverseELFConsumers(vdbDir, cpv)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "uninstall: parsing atom %q: %v\n", arg, err)
-			continue
+			return fmt.Errorf("reverse ELF verification for %s: %w", cpv, err)
 		}
-
-		vdbPath := filepath.Join(*vdbDir, a.Category, a.Package)
-		if a.Version != nil && a.Version.Raw != "" {
-			vdbPath = vdbPath + "-" + a.Version.Raw
+		for _, consumer := range consumers {
+			consumerIndex, included := positions[consumer]
+			if !included {
+				return fmt.Errorf("%s supplies shared libraries required by installed package %s outside the removal plan", cpv, consumer)
+			}
+			if consumerIndex >= providerIndex {
+				return fmt.Errorf("unsafe order: consumer %s must precede provider %s", consumer, cpv)
+			}
 		}
-
-		fmt.Printf("Proposed uninstall: %s\n", vdbPath)
 	}
-	if !*pretend {
-		fmt.Fprintln(os.Stderr, unsupportedRemovalMessage("uninstall"))
-		os.Exit(1)
-	}
+	return nil
 }
 
 func unsupportedRemovalMessage(command string) string {

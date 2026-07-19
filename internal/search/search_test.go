@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -65,7 +66,10 @@ func seedTestDBExtended(t *testing.T) *badger.DB {
 	return db
 }
 
-func createTestRepo(t *testing.T, pkgs []struct{ cat, pkg string; versions []string }) string {
+func createTestRepo(t *testing.T, pkgs []struct {
+	cat, pkg string
+	versions []string
+}) string {
 	t.Helper()
 	repoPath := t.TempDir()
 	for _, p := range pkgs {
@@ -103,6 +107,60 @@ func TestSearch_Category(t *testing.T) {
 	}
 	if len(results) != 2 {
 		t.Errorf("expected 2 results (python + rust), got %d", len(results))
+	}
+}
+
+func TestSearch_FullCategoryPackage(t *testing.T) {
+	db := seedTestDB(t)
+	for _, cfg := range []SearchConfig{
+		{Query: "dev-lang/python"},
+		{Query: "DEV-LANG/PYTHON"},
+		{Query: "dev-lang/python", Exact: true},
+		{Query: "lang/pyth"},
+	} {
+		results, err := Search(db, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 || results[0].Category != "dev-lang" || results[0].Package != "python" {
+			t.Fatalf("Search(%#v) = %#v, want dev-lang/python", cfg, results)
+		}
+	}
+}
+
+func TestSearch_PackageGlob(t *testing.T) {
+	db := seedTestDB(t)
+	tests := []struct {
+		query string
+		want  []string
+	}{
+		{query: "app-editors/*", want: []string{"app-editors/vim"}},
+		{query: "dev-lang/*", want: []string{"dev-lang/python", "dev-lang/rust"}},
+		{query: "*/vim", want: []string{"app-editors/vim"}},
+		{query: "pyth?n", want: []string{"dev-lang/python"}},
+		{query: "DEV-LANG/R*", want: []string{"dev-lang/rust"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			results, err := Search(db, SearchConfig{Query: tt.query})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make([]string, 0, len(results))
+			for _, result := range results {
+				got = append(got, result.Category+"/"+result.Package)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("Search(%q) = %v, want %v", tt.query, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSearch_InvalidPackageGlob(t *testing.T) {
+	db := seedTestDB(t)
+	if _, err := Search(db, SearchConfig{Query: "app-editors/["}); err == nil {
+		t.Fatal("invalid package glob was accepted")
 	}
 }
 
@@ -336,7 +394,10 @@ func TestSearch_TestingFilter(t *testing.T) {
 
 func TestSearch_Versions(t *testing.T) {
 	db := seedTestDB(t)
-	repoPath := createTestRepo(t, []struct{ cat, pkg string; versions []string }{
+	repoPath := createTestRepo(t, []struct {
+		cat, pkg string
+		versions []string
+	}{
 		{cat: "app-editors", pkg: "vim", versions: []string{"9.0.2100", "9.0.2000", "8.2.3456"}},
 	})
 
@@ -373,7 +434,10 @@ func TestSearch_VersionsNoRepo(t *testing.T) {
 
 func TestSearch_Duplicates(t *testing.T) {
 	db := seedTestDB(t)
-	repoPath := createTestRepo(t, []struct{ cat, pkg string; versions []string }{
+	repoPath := createTestRepo(t, []struct {
+		cat, pkg string
+		versions []string
+	}{
 		{cat: "sys-devel", pkg: "gcc", versions: []string{"13.2.0", "13.1.0", "12.3.0"}},
 	})
 

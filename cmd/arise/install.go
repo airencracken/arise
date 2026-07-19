@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime/pprof"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/airencracken/arise/internal/binpkg"
 	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/distfiles"
+	"github.com/airencracken/arise/internal/executor"
 	"github.com/airencracken/arise/internal/features"
 	"github.com/airencracken/arise/internal/fetch"
 	"github.com/airencracken/arise/internal/graph"
@@ -98,6 +98,26 @@ func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phase
 		GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]),
 		OnPhaseStart:  phaseStart,
 		OnPhaseEnd:    phaseEnd,
+		PhaseProtocol: true,
+		PortageConfig: portageCfg,
+		ConfigRoot:    *portageConfigRoot,
+		JournalDir:    *journalDir,
+	}
+	if portageCfg != nil {
+		cfg.PhaseLogDir = portageCfg.MakeConf["PORTAGE_LOGDIR"]
+		if cfg.PhaseLogDir == "" {
+			cfg.PhaseLogDir = commandRootPath("/var/log/portage")
+		} else if commandEnv("ROOT", "/") != "/" && filepath.IsAbs(cfg.PhaseLogDir) {
+			cfg.PhaseLogDir = commandRootPath(cfg.PhaseLogDir)
+		}
+		cfg.LogFilterCommand = portageCfg.MakeConf["PORTAGE_LOG_FILTER_FILE_CMD"]
+		cfg.ElogClasses = strings.Fields(portageCfg.MakeConf["PORTAGE_ELOG_CLASSES"])
+		cfg.ElogSinks = strings.Fields(portageCfg.MakeConf["PORTAGE_ELOG_SYSTEM"])
+		cfg.ElogOutput = os.Stdout
+	}
+	if featConfig != nil {
+		cfg.SplitLogs = featConfig.IsEnabled(features.FeatSplitLog)
+		cfg.CompressLogs = featConfig.IsEnabled(features.Flag("compress-build-logs"))
 	}
 	return cfg
 }
@@ -307,34 +327,36 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	graphDuration := time.Since(stageStarted)
 
 	stageStarted = time.Now()
-	var cpuProfile *os.File
-	if path := os.Getenv("ARISE_CPU_PROFILE"); path != "" {
-		cpuProfile, err = os.Create(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "resolve: create CPU profile: %v\n", err)
-		} else if err = pprof.StartCPUProfile(cpuProfile); err != nil {
-			fmt.Fprintf(os.Stderr, "resolve: start CPU profile: %v\n", err)
-			cpuProfile.Close()
-			cpuProfile = nil
-		}
+	resolveCtx := context.Background()
+	cancelResolve := func() {}
+	if *resolverTimeout > 0 {
+		resolveCtx, cancelResolve = context.WithTimeout(resolveCtx, *resolverTimeout)
 	}
-	result, err := resolve.Resolve(rg, targets, cfg)
-	if cpuProfile != nil {
-		pprof.StopCPUProfile()
-		cpuProfile.Close()
-	}
+	defer cancelResolve()
+	result, err := resolve.ResolveContext(resolveCtx, rg, targets, cfg)
 	solverDuration := time.Since(stageStarted)
 	progress.stop()
 	if result == nil {
 		result = &resolve.ResolveResult{}
 	}
 	resolutionDuration := time.Since(resolutionStarted)
+	stateSHA256 := ""
+	stateFingerprintStarted := time.Now()
+	if result.Verified && (jsonMode || *experimentalLiveMutation || *approvePlanSHA256 != "") {
+		stateSHA256, err = mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "arise: fingerprint mutation state: %v\n", err)
+			exitAfterRuntimeProfiles(1)
+		}
+	}
+	stateFingerprintDuration := time.Since(stateFingerprintStarted)
 	if jsonMode {
 		if jsonErr := writePlanJSON(os.Stdout, targets, cfg, result, err, planTimings{
 			Total: resolutionDuration, Index: openDuration, State: stateDuration, Graph: graphDuration, Solver: solverDuration,
+			StateFingerprint: stateFingerprintDuration, StateSHA256: stateSHA256,
 		}); jsonErr != nil {
 			fmt.Fprintf(os.Stderr, "encode JSON plan: %v\n", jsonErr)
-			os.Exit(1)
+			exitAfterRuntimeProfiles(1)
 		}
 	}
 	if !cfg.Quiet {
@@ -343,8 +365,8 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if cfg.Verbose {
 			fmt.Printf("  Stages: index %.3f s, state %.3f s, graph %.3f s, solver %.3f s\n",
 				openDuration.Seconds(), stateDuration.Seconds(), graphDuration.Seconds(), solverDuration.Seconds())
-			fmt.Printf("  Solver: search %.3f s, complete-graph %.3f s, verification %.3f s, sort %.3f s\n",
-				result.Metrics.Search.Seconds(), result.Metrics.CompleteGraph.Seconds(), result.Metrics.Verification.Seconds(), result.Metrics.Sort.Seconds())
+			fmt.Printf("  Solver: search %.3f s, direct-refresh %.3f s, complete-graph %.3f s, verification %.3f s, sort %.3f s\n",
+				result.Metrics.Search.Seconds(), result.Metrics.DirectUpdateRefresh.Seconds(), result.Metrics.CompleteGraph.Seconds(), result.Metrics.Verification.Seconds(), result.Metrics.Sort.Seconds())
 		}
 	}
 	if err != nil {
@@ -368,7 +390,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				}
 			}
 		}
-		os.Exit(1)
+		exitAfterRuntimeProfiles(1)
 	}
 
 	if len(result.Conflicts) > 0 && !cfg.Quiet {
@@ -453,7 +475,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			if !jsonMode {
 				fmt.Println("\nCannot proceed with unresolved conflicts.")
 			}
-			os.Exit(1)
+			exitAfterRuntimeProfiles(1)
 		}
 		// KeepGoing: with partial results, ask user if they want to proceed
 		if !jsonMode && cfg.KeepGoing && len(result.Install) > 0 {
@@ -469,6 +491,12 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				}
 			}
 		}
+	}
+	if !result.Verified && (jsonMode || cfg.Pretend) {
+		// --keep-going controls how much diagnostic work the resolver preserves;
+		// it must never turn an unresolved, non-executable pretend plan into a
+		// successful command result.
+		exitAfterRuntimeProfiles(1)
 	}
 
 	if len(result.Install) == 0 && len(result.Uninstall) == 0 {
@@ -487,6 +515,28 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	// Close the most obvious approval TOCTOU window: authorization is bound to
+	// a fresh fingerprint taken after all interactive/output work and directly
+	// before execution. The merge lock and journal provide the mutation-side
+	// boundary; a changed package database, policy, recipe, or eclass changes
+	// the canonical plan digest and fails closed here.
+	if *experimentalLiveMutation || *approvePlanSHA256 != "" {
+		currentStateSHA256, fingerprintErr := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
+		if fingerprintErr != nil {
+			fmt.Fprintf(os.Stderr, "arise: refusing execution: refresh mutation-state fingerprint: %v\n", fingerprintErr)
+			os.Exit(1)
+		}
+		if stateSHA256 != "" && currentStateSHA256 != stateSHA256 {
+			fmt.Fprintln(os.Stderr, "arise: refusing execution: package state or policy changed after resolution; resolve and approve the new plan")
+			os.Exit(1)
+		}
+		stateSHA256 = currentStateSHA256
+	}
+	actualPlanSHA256 := canonicalPlanSHA256(targets, cfg, result, stateSHA256)
+	if err := validatePlanAuthorization(*experimentalLiveMutation, *approvePlanSHA256, actualPlanSHA256); err != nil {
+		fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", err)
+		os.Exit(1)
+	}
 	if cfg.FetchOnly {
 		progress := newFetchProgress(!cfg.Quiet, os.Stdout)
 		if err := fetchPlanActions(context.Background(), result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: progress.Report}, &fetch.Fetcher{}); err != nil {
@@ -495,6 +545,34 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 		if !cfg.Quiet {
 			fmt.Println("All source artifacts are present and Manifest-verified.")
+		}
+		return
+	}
+	if *experimentalLiveMutation {
+		if !cfg.Oneshot {
+			fmt.Fprintln(os.Stderr, "arise: refusing execution: disposable executor currently requires --oneshot until world addition joins the package journal")
+			os.Exit(1)
+		}
+		rebuildCfg := buildRebuildConfig(repoDir, 1, nil, nil)
+		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
+			rebuildCfg.AllowLiveRoot = true
+		}
+		lockedStateValidation := func() error {
+			lockedStateSHA256, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
+			if err != nil {
+				return err
+			}
+			if lockedStateSHA256 != stateSHA256 {
+				return fmt.Errorf("package state or policy changed before the operation lock; resolve and approve the new plan")
+			}
+			return nil
+		}
+		if err := executor.Execute(context.Background(), result, executor.Config{Rebuild: *rebuildCfg, ResumePath: *resumeFile, ValidateLocked: lockedStateValidation}); err != nil {
+			fmt.Fprintf(os.Stderr, "arise: execution failed: %v\n", err)
+			os.Exit(1)
+		}
+		if !cfg.Quiet {
+			fmt.Println("All package transactions committed successfully.")
 		}
 		return
 	}

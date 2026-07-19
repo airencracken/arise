@@ -9,7 +9,7 @@ Bash and remains experimental.
 > package queries are usable foundations. The emerge-compatible resolver,
 > ebuild executor, transactional merge/unmerge, and maintenance operations are
 > experimental and are not yet safe replacements for Portage on a live system.
-> See [the latest development checkpoint](docs/audits/CHECKPOINT_2026-07-18.md),
+> See [the latest development checkpoint](docs/audits/CHECKPOINT_P3_P6_2026-07-18.md),
 > [documentation index](docs/README.md), and [punch list](PUNCHLIST.md).
 > The moving-target test policy is documented in
 > [the compatibility contract](COMPATIBILITY.md).
@@ -21,11 +21,14 @@ of what Arise knows about package-management semantics. Its long compatibility
 history, broad EAPI support, and integration with the rest of Gentoo are
 formidable engineering achievements.
 
-Arise explores a complementary architecture with two narrower goals. First, a
-static control plane may remain available when Python or other parts of the
-normal package-management environment need repair. Second, indexed immutable
-state and in-process resolution may reduce latency for read-heavy operations.
-Neither goal relaxes compatibility or safety requirements.
+Arise aims to be correct, useful, performant, and reliable: a "Swiss army
+chainsaw" for taking an old or damaged Gentoo installation to a clean,
+verified, current state without discarding its administrator's unusual but
+valid choices. A static control plane remains available when Python or other
+parts of the normal package-management environment need repair. Indexed,
+immutable state and Go concurrency avoid serializing expensive control-plane
+work behind a language runtime lock. Neither recovery nor performance relaxes
+compatibility or safety requirements.
 
 Arise is therefore being built around these priorities:
 
@@ -35,7 +38,16 @@ Arise is therefore being built around these priorities:
   execution and transaction milestones.
 - **Performance**: BadgerDB-backed metadata queries can avoid repeated
   filesystem scans and shell invocations. Dependency resolution runs in one
-  process over an immutable snapshot.
+  process over an immutable snapshot and is designed to use independent CPU
+  work concurrently while retaining deterministic output. Performance gates
+  compare only equivalent verified results.
+- **Whole-state repair**: damaged-world analysis derives the complete ordered
+  repair closure and explains every rebuild, replacement, or removal. The
+  operator should not have to recover by repeatedly widening hand-selected
+  `--oneshot --nodeps` batches until the dependency graph happens to converge.
+- **Unusual systems remain first-class**: split-usr, overlays, old slots,
+  preserved libraries, custom USE policy, and other supported Gentoo choices
+  are compatibility inputs—not excuses to bypass verification or recovery.
 - **Unified direction**: one static tool is intended to offer familiar
   workflows from emerge, eix, equery, quickpkg, perl-cleaner, python-updater,
   dispatch-conf, env-update, revdep-rebuild, and eselect-news.
@@ -138,10 +150,13 @@ arise --pretend revdep-rebuild
 arise dispatch-conf
 ```
 
-Non-pretend install, update, uninstall, depclean, repair and rebuild execution
-is deliberately blocked until the versioned ebuild ABI and journaled
-transaction engine satisfy their punch-list gates. Source `--fetchonly` is the
-current bounded exception and consumes only Manifest-verified artifacts.
+Live-root install, update, uninstall, depclean, repair and rebuild execution is
+deliberately blocked until the versioned ebuild ABI and journaled transaction
+engine satisfy their punch-list gates. Source `--fetchonly` is the bounded live
+exception and consumes only Manifest-verified artifacts. Development builds can
+exercise an exact-digest-authorized serial source install. Live `/` is limited
+to one additive action with absent file/VDB targets and no custom package
+lifecycle hooks; general mutation remains disabled.
 
 ## Usage
 
@@ -184,23 +199,40 @@ choices, not to diminish mature tools with broader responsibilities. Arise's
 own benchmark gate rejects correctness-equivalent regressions and requires a
 material measured benefit before making a performance claim.
 
-Same-snapshot, correctness-gated checkpoint results from 2026-07-17:
+Same-snapshot, correctness-gated checkpoint results through 2026-07-18:
 
 | Task | Reference | Equivalent | Arise median | Reference median | Speedup |
 |---|---|---:|---:|---:|---:|
 | List all installed CPVs | eix-installed | yes | 6.42 ms | 37.47 ms | **5.83x** |
 | Firefox substring search | eix | yes | 11.69 ms | 33.95 ms | **2.90x** |
 | Firefox substring search | emerge | yes | 10.95 ms | 865.47 ms | **79.03x** |
-| Signal Desktop dependency plan | emerge | yes | 1.30 s | 3.30 s | **2.54x** |
-| Shallow `@system` dependency plan | emerge | yes (11/11 actions) | 2.26 s | 6.42 s | **2.84x** |
+| Shallow `@system` update plan | emerge | yes (11/11 actions) | 1.43 s | 6.48 s | **4.52x** |
 | Crash-safe full configured-repository index | eix-update | yes | 3.96 s | 4.26 s | **1.08x** |
 | Crash-safe no-change configured-repository index | eix-update | yes | 1.86 s | 4.26 s | **2.29x** |
+
+Damaged-state recovery is reported separately because unequal outcomes cannot
+enter the equivalence speedup table. On repository commit
+`dbc31827cd0aab0d3b90114899a2eb2136dcb726`, three uninstrumented runs of deep,
+newuse, complete-graph `@system` with build dependencies produced:
+
+| Resolver | Outcome | Actions | Median wall time |
+|---|---|---:|---:|
+| Arise | verified repair, zero conflicts | 159 | **2.05 s** |
+| Portage 3.0.77 | unresolved partial plan, slot conflicts and four unsatisfied blocks | 143 displayed | 27.34 s |
+
+Arise used 13.33x less wall time in this damaged state while producing the
+stronger verified outcome. This is deliberately labeled a recovery diagnostic,
+not a Portage-equivalent speedup. The three samples, commands, outcomes, binary
+digest and repository commit are preserved in
+[`P3_SYSTEM_REPAIR_TIMINGS_2026-07-18.json`](docs/evidence/P3_SYSTEM_REPAIR_TIMINGS_2026-07-18.json).
 
 The index comparison covers every configured repository on both sides and
 validates normalized package names after each build. Current indexing creates a
 complete immutable generation, publishes it atomically and retains a rollback
 generation. Cache-footprint publication is temporarily withheld because the
 harness must follow generation symlinks before its numbers are trustworthy.
+The current `@system` samples and normalized outcome record are preserved in
+[`P3_SYSTEM_SHALLOW_TIMINGS_2026-07-18.json`](docs/evidence/P3_SYSTEM_SHALLOW_TIMINGS_2026-07-18.json).
 
 Not yet claimed:
 
@@ -210,6 +242,13 @@ Not yet claimed:
   development snapshot; the current hard gate is an installed live
   `llvm-core/llvm-23.0.0.9999:23/23.0` without an installable matching
   candidate, so no speedup is published.
+- The current deep/newuse `@system` outcome is ineligible for the equivalence
+  table because Arise repairs the state while Portage reports an unresolved
+  partial plan. Its separately labeled recovery diagnostic appears above.
+- Signal Desktop remains useful as a binary-package and user-patch regression,
+  but is no longer treated as a representative resolver or execution benchmark.
+  Resolver performance work now uses the explicit-package, `@system`, normal
+  `@world`, damaged-world, and empty-tree matrix.
 
 The complete current and planned task matrix is in
 [BENCHMARK_MATRIX.md](BENCHMARK_MATRIX.md), with methodology in

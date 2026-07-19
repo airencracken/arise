@@ -1,5 +1,9 @@
 # Development checkpoint — 2026-07-18
 
+> Historical checkpoint. Superseded by
+> [`CHECKPOINT_P3_P6_2026-07-18.md`](CHECKPOINT_P3_P6_2026-07-18.md); statements
+> below describe an earlier tree from the same day.
+
 This is an honest state record for commit and push. `PUNCHLIST.md` remains the
 authoritative dependency graph; this document summarizes what the current tree
 actually proves and, equally importantly, what it does not prove.

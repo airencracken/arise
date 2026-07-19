@@ -3,10 +3,10 @@
 @setfilename arise.info
 @settitle arise -- Gentoo Package Manager
 @documentencoding UTF-8
-@set VERSION 0.1.0-dev
+@set VERSION development
 
 @copying
-arise is a high-performance, self-healing package manager for Gentoo Linux.
+arise is an experimental recovery-oriented package manager for Gentoo Linux.
 
 Copyright @copyright{} 2026
 
@@ -44,14 +44,14 @@ This manual is for arise version @value{VERSION}.
 * Package Flags::               emerge-style resolution flags
 * Configuration Files::         /etc/portage layout
 * Extending arise::                Architecture and internals
-* GNU Free Documentation License::
 * Index::
 @end menu
 
 @node Overview
 @chapter Overview
 
-arise (@emph{Gentoo Manager}) is a statically-linked Go binary that replaces
+arise (@emph{Gentoo Manager}) is an experimental statically-linked Go control
+plane that aims to provide compatible workflows for
 @command{emerge}, @command{eix}, @command{equery}, @command{quickpkg},
 @command{perl-cleaner}, @command{python-updater}, @command{dispatch-conf},
 @command{env-update}, @command{revdep-rebuild}, and @command{eselect news}.
@@ -60,6 +60,15 @@ It stores package metadata in a BadgerDB key-value store and operates directly
 against the Gentoo repository tree and VDB, without depending on Python or
 Bash for core operations. Build phases that require shell scripts execute via
 @code{os/exec} to the appropriate build tools.
+
+The project priorities are correctness, usefulness, performance, and
+reliability. Repair planning is intended to derive and verify the complete
+ordered closure needed to recover an old or damaged installation, rather than
+requiring the administrator to widen hand-selected @option{--oneshot
+--nodeps} batches by trial and error. Indexed immutable state and Go
+concurrency reduce control-plane latency without weakening deterministic
+results or whole-state verification. Unusual but valid Gentoo configurations,
+including split-usr systems, remain compatibility inputs.
 
 @table @emph
 @item Pure Go and static linking
@@ -76,6 +85,10 @@ Core logic (resolution, metadata, auditing) is pure Go.
 @item Self-healing
 Remains operational even when system Python or portage libraries are broken.
 @end table
+
+General live-root install, update, removal, depclean and rebuild execution is
+not yet supported. Use pretend mode until the execution-ABI and transaction
+acceptance gates documented in @file{PUNCHLIST.md} pass.
 
 @node Quick Start
 @chapter Quick Start
@@ -102,11 +115,11 @@ $ arise equery size sys-devel/gcc
 $ arise equery uses sys-devel/gcc
 $ arise equery check sys-devel/gcc
 
-# Install packages
-$ arise install -av app-editors/vim
+# Resolve an install without mutation
+$ arise --pretend install app-editors/vim
 
-# Update world
-$ arise update -uDN @world
+# Resolve a world update without mutation
+$ arise --pretend update
 
 # Audit for outdated packages
 $ arise audit python
@@ -148,22 +161,31 @@ Remote repository URL for sync.
 
 @table @command
 @item install [flags] @var{atoms@dots{}}
-Install one or more packages. Resolves dependencies and builds from source.
+Resolve one or more packages. General execution is gated; use
+@option{--pretend}. Manifest-verified @option{--fetchonly} is the bounded
+non-pretend exception.
 
-@item update [flags] [@var{atoms@dots{}]
-Update installed packages. Defaults to @code{@@world} if no atoms given.
+@item update [flags] [@var{atoms@dots{}}]
+Resolve updates, defaulting to @code{@@world}. General execution is gated.
 
 @item uninstall @var{atoms@dots{}}
-Remove installed packages.
+Propose removal without live mutation.
 
 @item depclean [flags]
-Remove orphaned packages not in @@world or its dependency tree.
+Propose orphan removal without mutation.
 
 @item prune [flags]
-Remove old versions, keeping only the newest per slot.
+Propose old-version removal without mutation.
 
 @item deselect @var{atom}
 Remove a package from @@world without uninstalling.
+
+@item recover status
+List durable package journals and their state.
+
+@item recover rollback @var{id}
+Roll back one active journal while holding the VDB mutation lock. Use
+@option{--all-active} in place of @var{id} to recover every active journal.
 @end table
 
 @node Query and Information
@@ -371,7 +393,19 @@ Only build binaries.
 @item -f, --fetchonly
 Only fetch sources.
 @item --backtrack @var{N}
-Max backtracking levels (default 10).
+Maximum backtracking decisions (default 20).
+@item --resolver-timeout @var{duration}
+Wall-clock resolver deadline (default @code{5m}). @code{0} disables the
+deadline without changing the independent backtrack ceiling.
+@item --experimental-live-mutation
+Enable the development mutation path. It is not sufficient authorization by
+itself. Live root is limited to the additive single-package canary eligibility
+rules; general mutation remains disabled.
+@item --approve-plan-sha256 @var{digest}
+Authorize exactly the canonical verified-plan digest, including its package
+state and policy fingerprint. State drift before execution fails closed.
+@item --journal-dir @var{path}
+Directory containing durable package transaction journals.
 @item --complete-graph
 Rebuild reverse deps.
 @item --keep-going
@@ -490,8 +524,8 @@ Dependency graph builder. Queries BadgerDB and walks the ebuild tree.
 Backtracking dependency solver. USE, keyword, license, mask awareness.
 
 @item internal/rebuild
-Full build pipeline: fetch @rightarrow{} unpack @rightarrow{} configure
-@rightarrow{} compile @rightarrow{} install @rightarrow{} merge.
+Experimental build pipeline: fetch -> unpack -> configure -> compile ->
+image install -> journaled disposable-root merge. Live mutation remains gated.
 
 @item internal/portage
 Configuration parser. make.conf, package.use, package.accept_keywords, etc.
@@ -509,13 +543,9 @@ eix-style package search with 30+ filter options.
 Package query: belongs, files, uses, size, check, which, list.
 @end table
 
-Each package has comprehensive tests including unit tests, adversarial input
-tests, mutation tests (byte-flip fuzzing), and integration tests.
-
-@node GNU Free Documentation License
-@appendix GNU Free Documentation License
-
-@include fdl.texi
+Coverage varies by subsystem. The maintained test lanes include unit,
+adversarial, fuzz, race, differential and disposable-root integration tests;
+the punch list records the remaining acceptance gates.
 
 @node Index
 @unnumbered Index

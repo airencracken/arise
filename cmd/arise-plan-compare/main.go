@@ -15,10 +15,19 @@ import (
 )
 
 type report struct {
-	AriseCount  int                      `json:"arise_count"`
-	EmergeCount int                      `json:"emerge_count"`
-	Equivalent  bool                     `json:"equivalent"`
-	Differences []plancompare.Difference `json:"differences,omitempty"`
+	AriseCount      int                      `json:"arise_count"`
+	EmergeCount     int                      `json:"emerge_count"`
+	AriseVerified   bool                     `json:"arise_verified"`
+	PortageResolved bool                     `json:"portage_resolved"`
+	ComparisonClass string                   `json:"comparison_class"`
+	Equivalent      bool                     `json:"equivalent"`
+	Differences     []plancompare.Difference `json:"differences,omitempty"`
+}
+
+type commandResult struct {
+	stdout string
+	stderr string
+	err    error
 }
 
 func main() {
@@ -79,25 +88,28 @@ func main() {
 	}
 	emergeArgs = append(emergeArgs, *target)
 
-	ariseOutput, ariseRunErr := run(*arisePath, ariseArgs)
-	emergeOutput, emergeRunErr := run(*emergePath, emergeArgs)
-	arisePlan, err := plancompare.ParseAriseJSON(ariseOutput)
+	ariseResult := run(*arisePath, ariseArgs)
+	emergeResult := run(*emergePath, emergeArgs)
+	arisePlan, err := plancompare.ParseAriseJSON(ariseResult.stdout)
 	if err != nil {
 		fatal(err)
 	}
-	emergePlan, err := plancompare.ParseEmerge(emergeOutput)
+	emergePlan, err := plancompare.ParseEmerge(emergeResult.stdout)
 	if err != nil {
 		fatal(err)
 	}
-	if len(arisePlan) == 0 && ariseRunErr != nil {
-		fatal(fmt.Errorf("Arise produced no parseable actions: %w", ariseRunErr))
+	if len(arisePlan) == 0 && ariseResult.err != nil {
+		fatal(fmt.Errorf("Arise produced no parseable actions: %w", ariseResult.err))
 	}
-	if len(emergePlan) == 0 && emergeRunErr != nil && !looksLikeEmergePlan(emergeOutput) {
-		fatal(fmt.Errorf("emerge produced no parseable actions: %w", emergeRunErr))
+	if len(emergePlan) == 0 && emergeResult.err != nil && !looksLikeEmergePlan(emergeResult.stdout) {
+		fatal(fmt.Errorf("emerge produced no parseable actions: %w", emergeResult.err))
 	}
 
 	differences := plancompare.Compare(arisePlan, emergePlan)
-	r := report{AriseCount: len(arisePlan), EmergeCount: len(emergePlan), Equivalent: len(differences) == 0, Differences: differences}
+	ariseVerified := parseAriseVerified(ariseResult.stdout)
+	portageResolved := emergeResult.err == nil && !looksUnresolved(emergeResult.stderr)
+	comparisonClass := classifyComparison(ariseVerified, portageResolved, len(differences) == 0)
+	r := report{AriseCount: len(arisePlan), EmergeCount: len(emergePlan), AriseVerified: ariseVerified, PortageResolved: portageResolved, ComparisonClass: comparisonClass, Equivalent: comparisonClass == "equivalent-verified", Differences: differences}
 	if *jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
@@ -105,7 +117,7 @@ func main() {
 			fatal(err)
 		}
 	} else {
-		fmt.Printf("Arise actions: %d\nPortage actions: %d\nDifferences: %d\n", r.AriseCount, r.EmergeCount, len(differences))
+		fmt.Printf("Arise actions: %d (verified: %t)\nPortage actions: %d (resolved: %t)\nClass: %s\nDifferences: %d\n", r.AriseCount, r.AriseVerified, r.EmergeCount, r.PortageResolved, r.ComparisonClass, len(differences))
 		for _, difference := range differences {
 			fmt.Printf("  %-12s %s", difference.Kind, difference.Identity)
 			if difference.Arise != nil {
@@ -131,7 +143,7 @@ func looksLikeEmergePlan(output string) bool {
 		strings.Contains(output, "following update(s) have been skipped")
 }
 
-func run(path string, args []string) (string, error) {
+func run(path string, args []string) commandResult {
 	cmd := exec.Command(path, args...)
 	if filepath.Base(path) == "emerge" {
 		cmd.Env = withoutNews(os.Environ())
@@ -139,12 +151,35 @@ func run(path string, args []string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
-	// Plans with conflicts commonly exit non-zero. Preserve stderr only when
-	// stdout has no plan, so Portage news/config warnings cannot pollute parsing.
-	if stdout.Len() == 0 {
-		stdout.Write(stderr.Bytes())
+	return commandResult{stdout: stdout.String(), stderr: stderr.String(), err: err}
+}
+
+func parseAriseVerified(output string) bool {
+	var envelope struct {
+		Complete   bool `json:"complete"`
+		Resolution struct {
+			Verified     bool   `json:"verified"`
+			Verification string `json:"verification"`
+		} `json:"resolution"`
 	}
-	return stdout.String(), err
+	return json.Unmarshal([]byte(output), &envelope) == nil && envelope.Complete && envelope.Resolution.Verified && envelope.Resolution.Verification == "verified"
+}
+
+func looksUnresolved(stderr string) bool {
+	return strings.Contains(stderr, "resulting in a slot conflict") || strings.Contains(stderr, "impossible to satisfy simultaneously") || strings.Contains(stderr, "unsatisfied")
+}
+
+func classifyComparison(ariseVerified, portageResolved, sameActions bool) string {
+	switch {
+	case ariseVerified && portageResolved && sameActions:
+		return "equivalent-verified"
+	case ariseVerified && !portageResolved:
+		return "verified-repair-vs-unresolved-partial"
+	case !ariseVerified && portageResolved:
+		return "arise-unverified-vs-portage-resolved"
+	default:
+		return "non-equivalent"
+	}
 }
 
 func withoutNews(environment []string) []string {

@@ -270,7 +270,7 @@ func searchExitCode(matches int) int {
 }
 
 func canUseNameIndex(query string) bool {
-	return *searchOnlyNames && !*searchRegex && !*searchDesc &&
+	return *searchOnlyNames && !strings.ContainsAny(query, "*?[") && !*searchRegex && !*searchDesc &&
 		!*searchInstalled && *searchCategory == "" && *searchName == "" &&
 		*searchSlot == "" && *searchUse == "" && *searchKeywords == "" &&
 		*searchLicense == "" && !*searchStable && !*searchTesting &&
