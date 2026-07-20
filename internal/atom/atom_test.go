@@ -396,6 +396,22 @@ func TestParse_Errors(t *testing.T) {
 		"sys-devel/gcc:0/=",
 		"sys-devel/gcc-1.0_foo",
 		"sys-devel/gcc-1.0_alpha1x",
+		">=sys-devel/gcc",
+		"~sys-devel/gcc-1*",
+		">=sys-devel/gcc-1*",
+		"sys-devel/gcc:",
+		"sys-devel/gcc:/1",
+		"sys-devel/gcc:bad slot",
+		"sys-devel/gcc:.slot",
+		"sys-devel/gcc::repo.name",
+		"sys-devel/gcc:0*",
+		"sys-devel/gcc:0/1*",
+		"+sys/pkg",
+		"sys/+pkg",
+		"sys-devel/gcc[-doc?]",
+		"sys-devel/gcc[-doc=]",
+		"sys-devel/gcc[doc,doc]",
+		"sys-devel/gcc[doc(+),-doc]",
 	}
 	for _, input := range tests {
 		t.Run("error_"+input, func(t *testing.T) {
@@ -404,6 +420,101 @@ func TestParse_Errors(t *testing.T) {
 				t.Errorf("Parse(%q) expected error, got nil", input)
 			}
 		})
+	}
+}
+
+func TestAtomPortageBoundaryCharacters(t *testing.T) {
+	for _, input := range []string{
+		"sys.apps/gcc",
+		"sys+apps/gcc",
+		"sys_apps/gcc",
+		"sys-apps/gcc:slot.name/sub-slot+abi=::gentoo-overlay",
+		"sys-apps/gcc::_repo",
+	} {
+		t.Run(input, func(t *testing.T) {
+			parsed, err := Parse(input)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", input, err)
+			}
+			if parsed.String() != input {
+				t.Fatalf("roundtrip = %q", parsed.String())
+			}
+		})
+	}
+}
+
+// TestParsePortageAtomCorpus ports the non-wildcard syntax cases from
+// portage.tests.dep.test_atom and test_isvalidatom. Unversioned CPVs are
+// intentionally tested at the depstring boundary instead: Parse also serves
+// repository and VDB identity parsing, where those CPVs are valid inputs.
+func TestParsePortageAtomCorpus(t *testing.T) {
+	valid := []string{
+		"sys-apps/portage", "=sys-apps/portage-2.1", "=sys-apps/portage-2.1*",
+		">=sys-apps/portage-2.1", "<=sys-apps/portage-2.1", ">sys-apps/portage-2.1",
+		"<sys-apps/portage-2.1", "~sys-apps/portage-2.1", "sys-apps/portage:foo",
+		"=sys-apps/portage-2.2*:foo[bar?,!baz?,!doc=,build=]",
+		"=sys-apps/portage-2.2*:foo[bar,-baz,doc?,!build?]",
+		"=foo/bar--baz-1-r1", "=foo/bar-baz--1-r1", "=foo/bar-baz---1-r1",
+		"=foo/bar-baz---1", "games-strategy/ufo2000", "~games-strategy/ufo2000-0.1",
+		"=media-libs/x264-20060810", "foo/b", "app-text/7plus", "foo/666",
+		"=dev-libs/poppler-qt3-0.11*", "sys-apps/portage::repo_123-name",
+		"=sys-apps/portage-2.1::repo", "=sys-apps/portage-2.1*::repo",
+		"sys-apps/portage:foo::repo", "virtual/ffmpeg:0/53", "virtual/ffmpeg:0/53=",
+		"virtual/ffmpeg:=", "virtual/ffmpeg:0=", "virtual/ffmpeg:*", "virtual/ffmpeg:0",
+		"dev-libs/A[a(+),b(-)=,!c(+)=,d(-)?,!e(+)?,-f(-)]",
+	}
+	for _, input := range valid {
+		t.Run("valid_"+input, func(t *testing.T) {
+			parsed, err := Parse(input)
+			if err != nil {
+				t.Fatalf("Portage-valid atom rejected: %v", err)
+			}
+			if reparsed, err := Parse(parsed.String()); err != nil || reparsed.String() != parsed.String() {
+				t.Fatalf("round trip failed: parsed=%q reparsed=%v err=%v", parsed, reparsed, err)
+			}
+		})
+	}
+
+	invalid := []string{
+		"", "cat/pkg\n", "cat/Ҙ", "cat/pkg:/slot", "+cat/pkg", "-cat/pkg", ".cat/pkg",
+		"cat/+pkg", "cat/-pkg", "cat/pkg:+slot", "cat/pkg:-slot", "cat/pkg:.slot",
+		"cat/pkg[a!]", "cat/pkg[!a]", "cat/pkg[!a!]", "cat/pkg[!a-]", "cat/pkg[-a=]",
+		"cat/pkg[-a?]", "cat/pkg[-a!]", "cat/pkg[=a]", "cat/pkg[=a=]", "cat/pkg[=a?]",
+		"cat/pkg[=a!]", "cat/pkg[=a-]", "cat/pkg[?a]", "cat/pkg[?a=]", "cat/pkg[?a?]",
+		"cat/pkg[?a!]", "cat/pkg[?a-]", "sys-apps/portage[doc]:0", "cat/pkg[a()]",
+		"cat/pkg[a(]", "cat/pkg[a)]", "cat/pkg[a(,b]", "cat/pkg[a),b]", "cat/pkg[a(*)]",
+		"cat/pkg[a(+-)]", "cat/pkg[(+)a]", "cat/pkg[a=(+)]", "cat/pkg[!(+)a=]",
+		"cat/pkg[!a=(+)]", "cat/pkg[a?(+)]", "cat/pkg[!a?(+)]", "cat/pkg[!(+)a?]",
+		"cat/pkg[-(+)a]", "cat/pkg[a(+),-a]", "cat/pkg[a(-),-a]", "cat/pkg[-a,a(+)]",
+		"cat/pkg[-a,a(-)]", "cat/pkg[-a(+),a(-)]", "cat/pkg[-a(-),a(+)]",
+		"sys-apps/portage[doc]::repo_name", "sys-apps/portage:0[doc]::repo_name",
+		"sys-apps/portage[doc]:0::repo_name", ">~category/foo-1.0",
+		"<~category/foo-1.0", "###cat/foo-1.0", "~sys-apps/portage", "portage", "=portage",
+		">=portage-2.1", "null/portage*:0", ">=null/portage", ">null/portage", "=null/portage*",
+		"=null/portage", "~null/portage", "<=null/portage", "<null/portage",
+		"=foo/bar-1-r1-1-r1", "foo/-z-1", "=foo/bar-123-1", "=foo/bar-123-1*",
+		"=foo/bar-123-1-r1", "=foo/bar-123-1-r1*", "=foo/bar-baz-1--r1", "sys-apps/portage-2.1:::repo",
+		"sys-apps/portage-2.1:::repo[foo]", "virtual/ffmpeg:0/53*", "virtual/ffmpeg:0*",
+	}
+	for _, input := range invalid {
+		t.Run("invalid_"+input, func(t *testing.T) {
+			if parsed, err := Parse(input); err == nil {
+				t.Fatalf("Portage-invalid atom accepted as %q", parsed)
+			}
+		})
+	}
+}
+
+func TestParsePackageAtomSeparatesConstraintsFromCPVIdentities(t *testing.T) {
+	identity, err := Parse("sys-apps/portage-3.0.81")
+	if err != nil || identity.Version == nil {
+		t.Fatalf("internal CPV identity rejected: atom=%v err=%v", identity, err)
+	}
+	if _, err := ParsePackageAtom("sys-apps/portage-3.0.81"); err == nil {
+		t.Fatal("bare CPV accepted as a package constraint")
+	}
+	if _, err := ParsePackageAtom("=sys-apps/portage-3.0.81"); err != nil {
+		t.Fatalf("operator-qualified package atom rejected: %v", err)
 	}
 }
 
@@ -627,6 +738,80 @@ func TestProperty_VersionCompareTransitivity(t *testing.T) {
 						versions[i], versions[j], versions[j], versions[k], versions[i], versions[k])
 				}
 			}
+		}
+	}
+}
+
+func TestVersionComparisonMatchesPortageArbitraryPrecisionCases(t *testing.T) {
+	tests := []struct {
+		newer, older string
+	}{
+		{"999999999999999999999999999999", "999999999999999999999999999998"},
+		{"1.001000000000000000002", "1.001000000000000000001"},
+		{"1_alpha999999999999999999999", "1_alpha999999999999999999998"},
+		{"1-r999999999999999999999", "1-r999999999999999999998"},
+	}
+	for _, test := range tests {
+		newer, err := ParseVersion(test.newer)
+		if err != nil {
+			t.Fatalf("ParseVersion(%q): %v", test.newer, err)
+		}
+		older, err := ParseVersion(test.older)
+		if err != nil {
+			t.Fatalf("ParseVersion(%q): %v", test.older, err)
+		}
+		if newer.Compare(older) <= 0 || older.Compare(newer) >= 0 {
+			t.Fatalf("comparison %s > %s failed", test.newer, test.older)
+		}
+	}
+	left, _ := ParseVersion("01")
+	right, _ := ParseVersion("1")
+	if left.Compare(right) != 0 {
+		t.Fatal("leading zero in first component changed numeric value")
+	}
+}
+
+func TestVersionComparisonPortageCorpus(t *testing.T) {
+	greater := [][2]string{
+		{"6.0", "5.0"}, {"5.0", "5"}, {"1.0-r1", "1.0-r0"}, {"1.0-r1", "1.0"},
+		{"999999999999999999999999999999", "999999999999999999999999999998"},
+		{"1.0.0", "1.0"}, {"1.0.0", "1.0b"}, {"1b", "1"}, {"1b_p1", "1_p1"},
+		{"1.1b", "1.1"}, {"12.2.5", "12.2b"},
+	}
+	less := [][2]string{
+		{"4.0", "5.0"}, {"5", "5.0"}, {"1.0_pre2", "1.0_p2"}, {"1.0_alpha2", "1.0_p2"},
+		{"1.0_alpha1", "1.0_beta1"}, {"1.0_beta3", "1.0_rc3"},
+		{"1.001000000000000000001", "1.001000000000000000002"},
+		{"1.00100000000", "1.0010000000000000001"}, {"1.01", "1.1"},
+		{"1.0-r0", "1.0-r1"}, {"1.0", "1.0-r1"}, {"1.0", "1.0.0"},
+		{"1.0b", "1.0.0"}, {"1_p1", "1b_p1"}, {"1", "1b"}, {"1.1", "1.1b"},
+		{"12.2b", "12.2.5"},
+	}
+	equal := [][2]string{{"4.0", "4.0"}, {"1.0", "1.0"}, {"1.0-r0", "1.0"}, {"01", "1"}}
+	compare := func(pair [2]string) int {
+		left, err := ParseVersion(pair[0])
+		if err != nil {
+			t.Fatalf("ParseVersion(%q): %v", pair[0], err)
+		}
+		right, err := ParseVersion(pair[1])
+		if err != nil {
+			t.Fatalf("ParseVersion(%q): %v", pair[1], err)
+		}
+		return left.Compare(right)
+	}
+	for _, pair := range greater {
+		if got := compare(pair); got <= 0 {
+			t.Errorf("Compare(%q, %q) = %d, want > 0", pair[0], pair[1], got)
+		}
+	}
+	for _, pair := range less {
+		if got := compare(pair); got >= 0 {
+			t.Errorf("Compare(%q, %q) = %d, want < 0", pair[0], pair[1], got)
+		}
+	}
+	for _, pair := range equal {
+		if got := compare(pair); got != 0 {
+			t.Errorf("Compare(%q, %q) = %d, want 0", pair[0], pair[1], got)
 		}
 	}
 }

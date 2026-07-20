@@ -465,7 +465,9 @@ validity and promotion criteria, in
   remains.
 - [!] Implement EAPI-correct DEPEND/RDEPEND/BDEPEND/IDEPEND/PDEPEND behavior.
   Resolver records preserve EAPI; BDEPEND before EAPI 7 and IDEPEND before
-  EAPI 8 are rejected. Retained packages keep RDEPEND/PDEPEND, never IDEPEND,
+  EAPI 8 are ignored as unavailable metadata variables, matching Portage,
+  while malformed syntax in active classes still fails closed. Retained
+  packages keep RDEPEND/PDEPEND, never IDEPEND,
   and include DEPEND/BDEPEND only according to `--with-bdeps`. Source versus
   binary transaction roots and a full Portage differential matrix remain.
   Cross-root placement now follows the historical boundary: pre-EAPI-7 DEPEND
@@ -481,11 +483,23 @@ validity and promotion criteria, in
   dependency grammar is EAPI-aware for strong blockers (EAPI 2), slot deps
   (EAPI 1), slot operators (EAPI 5), repository qualifiers, USE dependencies
   and USE defaults, while unknown future EAPIs remain forward-compatible.
+  A single declarative EAPI 0-9 contract table now gates dependency syntax,
+  IUSE defaults, REQUIRED_USE, dependency-class activation, DEPEND root domains
+  and inactive any-of behavior; adding an EAPI requires one capability row.
+  Raw IUSE is retained in live graph records and portable resolver fixtures so
+  historical metadata validation survives capture and replay.
+  EAPI 7's empty-any-of transition is preserved: an any-of whose every option
+  is disabled by an inner USE conditional is satisfied through EAPI 6 and
+  unsatisfied in EAPI 7+, while a conditional enclosing the whole group still
+  disables it. Group and option conditions remain distinct in compact metadata.
   Operation-mode reduction now matches Portage for shallow/deep
   `--buildpkgonly`, target-scoped `--onlydeps-with-rdeps` and
   `--onlydeps-with-ideps`, including a fix for versioned action keys that could
-  leave the explicit target in an `--onlydeps` plan.
-- [!] Implement complete atom semantics, slots, subslots and repository constraints.
+  leave the explicit target in an `--onlydeps` plan. A portable transaction-root
+  matrix now covers EAPI 6 source, EAPI 8 source, EAPI 8 binary automatic-bdeps
+  and EAPI 8 binary explicit-bdeps plans across every dependency class; the
+  full live Portage differential matrix remains.
+- [x] Implement complete atom semantics, slots, subslots and repository constraints.
   Repository-qualified targets and dependencies now reject candidates from the
   wrong repository, including installed candidates. Identical CPVs from
   multiple repositories now remain distinct resolver candidates, unqualified
@@ -498,11 +512,10 @@ validity and promotion criteria, in
   package-mask reasons. Current Portage metadata command signatures and full
   slot/subslot identities are preserved by the oracle rather than generating
   shifted fields or false subslot-mask failures.
-  Package dependency fields now reject repository-qualified atoms for supported
-  EAPIs even though repository-qualified user targets remain valid. Remaining
-  work covers the rest of complete atom/EAPI semantics. The `~` operator now
-  matches an exact base version while ignoring only `-rN`, rather than wrongly
-  admitting longer numeric versions. The atom boundary rejects blocker syntax,
+  Package dependency fields reject repository-qualified atoms for supported
+  EAPIs even though repository-qualified user targets remain valid. The `~`
+  operator matches an exact base version while ignoring only `-rN`, rather than
+  wrongly admitting longer numeric versions. The atom boundary rejects blocker syntax,
   empty repositories and USE members, unterminated/trailing input, embedded
   control bytes and malformed standalone slot/subslot operators instead of
   normalizing invalid input into a different atom. Round-trip fuzzing found and
@@ -510,7 +523,30 @@ validity and promotion criteria, in
   now also preserves leading-zero fractional components, treats omitted suffix
   numbers and revisions as zero, accepts valid lowercase letter suffixes and
   rejects unknown suffix keywords, matching live Portage oracle cases that
-  previously changed candidate ordering.
+  previously changed candidate ordering. Operator atoms now require a version,
+  and version wildcards are accepted only with `=`. Category, slot/subslot and
+  repository boundary characters follow Portage's ASCII forms: dotted
+  categories, dotted/`+` slots and hyphenated repositories are preserved, while
+  empty or invalid-leading slot components, dotted repositories and operators
+  with no version fail instead of being normalized or accepted. Named `slot*`
+  and `slot/subslot*` forms are rejected while standalone `:*` remains valid.
+  Package dependency fields reject versioned atoms without an operator even
+  though internal action identities retain CPV parsing. Contradictory duplicate
+  USE dependencies and invalid disabled conditional/equality forms fail at the
+  atom boundary. Version comparison now consumes Portage's installed `vercmp`
+  corpus and compares arbitrary-precision numeric components, suffixes and
+  revisions without machine-integer overflow.
+  Portage's non-wildcard `test_atom` and `test_isvalidatom` syntax corpus is
+  retained as a Go regression table. Package names with a version-like suffix
+  are rejected without incorrectly rejecting valid doubled-hyphen CPVs.
+  Package-constraint parsing is distinct from internal repository/VDB CPV
+  parsing, so bare versioned targets and set entries fail instead of silently
+  ignoring their version. Equal-glob matching uses Portage's normalized literal
+  prefix and version-part boundary semantics, explicit subslots participate in
+  satisfaction, version constraints reject versionless candidates, and missing
+  IUSE flags require an explicit USE-dependency default. Repository, slot,
+  subslot, version and USE constraints therefore all participate in candidate
+  matching while full CPV identities remain available internally.
 - [x] Implement USE dependency defaults and conditional forms. Candidate
   satisfaction now has a full truth-table corpus for `flag?`, `!flag?`,
   `flag=`, `!flag=`, `flag(+)` and `flag(-)`, and repository/VDB graph records
@@ -525,9 +561,15 @@ validity and promotion criteria, in
   an explicit remove-before-merge requirement. Blocker matching now enumerates
   every matching installed version deterministically: qualified blockers retain
   unrelated parallel slots, unqualified blockers schedule every matching slot,
-  and removal actions preserve exact version/slot/repository identity. Enforcing
-  remove-before-merge ordering belongs to the P4 transaction scheduler and
-  remains a live-mutation gate.
+  and removal actions preserve exact version/slot/repository identity. Correct
+  explicit-subslot matching exposed and closed an installed-identity leak in
+  replacement selection: qtbase's soft blocker on
+  `<dev-qt/qt5compat-6.11.1:6` had constrained replacement lookup to the old
+  subslot and converted five coordinated Qt updates into removals. Replacement
+  lookup now uses a CP-only constraint and tests require
+  install-without-uninstall; the live plan is restored to all five coordinated
+  updates. Enforcing remove-before-merge ordering belongs to the P4 transaction
+  scheduler and remains a live-mutation gate.
 - [x] Verify the complete planned installed state before execution. Ordinary
   resolution and explicit install/removal overlays share one fail-closed gate;
   general uninstall, reverse-dependency breakage, repaired replacement,
@@ -660,7 +702,11 @@ validity and promotion criteria, in
   The next pretend-only expansion covers silver-searcher, ack, xterm,
   rxvt-unicode, st/st-terminfo, screen, tmux, BusyBox and genkernel for C/Perl,
   terminal/terminfo coupling, session/PAM policy, multicall userland and kernel
-  tooling behavior.
+  tooling behavior. That ten-case expansion now passes 10/10 on the live
+  comparator: silver-searcher 1/1, ack 2/2, xterm 2/2, tmux 1/1 and six verified
+  current/no-op cases, for 6/6 normalized actions overall. The dated record is
+  `docs/evidence/P3_EXPLICIT_CORPUS_EXPANSION_2026-07-19.json`; immutable
+  machine-independent promotion remains.
 - [x] Live configuration/metadata semantic differential gate against current
   Portage. The complete tagged matrix passes atoms, version comparison,
   repository and VDB metadata, raw GCC ebuild/eclass inheritance, dependency
@@ -1015,12 +1061,15 @@ from the core execution ABI; they do not block P4 closure.
   disposable-root end-to-end test validates phase order, installed payload,
   lifecycle side effects and VDB creation through the versioned worker.
 - [ ] Environment snapshot comparisons with Portage.
-- [ ] Failure injection at every phase.
-  EAPI 8 now has a failure-preservation matrix for every declared setup,
-  source and lifecycle phase. Each worker exits nonzero after emitting output;
-  the durable log retains pre-failure output, the exact terminal exit code and
-  a terminal-error record, and the returned error names the preserved path.
-  Transaction-boundary and EAPI 7 differentials remain.
+- [x] Failure injection at every phase. EAPI 7 and 8 have a
+  failure-preservation matrix for every declared setup, source and lifecycle
+  phase. Each worker exits nonzero after emitting output; the durable log
+  retains pre-failure output, the exact terminal exit code and a terminal-error
+  record, and the returned error names the preserved path. Production rebuild
+  coverage additionally injects a failing `pkg_postinst` for both EAPIs after
+  the journaled merge begins and proves payload/VDB rollback, a durably
+  rolled-back journal and preserved terminal log. Broader process-death
+  injection at journal persistence boundaries remains the P6 recovery gate.
 - [ ] Logging differential against Portage covering successful and failed
   builds, parallel jobs, split/compressed logs, phase/QA messages, filtering,
   permissions, cleanup and interrupted-log recovery. Assert that a failed build
@@ -1307,10 +1356,13 @@ The larger set gates additionally require:
   equivalent normalized Portage plan where Portage resolves, and verified
   post-transaction state. A stronger Arise repair requires a fixture-backed
   cause and final-state proof.
-  After the live Qt5 retirement, the deep/newuse `@system` resolver completes
-  in 2.13 seconds with zero backtracks and 158 proposed actions, but correctly
-  rejects execution on 13 final-state constraints (twelve Python target edges
-  and one Perl any-of). These are the immediate post-checkpoint P3 repair list.
+  After the live Qt5 retirement, a deep/newuse `@system` run that accidentally
+  omitted `--complete-graph` completed in 2.13 seconds with zero backtracks and
+  correctly rejected its 158-action plan on 13 retained reverse-dependency
+  constraints (twelve Python target edges and one Perl any-of). Repeating the
+  gate with the required `--complete-graph` option produced the same normalized
+  159-action, zero-conflict, verified plan three times; the 13 diagnostics were
+  therefore an invocation error, not a post-checkpoint resolver repair list.
 - [!] Before `--emptytree`, prove boot-critical replacement ordering, static
   recovery-binary availability outside paths being replaced, bounded disk
   usage, resume/recovery after interruption, and no removal of a working

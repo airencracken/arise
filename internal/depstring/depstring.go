@@ -160,18 +160,19 @@ func collectAtoms(nodes []DepNode) []string {
 }
 
 type AtomMeta struct {
-	Atom        string
-	Condition   string
-	AnyOfGroup  bool
-	AnyOfID     int // unique non-zero identifier within one CollectMeta call
-	AnyOfOption int // one-based conjunction alternative within AnyOfID
-	Block       bool
-	WeakBlock   bool
+	Atom           string
+	Condition      string
+	AnyOfCondition string // condition enclosing the group, excluding option-local conditions
+	AnyOfGroup     bool
+	AnyOfID        int // unique non-zero identifier within one CollectMeta call
+	AnyOfOption    int // one-based conjunction alternative within AnyOfID
+	Block          bool
+	WeakBlock      bool
 }
 
 func CollectMeta(node DepNode) []AtomMeta {
 	nextID := 0
-	return collectMeta(node, "", false, 0, 0, &nextID, make(map[int]int))
+	return collectMeta(node, "", false, 0, 0, "", &nextID, make(map[int]int))
 }
 
 // ValidatePackageDependencies rejects syntax that the shared parser accepts
@@ -187,7 +188,7 @@ func ValidatePackageDependenciesEAPI(node DepNode, rawEAPI string) error {
 	}
 	eapi, eapiErr := strconv.Atoi(rawEAPI)
 	validateAtom := func(raw string) error {
-		parsed, err := atom.Parse(raw)
+		parsed, err := atom.ParsePackageAtom(raw)
 		if err != nil {
 			return err
 		}
@@ -257,21 +258,21 @@ func ValidatePackageDependenciesEAPI(node DepNode, rawEAPI string) error {
 	return validate(node)
 }
 
-func collectMeta(node DepNode, condition string, anyOf bool, anyOfID, anyOfOption int, nextID *int, nextOption map[int]int) []AtomMeta {
+func collectMeta(node DepNode, condition string, anyOf bool, anyOfID, anyOfOption int, anyOfCondition string, nextID *int, nextOption map[int]int) []AtomMeta {
 	if node == nil {
 		return nil
 	}
 	switch n := node.(type) {
 	case *AtomDep:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption}}
+		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfCondition: anyOfCondition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption}}
 	case *Block:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, Block: true}}
+		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfCondition: anyOfCondition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, Block: true}}
 	case *WeakBlock:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, WeakBlock: true}}
+		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfCondition: anyOfCondition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, WeakBlock: true}}
 	case *AllOfGroup:
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, nextID, nextOption)...)
+			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption)...)
 		}
 		return result
 	case *AnyOfGroup:
@@ -279,23 +280,24 @@ func collectMeta(node DepNode, condition string, anyOf bool, anyOfID, anyOfOptio
 		if !anyOf {
 			*nextID++
 			groupID = *nextID
+			anyOfCondition = condition
 		}
 		var result []AtomMeta
 		for _, child := range n.Children {
 			nextOption[groupID]++
-			result = append(result, collectMeta(child, condition, true, groupID, nextOption[groupID], nextID, nextOption)...)
+			result = append(result, collectMeta(child, condition, true, groupID, nextOption[groupID], anyOfCondition, nextID, nextOption)...)
 		}
 		return result
 	case *XorOfGroup:
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, nextID, nextOption)...)
+			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption)...)
 		}
 		return result
 	case *AtMostOneOfGroup:
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, nextID, nextOption)...)
+			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption)...)
 		}
 		return result
 	case *UseConditional:
@@ -305,7 +307,7 @@ func collectMeta(node DepNode, condition string, anyOf bool, anyOfID, anyOfOptio
 		}
 		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, nextCond, anyOf, anyOfID, anyOfOption, nextID, nextOption)...)
+			result = append(result, collectMeta(child, nextCond, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption)...)
 		}
 		return result
 	default:

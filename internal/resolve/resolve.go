@@ -220,6 +220,7 @@ type VersionInfo struct {
 	Slot                    string
 	Subslot                 string
 	UseFlags                map[string]bool
+	IUse                    string
 	InstalledUseFlags       map[string]bool
 	InstalledIUseFlags      map[string]bool
 	Installed               bool
@@ -254,6 +255,7 @@ type DepEdge struct {
 	To          *PkgNode
 	Type        DepType
 	Domain      DependencyDomain // filesystem root in which this dependency is satisfied
+	EAPI        string           // selected parent EAPI governing dependency semantics
 	DepAtom     *atom.Atom       // the atom as specified in the dep string
 	UseCond     string           // USE flag condition (empty = always)
 	Block       bool             // is this a blocker?
@@ -1701,7 +1703,7 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 			return nil
 		}
 		for _, entry := range set.Entries {
-			a, err := atom.Parse(entry)
+			a, err := atom.ParsePackageAtom(entry)
 			if err != nil {
 				if r.config.KeepGoing {
 					r.conflicts = append(r.conflicts, fmt.Sprintf("bad %s entry %q: %v", label, entry, err))
@@ -1740,7 +1742,7 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 		}
 
 		// parse atom
-		a, err := atom.Parse(target)
+		a, err := atom.ParsePackageAtom(target)
 		if err != nil {
 			if !strings.Contains(target, "/") {
 				matches := r.findPackagesByName(target)
@@ -2012,6 +2014,15 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 				return fmt.Errorf("%s", msg)
 			}
 		}
+	}
+
+	if err := validateVersionMetadataEAPI(vi); err != nil {
+		msg := fmt.Sprintf("invalid EAPI metadata for %s: %v", cp, err)
+		r.conflicts = append(r.conflicts, msg)
+		if r.config.KeepGoing {
+			return nil
+		}
+		return fmt.Errorf("%s", msg)
 	}
 
 	// Check REQUIRED_USE
@@ -2406,8 +2417,18 @@ func (r *resolver) dependenciesForVersion(node *PkgNode, vi *VersionInfo) ([]*De
 			validation.Pdepend = dependency.raw
 		}
 	}
-	if err := validateDependencyClassesEAPI(validation); err != nil {
-		return nil, fmt.Errorf("%s: %w", node.Atom.CP(), err)
+	if eapi, err := strconv.Atoi(chosenEAPI); err == nil {
+		filtered := deps[:0]
+		for _, dependency := range deps {
+			// Metadata variables introduced by a later EAPI are not part of the
+			// package's dependency contract. Portage ignores them rather than
+			// interpreting or rejecting their contents.
+			if dependency.typ == DepTypeBuild && eapi < 7 || dependency.typ == DepTypeInstall && eapi < 8 {
+				continue
+			}
+			filtered = append(filtered, dependency)
+		}
+		deps = filtered
 	}
 	if r.config.BuildPkgOnly && !r.config.Deep && scheduledMergeType != "binary" {
 		filtered := deps[:0]
@@ -2512,25 +2533,22 @@ func (r *resolver) dependenciesForVersion(node *PkgNode, vi *VersionInfo) ([]*De
 			if meta.AnyOfID != 0 {
 				group := groups[meta.AnyOfID]
 				if group == nil {
-					group = &DepEdge{From: node, Type: d.typ, Domain: dependencyDomainForEAPI(d.typ, chosenEAPI), UseCond: meta.Condition, UseFlags: flags}
+					group = &DepEdge{From: node, Type: d.typ, Domain: dependencyDomainForEAPI(d.typ, chosenEAPI), EAPI: chosenEAPI, UseCond: meta.AnyOfCondition, UseFlags: flags}
 					groups[meta.AnyOfID] = group
 					edges = append(edges, group)
-				} else if group.UseCond != meta.Condition {
-					// Alternatives can have distinct inner conditions. In that
-					// case each option is evaluated independently below.
-					group.UseCond = ""
 				}
-				group.AnyOf = append(group.AnyOf, &DepAtom{Atom: a, UseCond: meta.Condition, Block: meta.Block || meta.WeakBlock, StrongBlock: meta.WeakBlock})
+				optionCondition := strings.TrimPrefix(strings.TrimPrefix(meta.Condition, meta.AnyOfCondition), ",")
+				group.AnyOf = append(group.AnyOf, &DepAtom{Atom: a, UseCond: optionCondition, Block: meta.Block || meta.WeakBlock, StrongBlock: meta.WeakBlock})
 				if groupOptions[meta.AnyOfID] == nil {
 					groupOptions[meta.AnyOfID] = make(map[int][]*DepAtom)
 				}
-				option := &DepAtom{Atom: a, UseCond: meta.Condition, Block: meta.Block || meta.WeakBlock, StrongBlock: meta.WeakBlock}
+				option := &DepAtom{Atom: a, UseCond: optionCondition, Block: meta.Block || meta.WeakBlock, StrongBlock: meta.WeakBlock}
 				groupOptions[meta.AnyOfID][meta.AnyOfOption] = append(groupOptions[meta.AnyOfID][meta.AnyOfOption], option)
 				continue
 			}
 			edges = append(edges, &DepEdge{
 				From: node, To: r.graph.Packages[a.CP()], Type: d.typ, Domain: dependencyDomainForEAPI(d.typ, chosenEAPI),
-				DepAtom: a, UseCond: meta.Condition,
+				EAPI: chosenEAPI, DepAtom: a, UseCond: meta.Condition,
 				Block: meta.Block || meta.WeakBlock, StrongBlock: meta.WeakBlock, UseFlags: flags,
 			})
 		}
@@ -2546,23 +2564,6 @@ func (r *resolver) dependenciesForVersion(node *PkgNode, vi *VersionInfo) ([]*De
 		}
 	}
 	return edges, nil
-}
-
-func validateDependencyClassesEAPI(version *VersionInfo) error {
-	if version == nil || version.EAPI == "" {
-		return nil
-	}
-	eapi, err := strconv.Atoi(version.EAPI)
-	if err != nil {
-		return nil
-	}
-	if eapi < 7 && (version.Bdepend != "" || version.InstalledBdepend != "") {
-		return fmt.Errorf("BDEPEND requires EAPI 7 or newer (package uses EAPI %d)", eapi)
-	}
-	if eapi < 8 && (version.Idepend != "" || version.InstalledIdepend != "") {
-		return fmt.Errorf("IDEPEND requires EAPI 8 or newer (package uses EAPI %d)", eapi)
-	}
-	return nil
 }
 
 func (r *resolver) effectiveBdepsMode() string {
@@ -2596,6 +2597,27 @@ func validateUseDependencyEAPI(dependency *atom.Atom, rawEAPI string) error {
 				return fmt.Errorf("USE dependency defaults require EAPI 4 or newer (package uses EAPI %d)", eapi)
 			}
 		}
+	}
+	return nil
+}
+
+func validateVersionMetadataEAPI(version *VersionInfo) error {
+	if version == nil || version.EAPI == "" {
+		return nil
+	}
+	eapi, err := strconv.Atoi(version.EAPI)
+	if err != nil {
+		return nil
+	}
+	if eapi < 1 {
+		for _, flag := range strings.Fields(version.IUse) {
+			if strings.HasPrefix(flag, "+") || strings.HasPrefix(flag, "-") {
+				return fmt.Errorf("IUSE defaults require EAPI 1 or newer")
+			}
+		}
+	}
+	if eapi < 4 && strings.TrimSpace(version.RequiredUse) != "" {
+		return fmt.Errorf("REQUIRED_USE requires EAPI 4 or newer")
 	}
 	return nil
 }
@@ -3014,7 +3036,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 	}
 
 	if len(candidates) == 0 {
-		if activeOptions == 0 {
+		if activeOptions == 0 && !anyOfRequiresActiveOption(edge.EAPI) {
 			return nil
 		}
 		var opts []string
@@ -3207,6 +3229,11 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 		if installed == nil || !installed.Installed {
 			continue
 		}
+		if replacement, replaces := r.scheduledReplacement(toNode, installed, edge.Domain); replaces && replacement != nil {
+			if edge.DepAtom == nil || !versionAtomMatches(toNode.Atom, edge.DepAtom, replacement, r.candidateUseFlags(toNode, replacement)) {
+				continue
+			}
+		}
 		if edge.DepAtom == nil || versionAtomMatches(installedNode.Atom, edge.DepAtom, installed, installedFlags(installed)) {
 			blocked = append(blocked, installed)
 		}
@@ -3224,7 +3251,11 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 	// upgrade when the selected replacement no longer matches the blocker.
 	if r.config.Update && edge.DepAtom != nil && len(blocked) == 1 {
 		installed := blocked[0]
-		best := r.findMatchingVersion(toNode, toNode.Atom)
+		// PkgNode.Atom may carry the installed identity for legacy graph
+		// consumers. Replacement selection needs an unconstrained CP atom;
+		// otherwise the old slot/subslot accidentally excludes its successor.
+		packageConstraint := &atom.Atom{Category: toNode.Atom.Category, Package: toNode.Atom.Package}
+		best := r.findMatchingVersion(toNode, packageConstraint)
 		if best != nil && best.Version != nil && installed.Version != nil && best.Version.Compare(installed.Version) > 0 &&
 			!versionAtomMatches(toNode.Atom, edge.DepAtom, best, r.candidateUseFlags(toNode, best)) {
 			reason := fmt.Sprintf("blocker replacement required by %s", edge.From.Atom.CP())
@@ -3643,7 +3674,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 							break
 						}
 					}
-					if active > 0 && !satisfied && (parentChanging || r.anyOptionChanged(edge.AnyOf, changed)) {
+					if (active > 0 || anyOfRequiresActiveOption(edge.EAPI)) && !satisfied && (parentChanging || r.anyOptionChanged(edge.AnyOf, changed)) {
 						addIssue(node, vi, parentChanging, fmt.Sprintf("post-solve verification: no alternative dependency of %s is satisfied", cp))
 					}
 					continue
@@ -3916,6 +3947,11 @@ func conditionsEnabled(flags map[string]bool, condition string) bool {
 		}
 	}
 	return true
+}
+
+func anyOfRequiresActiveOption(rawEAPI string) bool {
+	eapi, err := strconv.Atoi(rawEAPI)
+	return err == nil && eapi >= 7
 }
 
 func (r *resolver) effectiveNodeUseFlags(node *PkgNode) map[string]bool {
@@ -4327,7 +4363,10 @@ func atomMatches(installed *atom.Atom, constraint *atom.Atom, slot, subslot stri
 	}
 
 	// version constraint check
-	if constraint.Version != nil && constraint.Version.Raw != "" && pkgVersion != nil {
+	if constraint.Version != nil && constraint.Version.Raw != "" {
+		if pkgVersion == nil {
+			return false
+		}
 		cmp := pkgVersion.Compare(constraint.Version)
 		switch constraint.Op {
 		case atom.OpNone:
@@ -4369,6 +4408,15 @@ func atomMatches(installed *atom.Atom, constraint *atom.Atom, slot, subslot stri
 			return false
 		}
 	}
+	if constraint.Subslot != "" {
+		effectiveSubslot := subslot
+		if effectiveSubslot == "" {
+			effectiveSubslot = slot
+		}
+		if effectiveSubslot != constraint.Subslot {
+			return false
+		}
+	}
 
 	// slot operator * means any slot — always satisfied
 	// slot operator = means slot must match, subslot change triggers rebuild
@@ -4383,11 +4431,9 @@ func atomMatches(installed *atom.Atom, constraint *atom.Atom, slot, subslot stri
 			}
 		}
 		if !ok {
-			// flag not present in this version
-			if f.Enabled {
-				return false // required flag not set
-			}
-			continue // disabled flag not present is OK
+			// Without an explicit (+)/(-) default, a flag absent from the
+			// candidate's IUSE cannot satisfy either polarity of a USE dep.
+			return false
 		}
 		if enabled != f.Enabled {
 			return false
@@ -4452,18 +4498,45 @@ func tildeMatch(v, c *atom.Version) bool {
 	return vBase.Compare(&cBase) == 0
 }
 
-// globMatch checks if version v satisfies the =* operator constraint c.
-// =*x.y.* matches x.y.z for any z.
+// globMatch implements Portage's =* normalized literal-prefix rule. Matching
+// stops on a version-part boundary, so 1* matches 1.0 but not 10, and textual
+// component distinctions such as 1.2 versus 1.02 remain significant.
 func globMatch(v, c *atom.Version) bool {
-	if v == nil || c == nil || len(v.Numbers) < len(c.Numbers) {
+	if v == nil || c == nil {
 		return false
 	}
-	for i := 0; i < len(c.Numbers); i++ {
-		if v.Numbers[i] != c.Numbers[i] {
-			return false
-		}
+	candidate := normalizeGlobVersion(v.Raw)
+	prefix := strings.TrimSuffix(normalizeGlobVersion(c.Raw), "*")
+	if prefix == "" || !strings.HasPrefix(candidate, prefix) {
+		return false
 	}
-	return true
+	if len(candidate) == len(prefix) {
+		return true
+	}
+	next := candidate[len(prefix)]
+	last := prefix[len(prefix)-1]
+	return next == '.' || next == '_' || next == '-' || isASCIIDigit(last) != isASCIIDigit(next)
+}
+
+func normalizeGlobVersion(raw string) string {
+	star := strings.HasSuffix(raw, "*")
+	base := strings.TrimSuffix(raw, "*")
+	i := 0
+	for i < len(base) && base[i] == '0' {
+		i++
+	}
+	base = base[i:]
+	if base == "" || !isASCIIDigit(base[0]) {
+		base = "0" + base
+	}
+	if star {
+		base += "*"
+	}
+	return base
+}
+
+func isASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
 }
 
 func mustParseAtom(s string) *atom.Atom {

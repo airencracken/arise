@@ -28,11 +28,12 @@ const (
 )
 
 type Version struct {
-	Raw      string
-	Numbers  []int
-	Letter   string
-	Suffixes []string
-	Revision int // -1 means no revision suffix
+	Raw         string
+	Numbers     []int
+	Letter      string
+	Suffixes    []string
+	Revision    int // -1 means no revision suffix
+	revisionRaw string
 }
 
 type Atom struct {
@@ -54,6 +55,20 @@ type UseFlag struct {
 	Equal       bool  // flag= or !flag=
 	Negated     bool  // leading ! for conditional/equality operators
 	Default     *bool // (+) or (-) when the target omits the flag from IUSE
+}
+
+// ParsePackageAtom parses an atom used as a package constraint. Parse remains
+// intentionally capable of reading bare CPVs for repository/VDB identities;
+// package constraints require an operator whenever a version is present.
+func ParsePackageAtom(input string) (*Atom, error) {
+	parsed, err := Parse(input)
+	if err != nil {
+		return nil, err
+	}
+	if parsed.Version != nil && parsed.Op == OpNone {
+		return nil, fmt.Errorf("versioned package atoms require an operator")
+	}
+	return parsed, nil
 }
 
 func (a Atom) String() string {
@@ -167,13 +182,12 @@ func (v *Version) Compare(other *Version) int {
 		maxN = len(other.Numbers)
 	}
 	for i := 0; i < maxN; i++ {
-		vn := 0
-		on := 0
-		if i < len(v.Numbers) {
-			vn = v.Numbers[i]
+		vRaw, oRaw := "0", "0"
+		if i < len(vRawNumbers) {
+			vRaw = vRawNumbers[i]
 		}
-		if i < len(other.Numbers) {
-			on = other.Numbers[i]
+		if i < len(oRawNumbers) {
+			oRaw = oRawNumbers[i]
 		}
 		// After the first component, PMS treats a component with a leading
 		// zero as a decimal fraction. Preserve its textual precision: 1.01 is
@@ -184,8 +198,8 @@ func (v *Version) Compare(other *Version) int {
 			if len(oRawNumbers[i]) > width {
 				width = len(oRawNumbers[i])
 			}
-			left := vRawNumbers[i] + strings.Repeat("0", width-len(vRawNumbers[i]))
-			right := oRawNumbers[i] + strings.Repeat("0", width-len(oRawNumbers[i]))
+			left := vRaw + strings.Repeat("0", width-len(vRaw))
+			right := oRaw + strings.Repeat("0", width-len(oRaw))
 			if left < right {
 				return -1
 			}
@@ -194,11 +208,8 @@ func (v *Version) Compare(other *Version) int {
 			}
 			continue
 		}
-		if vn < on {
-			return -1
-		}
-		if vn > on {
-			return 1
+		if compared := compareDigitStrings(vRaw, oRaw); compared != 0 {
+			return compared
 		}
 	}
 	// PMS version components are significant even when an omitted component
@@ -230,15 +241,12 @@ func (v *Version) Compare(other *Version) int {
 	for i := 0; i < minS; i++ {
 		sa := aSuf[i]
 		sb := bSuf[i]
-		na, aIsNum := parseSuffixNum(sa)
-		nb, bIsNum := parseSuffixNum(sb)
+		aIsNum := isDigitString(sa)
+		bIsNum := isDigitString(sb)
 
 		if aIsNum && bIsNum {
-			if na < nb {
-				return -1
-			}
-			if na > nb {
-				return 1
+			if compared := compareDigitStrings(sa, sb); compared != 0 {
+				return compared
 			}
 			continue
 		}
@@ -302,19 +310,16 @@ func (v *Version) Compare(other *Version) int {
 	}
 
 revisions:
-	vRevision := v.Revision
-	if vRevision < 0 {
-		vRevision = 0
+	vRevision := v.revisionRaw
+	if vRevision == "" && v.Revision > 0 {
+		vRevision = strconv.Itoa(v.Revision)
 	}
-	oRevision := other.Revision
-	if oRevision < 0 {
-		oRevision = 0
+	oRevision := other.revisionRaw
+	if oRevision == "" && other.Revision > 0 {
+		oRevision = strconv.Itoa(other.Revision)
 	}
-	if vRevision < oRevision {
-		return -1
-	}
-	if vRevision > oRevision {
-		return 1
+	if compared := compareDigitStrings(vRevision, oRevision); compared != 0 {
+		return compared
 	}
 
 	return 0
@@ -325,8 +330,7 @@ func suffixRemainderIsZero(suffixes []string) bool {
 		return false
 	}
 	for _, suffix := range suffixes {
-		n, ok := parseSuffixNum(suffix)
-		if !ok || n != 0 {
+		if !isDigitString(suffix) || compareDigitStrings(suffix, "0") != 0 {
 			return false
 		}
 	}
@@ -353,6 +357,42 @@ func parseSuffixNum(s string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+func isDigitString(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := range len(value) {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func compareDigitStrings(left, right string) int {
+	left = strings.TrimLeft(left, "0")
+	right = strings.TrimLeft(right, "0")
+	if left == "" {
+		left = "0"
+	}
+	if right == "" {
+		right = "0"
+	}
+	if len(left) < len(right) {
+		return -1
+	}
+	if len(left) > len(right) {
+		return 1
+	}
+	if left < right {
+		return -1
+	}
+	if left > right {
+		return 1
+	}
+	return 0
 }
 
 func suffixOrder(s string) int {

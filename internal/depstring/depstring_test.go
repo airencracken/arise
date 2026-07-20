@@ -615,6 +615,43 @@ func TestSlotSubslotConstraints(t *testing.T) {
 	}
 }
 
+func TestPackageDependencyRejectsVersionWithoutOperator(t *testing.T) {
+	root, err := Parse("dev-libs/library-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePackageDependenciesEAPI(root, "8"); err == nil {
+		t.Fatal("versioned dependency without an operator was accepted")
+	}
+	root, err = Parse("=dev-libs/library-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePackageDependenciesEAPI(root, "8"); err != nil {
+		t.Fatalf("operator-qualified dependency rejected: %v", err)
+	}
+}
+
+func TestCollectMetaSeparatesAnyOfGroupAndOptionConditions(t *testing.T) {
+	tests := []struct {
+		dependency, groupCondition, optionCondition string
+	}{
+		{"outer? ( || ( cat/pkg ) )", "outer", "outer"},
+		{"|| ( inner? ( cat/pkg ) )", "", "inner"},
+		{"outer? ( || ( inner? ( cat/pkg ) ) )", "outer", "outer,inner"},
+	}
+	for _, test := range tests {
+		root, err := Parse(test.dependency)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := CollectMeta(root)
+		if len(meta) != 1 || meta[0].AnyOfCondition != test.groupCondition || meta[0].Condition != test.optionCondition {
+			t.Fatalf("CollectMeta(%q) = %#v", test.dependency, meta)
+		}
+	}
+}
+
 func TestRoundTrip(t *testing.T) {
 	inputs := []string{
 		"dev-lang/python",

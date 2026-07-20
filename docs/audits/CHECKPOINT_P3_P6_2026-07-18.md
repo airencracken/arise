@@ -184,13 +184,23 @@ authoritative gate ledger; older audits are historical snapshots.
   8 packages/46 edges to 7/30. This is the first live demonstration that Arise
   can derive and execute a damaged-state closure that would otherwise require
   manually widening `--oneshot --nodeps` batches.
-- On the repaired state, deep/newuse `@system` with build dependencies and
-  backtrack 20 completed in 2.13 seconds without backtracking. It proposed 158
-  actions but correctly remained non-executable due to 13 final-state
-  conflicts: twelve stale/misaligned Python target edges and one Perl any-of.
-  This is a correctness punch list, not a timeout pathology. The normalized
-  summary is stored in
+- On the repaired state, a deep/newuse `@system` run with build dependencies
+  and backtrack 20 completed in 2.13 seconds without backtracking. It proposed
+  158 actions but remained non-executable due to 13 final-state conflicts:
+  twelve stale/misaligned Python target edges and one Perl any-of. Resume-time
+  diagnosis found that this invocation accidentally omitted the required
+  `--complete-graph` option. Three corrected reruns each produced the same
+  normalized 159-action plan with zero conflicts and zero backtracks, and
+  whole-state verification repaired the retained dependency graph in two
+  passes. The normalized failed and corrected summaries are stored in
   `docs/evidence/P3_SYSTEM_POST_REPAIR_2026-07-19.json`.
+- The subsequent Portage atom/EAPI contract expansion retained the corrected
+  live result. Two final post-contract runs were byte-for-byte plan-identical:
+  159 actions, no uninstalls, conflicts or backtracks, and direct plan SHA-256
+  `8b63f31e027b7e148dacfca45185541789eb1e6f29d3ea1aadcef7a583f51c33`.
+  Correct subslot enforcement initially exposed an installed-identity leak in
+  blocker replacement selection; the qtbase/qt5compat regression is now fixed
+  and permanently covered.
 
 ## Live-operation acceptance gates
 

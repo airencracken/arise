@@ -366,44 +366,46 @@ func TestBashWorkerEmitsTypedElogClasses(t *testing.T) {
 }
 
 func TestEveryDeclaredPhaseFailurePreservesDurableLog(t *testing.T) {
-	phases, err := DefaultPhases("8")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, phaseName := range phases {
-		t.Run(phaseName, func(t *testing.T) {
-			directory := t.TempDir()
-			ebuild := filepath.Join(directory, "pkg-1.ebuild")
-			content := fmt.Sprintf("EAPI=8\n%s() { printf 'before failure in %s\\n'; return 23; }\n", phaseName, phaseName)
-			if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			request := Request{Protocol: Version, ID: "failure-" + phaseName, Command: "run_phase", Phase: phaseName, EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: filepath.Join(directory, "image"), TempDir: filepath.Join(directory, "temp")}
-			for _, path := range []string{request.ImageDir, request.TempDir} {
-				if err := os.MkdirAll(path, 0o755); err != nil {
+	for _, eapi := range []string{"7", "8"} {
+		phases, err := DefaultPhases(eapi)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, phaseName := range phases {
+			t.Run("EAPI-"+eapi+"-"+phaseName, func(t *testing.T) {
+				directory := t.TempDir()
+				ebuild := filepath.Join(directory, "pkg-1.ebuild")
+				content := fmt.Sprintf("EAPI=%s\n%s() { printf 'before failure in %s\\n'; return 23; }\n", eapi, phaseName, phaseName)
+				if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
 					t.Fatal(err)
 				}
-			}
-			events, runErr := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
-			if runErr == nil {
-				t.Fatal("failing phase returned success")
-			}
-			manager, err := NewPackageLog(PackageLogOptions{Root: filepath.Join(directory, "logs"), TempDir: request.TempDir, Category: "cat", PF: "pkg-1"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, persistErr := persistWorkerEvents(request, events, runErr, WorkerOptions{DurableLog: manager, FinalizeLog: true})
-			if persistErr == nil || !strings.Contains(persistErr.Error(), manager.Path()) {
-				t.Fatalf("persist error = %v", persistErr)
-			}
-			contentBytes, err := os.ReadFile(manager.Path())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(contentBytes), "before failure in "+phaseName) || !strings.Contains(string(contentBytes), "exit_code=23") || !strings.Contains(string(contentBytes), "terminal-error") {
-				t.Fatalf("durable failure log = %s", contentBytes)
-			}
-		})
+				request := Request{Protocol: Version, ID: "failure-" + eapi + "-" + phaseName, Command: "run_phase", Phase: phaseName, EAPI: eapi, Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: filepath.Join(directory, "image"), TempDir: filepath.Join(directory, "temp")}
+				for _, path := range []string{request.ImageDir, request.TempDir} {
+					if err := os.MkdirAll(path, 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+				events, runErr := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+				if runErr == nil {
+					t.Fatal("failing phase returned success")
+				}
+				manager, err := NewPackageLog(PackageLogOptions{Root: filepath.Join(directory, "logs"), TempDir: request.TempDir, Category: "cat", PF: "pkg-1"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, persistErr := persistWorkerEvents(request, events, runErr, WorkerOptions{DurableLog: manager, FinalizeLog: true})
+				if persistErr == nil || !strings.Contains(persistErr.Error(), manager.Path()) {
+					t.Fatalf("persist error = %v", persistErr)
+				}
+				contentBytes, err := os.ReadFile(manager.Path())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(contentBytes), "before failure in "+phaseName) || !strings.Contains(string(contentBytes), "exit_code=23") || !strings.Contains(string(contentBytes), "terminal-error") {
+					t.Fatalf("durable failure log = %s", contentBytes)
+				}
+			})
+		}
 	}
 }
 

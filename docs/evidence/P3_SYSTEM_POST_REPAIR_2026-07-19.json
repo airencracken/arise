@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "date": "2026-07-19",
-  "operation": "deep-newuse-system-post-qt5-repair",
+  "operation": "deep-newuse-system-post-qt5-repair-missing-complete-graph",
   "arguments": ["--pretend", "--update", "--deep", "--newuse", "--with-bdeps=y", "--backtrack=20", "@system"],
   "elapsed_ns": 2128778469,
   "verified": false,
@@ -27,5 +27,30 @@
     "<dev-python/docutils-0.23[python_targets_python3_14(-)] required by dev-python/sphinx",
     "dev-python/pygobject:3[python_targets_python3_13(-)] required by net-print/hplip",
     "no alternative dependency of virtual/perl-parent is satisfied"
-  ]
+  ],
+  "diagnosis": "This run accidentally omitted --complete-graph. The thirteen conflicts are the expected retained reverse-dependency breakage when complete-graph repair is disabled, not thirteen new resolver defects.",
+  "corrected_run": {
+    "arguments": ["--pretend", "--update", "--deep", "--newuse", "--complete-graph", "--with-bdeps=y", "--backtrack=20", "@system"],
+    "samples": 3,
+    "elapsed_ns": [3527617765, 3729453505, 2801689595],
+    "verified": true,
+    "verification": "verified",
+    "proposed_actions": 159,
+    "proposed_uninstalls": 0,
+    "backtracks_used": 0,
+    "backtrack_limit": 20,
+    "verifier_passes": 2,
+    "verifier_repairs": 1,
+    "conflicts": [],
+    "normalized_plan_sha256": "efecf9fd8b219e573bc1d43445c4e1700c1ac0b0b3473f92adbc6001b564fd11",
+    "post_atom_contract_validation": {
+      "samples": 2,
+      "verified": true,
+      "proposed_actions": 159,
+      "proposed_uninstalls": 0,
+      "backtracks_used": 0,
+      "conflicts": [],
+      "plan_sha256": "8b63f31e027b7e148dacfca45185541789eb1e6f29d3ea1aadcef7a583f51c33"
+    }
+  }
 }

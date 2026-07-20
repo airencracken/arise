@@ -1255,6 +1255,56 @@ func TestResolveConditionalUseDependenciesFromParent(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsBareCPVTargetInsteadOfIgnoringItsVersion(t *testing.T) {
+	graph := makeGraph()
+	pkg(graph, "app-misc/example", "1", "0", "0", false, nil)
+	pkg(graph, "app-misc/example", "2", "0", "0", false, nil)
+	if _, err := Resolve(graph, []string{"app-misc/example-1"}, DefaultResolveConfig()); err == nil {
+		t.Fatal("bare CPV target was accepted")
+	}
+	result, err := Resolve(graph, []string{"=app-misc/example-1"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Install) != 1 || result.Install[0].Atom.Version.Raw != "1" {
+		t.Fatalf("exact target selected %#v", result.Install)
+	}
+}
+
+func TestResolveRechecksBlockersWhenVersionIsReachedInAnotherDomain(t *testing.T) {
+	graph := makeGraph()
+	consumer := pkg(graph, "app-misc/consumer", "1", "0", "0", false, nil)
+	consumer.EAPI = "8"
+	consumer.Bdepend = "dev-qt/qtbase"
+	consumer.Rdepend = "dev-qt/qtbase"
+	qtbase := pkg(graph, "dev-qt/qtbase", "2", "6", "2", false, nil)
+	qtbase.Rdepend = "!<dev-qt/qt5compat-2:6"
+	pkg(graph, "dev-qt/qt5compat", "1", "6", "1", true, nil)
+	pkg(graph, "dev-qt/qt5compat", "2", "6", "2", false, nil)
+
+	root := makeGraph()
+	pkg(root, "dev-qt/qt5compat", "1", "6", "1", true, nil)
+	config := DefaultResolveConfig()
+	config.Update = true
+	config.InstalledByDomain = map[DependencyDomain]*DepGraph{
+		DomainROOT: root, DomainBROOT: makeGraph(), DomainSYSROOT: makeGraph(),
+	}
+	result, err := Resolve(graph, []string{"app-misc/consumer"}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, removed := false, false
+	for _, action := range result.Install {
+		found = found || action.Atom.CP() == "dev-qt/qt5compat"
+	}
+	for _, action := range result.Uninstall {
+		removed = removed || action.Atom.CP() == "dev-qt/qt5compat"
+	}
+	if !found || removed {
+		t.Fatalf("ROOT blocker did not coordinate replacement: install=%#v uninstall=%#v", result.Install, result.Uninstall)
+	}
+}
+
 func TestResolveUseDependencyOperatorTruthTable(t *testing.T) {
 	trueValue, falseValue := true, false
 	tests := []struct {
@@ -1274,6 +1324,8 @@ func TestResolveUseDependencyOperatorTruthTable(t *testing.T) {
 		{"equality disabled", atom.UseFlag{Name: "feature", Equal: true}, map[string]bool{"feature": false}, map[string]bool{"feature": false}, true},
 		{"negated equality enabled parent", atom.UseFlag{Name: "feature", Equal: true, Negated: true}, map[string]bool{"feature": true}, map[string]bool{"feature": false}, true},
 		{"negated equality disabled parent", atom.UseFlag{Name: "feature", Equal: true, Negated: true}, map[string]bool{"feature": false}, map[string]bool{"feature": true}, true},
+		{"missing child positive without default", atom.UseFlag{Name: "feature", Enabled: true}, nil, nil, false},
+		{"missing child negative without default", atom.UseFlag{Name: "feature", Enabled: false}, nil, nil, false},
 		{"missing child defaults enabled", atom.UseFlag{Name: "feature", Enabled: true, Default: &trueValue}, nil, nil, true},
 		{"missing child defaults disabled", atom.UseFlag{Name: "feature", Enabled: false, Default: &falseValue}, nil, nil, true},
 		{"missing child wrong enabled default", atom.UseFlag{Name: "feature", Enabled: false, Default: &trueValue}, nil, nil, false},
@@ -1289,6 +1341,26 @@ func TestResolveUseDependencyOperatorTruthTable(t *testing.T) {
 				t.Fatalf("resolved=%s child=%v satisfied=%v, want %v", resolved, test.child, got, test.satisfied)
 			}
 		})
+	}
+}
+
+func TestAtomMatchesRequiresExplicitSubslot(t *testing.T) {
+	packageAtom := mustParse("dev-libs/provider-1")
+	constraint := mustParse("dev-libs/provider:0/53=")
+	if !atomMatches(packageAtom, constraint, "0", "53", nil, packageAtom.Version) {
+		t.Fatal("matching explicit subslot rejected")
+	}
+	if atomMatches(packageAtom, constraint, "0", "54", nil, packageAtom.Version) {
+		t.Fatal("mismatched explicit subslot accepted")
+	}
+	if !atomMatches(packageAtom, mustParse("dev-libs/provider:0/0="), "0", "", nil, packageAtom.Version) {
+		t.Fatal("implicit subslot equal to SLOT was rejected")
+	}
+}
+
+func TestAtomMatchesVersionConstraintRequiresCandidateVersion(t *testing.T) {
+	if atomMatches(mustParse("dev-libs/provider"), mustParse(">=dev-libs/provider-1"), "0", "0", nil, nil) {
+		t.Fatal("version constraint accepted a versionless candidate")
 	}
 }
 
@@ -1317,22 +1389,36 @@ func TestDependenciesForVersionEnforcesUseDependencyEAPI(t *testing.T) {
 	}
 }
 
-func TestDependenciesForVersionEnforcesDependencyClassEAPI(t *testing.T) {
+func TestDependenciesForVersionIgnoresDependencyClassesUnavailableToEAPI(t *testing.T) {
 	tests := []struct {
 		name string
 		vi   *VersionInfo
-		want bool
+		want map[DepType]bool
 	}{
-		{"BDEPEND before EAPI 7", &VersionInfo{EAPI: "6", Bdepend: "dev-build/tool"}, true},
-		{"BDEPEND in EAPI 7", &VersionInfo{EAPI: "7", Bdepend: "dev-build/tool"}, false},
-		{"IDEPEND before EAPI 8", &VersionInfo{EAPI: "7", Idepend: "app-admin/tool"}, true},
-		{"IDEPEND in EAPI 8", &VersionInfo{EAPI: "8", Idepend: "app-admin/tool"}, false},
-		{"future EAPI", &VersionInfo{EAPI: "9999", Bdepend: "dev-build/tool", Idepend: "app-admin/tool"}, false},
+		{"BDEPEND before EAPI 7", &VersionInfo{EAPI: "6", Bdepend: "not valid syntax ("}, map[DepType]bool{}},
+		{"BDEPEND in EAPI 7", &VersionInfo{EAPI: "7", Bdepend: "dev-build/tool"}, map[DepType]bool{DepTypeBuild: true}},
+		{"IDEPEND before EAPI 8", &VersionInfo{EAPI: "7", Idepend: "not valid syntax ("}, map[DepType]bool{}},
+		{"IDEPEND in EAPI 8", &VersionInfo{EAPI: "8", Idepend: "app-admin/tool"}, map[DepType]bool{DepTypeInstall: true}},
+		{"future EAPI", &VersionInfo{EAPI: "9999", Bdepend: "dev-build/tool", Idepend: "app-admin/tool"}, map[DepType]bool{DepTypeBuild: true, DepTypeInstall: true}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if err := validateDependencyClassesEAPI(test.vi); (err != nil) != test.want {
-				t.Fatalf("error=%v, wantError=%v", err, test.want)
+			graph := makeGraph()
+			node := graph.AddPackage("app-misc/parent")
+			test.vi.Package = node
+			test.vi.Version = mustParse("app-misc/parent-1").Version
+			test.vi.Available = true
+			resolver := &resolver{graph: graph, toInstall: make(map[string]*PkgAction), baseUseCache: make(map[string]map[string]bool), useOverrides: make(map[string]map[string]bool)}
+			edges, err := resolver.dependenciesForVersion(node, test.vi)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make(map[DepType]bool)
+			for _, edge := range edges {
+				got[edge.Type] = true
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("dependency classes = %#v, want %#v", got, test.want)
 			}
 		})
 	}
@@ -1459,6 +1545,76 @@ func TestBinaryMergeExplicitWithBdepsKeepsBuildDependencyClasses(t *testing.T) {
 	}
 	if !classes[DepTypeDepend] || !classes[DepTypeBuild] || !classes[DepTypeRuntime] {
 		t.Fatalf("explicit --with-bdeps=y binary classes = %#v", classes)
+	}
+}
+
+func TestSourceAndBinaryTransactionDependencyDomains(t *testing.T) {
+	tests := []struct {
+		name      string
+		eapi      string
+		mergeType string
+		withBdeps string
+		want      map[string]DependencyDomain
+	}{
+		{
+			name: "EAPI 8 source", eapi: "8", mergeType: "source", withBdeps: "auto",
+			want: map[string]DependencyDomain{
+				"dev-libs/target": DomainSYSROOT, "dev-build/native": DomainBROOT,
+				"dev-libs/runtime": DomainROOT, "app-admin/install-tool": DomainBROOT,
+				"app-misc/post": DomainROOT,
+			},
+		},
+		{
+			name: "EAPI 6 source DEPEND uses build root", eapi: "6", mergeType: "source", withBdeps: "auto",
+			want: map[string]DependencyDomain{
+				"dev-libs/target": DomainBROOT, "dev-libs/runtime": DomainROOT, "app-misc/post": DomainROOT,
+			},
+		},
+		{
+			name: "EAPI 8 binary automatic bdeps", eapi: "8", mergeType: "binary", withBdeps: "auto",
+			want: map[string]DependencyDomain{
+				"dev-libs/runtime": DomainROOT, "app-admin/install-tool": DomainBROOT, "app-misc/post": DomainROOT,
+			},
+		},
+		{
+			name: "EAPI 8 binary explicit bdeps", eapi: "8", mergeType: "binary", withBdeps: "y",
+			want: map[string]DependencyDomain{
+				"dev-libs/target": DomainSYSROOT, "dev-build/native": DomainBROOT,
+				"dev-libs/runtime": DomainROOT, "app-admin/install-tool": DomainBROOT,
+				"app-misc/post": DomainROOT,
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			graph := makeGraph()
+			node := graph.AddPackage("app-misc/parent")
+			version := &VersionInfo{
+				Package: node, Version: mustParse("app-misc/parent-1").Version, Available: true, EAPI: test.eapi,
+				Depend: "dev-libs/target", Rdepend: "dev-libs/runtime", Pdepend: "app-misc/post",
+			}
+			if test.eapi != "6" {
+				version.Bdepend = "dev-build/native"
+				version.Idepend = "app-admin/install-tool"
+			}
+			resolver := &resolver{
+				graph: graph, config: ResolveConfig{UsePkg: test.mergeType == "binary", WithBdeps: test.withBdeps},
+				toInstall: make(map[string]*PkgAction), baseUseCache: make(map[string]map[string]bool),
+				useOverrides: make(map[string]map[string]bool),
+			}
+			resolver.toInstall[versionActionKey(node.Atom.CP(), version)] = &PkgAction{Atom: bestVersionAtom(node.Atom, version), MergeType: test.mergeType}
+			edges, err := resolver.dependenciesForVersion(node, version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := make(map[string]DependencyDomain)
+			for _, edge := range edges {
+				got[edge.DepAtom.CP()] = edge.Domain
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("dependency domains = %#v, want %#v", got, test.want)
+			}
+		})
 	}
 }
 
@@ -1784,6 +1940,14 @@ func TestGlobMatch(t *testing.T) {
 		{"3.11.5-r1", "3.11", true},
 		{"3.12.0", "3.11", false},
 		{"3.11", "3.11", true},
+		{"1.0", "1", true},
+		{"10", "1", false},
+		{"1.2a", "1.2", true},
+		{"1.2_alpha", "1.2", true},
+		{"1.02", "1.2", false},
+		{"01.2", "1.2", true},
+		{"1.2-r1", "1.2-r1", true},
+		{"1.2-r2", "1.2-r1", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.v+"_=*_"+tt.c, func(t *testing.T) {
@@ -6213,6 +6377,30 @@ func TestResolve_InactiveConditionalAnyOfIsNotAConflict(t *testing.T) {
 	}
 	if len(result.Conflicts) != 0 {
 		t.Fatalf("unexpected conflicts: %v", result.Conflicts)
+	}
+}
+
+func TestResolve_InactiveAnyOfOptionChangesInEAPI7(t *testing.T) {
+	for _, test := range []struct {
+		eapi         string
+		wantConflict bool
+	}{{eapi: "6"}, {eapi: "7", wantConflict: true}, {eapi: "8", wantConflict: true}} {
+		t.Run("EAPI-"+test.eapi, func(t *testing.T) {
+			graph := makeGraph()
+			consumer := pkg(graph, "app-misc/consumer", "1", "0", "0", false, map[string]bool{"gui": false})
+			consumer.EAPI = test.eapi
+			consumer.Rdepend = "|| ( gui? ( app-misc/provider ) )"
+			result, err := Resolve(graph, []string{"app-misc/consumer"}, DefaultResolveConfig())
+			if test.wantConflict {
+				if err == nil || len(result.Conflicts) == 0 {
+					t.Fatalf("inactive any-of option passed EAPI %s: result=%#v err=%v", test.eapi, result, err)
+				}
+				return
+			}
+			if err != nil || len(result.Conflicts) != 0 || !result.Verified {
+				t.Fatalf("inactive any-of option failed EAPI %s: result=%#v err=%v", test.eapi, result, err)
+			}
+		})
 	}
 }
 

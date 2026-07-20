@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "captured": "2026-07-19",
+  "arise_commit": "a44204df42ce1490341520da39d5b9d9483e2d05",
+  "repository_commit": "dbc31827cd0aab0d3b90114899a2eb2136dcb726",
+  "operation": "update",
+  "comparator_options": {
+    "complete_graph": true,
+    "deep": false,
+    "newuse": false,
+    "with_bdeps": "auto",
+    "backtrack": 20
+  },
+  "cases": [
+    {"target": "sys-apps/the_silver_searcher", "arise_actions": 1, "portage_actions": 1, "arise_verified": true, "portage_resolved": true, "equivalent": true},
+    {"target": "sys-apps/ack", "arise_actions": 2, "portage_actions": 2, "arise_verified": true, "portage_resolved": true, "equivalent": true},
+    {"target": "x11-terms/xterm", "arise_actions": 2, "portage_actions": 2, "arise_verified": true, "portage_resolved": true, "equivalent": true},
+    {"target": "x11-terms/rxvt-unicode", "arise_actions": 0, "portage_actions": 0, "arise_verified": true, "portage_resolved": true, "equivalent": true},
+    {"target": "x11-terms/st", "arise_actions": 0, "portage_actions": 0, "arise_verified": true, "portage_resolved": true, "equivalent": true},
+    {"target": "x11-terms/st-terminfo", "arise_actions": 0, "portage_actions": 0, "arise_verified": true, "portage_resolved": true, "equivalent": true},
+    {"target": "app-misc/screen", "arise_actions": 0, "portage_actions": 0, "arise_verified": true, "portage_resolved": true, "equivalent": true},
+    {"target": "app-misc/tmux", "arise_actions": 1, "portage_actions": 1, "arise_verified": true, "portage_resolved": true, "equivalent": true},
+    {"target": "sys-apps/busybox", "arise_actions": 0, "portage_actions": 0, "arise_verified": true, "portage_resolved": true, "equivalent": true},
+    {"target": "sys-kernel/genkernel", "arise_actions": 0, "portage_actions": 0, "arise_verified": true, "portage_resolved": true, "equivalent": true}
+  ],
+  "totals": {
+    "cases": 10,
+    "equivalent_cases": 10,
+    "arise_actions": 6,
+    "portage_actions": 6
+  },
+  "normalization": "The comparator checks action, CPV, slot/subslot, repository, merge type, and every Portage-reported effective USE flag. Zero-action cases are retained as verified no-op/update-current coverage."
+}

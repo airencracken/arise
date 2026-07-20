@@ -17,6 +17,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/airencracken/arise/internal/journal"
 	"github.com/airencracken/arise/internal/phaseproto"
 	"github.com/airencracken/arise/internal/portage"
 )
@@ -680,6 +681,74 @@ pkg_postinst() { printf 'postinst\n' > "${ROOT}/postinst-marker"; }
 	compressed.Close()
 	if err != nil || !strings.Contains(string(environment), "export PF='protocol-test-1'") || !strings.Contains(string(environment), "export ROOT='") {
 		t.Fatalf("VDB environment=%q err=%v", environment, err)
+	}
+}
+
+func TestRebuildPackagePostinstFailureRollsBackTransactionAndPreservesLog(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	for _, eapi := range []string{"7", "8"} {
+		t.Run("EAPI-"+eapi, func(t *testing.T) {
+			tmp := t.TempDir()
+			repo := filepath.Join(tmp, "repo")
+			root := filepath.Join(tmp, "root")
+			vdb := filepath.Join(root, "var", "db", "pkg")
+			work := filepath.Join(tmp, "work")
+			dist := filepath.Join(tmp, "distfiles")
+			logs := filepath.Join(tmp, "logs")
+			journals := filepath.Join(tmp, "journals")
+			packageDir := filepath.Join(repo, "app-misc", "failure-test")
+			for _, directory := range []string{filepath.Join(repo, "eclass"), packageDir, root, vdb, work, dist} {
+				if err := os.MkdirAll(directory, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ebuildContent := fmt.Sprintf(`EAPI=%s
+S="${WORKDIR}/${P}"
+src_unpack() { mkdir -p "${S}"; printf 'transaction payload\n' > "${S}/payload"; }
+src_install() { insinto /usr/share/failure-test; doins payload; }
+pkg_postinst() { printf 'postinst failure\n'; return 29; }
+`, eapi)
+			if err := os.WriteFile(filepath.Join(packageDir, "failure-test-1.ebuild"), []byte(ebuildContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := RebuildConfig{
+				RepoDir: repo, DistfilesDir: dist, RootDir: root, VdbDir: vdb, WorkDirBase: work,
+				PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+				PhaseLogDir: logs, JournalDir: journals,
+			}
+			err := RebuildPackage(context.Background(), "app-misc/failure-test-1", &cfg)
+			if err == nil || !strings.Contains(err.Error(), "pkg_postinst") || !strings.Contains(err.Error(), "exit status 29") {
+				t.Fatalf("postinst failure = %v", err)
+			}
+			for _, path := range []string{
+				filepath.Join(root, "usr", "share", "failure-test", "payload"),
+				filepath.Join(vdb, "app-misc", "failure-test-1"),
+			} {
+				if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("failed transaction retained %s: %v", path, statErr)
+				}
+			}
+			summaries, err := journal.List(journals)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(summaries) != 1 || summaries[0].Status != "rolled-back" || summaries[0].Entries == 0 {
+				t.Fatalf("failure journal = %#v", summaries)
+			}
+			logPaths, err := filepath.Glob(filepath.Join(logs, "app-misc:failure-test-1:*.log"))
+			if err != nil || len(logPaths) != 1 {
+				t.Fatalf("durable logs = %v, %v", logPaths, err)
+			}
+			content, err := os.ReadFile(logPaths[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(content), "postinst failure") || !strings.Contains(string(content), "exit_code=29") || !strings.Contains(string(content), "terminal-error") {
+				t.Fatalf("durable postinst log = %s", content)
+			}
+		})
 	}
 }
 

@@ -40,6 +40,7 @@ type FixtureVersion struct {
 	CP, Version, Slot, Subslot, Repository string          `json:",omitempty"`
 	Installed, Available                   bool            `json:",omitempty"`
 	Use, InstalledUse, InstalledIUse       map[string]bool `json:",omitempty"`
+	IUse                                   string          `json:",omitempty"`
 	Depend, Rdepend, Bdepend               string          `json:",omitempty"`
 	Idepend, Pdepend                       string          `json:",omitempty"`
 	InstalledDepend, InstalledRdepend      string          `json:",omitempty"`
@@ -78,6 +79,7 @@ func (f *ResolverFixture) Graph() (*DepGraph, error) {
 		version.InstalledBdepend, version.InstalledIdepend = record.InstalledBdepend, record.InstalledIdepend
 		version.InstalledPdepend, version.EAPI, version.InstalledEAPI = record.InstalledPdepend, record.EAPI, record.InstalledEAPI
 		version.UseFlags, version.InstalledUseFlags, version.InstalledIUseFlags = record.Use, record.InstalledUse, record.InstalledIUse
+		version.IUse = record.IUse
 		version.RequiredUse = record.RequiredUse
 		version.DependencyMetadataKnown = record.DependencyMetadataKnown
 		version.RepositoryPriority = record.RepositoryPriority

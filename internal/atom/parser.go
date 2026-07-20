@@ -49,6 +49,12 @@ func (p *parser) parse() (*Atom, error) {
 	a.Package = cp.pkg
 
 	if p.peek() == 0 {
+		if a.Op != OpNone {
+			return nil, fmt.Errorf("operator %q requires a version", a.Op)
+		}
+		if strings.HasSuffix(a.Package, "-") {
+			return nil, fmt.Errorf("package name must not end with '-' without a version")
+		}
 		return a, nil
 	}
 
@@ -62,6 +68,8 @@ func (p *parser) parse() (*Atom, error) {
 		a.Version = ver
 		if a.Op == OpEq && strings.HasSuffix(ver.Raw, "*") {
 			a.Op = OpEqGlob
+		} else if strings.HasSuffix(ver.Raw, "*") {
+			return nil, fmt.Errorf("version wildcard requires the = operator")
 		}
 	}
 
@@ -135,7 +143,7 @@ func (p *parser) parseCP() (*cp, error) {
 		if b == '/' {
 			break
 		}
-		if !isAtomChar(b) && b != '-' && b != '+' {
+		if !isCategoryChar(b) {
 			return nil, fmt.Errorf("invalid character %q in category at position %d", b, p.pos+1)
 		}
 		p.pos++
@@ -146,6 +154,9 @@ func (p *parser) parseCP() (*cp, error) {
 	cat := p.input[catStart:p.pos]
 	if cat == "" {
 		return nil, fmt.Errorf("empty category")
+	}
+	if !isAtomChar(cat[0]) {
+		return nil, fmt.Errorf("category must begin with an ASCII letter, digit, or underscore")
 	}
 
 	p.pos++ // skip '/'
@@ -174,8 +185,19 @@ func (p *parser) parseCP() (*cp, error) {
 	if pkg == "" {
 		return nil, fmt.Errorf("empty package name")
 	}
-	if strings.HasSuffix(pkg, "-") {
-		return nil, fmt.Errorf("package name must not end with '-'")
+	if !isAtomChar(pkg[0]) {
+		return nil, fmt.Errorf("package name must begin with an ASCII letter, digit, or underscore")
+	}
+	// A package component may contain (and, in a CPV, even end with) hyphens,
+	// but no hyphen-delimited suffix may itself be a valid version. Otherwise
+	// the package/version boundary is ambiguous (for example bar-123-1).
+	for i := 0; i < len(pkg); i++ {
+		if pkg[i] != '-' || i+1 == len(pkg) {
+			continue
+		}
+		if _, err := parseVersionString(pkg[i+1:]); err == nil {
+			return nil, fmt.Errorf("package name has version-like suffix %q", pkg[i+1:])
+		}
 	}
 
 	return &cp{cat: cat, pkg: pkg}, nil
@@ -210,7 +232,10 @@ func parseVersionString(raw string) (*Version, error) {
 		}
 		n, err := strconv.Atoi(remain[:end])
 		if err != nil {
-			return nil, fmt.Errorf("invalid number %q: %w", remain[:end], err)
+			if !isDigitString(remain[:end]) {
+				return nil, fmt.Errorf("invalid number %q: %w", remain[:end], err)
+			}
+			n = int(^uint(0) >> 1)
 		}
 		v.Numbers = append(v.Numbers, n)
 		remain = remain[end:]
@@ -261,8 +286,7 @@ func parseVersionString(raw string) (*Version, error) {
 			if suffixType != "" && numStart > 0 && numStart < len(token) {
 				// has a numeric suffix
 				numStr := token[numStart:]
-				_, err := strconv.Atoi(numStr)
-				if err == nil {
+				if isDigitString(numStr) {
 					v.Suffixes = append(v.Suffixes, suffixType)
 					v.Suffixes = append(v.Suffixes, numStr)
 					remain = remain[end:]
@@ -288,7 +312,11 @@ func parseVersionString(raw string) (*Version, error) {
 				if revEnd > 0 {
 					rev, err := strconv.Atoi(rest[:revEnd])
 					if err != nil {
-						return nil, fmt.Errorf("invalid revision: %w", err)
+						if !isDigitString(rest[:revEnd]) {
+							return nil, fmt.Errorf("invalid revision: %w", err)
+						}
+						rev = int(^uint(0) >> 1)
+						v.revisionRaw = rest[:revEnd]
 					}
 					v.Revision = rev
 					remain = remain[2+revEnd:]
@@ -347,15 +375,18 @@ func (p *parser) parseSlot(a *Atom) error {
 			break
 		}
 		if b == '*' {
-			a.SlotOp = SlotOpStar
-			a.Slot = p.input[start:p.pos]
-			p.pos++
-			break
+			return fmt.Errorf("the * slot operator cannot follow a named slot")
 		}
 		p.pos++
 	}
 	if a.Slot == "" && p.pos > start {
 		a.Slot = p.input[start:p.pos]
+	}
+	if a.Slot == "" {
+		return fmt.Errorf("empty slot")
+	}
+	if err := validateSlotPart("slot", a.Slot); err != nil {
+		return err
 	}
 
 	// Parse subslot
@@ -377,18 +408,18 @@ func (p *parser) parseSlot(a *Atom) error {
 				break
 			}
 			if b == '*' {
-				if p.pos == start {
-					return fmt.Errorf("empty subslot before '*' operator")
-				}
-				a.SlotOp = SlotOpStar
-				a.Subslot = p.input[start:p.pos]
-				p.pos++
-				break
+				return fmt.Errorf("the * slot operator cannot follow a named subslot")
 			}
 			p.pos++
 		}
 		if a.Subslot == "" && p.pos > start {
 			a.Subslot = p.input[start:p.pos]
+		}
+		if a.Subslot == "" {
+			return fmt.Errorf("empty subslot")
+		}
+		if err := validateSlotPart("subslot", a.Subslot); err != nil {
+			return err
 		}
 	}
 
@@ -399,16 +430,21 @@ func (p *parser) parseRepo() string {
 	start := p.pos
 	for p.pos < len(p.input) {
 		b := p.input[p.pos]
-		if b == '[' || b == 0 || !isAtomChar(b) {
+		if b == '[' || b == 0 || !isRepositoryChar(b) {
 			break
 		}
 		p.pos++
 	}
-	return p.input[start:p.pos]
+	repository := p.input[start:p.pos]
+	if repository != "" && !isAtomChar(repository[0]) {
+		return ""
+	}
+	return repository
 }
 
 func (p *parser) parseUseFlags() ([]UseFlag, error) {
 	var flags []UseFlag
+	seen := make(map[string]bool)
 	expectFlag := true
 	for p.pos < len(p.input) {
 		b := p.input[p.pos]
@@ -431,6 +467,10 @@ func (p *parser) parseUseFlags() ([]UseFlag, error) {
 		if err != nil {
 			return nil, err
 		}
+		if seen[flag.Name] {
+			return nil, fmt.Errorf("duplicate USE dependency %q", flag.Name)
+		}
+		seen[flag.Name] = true
 		flags = append(flags, flag)
 		expectFlag = false
 	}
@@ -481,6 +521,9 @@ func (p *parser) parseUseFlag() (UseFlag, error) {
 	if flag.Negated && !flag.Conditional && !flag.Equal {
 		return UseFlag{}, fmt.Errorf("negated USE dependency %q requires ? or =", raw)
 	}
+	if !flag.Enabled && (flag.Conditional || flag.Equal) {
+		return UseFlag{}, fmt.Errorf("disabled USE dependency %q cannot use ? or =", raw)
+	}
 	flag.Name = raw
 	return flag, nil
 }
@@ -509,5 +552,29 @@ func parseOp(input string) (Op, int) {
 }
 
 func isAtomChar(b byte) bool {
-	return unicode.IsLetter(rune(b)) || unicode.IsDigit(rune(b)) || b == '_'
+	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
+}
+
+func isCategoryChar(b byte) bool {
+	return isAtomChar(b) || b == '+' || b == '-' || b == '.'
+}
+
+func isSlotChar(b byte) bool {
+	return isCategoryChar(b)
+}
+
+func isRepositoryChar(b byte) bool {
+	return isAtomChar(b) || b == '-'
+}
+
+func validateSlotPart(label, value string) error {
+	if value == "" || !isAtomChar(value[0]) {
+		return fmt.Errorf("%s must begin with an ASCII letter, digit, or underscore", label)
+	}
+	for i := 1; i < len(value); i++ {
+		if !isSlotChar(value[i]) {
+			return fmt.Errorf("invalid character %q in %s", value[i], label)
+		}
+	}
+	return nil
 }

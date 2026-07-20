@@ -520,7 +520,7 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 			vi.EAPIDeprecated = m.EAPIDeprecated
 			vi.Depend, vi.Rdepend = m.DEPEND, m.RDEPEND
 			vi.Bdepend, vi.Idepend, vi.Pdepend = m.BDEPEND, m.IDEPEND, m.PDEPEND
-			vi.RequiredUse, vi.License = m.REQUIRED_USE, m.LICENSE
+			vi.IUse, vi.RequiredUse, vi.License = m.IUSE, m.REQUIRED_USE, m.LICENSE
 			vi.RepositoryPath, vi.SrcURI, vi.EAPI = m.RepositoryPath, m.SRC_URI, m.EAPI
 			vi.DependencyMetadataKnown = true
 		}

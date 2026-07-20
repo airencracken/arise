@@ -58,7 +58,7 @@ func TestBrokenPythonTransitionFixtureIsPortableAndRepairable(t *testing.T) {
 
 func TestResolverFixtureEncodingIsDeterministicPrivateAndReducible(t *testing.T) {
 	fixture := &ResolverFixture{Name: "portable", Targets: []string{"cat/b", "cat/a"}, World: []string{"cat/b", "cat/a"}, Config: FixtureConfig{Deep: true}, Versions: []FixtureVersion{
-		{CP: "cat/b", Version: "2", Slot: "0", Repository: "overlay", RepositoryPriority: 10, Available: true},
+		{CP: "cat/b", Version: "2", Slot: "0", Repository: "overlay", RepositoryPriority: 10, Available: true, IUse: "+feature"},
 		{CP: "cat/a", Version: "1", Slot: "0", Repository: "gentoo", Installed: true, Available: true},
 	}, Providers: map[string][]string{"virtual/x": {"cat/b", "cat/a"}}}
 	var first bytes.Buffer
@@ -88,6 +88,9 @@ func TestResolverFixtureEncodingIsDeterministicPrivateAndReducible(t *testing.T)
 	}
 	if graph.Packages["cat/b"].GetBestVersion().RepositoryPriority != 10 {
 		t.Fatalf("repository priority was lost")
+	}
+	if graph.Packages["cat/b"].GetBestVersion().IUse != "+feature" {
+		t.Fatalf("raw IUSE was lost")
 	}
 	private := *fixture
 	private.Name = "/home/user/private"
