@@ -36,6 +36,17 @@ func runInstall(args []string, dbPath, repoDir string) {
 	runResolveAndRebuild(args, dbPath, repoDir, *updateMode, false)
 }
 
+// liveMutationNeedsWorldJournal reports whether a successful invocation would
+// need to add its targets to the world file. Updating the canonical @world set
+// preserves membership; explicit package targets still require the not-yet-
+// journaled world update unless the caller selected --oneshot.
+func liveMutationNeedsWorldJournal(targets []string, cfg resolve.ResolveConfig) bool {
+	if cfg.Oneshot {
+		return false
+	}
+	return len(targets) != 1 || targets[0] != "@world"
+}
+
 func colorActionAtom(action resolve.PkgAction) string {
 	if action.Atom == nil {
 		return ""
@@ -623,7 +634,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		return
 	}
 	if *experimentalLiveMutation {
-		if !cfg.Oneshot {
+		if liveMutationNeedsWorldJournal(targets, cfg) {
 			fmt.Fprintln(os.Stderr, "arise: refusing execution: disposable executor currently requires --oneshot until world addition joins the package journal")
 			os.Exit(1)
 		}
