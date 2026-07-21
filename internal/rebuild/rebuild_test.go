@@ -841,7 +841,7 @@ func TestRebuildPackagePostinstFailureRetainsCommittedTransactionAndPreservesLog
 		t.Skip("Portage sandbox is not installed")
 	}
 	for _, eapi := range []string{"7", "8", "9"} {
-			t.Run("EAPI-"+eapi, func(t *testing.T) {
+		t.Run("EAPI-"+eapi, func(t *testing.T) {
 			tmp := t.TempDir()
 			repo := filepath.Join(tmp, "repo")
 			root := filepath.Join(tmp, "root")
@@ -1156,5 +1156,24 @@ func TestStaticHasVersionQueryAcceptsQuotedAndUnquotedAtoms(t *testing.T) {
 	want := []string{":dev-libs/libffi[pax-kernel]", "b:=dev-build/automake-1.18*", ":dev-lang/python:3.14"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("queries=%v want=%v", got, want)
+	}
+}
+
+func TestPhaseRequestEnvironmentPreservesPackageEnvPrecedence(t *testing.T) {
+	cfg := &RebuildConfig{
+		CFLAGS: "-O2", CXXFLAGS: "-O2", LDFLAGS: "-Wl,-O1", MAKEOPTS: "-j8", Arch: "amd64",
+		PortageConfig: &portage.Config{MakeConf: map[string]string{"CFLAGS": "-O2", "CHOST": "x86_64-pc-linux-gnu"}},
+	}
+	got := phaseRequestEnvironment(cfg, "ssl", "source.tar")
+	if len(got) != 2 || got["USE"] != "ssl" || got["A"] != "source.tar" {
+		t.Fatalf("configured request overrides = %#v", got)
+	}
+
+	cfg.PortageConfig = nil
+	got = phaseRequestEnvironment(cfg, "ssl", "source.tar")
+	for name, want := range map[string]string{"CFLAGS": "-O2", "CXXFLAGS": "-O2", "LDFLAGS": "-Wl,-O1", "MAKEOPTS": "-j8", "ARCH": "amd64"} {
+		if got[name] != want {
+			t.Fatalf("fallback %s = %q, want %q", name, got[name], want)
+		}
 	}
 }

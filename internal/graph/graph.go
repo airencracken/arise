@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -790,7 +791,7 @@ func BuildFromState(db *badger.DB, vdbPath string, workers int) (*DepGraph, erro
 			availableCh <- availableResult{packages: selected}
 			return
 		}
-		if !os.IsNotExist(snapshotErr) {
+		if !os.IsNotExist(snapshotErr) && !errors.Is(snapshotErr, resolversnapshot.ErrIncompatible) {
 			availableCh <- availableResult{err: snapshotErr}
 			return
 		}

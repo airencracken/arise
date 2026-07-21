@@ -1452,6 +1452,13 @@ Acceptance gate:
 
 ## P8 — wire install, update and removal end to end
 
+- [ ] Establish the Arise-owned filesystem contract: administrator settings in
+  `/etc/arise`, durable state in `/var/lib/arise`, cache in `/var/cache/arise`,
+  logs in `/var/log/arise`, runtime coordination in `/run/arise`, and build or
+  transaction scratch in `/var/tmp/arise`. Continue reading `/etc/portage` as
+  shared Gentoo policy, but never write Arise-only syntax there; anything
+  emitted into a Portage namespace must remain valid and useful to Portage.
+
 - [!] Connect resolved plans to fetch/build/binpkg/merge/unmerge execution.
 - [~] Correctly implement pretend, ask, fetchonly and buildpkgonly. Source
   fetch-only now executes the resolved plan through the shared Manifest-backed

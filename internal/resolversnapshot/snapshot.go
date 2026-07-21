@@ -5,6 +5,7 @@ package resolversnapshot
 import (
 	"bufio"
 	"encoding/gob"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,10 +15,12 @@ import (
 	"github.com/dgraph-io/badger/v4"
 )
 
+var ErrIncompatible = errors.New("resolver snapshot: incompatible schema")
+
 const (
 	filename = "resolver.arise"
 	magic    = "ARISE-RESOLVER"
-	schema   = uint32(1)
+	schema   = uint32(2)
 )
 
 type header struct {
@@ -33,7 +36,7 @@ type Record struct {
 	Category, Package, Version                 string
 	Depend, Rdepend, Bdepend, Idepend, Pdepend string
 	SrcURI, Slot, Subslot, Keywords, Iuse      string
-	License, RequiredUse, EAPI                 string
+	License, RequiredUse, Restrict, EAPI       string
 }
 
 func Path(databasePath string) string { return filepath.Join(databasePath, filename) }
@@ -98,7 +101,7 @@ func Read(databasePath string) ([]*metadata.PackageMetadata, error) {
 		return nil, err
 	}
 	if hdr.Magic != magic || hdr.Schema != schema || hdr.Count < 0 {
-		return nil, fmt.Errorf("resolver snapshot: incompatible header %+v", hdr)
+		return nil, fmt.Errorf("%w: header %+v", ErrIncompatible, hdr)
 	}
 	result := make([]*metadata.PackageMetadata, 0, hdr.Count)
 	for range hdr.Count {
@@ -119,7 +122,7 @@ func fromMetadata(m *metadata.PackageMetadata) Record {
 		Category: m.Category, Package: m.Package, Version: m.Version,
 		Depend: m.DEPEND, Rdepend: m.RDEPEND, Bdepend: m.BDEPEND, Idepend: m.IDEPEND, Pdepend: m.PDEPEND,
 		SrcURI: m.SRC_URI, Slot: m.SLOT, Subslot: m.Subslot, Keywords: m.KEYWORDS, Iuse: m.IUSE,
-		License: m.LICENSE, RequiredUse: m.REQUIRED_USE, EAPI: m.EAPI,
+		License: m.LICENSE, RequiredUse: m.REQUIRED_USE, Restrict: m.RESTRICT, EAPI: m.EAPI,
 	}
 }
 
@@ -131,6 +134,6 @@ func (r Record) metadata() *metadata.PackageMetadata {
 		Category: r.Category, Package: r.Package, Version: r.Version,
 		DEPEND: r.Depend, RDEPEND: r.Rdepend, BDEPEND: r.Bdepend, IDEPEND: r.Idepend, PDEPEND: r.Pdepend,
 		SRC_URI: r.SrcURI, SLOT: r.Slot, Subslot: r.Subslot, KEYWORDS: r.Keywords, IUSE: r.Iuse,
-		LICENSE: r.License, REQUIRED_USE: r.RequiredUse, EAPI: r.EAPI,
+		LICENSE: r.License, REQUIRED_USE: r.RequiredUse, RESTRICT: r.Restrict, EAPI: r.EAPI,
 	}
 }

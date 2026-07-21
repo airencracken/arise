@@ -195,6 +195,18 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 			return fmt.Errorf("rebuild: load mirror policy: %w", mirrorErr)
 		}
 		fetchCfg := fetch.FetchConfig{DistfilesDir: cfg.DistfilesDir, GentooMirrors: cfg.GentooMirrors, MirrorGroups: mirrorGroups}
+		restrict, policyErr := phaseproto.EvaluatePolicyExpression(cleanEbuildValue(eb.Vars()["RESTRICT"]), cfg.UseFlags)
+		if policyErr != nil {
+			return fmt.Errorf("rebuild: evaluate RESTRICT for fetch: %w", policyErr)
+		}
+		for _, name := range restrict {
+			switch name {
+			case "mirror":
+				fetchCfg.RestrictMirrors = true
+			case "primaryuri":
+				fetchCfg.PrimaryURI = true
+			}
+		}
 		var err error
 		verified, err = cfg.fetcher().AcquireManifest(ctx, filepath.Join(filepath.Dir(ebuildFile), "Manifest"), srcURI, cfg.UseFlags, fetchCfg)
 		if err != nil {
@@ -712,6 +724,21 @@ func enabledUse(flags map[string]bool) string {
 	return strings.Join(names, " ")
 }
 
+func phaseRequestEnvironment(cfg *RebuildConfig, use, artifacts string) map[string]string {
+	result := map[string]string{"USE": use, "A": artifacts}
+	// ApplyPackagePolicy composes make.conf, package.env, and command overrides
+	// when effective Portage configuration is available. Reinjecting global
+	// flags as request overrides here would incorrectly outrank package.env.
+	if cfg.PortageConfig == nil {
+		result["CFLAGS"] = cfg.CFLAGS
+		result["CXXFLAGS"] = cfg.CXXFLAGS
+		result["LDFLAGS"] = cfg.LDFLAGS
+		result["MAKEOPTS"] = cfg.MAKEOPTS
+		result["ARCH"] = cfg.Arch
+	}
+	return result
+}
+
 func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Ebuild, ebuildFile, workDir, destDir string, verified distfiles.VerifiedSet, cfg *RebuildConfig) (returnErr error) {
 	a, err := atom.Parse(atomStr)
 	if err != nil || a.Version == nil {
@@ -770,23 +797,10 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	}
 	sort.Strings(use)
 	artifacts := artifactNames(verified.Artifacts)
+	requestEnv := phaseRequestEnvironment(cfg, strings.Join(use, " "), strings.Join(artifacts, " "))
 	base := phaseproto.Request{
 		Protocol: phaseproto.Version, ID: "policy-preflight", Command: "run_phase", Phase: "pkg_setup", EAPI: eb.EAPI, Ebuild: ebuildFile,
-		Env: map[string]string{
-			"USE": strings.Join(use, " "), "A": strings.Join(artifacts, " "),
-			"CFLAGS": cfg.CFLAGS, "CXXFLAGS": cfg.CXXFLAGS, "LDFLAGS": cfg.LDFLAGS,
-			"MAKEOPTS": cfg.MAKEOPTS, "ARCH": cfg.Arch,
-		},
-	}
-	if cfg.PortageConfig != nil {
-		for _, name := range []string{"CHOST", "CBUILD", "CTARGET", "ABI", "DEFAULT_ABI", "MULTILIB_ABIS", "PORTAGE_COMPRESS", "PORTAGE_COMPRESS_FLAGS"} {
-			if value := cfg.PortageConfig.MakeConf[name]; value != "" {
-				base.Env[name] = value
-			}
-		}
-	}
-	if base.Env["DEFAULT_ABI"] == "" && cfg.Arch == "amd64" {
-		base.Env["DEFAULT_ABI"] = "amd64"
+		Env: requestEnv,
 	}
 	_, queryBroot := cfg.dependencyRoots()
 	base.HasVersion, err = preflightHasVersionQueries(ebuildFile, eb, repositories, repository, cfg.VdbDir, filepath.Join(queryBroot, "var", "db", "pkg"), cfg.HasVersion)
@@ -810,6 +824,9 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	}
 	if err != nil {
 		return fmt.Errorf("rebuild: phase protocol policy: %w", err)
+	}
+	if base.Env["DEFAULT_ABI"] == "" && cfg.Arch == "amd64" {
+		base.Env["DEFAULT_ABI"] = "amd64"
 	}
 	var packageEvents []phaseproto.Event
 	run := func(phaseName string) error {

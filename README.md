@@ -361,6 +361,18 @@ internal/
 | `NO_COLOR` | Disable colored output |
 | `USE`, `FEATURES`, policy and toolchain variables | Allowlisted one-shot Portage configuration; see the P2 contract |
 
+Arise evaluates the declarative shell-assignment subset used by normal Portage
+configuration: quoting, continuations, ordered assignments, and `$VAR` or
+`${VAR}` references across profile defaults, `make.conf`, and `package.env`.
+It does not execute arbitrary shell functions, conditionals, command
+substitutions, or sourced scripts; unsupported dynamic configuration must not be
+silently treated as an equivalent Portage environment.
+
+Arise reads `/etc/portage` as shared Gentoo policy, but Arise-specific settings
+belong under `/etc/arise`; see
+[`docs/configuration-layout.md`](docs/configuration-layout.md) for configuration,
+state, cache, log, runtime, and temporary-file ownership.
+
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE) for the full text.
