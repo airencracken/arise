@@ -71,6 +71,7 @@ type jsonAction struct {
 	UseEnabled    []string `json:"use_enabled,omitempty"`
 	UseDisabled   []string `json:"use_disabled,omitempty"`
 	Prerequisites []string `json:"prerequisites,omitempty"`
+	Restrict      string   `json:"restrict,omitempty"`
 }
 
 type planTimings struct {
@@ -163,7 +164,7 @@ func jsonActions(actions []resolve.PkgAction) []jsonAction {
 		if domain == "" {
 			domain = resolve.DomainROOT
 		}
-		item := jsonAction{Action: action.Action, CPV: cpv, Slot: action.Slot, Subslot: action.Subslot, Repository: action.Repository, MergeType: action.MergeType, BinaryPath: action.BinaryPath, Reason: action.Reason, Domain: string(domain), Prerequisites: append([]string(nil), action.Prerequisites...)}
+		item := jsonAction{Action: action.Action, CPV: cpv, Slot: action.Slot, Subslot: action.Subslot, Repository: action.Repository, MergeType: action.MergeType, BinaryPath: action.BinaryPath, Reason: action.Reason, Domain: string(domain), Prerequisites: append([]string(nil), action.Prerequisites...), Restrict: action.Restrict}
 		for flag, enabled := range action.UseFlags {
 			if enabled {
 				item.UseEnabled = append(item.UseEnabled, flag)

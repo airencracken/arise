@@ -22,6 +22,7 @@ import (
 	"github.com/airencracken/arise/internal/fetch"
 	"github.com/airencracken/arise/internal/graph"
 	"github.com/airencracken/arise/internal/ingest"
+	"github.com/airencracken/arise/internal/phaseproto"
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/rebuild"
 	"github.com/airencracken/arise/internal/resolve"
@@ -889,6 +890,18 @@ func fetchPlanAction(ctx context.Context, action resolve.PkgAction, baseConfig f
 	}
 	config := baseConfig
 	config.MirrorGroups = mirrorGroups
+	restrict, err := phaseproto.EvaluatePolicyExpression(action.Restrict, action.UseFlags)
+	if err != nil {
+		return fmt.Errorf("%s: evaluate RESTRICT for fetch: %w", action.Atom, err)
+	}
+	for _, name := range restrict {
+		switch name {
+		case "mirror":
+			config.RestrictMirrors = true
+		case "primaryuri":
+			config.PrimaryURI = true
+		}
+	}
 	if _, err := fetcher.AcquireManifest(ctx, manifest, action.SrcURI, action.UseFlags, config); err != nil {
 		return fmt.Errorf("%s: %w", action.Atom, err)
 	}

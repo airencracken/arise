@@ -196,6 +196,7 @@ type PkgAction struct {
 	Repository     string     // selected repository
 	RepositoryPath string
 	SrcURI         string
+	Restrict       string
 	UseFlags       map[string]bool
 	MergeType      string // source or binary
 	BinaryPath     string
@@ -261,6 +262,7 @@ type VersionInfo struct {
 	RepositoryPath          string
 	EAPIDeprecated          bool
 	SrcURI                  string
+	Restrict                string
 	EAPI                    string
 }
 
@@ -2267,6 +2269,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			Repository:     vi.Repository,
 			RepositoryPath: vi.RepositoryPath,
 			SrcURI:         vi.SrcURI,
+			Restrict:       vi.Restrict,
 			UseFlags:       r.candidateUseFlags(node, vi),
 			MergeType:      mergeType,
 			BinaryPath:     binaryPath,
@@ -3542,7 +3545,7 @@ func (r *resolver) processCompleteGraph() {
 				r.setInstall(versionActionKey(dependent.Atom.CP(), dVI), &PkgAction{
 					Atom: depAtom, Action: "reinstall", Reason: reason,
 					Slot: dVI.Slot, Subslot: dVI.Subslot, Repository: dVI.Repository,
-					RepositoryPath: dVI.RepositoryPath, SrcURI: dVI.SrcURI,
+					RepositoryPath: dVI.RepositoryPath, SrcURI: dVI.SrcURI, Restrict: dVI.Restrict,
 					UseFlags: r.candidateUseFlags(dependent, dVI),
 				})
 				found = true
@@ -3920,7 +3923,7 @@ func (r *resolver) scheduleVerificationRebuild(node *PkgNode, installed *Version
 		Atom: resolved, Action: action,
 		Reason: "complete-graph repair: " + strings.TrimPrefix(cause, "post-solve verification: "),
 		Slot:   best.Slot, Subslot: best.Subslot, Repository: best.Repository,
-		RepositoryPath: best.RepositoryPath, SrcURI: best.SrcURI,
+		RepositoryPath: best.RepositoryPath, SrcURI: best.SrcURI, Restrict: best.Restrict,
 		UseFlags: r.candidateUseFlags(node, best),
 	})
 	if err := r.processDeps(node, best, resolved.String(), 1, DomainROOT); err != nil {

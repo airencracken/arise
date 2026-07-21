@@ -38,3 +38,13 @@ func TestExpandMirrorSourceRejectsUnknownAndUnsupportedGroups(t *testing.T) {
 		t.Fatal("unsupported endpoint accepted")
 	}
 }
+
+func TestAutomaticGentooSourcesUsesPortageDistfilesLayout(t *testing.T) {
+	got := automaticGentooSources("source.tar", FetchConfig{GentooMirrors: []string{
+		"http://distfiles.gentoo.org", "https://mirror.example/distfiles/", "http://distfiles.gentoo.org",
+	}})
+	want := "http://distfiles.gentoo.org/distfiles/source.tar https://mirror.example/distfiles/source.tar"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("sources = %q, want %q", strings.Join(got, " "), want)
+	}
+}

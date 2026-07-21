@@ -92,6 +92,13 @@ func evaluatePolicyExpression(raw string, use map[string]bool) ([]string, error)
 	return result, nil
 }
 
+// EvaluatePolicyExpression resolves a metadata policy expression against the
+// selected USE state. Fetch planning uses this before phase execution so it can
+// honor RESTRICT=mirror and RESTRICT=primaryuri when ordering source candidates.
+func EvaluatePolicyExpression(raw string, use map[string]bool) ([]string, error) {
+	return evaluatePolicyExpression(raw, use)
+}
+
 func EvaluateExecutionPolicy(featureText, restrictText, propertyText string, use map[string]bool) (ExecutionPolicy, error) {
 	policy := ExecutionPolicy{Configured: true, Fetch: true, Strip: true}
 	for _, token := range strings.Fields(featureText) {

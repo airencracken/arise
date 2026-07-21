@@ -1361,14 +1361,12 @@ Acceptance gate:
 
 ## P7 — dependency-aware concurrent scheduler
 
-- [!] Promote dependency-aware concurrency before using Arise for the full
-  development-host world upgrade. The current production executor deliberately
-  ignores `--jobs` and serializes complete package transactions; that is a safe
-  canary but an unacceptable emerge compatibility/performance regression for a
-  369-package run. Do not connect the legacy FIFO `RebuildPackagesParallel`
-  worker pool to live ROOT: it runs complete merge transactions concurrently
-  without dependency readiness or a serialized commit boundary.
-- [ ] Split source execution into a prepared build artifact and a commit step.
+- [x] Promote dependency-aware concurrency before using Arise for the full
+  development-host world upgrade. Production execution now honors package
+  `--jobs`, starts only dependency-ready actions, and serializes ROOT/VDB
+  mutation with an internal commit lock while retaining the operation-wide
+  Portage-compatible exclusion lock.
+- [x] Split source execution at an explicit prepared-image/commit boundary.
   Fetch/unpack/prepare/configure/compile/test/install-to-image may occupy
   dependency-ready worker slots; merge, replacement lifecycle, journal/VDB
   commit and post-commit lifecycle use a separately serialized resource. Keep
@@ -1392,6 +1390,12 @@ Acceptance gate:
   are independent, matching Portage; Arise no longer rewrites `MAKEOPTS` to the
   package-worker count.
 - [x] Support fetch-ahead while respecting build and merge ordering.
+- [~] Match Portage source-candidate policy. Ordinary SRC_URI artifacts now try
+  configured Gentoo mirrors before upstream, fall back after Manifest size or
+  digest failure, honor USE-resolved `RESTRICT=mirror` and `primaryuri`, and
+  retain explicit `mirror://` expansion. Remaining parity includes mirror
+  layout discovery/cache, `fetch+`/`mirror+`, local and read-only DISTDIRs,
+  bounded checksum retry policy, and mismatch quarantine naming.
 - [~] Start scheduler promotion with bounded parallel fetch-ahead. Source
   acquisition uses a separate `--fetch-jobs` pool (default four) for both
   fetch-only and live execution, retains Manifest verification, coalesces shared
@@ -1410,6 +1414,16 @@ Acceptance gate:
   started action and one completion line per committed action instead of
   letting multiple workers overwrite a single spinner label. Full compiler
   output remains isolated in durable per-package logs.
+- [ ] Make the package transaction the primary fetch display hierarchy, as
+  emerge does: identify the owning package for each fetch, keep per-file
+  percentages transient on a TTY, route concurrent detail to a durable fetch
+  log, and retain concise package/job/load/merge-wait status on the terminal.
+- [ ] Emit structured rebuild-cause provenance in human and JSON plans,
+  including the triggering package and edge for subslot, changed-USE,
+  changed-dependency, preserved-library, and explicit reinstall actions.
+- [ ] Throttle new package jobs as PORTAGE_TMPDIR free space falls. Model
+  emerge's `--jobs-tmpdir-require-free-gb` behavior, account for completed
+  images waiting on the commit lock, and report why concurrency was reduced.
 - [x] Persist completed nodes for resume. Completion is fsynced from the
   transaction callback while the internal commit lock remains held, before a
   second worker may mutate ROOT/VDB.

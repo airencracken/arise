@@ -21,12 +21,14 @@ type Progress struct {
 }
 
 type FetchConfig struct {
-	Destination   string
-	DistfilesDir  string
-	Timeout       time.Duration
-	GentooMirrors []string
-	MirrorGroups  map[string][]string
-	Progress      func(Progress)
+	Destination     string
+	DistfilesDir    string
+	Timeout         time.Duration
+	GentooMirrors   []string
+	MirrorGroups    map[string][]string
+	RestrictMirrors bool
+	PrimaryURI      bool
+	Progress        func(Progress)
 }
 
 func (c *FetchConfig) defaults() {

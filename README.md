@@ -150,13 +150,14 @@ arise --pretend revdep-rebuild
 arise dispatch-conf
 ```
 
-Live-root install, update, uninstall, depclean, repair and rebuild execution is
-deliberately blocked until the versioned ebuild ABI and journaled transaction
-engine satisfy their punch-list gates. Source `--fetchonly` is the bounded live
-exception and consumes only Manifest-verified artifacts. Development builds can
-exercise an exact-digest-authorized serial source install. Live `/` is limited
-to one additive action with absent file/VDB targets and no custom package
-lifecycle hooks; general mutation remains disabled.
+Live-root install, update, and uninstall execution is available only through the
+experimental mutation gate and an exact approved saved plan. Source transactions
+use Manifest-verified artifacts, isolated phase workers, durable per-package
+logs, collision checks, package journals, operation locking, and resumable
+dependency-aware scheduling. Package preparation may run concurrently, while
+ROOT and VDB commits remain serialized. Depclean, repair, and broader maintenance
+mutation remain gated until their complete plans and rollback boundaries join
+the same transaction model.
 
 ## Usage
 
@@ -238,10 +239,14 @@ Not yet claimed:
 
 - The isolated `emerge --metadata` workload is ready but still needs a
   privileged run because Portage enforces root/portage-group access.
-- `@world` planning remains correctness-blocked on the intentionally damaged
-  development snapshot; the current hard gate is an installed live
-  `llvm-core/llvm-23.0.0.9999:23/23.0` without an installable matching
-  candidate, so no speedup is published.
+- Deep, newuse, complete-graph `@world` planning now has an exact 369-action
+  same-snapshot comparison with Portage and a successful whole-plan preflight.
+  No resolver speedup is published yet because that result has not completed
+  the repeated, correctness-gated benchmark protocol.
+- A successful experimental deep `@world` execution is not yet evidence of
+  general Portage execution parity. Parallel scheduling, fetch policy,
+  lifecycle coverage, failure recovery, and long-running mutation still need
+  broader machine and package-corpus coverage.
 - The current deep/newuse `@system` outcome is ineligible for the equivalence
   table because Arise repairs the state while Portage reports an unresolved
   partial plan. Its separately labeled recovery diagnostic appears above.

@@ -128,6 +128,82 @@ func TestAcquireFallsBackAcrossMirrorEndpointsInOrder(t *testing.T) {
 	}
 }
 
+func TestAcquireUsesGentooMirrorBeforeOrdinaryUpstream(t *testing.T) {
+	content := []byte("verified rhash archive")
+	artifact := testArtifact(content, "https://downloads.sourceforge.net/rhash/source.tar")
+	var requested []string
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		if request.URL.Host == "distfiles.gentoo.org" {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(content)), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("wrong-sized SourceForge response")), Header: make(http.Header)}, nil
+	})}
+	_, err := (&Fetcher{Client: client}).Acquire(context.Background(), []distfiles.Artifact{artifact}, FetchConfig{
+		DistfilesDir: t.TempDir(), GentooMirrors: []string{"http://distfiles.gentoo.org"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"http://distfiles.gentoo.org/distfiles/source.tar"}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requests = %#v, want %#v", requested, want)
+	}
+}
+
+func TestAcquireFallsBackFromBadGentooMirrorToUpstream(t *testing.T) {
+	content := []byte("verified upstream archive")
+	artifact := testArtifact(content, "https://upstream.example/source.tar")
+	var requested []string
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requested = append(requested, request.URL.String())
+		body := []byte("wrong size")
+		if request.URL.Host == "upstream.example" {
+			body = content
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	_, err := (&Fetcher{Client: client}).Acquire(context.Background(), []distfiles.Artifact{artifact}, FetchConfig{
+		DistfilesDir: t.TempDir(), GentooMirrors: []string{"https://mirror.example"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"https://mirror.example/distfiles/source.tar", "https://upstream.example/source.tar"}
+	if !slices.Equal(requested, want) {
+		t.Fatalf("requests = %#v, want %#v", requested, want)
+	}
+}
+
+func TestAcquireHonorsMirrorRestrictionAndPrimaryURI(t *testing.T) {
+	content := []byte("verified")
+	for _, test := range []struct {
+		name string
+		cfg  FetchConfig
+		want []string
+	}{
+		{name: "mirror restricted", cfg: FetchConfig{RestrictMirrors: true}, want: []string{"https://upstream.example/source.tar"}},
+		{name: "primary URI", cfg: FetchConfig{PrimaryURI: true}, want: []string{"https://upstream.example/source.tar"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			artifact := testArtifact(content, "https://upstream.example/source.tar")
+			var requested []string
+			client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requested = append(requested, request.URL.String())
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(content)), Header: make(http.Header)}, nil
+			})}
+			test.cfg.DistfilesDir = t.TempDir()
+			test.cfg.GentooMirrors = []string{"https://mirror.example"}
+			if _, err := (&Fetcher{Client: client}).Acquire(context.Background(), []distfiles.Artifact{artifact}, test.cfg); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(requested, test.want) {
+				t.Fatalf("requests = %#v, want %#v", requested, test.want)
+			}
+		})
+	}
+}
+
 func TestAcquireRejectsCorruptDownloadsAndPreservesExistingFile(t *testing.T) {
 	directory := t.TempDir()
 	destination := filepath.Join(directory, "source.tar")

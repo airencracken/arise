@@ -9,6 +9,28 @@ import (
 	"strings"
 )
 
+func automaticGentooSources(name string, cfg FetchConfig) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, base := range cfg.GentooMirrors {
+		base = strings.TrimRight(strings.TrimSpace(base), "/")
+		if base == "" {
+			continue
+		}
+		if !strings.HasSuffix(base, "/distfiles") {
+			base += "/distfiles"
+		}
+		candidate := base + "/" + name
+		parsed, err := url.Parse(candidate)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		result = append(result, candidate)
+	}
+	return result
+}
+
 func LoadMirrorGroups(path string) (map[string][]string, error) {
 	file, err := os.Open(path)
 	if os.IsNotExist(err) {

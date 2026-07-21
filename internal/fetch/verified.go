@@ -129,19 +129,36 @@ func (f *Fetcher) acquireLeader(ctx context.Context, directory string, artifact 
 		return fmt.Errorf("fetch: %s is not verified and has no source URI", artifact.Name)
 	}
 	var failures []error
+	automaticMirrors := automaticGentooSources(artifact.Name, cfg)
+	if cfg.RestrictMirrors {
+		automaticMirrors = nil
+	}
+	var endpoints []string
+	if !cfg.PrimaryURI {
+		endpoints = append(endpoints, automaticMirrors...)
+	}
 	for _, source := range artifact.Sources {
-		endpoints, err := expandMirrorSource(source, cfg)
+		expanded, err := expandMirrorSource(source, cfg)
 		if err != nil {
 			failures = append(failures, err)
 			continue
 		}
-		for _, endpoint := range endpoints {
-			if err := f.downloadVerified(ctx, endpoint, destination, artifact, cfg); err != nil {
-				failures = append(failures, err)
-				continue
-			}
-			return nil
+		endpoints = append(endpoints, expanded...)
+	}
+	if cfg.PrimaryURI {
+		endpoints = append(endpoints, automaticMirrors...)
+	}
+	seen := make(map[string]bool)
+	for _, endpoint := range endpoints {
+		if seen[endpoint] {
+			continue
 		}
+		seen[endpoint] = true
+		if err := f.downloadVerified(ctx, endpoint, destination, artifact, cfg); err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		return nil
 	}
 	return fmt.Errorf("fetch: all sources failed for %s: %v", artifact.Name, failures)
 }
