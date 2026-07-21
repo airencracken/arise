@@ -124,12 +124,20 @@ func parse(lines []string, path string) (*Ebuild, error) {
 	}
 
 	if v, ok := e.Variables["EAPI"]; ok {
-		e.EAPI = v
+		e.EAPI = normalizeEAPI(v)
 	} else if v, ok := e.Variables["eapi"]; ok {
-		e.EAPI = v
+		e.EAPI = normalizeEAPI(v)
 	}
 
 	return e, nil
+}
+
+func normalizeEAPI(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'')) {
+		value = value[1 : len(value)-1]
+	}
+	return value
 }
 
 func (p *parser) processLine() {
@@ -285,12 +293,74 @@ func (p *parser) finishFunction() {
 }
 
 func countBracesNoComment(line string) int {
-	commentIdx := strings.IndexByte(line, '#')
-	effective := line
-	if commentIdx >= 0 {
-		effective = line[:commentIdx]
+	line = stripShellComment(line)
+	depth := 0
+	var quote byte
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		switch ch {
+		case '{':
+			depth++
+		case '}':
+			depth--
+		}
 	}
-	return countChar(effective, '{') - countChar(effective, '}')
+	return depth
+}
+
+// stripShellComment does not confuse parameter trimming (${value##pattern})
+// or quoted hashes with shell comments.
+func stripShellComment(line string) string {
+	var quote byte
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if ch == '#' && (i == 0 || isShellCommentBoundary(line[i-1])) {
+			return strings.TrimSpace(line[:i])
+		}
+	}
+	return line
+}
+
+func isShellCommentBoundary(ch byte) bool {
+	return ch == ' ' || ch == '\t' || strings.ContainsRune(";&|()<>", rune(ch))
 }
 
 func isPhaseFuncHeader(trimmed string) (string, bool) {
@@ -325,7 +395,7 @@ func parseVarAssign(trimmed string) (name, value string, more bool, ok bool) {
 		if !varComplete(value) {
 			return name, value, true, true
 		}
-		return name, value, false, true
+		return name, stripShellComment(value), false, true
 	}
 
 	// Handle export VAR / local VAR without assignment

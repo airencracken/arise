@@ -6,14 +6,336 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/airencracken/arise/internal/distfiles"
 )
+
+func readEnvironmentSnapshot(path string) (map[string]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		name, value, found := strings.Cut(line, "=")
+		if !found {
+			return nil, fmt.Errorf("malformed environment snapshot line %q", line)
+		}
+		result[name] = value
+	}
+	return result, nil
+}
+
+func normalizedExecutionEnvironment(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for name, value := range values {
+		switch name {
+		case "PORTAGE_BUILDDIR", "WORKDIR", "S", "T", "HOME", "D", "ED", "ROOT", "EROOT", "SYSROOT", "ESYSROOT", "BROOT", "PORTAGE_CONFIGROOT":
+			if value == "" {
+				result[name] = ""
+			} else {
+				result[name] = "<absolute>"
+			}
+		default:
+			result[name] = value
+		}
+	}
+	return result
+}
+
+type imageEntry struct {
+	Path, Type, Content string
+	Mode                os.FileMode
+}
+
+func snapshotImageTree(root string) ([]imageEntry, error) {
+	var result []imageEntry
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		item := imageEntry{Path: filepath.ToSlash(relative), Mode: info.Mode().Perm()}
+		switch {
+		case info.Mode().IsDir():
+			item.Type = "directory"
+		case info.Mode()&os.ModeSymlink != 0:
+			item.Type = "symlink"
+			item.Content, err = os.Readlink(path)
+		case info.Mode().IsRegular():
+			item.Type = "file"
+			var raw []byte
+			raw, err = os.ReadFile(path)
+			if len(raw) >= 4 && bytes.Equal(raw[:4], []byte{0x7f, 'E', 'L', 'F'}) {
+				item.Content = "<ELF>"
+			} else {
+				item.Content = string(raw)
+			}
+		default:
+			return fmt.Errorf("unsupported image object %s (%s)", relative, info.Mode())
+		}
+		if err != nil {
+			return err
+		}
+		result = append(result, item)
+		return nil
+	})
+	return result, err
+}
+
+func TestLivePortageEnvironmentSnapshot(t *testing.T) {
+	ebuildCommand, err := exec.LookPath("ebuild")
+	if err != nil {
+		t.Skip("Portage ebuild command unavailable")
+	}
+	for _, eapi := range []string{"7", "8"} {
+		t.Run("EAPI-"+eapi, func(t *testing.T) {
+			compareLivePortageEnvironment(t, ebuildCommand, eapi)
+		})
+	}
+}
+
+func compareLivePortageEnvironment(t *testing.T, ebuildCommand, eapi string) {
+	t.Helper()
+	directory := t.TempDir()
+	repository := filepath.Join(directory, "repo")
+	packageDir := filepath.Join(repository, "app-misc", "arise-env-probe")
+	for _, path := range []string{packageDir, filepath.Join(repository, "profiles"), filepath.Join(repository, "metadata"), filepath.Join(directory, "distfiles"), filepath.Join(directory, "packages")} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repository, "profiles", "repo_name"), []byte("arise-env-probe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "metadata", "layout.conf"), []byte("masters = gentoo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := filepath.Join(packageDir, "arise-env-probe-1.ebuild")
+	names := []string{"EAPI", "CATEGORY", "PN", "PV", "PR", "P", "PVR", "PF", "SLOT", "PORTAGE_REPO_NAME", "EBUILD_PHASE", "EBUILD_PHASE_FUNC", "PORTAGE_BUILDDIR", "WORKDIR", "S", "T", "HOME", "D", "ED", "ROOT", "EROOT", "SYSROOT", "ESYSROOT", "BROOT", "PORTAGE_CONFIGROOT"}
+	sort.Strings(names)
+	var body strings.Builder
+	fmt.Fprintf(&body, "EAPI=%s\nSLOT=0\nS=${WORKDIR}\nsrc_compile() {\n", eapi)
+	for _, name := range names {
+		fmt.Fprintf(&body, "  printf '%%s=%%s\\n' %s \"${%s-}\"\n", name, name)
+	}
+	body.WriteString("} > \"${PORTAGE_BUILDDIR}/environment.snapshot\"\n")
+	if err := os.WriteFile(ebuild, []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	portageTmp := filepath.Join(directory, "portage-tmp")
+	if err := os.MkdirAll(portageTmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(ebuildCommand, "--skip-manifest", ebuild, "compile")
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentGroup, err := user.LookupGroupId(currentUser.Gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command.Env = append(os.Environ(),
+		"PORTAGE_TMPDIR="+portageTmp, "DISTDIR="+filepath.Join(directory, "distfiles"), "PKGDIR="+filepath.Join(directory, "packages"),
+		"PORTAGE_USERNAME="+currentUser.Username, "PORTAGE_GRPNAME="+currentGroup.Name,
+		"FEATURES=-sandbox -usersandbox -userpriv -network-sandbox -pid-sandbox -ipc-sandbox -mount-sandbox",
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Portage environment probe: %v\n%s", err, output)
+	}
+	matches, err := filepath.Glob(filepath.Join(portageTmp, "portage", "app-misc", "arise-env-probe-1", "environment.snapshot"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("Portage snapshot paths = %#v, error=%v", matches, err)
+	}
+	portageEnvironment, err := readEnvironmentSnapshot(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ariseBuild := filepath.Join(directory, "arise-build")
+	for _, path := range []string{ariseBuild, filepath.Join(ariseBuild, "temp"), filepath.Join(ariseBuild, "home"), filepath.Join(ariseBuild, "image")} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := Request{
+		Protocol: Version, ID: "environment-differential", Command: "run_phase", Phase: "src_compile", EAPI: eapi, Ebuild: ebuild,
+		WorkDir: ariseBuild, BuildDir: ariseBuild, SourceDir: ariseBuild, ImageDir: filepath.Join(ariseBuild, "image"),
+		TempDir: filepath.Join(ariseBuild, "temp"), HomeDir: filepath.Join(ariseBuild, "home"), ConfigRoot: "/",
+		Package: PackageIdentity{Category: "app-misc", PN: "arise-env-probe", PV: "1", PR: "r0", P: "arise-env-probe-1", PVR: "1", PF: "arise-env-probe-1", Slot: "0", Repository: "arise-env-probe"},
+	}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("Arise environment probe: %v; events=%#v", err, events)
+	}
+	ariseEnvironment, err := readEnvironmentSnapshot(filepath.Join(ariseBuild, "environment.snapshot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := normalizedExecutionEnvironment(ariseEnvironment), normalizedExecutionEnvironment(portageEnvironment); !reflect.DeepEqual(got, want) {
+		t.Fatalf("normalized environment differs\nArise:  %#v\nPortage: %#v", got, want)
+	}
+}
+
+func TestLivePortageInstallHelperImageTree(t *testing.T) {
+	ebuildCommand, err := exec.LookPath("ebuild")
+	if err != nil {
+		t.Skip("Portage ebuild command unavailable")
+	}
+	for _, eapi := range []string{"7", "8"} {
+		t.Run("EAPI-"+eapi, func(t *testing.T) {
+			compareLivePortageHelperImage(t, ebuildCommand, eapi)
+		})
+	}
+}
+
+func compareLivePortageHelperImage(t *testing.T, ebuildCommand, eapi string) {
+	t.Helper()
+	directory := t.TempDir()
+	repository := filepath.Join(directory, "repo")
+	packageDir := filepath.Join(repository, "app-misc", "arise-helper-probe")
+	for _, path := range []string{packageDir, filepath.Join(repository, "profiles"), filepath.Join(repository, "metadata"), filepath.Join(directory, "distfiles"), filepath.Join(directory, "packages")} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repository, "profiles", "repo_name"), []byte("arise-helper-probe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "metadata", "layout.conf"), []byte("masters = gentoo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := filepath.Join(packageDir, "arise-helper-probe-1.ebuild")
+	body := fmt.Sprintf(`EAPI=%s
+SLOT=0
+S=${WORKDIR}
+src_install() {
+  nonfatal false
+  [[ $? == 1 ]] || die "nonfatal false status mismatch"
+  printf tool > tool
+  printf data > data
+  printf header > header.h
+  printf library > libprobe.so
+  printf manual > probe.1
+  for i in {1..64}; do printf 'documentation line\n'; done > guide.txt
+  printf translation > fr.mo
+  into /opt/probe
+  dobin tool
+  newbin tool renamed
+  insinto /etc/probe
+  insopts -m0600
+  doins data
+  newins data renamed.conf
+  doheader header.h
+  dolib.so libprobe.so
+  newlib.so libprobe.so librenamed.so
+  diropts -m0700
+  dodir /var/lib/probe
+  dodir /var/lib/empty
+  insinto /var/lib/probe
+  doins data
+  doinitd tool
+  newconfd data probe
+  doenvd data
+  docinto html
+  newdoc data README.probe
+  docinto /
+  dodoc guide.txt
+  doman probe.1
+  newman probe.1 renamed.5
+  doinfo data
+  domo fr.mo
+  docompress -x /usr/share/info
+  dosym ../../opt/probe/bin/tool /usr/bin/probe-link
+  fperms 0750 /opt/probe/bin/renamed
+}
+`, eapi)
+	if err := os.WriteFile(ebuild, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	portageTmp := filepath.Join(directory, "portage-tmp")
+	if err := os.MkdirAll(portageTmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentGroup, err := user.LookupGroupId(currentUser.Gid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(ebuildCommand, "--skip-manifest", ebuild, "install")
+	command.Env = append(os.Environ(),
+		"PORTAGE_TMPDIR="+portageTmp, "DISTDIR="+filepath.Join(directory, "distfiles"), "PKGDIR="+filepath.Join(directory, "packages"),
+		"PORTAGE_USERNAME="+currentUser.Username, "PORTAGE_GRPNAME="+currentGroup.Name,
+		"PORTAGE_INST_UID="+currentUser.Uid, "PORTAGE_INST_GID="+currentUser.Gid,
+		"FEATURES=-sandbox -usersandbox -userpriv -network-sandbox -pid-sandbox -ipc-sandbox -mount-sandbox -strip",
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("Portage helper probe: %v\n%s", err, output)
+	}
+	portageImages, err := filepath.Glob(filepath.Join(portageTmp, "portage", "app-misc", "arise-helper-probe-1", "image"))
+	if err != nil || len(portageImages) != 1 {
+		t.Fatalf("Portage image paths = %#v, error=%v", portageImages, err)
+	}
+
+	ariseBuild := filepath.Join(directory, "arise-build")
+	ariseImage := filepath.Join(ariseBuild, "image")
+	for _, path := range []string{ariseBuild, ariseImage, filepath.Join(ariseBuild, "temp"), filepath.Join(ariseBuild, "home")} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := Request{
+		Protocol: Version, ID: "helper-image-differential", Command: "run_phase", Phase: "src_install", EAPI: eapi, Ebuild: ebuild,
+		WorkDir: ariseBuild, BuildDir: ariseBuild, SourceDir: ariseBuild, ImageDir: ariseImage, TempDir: filepath.Join(ariseBuild, "temp"), HomeDir: filepath.Join(ariseBuild, "home"),
+		Package: PackageIdentity{Category: "app-misc", PN: "arise-helper-probe", PV: "1", PR: "r0", P: "arise-helper-probe-1", PVR: "1", PF: "arise-helper-probe-1", Slot: "0", Repository: "arise-helper-probe"},
+		Env:     map[string]string{"ABI": "amd64", "PORTAGE_COMPRESS": "bzip2"},
+	}
+	if events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
+		t.Fatalf("Arise helper probe: %v; events=%#v", err, events)
+	}
+	portageTree, err := snapshotImageTree(portageImages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ariseTree, err := snapshotImageTree(ariseImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ariseTree, portageTree) {
+		if len(ariseTree) != len(portageTree) {
+			t.Fatalf("normalized image tree length differs: Arise=%d Portage=%d\nArise: %#v\nPortage: %#v", len(ariseTree), len(portageTree), ariseTree, portageTree)
+		}
+		for index := range ariseTree {
+			if ariseTree[index] != portageTree[index] {
+				t.Fatalf("normalized image entry %d differs\nArise:  %#v\nPortage: %#v", index, ariseTree[index], portageTree[index])
+			}
+		}
+		t.Fatal("normalized image trees differ without a differing entry")
+	}
+}
 
 func signalPackageIdentity() PackageIdentity {
 	return PackageIdentity{

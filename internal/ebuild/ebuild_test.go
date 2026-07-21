@@ -82,6 +82,20 @@ RDEPEND="${DEPEND}"
 	}
 }
 
+func TestParseQuotedEAPI(t *testing.T) {
+	for _, declaration := range []string{`EAPI="8"`, `EAPI='7'`} {
+		path := writeTemp(t, "quoted-1.ebuild", declaration+"\n")
+		ebuild, err := ParseEbuild(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := declaration[len(declaration)-2 : len(declaration)-1]
+		if ebuild.EAPI != want {
+			t.Fatalf("%s parsed EAPI %q, want %q", declaration, ebuild.EAPI, want)
+		}
+	}
+}
+
 func TestMultilineVariables(t *testing.T) {
 	content := `EAPI=8
 
@@ -685,6 +699,28 @@ src_compile() {
 	_, err := ParseEbuild(path)
 	if err == nil {
 		t.Error("expected error for unbalanced braces")
+	}
+}
+
+func TestFunctionBraceCountingIgnoresShellHashesAndQuotedBraces(t *testing.T) {
+	content := `EAPI=8
+RESTRICT="test" # an inline metadata comment
+src_compile() {
+	local suffix=${CHOST##*darwin}
+	echo "an unmatched { is data"
+}
+`
+	path := writeTemp(t, "shell-hashes-1.0.ebuild", content)
+
+	eb, err := ParseEbuild(path)
+	if err != nil {
+		t.Fatalf("ParseEbuild: %v", err)
+	}
+	if got := eb.Variables["RESTRICT"]; got != `"test"` {
+		t.Fatalf("RESTRICT = %q, want quoted value without comment", got)
+	}
+	if _, ok := eb.RawPhases["src_compile"]; !ok {
+		t.Fatal("expected src_compile phase")
 	}
 }
 

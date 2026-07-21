@@ -599,11 +599,20 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 // overrides it.
 func iuseDefaults(iuse string) map[string]bool {
 	flags := make(map[string]bool)
+	explicit := make(map[string]bool)
 	for _, raw := range strings.Fields(iuse) {
 		enabled := strings.HasPrefix(raw, "+")
 		name := strings.TrimLeft(raw, "+-")
 		if name != "" {
+			marked := strings.HasPrefix(raw, "+") || strings.HasPrefix(raw, "-")
+			// md5-cache IUSE may repeat an ebuild's explicit default when
+			// profile-generated implicit flags are appended. A later unmarked
+			// duplicate declares the domain; it must not erase `+flag`.
+			if explicit[name] && !marked {
+				continue
+			}
 			flags[name] = enabled
+			explicit[name] = marked
 		}
 	}
 	return flags

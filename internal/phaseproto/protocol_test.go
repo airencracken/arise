@@ -88,6 +88,379 @@ src_install() {
 	}
 }
 
+func TestBashWorkerVersionCutAndSeparatorReplacement(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "libsoup-2.74.3-r1.ebuild")
+	content := `EAPI=7
+src_unpack() {
+  printf '%s\n' "$(ver_cut 1 2.74.3)" "$(ver_cut 1-2 2.74.3)" "$(ver_rs 1- . 2.74.3-r1)" > "${T}/versions"
+}
+`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	temporary := filepath.Join(directory, "temp")
+	for _, path := range []string{temporary, filepath.Join(directory, "work"), filepath.Join(directory, "source"), filepath.Join(directory, "image")} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := Request{Protocol: Version, ID: "version-helpers", Command: "run_phase", Phase: "src_unpack", EAPI: "7", Ebuild: ebuild, WorkDir: filepath.Join(directory, "work"), SourceDir: filepath.Join(directory, "source"), ImageDir: filepath.Join(directory, "image"), TempDir: temporary}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("version helpers: %v; events=%#v", err, events)
+	}
+	data, err := os.ReadFile(filepath.Join(temporary, "versions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "2\n2.74\n2.74.3.r.1\n"; got != want {
+		t.Fatalf("version helper output=%q, want %q", got, want)
+	}
+}
+
+func TestBashWorkerCoreInstallHelperFamily(t *testing.T) {
+	directory := t.TempDir()
+	source := filepath.Join(directory, "source")
+	image := filepath.Join(directory, "image")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"tool": "tool", "data": "data", "header.h": "header", "libdemo.a": "archive", "libdemo.so": "shared", "tool.1": "manual", "service": "service", "config": "config", "environment": "environment"} {
+		if err := os.WriteFile(filepath.Join(source, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+src_install() {
+  into /opt/demo
+  dobin tool
+  newbin tool renamed
+  dosbin tool
+  newsbin tool renamed-admin
+  exeinto /usr/libexec/demo
+  exeopts -m0710
+  doexe tool
+  newexe tool renamed-helper
+  insinto /etc/demo
+  insopts -m0600
+  doins data
+  newins data renamed.conf
+  doheader header.h
+  newheader header.h renamed.hpp
+  dolib.a libdemo.a
+  dolib.so libdemo.so
+  newlib.a libdemo.a librenamed.a
+  newlib.so libdemo.so librenamed.so
+  diropts -m0700
+  dodir /var/lib/demo
+  keepdir /var/lib/demo/empty
+  doinitd service
+  newinitd service renamed-service
+  doconfd config
+  newconfd config renamed-config
+  doenvd environment
+  newenvd environment 99demo
+  docinto html
+  newdoc data README.demo
+  doman tool.1
+  newman tool.1 renamed.5
+  doinfo data
+  fowners "${UID}:$(id -g)" /etc/demo/data
+}`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "install-family", Command: "run_phase", Phase: "src_install", EAPI: "8", Ebuild: ebuild, WorkDir: source, SourceDir: source, ImageDir: image, Package: PackageIdentity{Category: "app-misc", PN: "pkg", PV: "1", PR: "r0", P: "pkg-1", PVR: "1", PF: "pkg-1", Slot: "0", Repository: "test"}, Env: map[string]string{"ABI": "amd64"}}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("install helper family: %v; events=%#v", err, events)
+	}
+	wantModes := map[string]os.FileMode{
+		"opt/demo/bin/tool": 0o755, "opt/demo/bin/renamed": 0o755,
+		"opt/demo/sbin/tool": 0o755, "opt/demo/sbin/renamed-admin": 0o755,
+		"usr/libexec/demo/tool": 0o710, "usr/libexec/demo/renamed-helper": 0o710,
+		"etc/demo/data": 0o600, "etc/demo/renamed.conf": 0o600,
+		"usr/include/header.h": 0o644, "usr/include/renamed.hpp": 0o644,
+		"opt/demo/lib64/libdemo.a": 0o644, "opt/demo/lib64/libdemo.so": 0o755,
+		"opt/demo/lib64/librenamed.a": 0o644, "opt/demo/lib64/librenamed.so": 0o755,
+		"etc/init.d/service": 0o755, "etc/init.d/renamed-service": 0o755,
+		"etc/conf.d/config": 0o644, "etc/conf.d/renamed-config": 0o644,
+		"etc/env.d/environment": 0o644, "etc/env.d/99demo": 0o644,
+		"usr/share/doc/pkg-1/html/README.demo": 0o644,
+		"usr/share/man/man1/tool.1":            0o644, "usr/share/man/man5/renamed.5": 0o644,
+		"usr/share/info/data": 0o644,
+	}
+	for relative, wantMode := range wantModes {
+		info, err := os.Stat(filepath.Join(image, relative))
+		if err != nil || infoMode(info) != wantMode {
+			t.Errorf("%s mode = %v, error=%v; want %v", relative, infoMode(info), err, wantMode)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(image, "var/lib/demo/empty/.keep_app-misc_pkg_0")); err != nil {
+		t.Fatalf("keepdir marker: %v", err)
+	}
+	for _, relative := range []string{"var/lib/demo", "var/lib/demo/empty"} {
+		info, err := os.Stat(filepath.Join(image, relative))
+		if err != nil || infoMode(info) != 0o700 {
+			t.Errorf("%s directory mode = %v, error=%v", relative, infoMode(info), err)
+		}
+	}
+	for _, relative := range []string{"etc/conf.d", "etc/env.d", "usr/include"} {
+		info, err := os.Stat(filepath.Join(image, relative))
+		if err != nil || infoMode(info) != 0o755 {
+			t.Errorf("%s fixed directory mode = %v, error=%v", relative, infoMode(info), err)
+		}
+	}
+	ownedInfo, err := os.Stat(filepath.Join(image, "etc/demo/data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownedStat := ownedInfo.Sys().(*syscall.Stat_t)
+	if int(ownedStat.Uid) != os.Getuid() || int(ownedStat.Gid) != os.Getgid() {
+		t.Fatalf("fowners owner = %d:%d, want %d:%d", ownedStat.Uid, ownedStat.Gid, os.Getuid(), os.Getgid())
+	}
+}
+
+func infoMode(info os.FileInfo) os.FileMode {
+	if info == nil {
+		return 0
+	}
+	return info.Mode().Perm()
+}
+
+func TestBashWorkerInstallHelpersRejectImageEscape(t *testing.T) {
+	for name, command := range map[string]string{
+		"directory":   "dodir /safe/../../../escaped",
+		"permissions": "fperms 0644 /safe/../../../escaped",
+		"symlink":     "dosym target /safe/../../../escaped",
+		"hardlink":    "dohard /safe/source /safe/escaped",
+		"documents":   "docinto ../../escaped",
+	} {
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			image := filepath.Join(directory, "image")
+			if err := os.MkdirAll(image, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			ebuild := filepath.Join(directory, "pkg-1.ebuild")
+			if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_install() { "+command+"; }\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			request := Request{Protocol: Version, ID: "install-escape-" + name, Command: "run_phase", Phase: "src_install", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: image}
+			if _, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err == nil {
+				t.Fatal("image destination traversal was accepted")
+			}
+			if _, err := os.Stat(filepath.Join(directory, "escaped")); !os.IsNotExist(err) {
+				t.Fatalf("image helper escaped D: %v", err)
+			}
+		})
+	}
+}
+
+func TestBashWorkerInstallHelpersRejectInvalidArguments(t *testing.T) {
+	commands := map[string]string{
+		"diropts-empty":   "diropts",
+		"libopts-empty":   "libopts",
+		"newheader-name":  "newheader data ../escaped.h",
+		"newlib-name":     "newlib.so data ../escaped.so",
+		"newman-section":  "newman data invalid-name",
+		"newinfo-missing": "newinfo data renamed.info",
+		"dohard-banned":   "dohard /source /destination",
+		"dohtml-banned":   "dohtml data",
+		"dosed-banned":    "dosed data",
+		"dolib-banned":    "dolib data",
+	}
+	for name, command := range commands {
+		t.Run(name, func(t *testing.T) {
+			directory := t.TempDir()
+			if err := os.WriteFile(filepath.Join(directory, "data"), []byte("data"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			ebuild := filepath.Join(directory, "pkg-1.ebuild")
+			if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_install() { "+command+"; }\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			request := Request{Protocol: Version, ID: "install-invalid-" + name, Command: "run_phase", Phase: "src_install", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: filepath.Join(directory, "image")}
+			if _, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err == nil {
+				t.Fatalf("invalid helper call %q succeeded", command)
+			}
+		})
+	}
+}
+
+func TestBashWorkerEAPI8PrunesOnlyUnclaimedEmptyImageDirectories(t *testing.T) {
+	for _, eapi := range []string{"7", "8"} {
+		t.Run("EAPI-"+eapi, func(t *testing.T) {
+			directory := t.TempDir()
+			image := filepath.Join(directory, "image")
+			if err := os.MkdirAll(image, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			ebuild := filepath.Join(directory, "pkg-1.ebuild")
+			content := "EAPI=" + eapi + "\nsrc_install() { dodir /var/lib/empty; keepdir /var/lib/kept; }\n"
+			if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			request := Request{Protocol: Version, ID: "empty-image-" + eapi, Command: "run_phase", Phase: "src_install", EAPI: eapi, Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: image, Package: PackageIdentity{Category: "app-misc", PN: "pkg", PV: "1", PR: "r0", P: "pkg-1", PVR: "1", PF: "pkg-1", Slot: "0", Repository: "test"}}
+			if events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
+				t.Fatalf("empty image cleanup: %v; events=%#v", err, events)
+			}
+			_, emptyErr := os.Stat(filepath.Join(image, "var/lib/empty"))
+			if eapi == "7" && emptyErr != nil {
+				t.Fatalf("EAPI 7 empty directory was removed: %v", emptyErr)
+			}
+			if eapi == "8" && !os.IsNotExist(emptyErr) {
+				t.Fatalf("EAPI 8 empty directory remains: %v", emptyErr)
+			}
+			if _, err := os.Stat(filepath.Join(image, "var/lib/kept/.keep_app-misc_pkg_0")); err != nil {
+				t.Fatalf("keepdir marker removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestBashWorkerTranslationAndCompressionHelpers(t *testing.T) {
+	directory := t.TempDir()
+	source, image := filepath.Join(directory, "source"), filepath.Join(directory, "image")
+	if err := os.MkdirAll(filepath.Join(source, "html"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	large := bytes.Repeat([]byte("documentation line\n"), 32)
+	for name, content := range map[string][]byte{"guide.txt": large, "probe.1": large, "manual.info": large, "html/index.html": large, "fr.mo": []byte("translation")} {
+		path := filepath.Join(source, name)
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+src_install() {
+  dodoc guide.txt
+  docinto html
+  newdoc html/index.html index.html
+  doman probe.1
+  doinfo manual.info
+  domo fr.mo
+  docompress -x /usr/share/info
+}`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "translation-compression", Command: "run_phase", Phase: "src_install", EAPI: "8", Ebuild: ebuild, WorkDir: source, SourceDir: source, ImageDir: image, Package: PackageIdentity{Category: "app-misc", PN: "pkg", PV: "1", PR: "r0", P: "pkg-1", PVR: "1", PF: "pkg-1", Slot: "0", Repository: "test"}}
+	if events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
+		t.Fatalf("translation/compression helpers: %v; events=%#v", err, events)
+	}
+	for _, relative := range []string{"usr/share/doc/pkg-1/guide.txt.gz", "usr/share/man/man1/probe.1.gz"} {
+		file, err := os.Open(filepath.Join(image, relative))
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader, err := gzip.NewReader(file)
+		if err != nil {
+			file.Close()
+			t.Fatal(err)
+		}
+		decompressed, err := io.ReadAll(reader)
+		reader.Close()
+		file.Close()
+		if err != nil || !bytes.Equal(decompressed, large) {
+			t.Fatalf("compressed %s does not round trip: %v", relative, err)
+		}
+	}
+	for _, relative := range []string{"usr/share/doc/pkg-1/html/index.html", "usr/share/info/manual.info"} {
+		if raw, err := os.ReadFile(filepath.Join(image, relative)); err != nil || !bytes.Equal(raw, large) {
+			t.Fatalf("excluded compression path %s = %d bytes, %v", relative, len(raw), err)
+		}
+	}
+	if raw, err := os.ReadFile(filepath.Join(image, "usr/share/locale/fr/LC_MESSAGES/pkg.mo")); err != nil || string(raw) != "translation" {
+		t.Fatalf("domo output = %q, %v", raw, err)
+	}
+}
+
+func TestBashWorkerStripQueueHonorsExclusions(t *testing.T) {
+	if _, err := exec.LookPath("strip"); err != nil {
+		t.Skip("strip is unavailable")
+	}
+	if _, err := exec.LookPath("readelf"); err != nil {
+		t.Skip("readelf is unavailable")
+	}
+	directory := t.TempDir()
+	source, image := filepath.Join(directory, "source"), filepath.Join(directory, "image")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "probe"), original, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+src_install() {
+  newexe probe stripped
+  newexe probe unstripped
+  dostrip -x /usr/bin/unstripped
+}`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "strip-queue", Command: "run_phase", Phase: "src_install", EAPI: "8", Ebuild: ebuild, WorkDir: source, SourceDir: source, ImageDir: image, Policy: ExecutionPolicy{Configured: true, Strip: true}}
+	if events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
+		t.Fatalf("strip helpers: %v; events=%#v", err, events)
+	}
+	stripped, err := os.ReadFile(filepath.Join(image, "usr/bin/stripped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unstripped, err := os.ReadFile(filepath.Join(image, "usr/bin/unstripped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(unstripped, original) {
+		t.Fatal("dostrip exclusion did not preserve the original executable")
+	}
+	if len(stripped) >= len(unstripped) {
+		t.Fatalf("stripped executable size = %d, unstripped = %d", len(stripped), len(unstripped))
+	}
+}
+
+func TestBashWorkerConfiguredZstdCompression(t *testing.T) {
+	if _, err := exec.LookPath("zstd"); err != nil {
+		t.Skip("zstd is unavailable")
+	}
+	directory := t.TempDir()
+	source, image := filepath.Join(directory, "source"), filepath.Join(directory, "image")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := bytes.Repeat([]byte("zstd is great\n"), 64)
+	if err := os.WriteFile(filepath.Join(source, "README"), original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_install() { dodoc README; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "zstd-compression", Command: "run_phase", Phase: "src_install", EAPI: "8", Ebuild: ebuild, WorkDir: source, SourceDir: source, ImageDir: image, Package: PackageIdentity{Category: "app-misc", PN: "pkg", PV: "1", PR: "r0", P: "pkg-1", PVR: "1", PF: "pkg-1", Slot: "0", Repository: "test"}, Env: map[string]string{"PORTAGE_COMPRESS": "zstd"}}
+	if events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
+		t.Fatalf("zstd compression: %v; events=%#v", err, events)
+	}
+	compressed := filepath.Join(image, "usr/share/doc/pkg-1/README.zst")
+	command := exec.Command("zstd", "-q", "-d", "-c", compressed)
+	decompressed, err := command.Output()
+	if err != nil || !bytes.Equal(decompressed, original) {
+		t.Fatalf("zstd round trip = %d bytes, error=%v", len(decompressed), err)
+	}
+}
+
 func TestBashWorkerUnpackUsesWorkDirAndLifecycleDefaultsAreNoOps(t *testing.T) {
 	directory := t.TempDir()
 	work := filepath.Join(directory, "work")
@@ -108,6 +481,96 @@ func TestBashWorkerUnpackUsesWorkDirAndLifecycleDefaultsAreNoOps(t *testing.T) {
 		request.ID, request.Command, request.Phase = "directory-"+phase, "run_phase", phase
 		if events, err := RunBashWorker(context.Background(), request); err != nil {
 			t.Fatalf("%s: %v; events=%#v", phase, err, events)
+		}
+	}
+}
+
+func TestBashWorkerEapplyDirectoryUsesSortedPatchAndDiffFiles(t *testing.T) {
+	directory := t.TempDir()
+	work, source, image := filepath.Join(directory, "work"), filepath.Join(directory, "source"), filepath.Join(directory, "image")
+	patches := filepath.Join(work, "patches")
+	for _, path := range []string{work, source, image, patches} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(source, "value"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first := "--- a/value\n+++ b/value\n@@ -1 +1 @@\n-one\n+two\n"
+	second := "--- a/value\n+++ b/value\n@@ -1 +1 @@\n-two\n+three\n"
+	if err := os.WriteFile(filepath.Join(patches, "01.patch"), []byte(first), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(patches, "02.diff"), []byte(second), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(patches, "README"), []byte("ignored\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_prepare() { eapply \"$WORKDIR/patches\"; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "eapply-directory", Command: "run_phase", Phase: "src_prepare", EAPI: "8", Ebuild: ebuild, WorkDir: work, SourceDir: source, ImageDir: image}
+	if events, err := RunBashWorker(context.Background(), request); err != nil {
+		t.Fatalf("eapply directory: %v; events=%#v", err, events)
+	}
+	content, err := os.ReadFile(filepath.Join(source, "value"))
+	if err != nil || string(content) != "three\n" {
+		t.Fatalf("patched content=%q err=%v", content, err)
+	}
+}
+
+func TestBashWorkerEscapesJSONControlCharacters(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_prepare() { printf 'tab\\tcarriage\\rcontrol\\001slash\\\\quote\\\"\\n'; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "json-controls", Command: "run_phase", Phase: "src_prepare", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: filepath.Join(directory, "image")}
+	events, err := RunBashWorker(context.Background(), request)
+	if err != nil {
+		t.Fatalf("control-character output: %v; events=%#v", err, events)
+	}
+	want := "tab\tcarriage\rcontrol\x01slash\\quote\""
+	for _, event := range events {
+		if event.Kind == "log" {
+			if event.Message != want {
+				t.Fatalf("message=%q want=%q", event.Message, want)
+			}
+			return
+		}
+	}
+	t.Fatal("missing log event")
+}
+
+func TestBashWorkerEconfSuppliesGentooInstallDirectories(t *testing.T) {
+	directory := t.TempDir()
+	configure := filepath.Join(directory, "configure")
+	if err := os.WriteFile(configure, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$T/configure.args\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_configure() { econf --enable-example; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	temp := filepath.Join(directory, "temp")
+	if err := os.MkdirAll(temp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "econf-layout", Command: "run_phase", Phase: "src_configure", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: filepath.Join(directory, "image"), TempDir: temp, Env: map[string]string{"DEFAULT_ABI": "amd64", "CHOST": "x86_64-pc-linux-gnu"}}
+	if events, err := RunBashWorker(context.Background(), request); err != nil {
+		t.Fatalf("econf: %v; events=%#v", err, events)
+	}
+	data, err := os.ReadFile(filepath.Join(temp, "configure.args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := string(data)
+	for _, want := range []string{"--prefix=/usr\n", "--libdir=/usr/lib64\n", "--sysconfdir=/etc\n", "--localstatedir=/var/lib\n", "--build=x86_64-pc-linux-gnu\n", "--host=x86_64-pc-linux-gnu\n", "--enable-example\n"} {
+		if !strings.Contains(arguments, want) {
+			t.Fatalf("configure args missing %q:\n%s", want, arguments)
 		}
 	}
 }
@@ -169,6 +632,77 @@ src_compile() {
 	}
 }
 
+func TestBashWorkerUseHelperPrimitives(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+IUSE="+ssl -test examples"
+src_compile() {
+  in_iuse ssl || return 31
+  in_iuse test || return 32
+  ! in_iuse missing || return 33
+  [[ $(usev ssl) == ssl ]] || return 34
+  [[ $(usev ssl custom) == custom ]] || return 35
+  ! usev test >/dev/null || return 36
+  [[ $(use_with ssl crypto openssl) == --with-crypto=openssl ]] || return 37
+  [[ $(use_with test tests) == --without-tests ]] || return 38
+  [[ $(use_enable examples demos) == --enable-demos ]] || return 39
+  [[ $(use_enable test tests) == --disable-tests ]] || return 40
+  use '!test' || return 41
+  ! use '!ssl' || return 42
+}`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "use-primitives", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, Env: map[string]string{"USE": "ssl examples"}}
+	if events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
+		t.Fatalf("USE helper primitives: %v; events=%#v", err, events)
+	}
+}
+
+func TestBashWorkerNonfatalContainsCommandFailureButNotDie(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+expected_failure() { printf expected; return 23; }
+src_compile() {
+  nonfatal expected_failure
+  [[ $? == 23 ]] || return 31
+  [[ ${PORTAGE_NONFATAL-unset} == unset ]] || return 33
+  printf 'survived\n'
+}`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "nonfatal-primitives", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("nonfatal primitives: %v; events=%#v", err, events)
+	}
+	var output strings.Builder
+	for _, event := range events {
+		if event.Kind == "log" {
+			output.WriteString(event.Message)
+		}
+	}
+	if got := output.String(); !strings.Contains(got, "expected") || !strings.Contains(got, "survived") {
+		t.Fatalf("nonfatal output = %q", got)
+	}
+	content = `EAPI=8
+src_compile() { nonfatal die terminal; printf leaked > "${T}/leaked"; }`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request.ID = "nonfatal-die"
+	request.TempDir = directory
+	if _, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err == nil {
+		t.Fatal("nonfatal contained die")
+	}
+	if _, err := os.Stat(filepath.Join(directory, "leaked")); !os.IsNotExist(err) {
+		t.Fatalf("execution continued after nonfatal die: %v", err)
+	}
+}
+
 func TestRequestValidation(t *testing.T) {
 	request := Request{Protocol: Version, ID: "pkg-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: "/repo/cat/pkg/pkg-1.ebuild"}
 	if err := request.Validate(); err != nil {
@@ -181,7 +715,7 @@ func TestRequestValidation(t *testing.T) {
 }
 
 func TestRequestRejectsUnsupportedEAPIAndRelativeEclassDirectory(t *testing.T) {
-	request := Request{Protocol: Version, ID: "pkg-1", Command: "run_phase", Phase: "src_compile", EAPI: "9", Ebuild: "/repo/pkg.ebuild"}
+	request := Request{Protocol: Version, ID: "pkg-1", Command: "run_phase", Phase: "src_compile", EAPI: "10", Ebuild: "/repo/pkg.ebuild"}
 	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported EAPI") {
 		t.Fatalf("EAPI error = %v", err)
 	}
@@ -212,7 +746,7 @@ func TestRequestRejectsRelativeExecutionDirectories(t *testing.T) {
 }
 
 func TestDefaultPhasesDeclareSupportedEAPIs(t *testing.T) {
-	for _, eapi := range []string{"7", "8"} {
+	for _, eapi := range []string{"7", "8", "9"} {
 		phases, err := DefaultPhases(eapi)
 		if err != nil || len(phases) != 11 || phases[2] != "src_prepare" {
 			t.Fatalf("EAPI %s defaults = %#v, %v", eapi, phases, err)
@@ -223,8 +757,64 @@ func TestDefaultPhasesDeclareSupportedEAPIs(t *testing.T) {
 	}
 }
 
+func TestEAPI9EnvironmentAndHelpers(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=9
+src_compile() {
+	[[ -n ${ROOT} ]] || die "ROOT shell variable missing"
+	! env | grep -q '^ROOT=' || die "ROOT leaked to external environment"
+	false | true
+	! pipestatus || die "pipestatus missed pipeline failure"
+	true | true
+	pipestatus || die "pipestatus rejected successful pipeline"
+	! domo missing.mo || die "EAPI 9 domo was not banned"
+}
+`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "eapi9-helpers", Command: "run_phase", Phase: "src_compile", EAPI: "9", Ebuild: ebuild, RootDir: directory}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("EAPI 9 worker: %v; events=%#v", err, events)
+	}
+}
+
+func TestInstalledEnvironmentSuppliesLifecycleAndCannotReplaceTypedRoot(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	environment := filepath.Join(directory, "environment")
+	root := filepath.Join(directory, "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content := `EAPI=8
+ROOT=/stale/installed/root
+pkg_postrm() { [[ ${ROOT} == "${EXPECTED_ROOT}" ]] || die "stale ROOT escaped"; echo installed-environment; }
+`
+	if err := os.WriteFile(environment, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "installed-environment", Command: "run_phase", Phase: "pkg_postrm", EAPI: "8", Ebuild: ebuild, Environment: environment, RootDir: root, Env: map[string]string{"EXPECTED_ROOT": root}}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("installed environment worker: %v; events=%#v", err, events)
+	}
+	found := false
+	for _, event := range events {
+		found = found || event.Kind == "log" && event.Message == "installed-environment"
+	}
+	if !found {
+		t.Fatalf("installed lifecycle did not run: %#v", events)
+	}
+}
+
 func TestSupportedEAPIDefaultAndLifecycleMatrix(t *testing.T) {
-	for _, eapi := range []string{"7", "8"} {
+	for _, eapi := range []string{"7", "8", "9"} {
 		t.Run("EAPI-"+eapi, func(t *testing.T) {
 			directory := t.TempDir()
 			work := filepath.Join(directory, "work")
@@ -342,6 +932,39 @@ func TestBashWorkerHandshakeAndOrderedLogs(t *testing.T) {
 	}
 }
 
+func TestBashWorkerEmitsExpandedVDBMetadataOnRequest(t *testing.T) {
+	ebuild := filepath.Join(t.TempDir(), "pkg-1.ebuild")
+	eclassDir := filepath.Join(filepath.Dir(ebuild), "eclass")
+	if err := os.Mkdir(eclassDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(eclassDir, "sample.eclass"), []byte("sample_src_prepare() { :; }\nEXPORT_FUNCTIONS src_prepare\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content := "EAPI=8\ninherit sample\nLLVM_MAJOR=19\nDEPEND=\"~llvm-core/llvm-${LLVM_MAJOR}:${LLVM_MAJOR}\"\nRDEPEND=\"${DEPEND}\"\nsrc_compile() { :; }\n"
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "metadata-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild, EclassDirs: []string{eclassDir}, EmitMetadata: true}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := make(map[string]string)
+	for _, event := range events {
+		if event.Kind == "metadata" {
+			metadata[event.Class] = event.Message
+		}
+	}
+	want := "~llvm-core/llvm-19:19"
+	if metadata["DEPEND"] != want || metadata["RDEPEND"] != want {
+		t.Fatalf("expanded metadata = %#v, want DEPEND/RDEPEND %q", metadata, want)
+	}
+	if metadata["INHERITED"] != "sample" || metadata["DEFINED_PHASES"] != "src_prepare src_compile" {
+		t.Fatalf("derived metadata = %#v", metadata)
+	}
+}
+
 func TestBashWorkerEmitsTypedElogClasses(t *testing.T) {
 	ebuild := filepath.Join(t.TempDir(), "pkg-1.ebuild")
 	content := "EAPI=8\nsrc_compile() { einfo info; elog log; ewarn warn; eerror error; eqawarn qa; }\n"
@@ -421,9 +1044,15 @@ func TestBashWorkerCancellationKillsProcessGroup(t *testing.T) {
 	defer cancel()
 	request := Request{Protocol: Version, ID: "cancel-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild, Env: map[string]string{"PID_FILE": pidFile}}
 	started := time.Now()
-	_, err := runWorkerCommandWithCancelGrace(exec.CommandContext(ctx, "bash", "--noprofile", "--norc", "-c", bashWorker), request, 100*time.Millisecond)
+	events, err := runWorkerCommandWithCancelGrace(exec.CommandContext(ctx, "bash", "--noprofile", "--norc", "-c", bashWorker), request, 100*time.Millisecond)
 	if err == nil {
 		t.Fatal("cancelled worker returned success")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("cancellation error = %v", err)
+	}
+	if len(events) == 0 || events[len(events)-1].Kind != "signal" || events[len(events)-1].Stream != "control" || !strings.Contains(events[len(events)-1].Message, "process group terminated") {
+		t.Fatalf("cancellation events = %#v", events)
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("worker cancellation took %s", elapsed)
@@ -446,6 +1075,25 @@ func TestBashWorkerCancellationKillsProcessGroup(t *testing.T) {
 			t.Fatalf("worker descendant %d survived cancellation (probe error %v)", pid, probeErr)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+
+	logRoot := filepath.Join(directory, "logs")
+	manager, managerErr := NewPackageLog(PackageLogOptions{
+		Root: logRoot, TempDir: filepath.Join(directory, "log-temp"), Category: "cat", PF: "pkg-1",
+		Now: time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC),
+	})
+	if managerErr != nil {
+		t.Fatal(managerErr)
+	}
+	if _, persistErr := persistWorkerEvents(request, events, err, WorkerOptions{DurableLog: manager}); persistErr == nil || !strings.Contains(persistErr.Error(), manager.Path()) {
+		t.Fatalf("persist cancellation error = %v", persistErr)
+	}
+	logContent, readErr := os.ReadFile(manager.Path())
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(logContent), `kind="signal" stream="control"`) || !strings.Contains(string(logContent), `kind="terminal-error" stream="stderr"`) || !strings.Contains(string(logContent), "cancelled") {
+		t.Fatalf("durable cancellation log = %s", logContent)
 	}
 }
 
@@ -471,6 +1119,38 @@ func TestBashWorkerReceivesControlledRootAndScratchContract(t *testing.T) {
 	want := strings.Join([]string{dirs["root"], dirs["sysroot"], dirs["broot"], dirs["temp"], dirs["temp"], dirs["temp"], dirs["temp"], dirs["home"]}, "|")
 	if len(events) != 3 || events[1].Message != want {
 		t.Fatalf("controlled environment = %#v, want %q", events, want)
+	}
+}
+
+func TestBashWorkerReceivesPortagePhaseAndBuildEnvironment(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+src_compile() {
+  printf '%s|%s|%s|%s\n' "$EBUILD_PHASE" "$EBUILD_PHASE_FUNC" "$PORTAGE_BUILDDIR" "$PORTAGE_CONFIGROOT"
+}`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	buildDir := filepath.Join(directory, "build")
+	configRoot := filepath.Join(directory, "config")
+	request := Request{
+		Protocol: Version, ID: "portage-env", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild,
+		WorkDir: directory, SourceDir: directory, BuildDir: buildDir, ConfigRoot: configRoot,
+	}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("phase environment: %v; events=%#v", err, events)
+	}
+	want := "compile|src_compile|" + buildDir + "|" + configRoot
+	found := false
+	for _, event := range events {
+		if event.Kind == "log" && event.Message == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("phase environment missing %q: %#v", want, events)
 	}
 }
 
@@ -800,6 +1480,45 @@ func TestFilesystemSandboxHidesUnboundHostFiles(t *testing.T) {
 	}
 	if len(events) != 3 || events[1].Message != "hidden" {
 		t.Fatalf("host file visibility events = %#v", events)
+	}
+}
+
+func TestBubblewrapMakesRootReadOnlyAndLeavesImageWritable(t *testing.T) {
+	directory := t.TempDir()
+	root := filepath.Join(directory, "root")
+	image := filepath.Join(directory, "image")
+	work := filepath.Join(directory, "work")
+	for _, path := range []string{root, image, work} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+pkg_preinst() {
+	printf image > "${ED}/image-marker"
+	printf escaped > "${ROOT}/root-marker"
+}
+`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Protocol: Version, ID: "readonly-root-1", Command: "run_phase", Phase: "pkg_preinst", EAPI: "8", Ebuild: ebuild,
+		RootDir: root, ImageDir: image, WorkDir: work, BuildDir: work, SourceDir: work, TempDir: work, HomeDir: work,
+	}
+	events, workerErr := RunBashWorkerWithOptions(context.Background(), request, WorkerOptions{Isolation: IsolationBubblewrap})
+	if workerErr != nil && len(events) == 0 && strings.Contains(workerErr.Error(), "worker did not start") {
+		t.Skipf("bubblewrap unavailable in test environment: %v", workerErr)
+	}
+	if workerErr == nil {
+		t.Fatalf("ROOT write unexpectedly succeeded: %#v", events)
+	}
+	if _, err := os.Stat(filepath.Join(image, "image-marker")); err != nil {
+		t.Fatalf("writable image marker: %v; worker error=%v events=%#v", err, workerErr, events)
+	}
+	if _, err := os.Stat(filepath.Join(root, "root-marker")); !os.IsNotExist(err) {
+		t.Fatalf("read-only ROOT was modified: %v", err)
 	}
 }
 

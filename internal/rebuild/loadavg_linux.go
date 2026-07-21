@@ -3,13 +3,14 @@
 package rebuild
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
-func waitForLoad(maxLoad float64) error {
+func waitForLoad(ctx context.Context, maxLoad float64) error {
 	for {
 		load, err := readLoadAvg1()
 		if err != nil {
@@ -18,7 +19,13 @@ func waitForLoad(maxLoad float64) error {
 		if load <= maxLoad {
 			return nil
 		}
-		time.Sleep(1 * time.Second)
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 

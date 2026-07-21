@@ -26,10 +26,29 @@ type canonicalPlanAuthorization struct {
 }
 
 type planOptions struct {
-	Update, Deep, CompleteGraph, NewUse, ChangedUse, ChangedDeps bool
-	EmptyTree, Reinstall, OnlyDeps, NoDeps, Oneshot              bool
-	WithBdeps, RootDeps                                          string
-	Backtrack                                                    int
+	Update        bool    `json:"update"`
+	Deep          bool    `json:"deep"`
+	CompleteGraph bool    `json:"complete_graph"`
+	NewUse        bool    `json:"newuse"`
+	ChangedUse    bool    `json:"changed_use"`
+	ChangedDeps   bool    `json:"changed_deps"`
+	EmptyTree     bool    `json:"empty_tree"`
+	Reinstall     bool    `json:"reinstall"`
+	OnlyDeps      bool    `json:"only_deps"`
+	NoDeps        bool    `json:"no_deps"`
+	Oneshot       bool    `json:"oneshot"`
+	WithBdeps     string  `json:"with_bdeps"`
+	RootDeps      string  `json:"root_deps"`
+	Backtrack     int     `json:"backtrack"`
+	Jobs          int     `json:"jobs"`
+	LoadAverage   float64 `json:"load_average"`
+}
+
+func optionsForPlan(cfg resolve.ResolveConfig) planOptions {
+	return planOptions{Update: cfg.Update, Deep: cfg.Deep, CompleteGraph: cfg.CompleteGraph, NewUse: cfg.NewUse,
+		ChangedUse: cfg.ChangedUse, ChangedDeps: cfg.ChangedDeps, EmptyTree: cfg.EmptyTree, Reinstall: cfg.Reinstall,
+		OnlyDeps: cfg.OnlyDeps, NoDeps: cfg.NoDeps, Oneshot: cfg.Oneshot, WithBdeps: cfg.WithBdeps,
+		RootDeps: cfg.RootDeps, Backtrack: cfg.Backtrack, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage}
 }
 
 type canonicalWorldMutation struct {
@@ -64,13 +83,7 @@ func canonicalPlanSHA256(targets []string, cfg resolve.ResolveConfig, result *re
 	document := canonicalPlanAuthorization{
 		Version: 1, StateSHA256: stateSHA256, Operation: operation,
 		Targets: append([]string(nil), targets...),
-		Options: planOptions{
-			Update: cfg.Update, Deep: cfg.Deep, CompleteGraph: cfg.CompleteGraph,
-			NewUse: cfg.NewUse, ChangedUse: cfg.ChangedUse, ChangedDeps: cfg.ChangedDeps,
-			EmptyTree: cfg.EmptyTree, Reinstall: cfg.Reinstall, OnlyDeps: cfg.OnlyDeps,
-			NoDeps: cfg.NoDeps, Oneshot: cfg.Oneshot, WithBdeps: cfg.WithBdeps,
-			RootDeps: cfg.RootDeps, Backtrack: cfg.Backtrack,
-		},
+		Options: optionsForPlan(cfg),
 		Actions: jsonActions(result.Install), Uninstall: jsonActions(result.Uninstall),
 	}
 	encoded, err := json.Marshal(document)
@@ -215,4 +228,151 @@ func validatePlanAuthorization(experimental bool, approved, actual string) error
 		return fmt.Errorf("approved plan SHA-256 %s does not match current verified plan %s", approved, actual)
 	}
 	return nil
+}
+
+func approvedPlanDigest(legacyDigest, reference, directory string) (string, error) {
+	legacyDigest, reference = strings.TrimSpace(legacyDigest), strings.TrimSpace(reference)
+	if legacyDigest != "" && reference != "" {
+		return "", fmt.Errorf("use only one of --approve-plan-sha256 and --approve-plan")
+	}
+	if reference == "" {
+		return legacyDigest, nil
+	}
+	path, err := resolvePlanPath(reference, directory)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read approved plan %s: %w", path, err)
+	}
+	var document struct {
+		Complete   bool   `json:"complete"`
+		Operation  string `json:"operation"`
+		PlanSHA256 string `json:"plan_sha256"`
+		Resolution struct {
+			Verified     bool   `json:"verified"`
+			Verification string `json:"verification"`
+		} `json:"resolution"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return "", fmt.Errorf("decode approved plan %s: %w", path, err)
+	}
+	verifiedOperation := document.Operation == "install" || document.Operation == "update" || document.Operation == "uninstall"
+	if !document.Complete || (verifiedOperation && (!document.Resolution.Verified || document.Resolution.Verification != resolve.VerificationVerified)) {
+		return "", fmt.Errorf("approved plan %s is not complete and verified", path)
+	}
+	if strings.TrimSpace(document.PlanSHA256) == "" {
+		return "", fmt.Errorf("approved plan %s has no plan_sha256", path)
+	}
+	return document.PlanSHA256, nil
+}
+
+func describeApprovedPlanDifference(reference, directory string, current resolve.ResolveConfig) string {
+	if strings.TrimSpace(reference) == "" {
+		return ""
+	}
+	path, err := resolvePlanPath(reference, directory)
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var saved struct {
+		Options planOptions `json:"options"`
+	}
+	if json.Unmarshal(data, &saved) != nil {
+		return ""
+	}
+	want := optionsForPlan(current)
+	var differences []string
+	boolOption := func(name string, before, after bool) {
+		if before != after {
+			differences = append(differences, fmt.Sprintf("%s (saved=%t, current=%t)", name, before, after))
+		}
+	}
+	boolOption("update", saved.Options.Update, want.Update)
+	boolOption("deep", saved.Options.Deep, want.Deep)
+	boolOption("complete-graph", saved.Options.CompleteGraph, want.CompleteGraph)
+	boolOption("newuse", saved.Options.NewUse, want.NewUse)
+	boolOption("changed-use", saved.Options.ChangedUse, want.ChangedUse)
+	boolOption("changed-deps", saved.Options.ChangedDeps, want.ChangedDeps)
+	boolOption("emptytree", saved.Options.EmptyTree, want.EmptyTree)
+	boolOption("reinstall", saved.Options.Reinstall, want.Reinstall)
+	boolOption("onlydeps", saved.Options.OnlyDeps, want.OnlyDeps)
+	boolOption("nodeps", saved.Options.NoDeps, want.NoDeps)
+	boolOption("oneshot", saved.Options.Oneshot, want.Oneshot)
+	if saved.Options.WithBdeps != want.WithBdeps {
+		differences = append(differences, fmt.Sprintf("with-bdeps (saved=%q, current=%q)", saved.Options.WithBdeps, want.WithBdeps))
+	}
+	if saved.Options.RootDeps != want.RootDeps {
+		differences = append(differences, fmt.Sprintf("root-deps (saved=%q, current=%q)", saved.Options.RootDeps, want.RootDeps))
+	}
+	if len(differences) == 0 {
+		return ""
+	}
+	return "authorization-bound options differ: " + strings.Join(differences, ", ")
+}
+
+func resolvePlanPath(reference, directory string) (string, error) {
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return "", fmt.Errorf("plan reference is empty")
+	}
+	if filepath.IsAbs(reference) || strings.ContainsRune(reference, filepath.Separator) {
+		return filepath.Clean(reference), nil
+	}
+	if reference == "." || reference == ".." || strings.ContainsAny(reference, "\\\x00") {
+		return "", fmt.Errorf("invalid plan name %q", reference)
+	}
+	// Bare references are logical plan names, not filenames with arbitrary
+	// extensions. Dots are useful in package/version-derived names, so only an
+	// explicit .json suffix suppresses the default extension.
+	if !strings.EqualFold(filepath.Ext(reference), ".json") {
+		reference += ".json"
+	}
+	return filepath.Join(directory, reference), nil
+}
+
+func savePlanDocument(reference, directory string, data []byte) (string, error) {
+	path, err := resolvePlanPath(reference, directory)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	temporary, err := os.CreateTemp(dir, ".plan-*")
+	if err != nil {
+		return "", err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o644); err == nil {
+		_, err = temporary.Write(data)
+	}
+	if err == nil {
+		err = temporary.Sync()
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return "", err
+	}
+	directoryHandle, err := os.Open(dir)
+	if err != nil {
+		return "", err
+	}
+	if err := directoryHandle.Sync(); err != nil {
+		directoryHandle.Close()
+		return "", err
+	}
+	return path, directoryHandle.Close()
 }

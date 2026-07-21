@@ -92,6 +92,15 @@ func firstDynamicString(file *elf.File, tag elf.DynTag) string {
 	return values[0]
 }
 
+func elfSONAME(path string) string {
+	file, err := elf.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	return firstDynamicString(file, elf.DT_SONAME)
+}
+
 func portageELFArch(file *elf.File) (string, string) {
 	switch file.Machine {
 	case elf.EM_X86_64:

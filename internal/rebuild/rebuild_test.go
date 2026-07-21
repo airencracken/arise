@@ -8,16 +8,20 @@ import (
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/airencracken/arise/internal/ebuild"
 	"github.com/airencracken/arise/internal/journal"
+	mergepkg "github.com/airencracken/arise/internal/merge"
 	"github.com/airencracken/arise/internal/phaseproto"
 	"github.com/airencracken/arise/internal/portage"
 )
@@ -64,6 +68,47 @@ func TestFindEbuild(t *testing.T) {
 			t.Error("expected error for missing package, got nil")
 		}
 	})
+}
+
+func TestPreflightHasVersionQueriesUsesInstalledVDB(t *testing.T) {
+	tmp := t.TempDir()
+	repo, vdb := filepath.Join(tmp, "repo"), filepath.Join(tmp, "vdb")
+	eclassDir := filepath.Join(repo, "eclass")
+	installed := filepath.Join(vdb, "dev-build", "cmake-4.2.0")
+	for _, directory := range []string{eclassDir, installed} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eclass := `probe() {
+  has_version -b "<dev-build/cmake-4.2.1"
+  has_version -b ">=dev-build/cmake-4"
+}`
+	if err := os.WriteFile(filepath.Join(eclassDir, "probe.eclass"), []byte(eclass), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"SLOT": "0\n", "repository": "gentoo\n"} {
+		if err := os.WriteFile(filepath.Join(installed, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuildPath := filepath.Join(tmp, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuildPath, []byte("EAPI=8\ninherit probe\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eb, err := ebuild.ParseEbuild(ebuildPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := preflightHasVersionQueries(ebuildPath, eb, []portage.RepoEntry{{Name: "gentoo", Location: repo}}, "gentoo", t.TempDir(), vdb, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"<dev-build/cmake-4.2.1", ">=dev-build/cmake-4"} {
+		if !answers[query] {
+			t.Fatalf("has_version %s = false, answers=%v", query, answers)
+		}
+	}
 }
 
 func TestFindEbuild_EmptyDir(t *testing.T) {
@@ -684,12 +729,119 @@ pkg_postinst() { printf 'postinst\n' > "${ROOT}/postinst-marker"; }
 	}
 }
 
-func TestRebuildPackagePostinstFailureRollsBackTransactionAndPreservesLog(t *testing.T) {
+func TestRebuildPackageDisposableRootReplacementMatrix(t *testing.T) {
 	if _, err := exec.LookPath("sandbox"); err != nil {
 		t.Skip("Portage sandbox is not installed")
 	}
-	for _, eapi := range []string{"7", "8"} {
-		t.Run("EAPI-"+eapi, func(t *testing.T) {
+	tmp := t.TempDir()
+	repo, root := filepath.Join(tmp, "repo"), filepath.Join(tmp, "root")
+	vdb, work := filepath.Join(root, "var", "db", "pkg"), filepath.Join(tmp, "work")
+	dist, journals := filepath.Join(tmp, "distfiles"), filepath.Join(tmp, "journals")
+	packageDir := filepath.Join(repo, "app-misc", "cycle-test")
+	for _, directory := range []string{filepath.Join(repo, "eclass"), packageDir, root, vdb, work, dist} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEbuild := func(version, slot string) {
+		t.Helper()
+		body := fmt.Sprintf(`EAPI=8
+S="${WORKDIR}/${P}"
+SLOT=%q
+src_unpack() { mkdir -p "${S}"; printf 'version=%s\n' > "${S}/current"; printf 'payload=%s\n' > "${S}/versioned"; }
+src_install() {
+  insinto /usr/share/cycle-test
+  newins current current
+  newins versioned version-%s
+  if [[ ${SLOT} == 1 ]]; then newins versioned slot-1; fi
+}
+`, slot, version, version, version)
+		if err := os.WriteFile(filepath.Join(packageDir, "cycle-test-"+version+".ebuild"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEbuild("1", "0")
+	writeEbuild("2", "0")
+	writeEbuild("3", "1")
+	cfg := RebuildConfig{
+		RepoDir: repo, DistfilesDir: dist, RootDir: root, VdbDir: vdb, WorkDirBase: work,
+		PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+		JournalDir: journals,
+	}
+	run := func(version string, replacement bool) {
+		t.Helper()
+		cfg.AllowLiveUpgrade = replacement
+		if err := RebuildPackage(context.Background(), "app-misc/cycle-test-"+version, &cfg); err != nil {
+			t.Fatalf("install cycle-test-%s (replacement=%v): %v", version, replacement, err)
+		}
+	}
+	assertCurrent := func(version string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, "usr", "share", "cycle-test", "current"))
+		if err != nil || string(data) != "version="+version+"\n" {
+			t.Fatalf("current after %s = %q, %v", version, data, err)
+		}
+	}
+
+	run("1", false) // fresh install
+	assertCurrent("1")
+	run("2", true) // upgrade
+	assertCurrent("2")
+	if _, err := os.Lstat(filepath.Join(root, "usr", "share", "cycle-test", "version-1")); !os.IsNotExist(err) {
+		t.Fatalf("upgrade retained obsolete version-1 payload: %v", err)
+	}
+	run("1", true) // downgrade
+	assertCurrent("1")
+	if _, err := os.Lstat(filepath.Join(root, "usr", "share", "cycle-test", "version-2")); !os.IsNotExist(err) {
+		t.Fatalf("downgrade retained obsolete version-2 payload: %v", err)
+	}
+	run("1", false) // same-version reinstall
+	assertCurrent("1")
+	run("3", false) // parallel slot
+	assertCurrent("3")
+
+	for _, entry := range []string{"cycle-test-1", "cycle-test-3"} {
+		if _, err := os.Stat(filepath.Join(vdb, "app-misc", entry, "CONTENTS")); err != nil {
+			t.Fatalf("coexisting VDB entry %s: %v", entry, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "usr", "share", "cycle-test", "slot-1")); err != nil {
+		t.Fatalf("parallel-slot payload: %v", err)
+	}
+	if err := mergepkg.UnmergeAt(context.Background(), root, vdb, filepath.Join(vdb, "app-misc", "cycle-test-1"), journals); err != nil {
+		t.Fatalf("unmerge slot 0: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(vdb, "app-misc", "cycle-test-1")); !os.IsNotExist(err) {
+		t.Fatalf("unmerge retained slot-0 VDB: %v", err)
+	}
+	for _, path := range []string{"current", "slot-1", "version-3"} {
+		if _, err := os.Stat(filepath.Join(root, "usr", "share", "cycle-test", path)); err != nil {
+			t.Fatalf("unmerge removed slot-1-owned %s: %v", path, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(root, "usr", "share", "cycle-test", "version-1")); !os.IsNotExist(err) {
+		t.Fatalf("unmerge retained exclusively owned slot-0 payload: %v", err)
+	}
+	summaries, err := journal.List(journals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 6 {
+		t.Fatalf("journal count = %d, want 6", len(summaries))
+	}
+	for _, summary := range summaries {
+		if summary.Status != "committed" || summary.Entries == 0 {
+			t.Fatalf("replacement journal = %#v", summary)
+		}
+	}
+}
+
+func TestRebuildPackagePostinstFailureRetainsCommittedTransactionAndPreservesLog(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	for _, eapi := range []string{"7", "8", "9"} {
+			t.Run("EAPI-"+eapi, func(t *testing.T) {
 			tmp := t.TempDir()
 			repo := filepath.Join(tmp, "repo")
 			root := filepath.Join(tmp, "root")
@@ -713,28 +865,40 @@ pkg_postinst() { printf 'postinst failure\n'; return 29; }
 			if err := os.WriteFile(filepath.Join(packageDir, "failure-test-1.ebuild"), []byte(ebuildContent), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			commitCallbackCalled := false
 			cfg := RebuildConfig{
 				RepoDir: repo, DistfilesDir: dist, RootDir: root, VdbDir: vdb, WorkDirBase: work,
 				PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
 				PhaseLogDir: logs, JournalDir: journals,
+				OnTransactionCommit: func(committedErr error) error {
+					commitCallbackCalled = true
+					var postCommit *mergepkg.PostCommitError
+					if !errors.As(committedErr, &postCommit) {
+						t.Fatalf("commit callback error = %v, want PostCommitError", committedErr)
+					}
+					return nil
+				},
 			}
 			err := RebuildPackage(context.Background(), "app-misc/failure-test-1", &cfg)
 			if err == nil || !strings.Contains(err.Error(), "pkg_postinst") || !strings.Contains(err.Error(), "exit status 29") {
 				t.Fatalf("postinst failure = %v", err)
 			}
+			if !commitCallbackCalled {
+				t.Fatal("committed postinst failure did not invoke transaction callback")
+			}
 			for _, path := range []string{
 				filepath.Join(root, "usr", "share", "failure-test", "payload"),
 				filepath.Join(vdb, "app-misc", "failure-test-1"),
 			} {
-				if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
-					t.Fatalf("failed transaction retained %s: %v", path, statErr)
+				if _, statErr := os.Lstat(path); statErr != nil {
+					t.Fatalf("post-commit failure lost %s: %v", path, statErr)
 				}
 			}
 			summaries, err := journal.List(journals)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(summaries) != 1 || summaries[0].Status != "rolled-back" || summaries[0].Entries == 0 {
+			if len(summaries) != 1 || summaries[0].Status != "committed" || summaries[0].Entries == 0 {
 				t.Fatalf("failure journal = %#v", summaries)
 			}
 			logPaths, err := filepath.Glob(filepath.Join(logs, "app-misc:failure-test-1:*.log"))
@@ -940,5 +1104,57 @@ func TestProtocolBuildPhasesHonorTestPolicy(t *testing.T) {
 	with := strings.Join(protocolBuildPhases(phaseproto.ExecutionPolicy{Configured: true, Tests: true}), " ")
 	if strings.Contains(without, "src_test") || !strings.Contains(with, "src_test") {
 		t.Fatalf("without=%q with=%q", without, with)
+	}
+}
+
+func TestLifecycleOnlyDisabledUseGuards(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pkg-1.ebuild")
+	content := "pkg_setup() {\n\tuse test && check-reqs_pkg_setup\n}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !lifecycleOnlyDisabledUseGuards(path, "pkg_setup", map[string]bool{"test": false}) {
+		t.Fatal("disabled USE guard was not accepted")
+	}
+	if lifecycleOnlyDisabledUseGuards(path, "pkg_setup", map[string]bool{"test": true}) {
+		t.Fatal("enabled USE guard was accepted")
+	}
+	content = "pkg_setup() {\n\tuse test && check-reqs_pkg_setup\n\teinfo unsafe-unguarded-tail\n}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleOnlyDisabledUseGuards(path, "pkg_setup", map[string]bool{"test": false}) {
+		t.Fatal("unguarded lifecycle command was accepted")
+	}
+}
+
+func TestDynamicAutotoolsQueries(t *testing.T) {
+	source := "_LATEST_AUTOCONF=( 2.73:2.73 2.72-r1:2.72 )\n_LATEST_AUTOMAKE=( 1.18.1:1.18 )\n"
+	want := []string{"=dev-build/autoconf-2.72*", "=dev-build/autoconf-2.73*", "=dev-build/automake-1.18*"}
+	if got := dynamicAutotoolsQueries(source); !slices.Equal(got, want) {
+		t.Fatalf("queries=%v want=%v", got, want)
+	}
+}
+
+func TestStaticHasVersionQueryAcceptsQuotedAndUnquotedAtoms(t *testing.T) {
+	source := `has_version dev-libs/libffi[pax-kernel]; has_version -b "=dev-build/automake-1.18*"; has_version 'dev-lang/python:3.14'`
+	matches := staticHasVersionQuery.FindAllStringSubmatch(source, -1)
+	if len(matches) != 3 {
+		t.Fatalf("matches=%v", matches)
+	}
+	var got []string
+	for _, match := range matches {
+		query := match[2]
+		if query == "" {
+			query = match[3]
+		}
+		if query == "" {
+			query = match[4]
+		}
+		got = append(got, match[1]+":"+query)
+	}
+	want := []string{":dev-libs/libffi[pax-kernel]", "b:=dev-build/automake-1.18*", ":dev-lang/python:3.14"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("queries=%v want=%v", got, want)
 	}
 }

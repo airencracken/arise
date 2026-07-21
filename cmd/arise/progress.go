@@ -12,15 +12,22 @@ import (
 )
 
 type terminalProgress struct {
+	output  bool
 	enabled bool
 	done    chan struct{}
 	wait    sync.WaitGroup
+	mu      sync.Mutex
+	label   string
 }
 
 var progressFrames = [...]string{"|", "/", "-", "\\"}
 
 func startTerminalProgress(label string, enabled bool) *terminalProgress {
-	p := &terminalProgress{enabled: enabled && term.IsTerminal(int(os.Stdout.Fd()))}
+	return startTerminalProgressMode(label, enabled, true)
+}
+
+func startTerminalProgressMode(label string, output, animate bool) *terminalProgress {
+	p := &terminalProgress{output: output, enabled: output && animate && term.IsTerminal(int(os.Stdout.Fd())), label: label}
 	if !p.enabled {
 		return p
 	}
@@ -31,12 +38,12 @@ func startTerminalProgress(label string, enabled bool) *terminalProgress {
 		ticker := time.NewTicker(80 * time.Millisecond)
 		defer ticker.Stop()
 		frame := 0
-		fmt.Printf("\r%s %s", progressFrames[frame], label)
+		p.render(frame)
 		for {
 			select {
 			case <-ticker.C:
 				frame = (frame + 1) % len(progressFrames)
-				fmt.Printf("\r%s %s", progressFrames[frame], label)
+				p.render(frame)
 			case <-p.done:
 				return
 			}
@@ -45,13 +52,42 @@ func startTerminalProgress(label string, enabled bool) *terminalProgress {
 	return p
 }
 
+func (p *terminalProgress) render(frame int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	fmt.Printf("\r%s %s", progressFrames[frame], p.label)
+}
+
+func (p *terminalProgress) setLabel(label string) {
+	if p == nil || !p.output {
+		return
+	}
+	p.mu.Lock()
+	p.label = label
+	p.mu.Unlock()
+}
+
+func (p *terminalProgress) message(message string) {
+	if p == nil || !p.output {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.enabled {
+		fmt.Print("\r\033[K")
+	}
+	fmt.Println(message)
+}
+
 func (p *terminalProgress) stop() {
 	if p == nil || !p.enabled {
 		return
 	}
 	close(p.done)
 	p.wait.Wait()
+	p.mu.Lock()
 	fmt.Print("\r\033[K")
+	p.mu.Unlock()
 }
 
 type fetchProgress struct {
@@ -72,6 +108,15 @@ func newFetchProgress(enabled bool, writer io.Writer) *fetchProgress {
 		progress.writer = io.Discard
 	}
 	return progress
+}
+
+// A carriage-return percentage display has only one owner. Concurrent
+// downloads therefore use complete event lines rather than allowing workers to
+// overwrite or accidentally terminate each other's progress line.
+func (p *fetchProgress) setConcurrent(concurrent bool) {
+	if concurrent {
+		p.terminal = false
+	}
 }
 
 func (p *fetchProgress) Report(event fetch.Progress) {

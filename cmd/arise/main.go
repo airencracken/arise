@@ -56,6 +56,12 @@ var (
 	journalDir               = flag.String("journal-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "journal"), "path to durable operation journals")
 	experimentalLiveMutation = flag.Bool("experimental-live-mutation", false, "authorize the gated live-mutation canary path")
 	approvePlanSHA256        = flag.String("approve-plan-sha256", "", "authorize exactly the canonical verified plan with this SHA-256 digest")
+	approvePlan              = flag.String("approve-plan", "", "authorize from a saved JSON plan path or name")
+	savePlan                 = flag.String("save-plan", "", "save the generated JSON plan to a path or name")
+	planDir                  = flag.String("plan-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "plans"), "directory for named saved plans")
+	emergeLog                = flag.String("emerge-log", commandRootPath("/var/log/emerge.log"), "Portage-compatible merge timing log")
+	showEstimates            = flag.Bool("show-estimates", false, "show historical per-package and total merge-time estimates")
+	preflightOnly            = flag.Bool("preflight-only", false, "validate every planned package without fetching, building, or mutating")
 
 	// Logging
 	logLevel = flag.String("log-level", "info", "log level: debug, info, warn, error")
@@ -80,6 +86,7 @@ var (
 	backtrackVal       = flag.Int("backtrack", 20, "--backtrack=INT, max backtrack levels")
 	resolverTimeout    = flag.Duration("resolver-timeout", 5*time.Minute, "wall-clock resolver limit (0 disables)")
 	jobsVal            = flag.Int("jobs", 0, "-j, parallel jobs")
+	fetchJobs          = flag.Int("fetch-jobs", 4, "number of concurrent source fetches (1 disables parallel fetch)")
 	loadAverage        = flag.Float64("load-average", 0, "--load-average=LOAD")
 	pretend            = flag.Bool("pretend", false, "-p, dry run")
 	ask                = flag.Bool("ask", false, "-a, prompt before proceeding")

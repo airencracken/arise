@@ -617,6 +617,17 @@ func TestEffectiveUseForPackagePolicyCanRemoveGlobalMask(t *testing.T) {
 	}
 }
 
+func TestExplicitUseOverrideExcludesProfileDefaults(t *testing.T) {
+	cfg := &Config{USE: []string{"-debug"}}
+	if cfg.ExplicitUseOverride("dev-libs/libnl-3.12.0", "3", "gentoo", "debug", true) {
+		t.Fatal("merged profile default was treated as an explicit override")
+	}
+	cfg.UserUSE = []string{"-debug"}
+	if !cfg.ExplicitUseOverride("dev-libs/libnl-3.12.0", "3", "gentoo", "debug", true) {
+		t.Fatal("user make.conf override was ignored")
+	}
+}
+
 func TestParsePackageUse_NegativeFlags(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "package.use")

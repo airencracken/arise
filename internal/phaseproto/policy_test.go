@@ -166,6 +166,17 @@ func TestEvaluateExecutionPolicyRejectsUnsupportedEnabledBehavior(t *testing.T) 
 	}
 }
 
+func TestEvaluateExecutionPolicyAcceptsControlPlaneFeatures(t *testing.T) {
+	features := "assume-digests binpkg-docompress binpkg-dostrip binpkg-logs buildpkg-live compress-index config-protect-if-modified distlocks ebuild-locks merge-sync merge-wait news parallel-fetch parallel-install pkgdir-index-trusted unknown-features-warn unmerge-logs unmerge-orphans userfetch usersync"
+	policy, err := EvaluateExecutionPolicy(features, "", "", nil)
+	if err != nil {
+		t.Fatalf("control-plane FEATURES: %v", err)
+	}
+	if !reflect.DeepEqual(policy.Features, strings.Fields(features)) {
+		t.Fatalf("FEATURES=%v", policy.Features)
+	}
+}
+
 func TestRunWorkerRejectsUserprivBeforeWorkerStartup(t *testing.T) {
 	request := Request{Protocol: Version, ID: "policy-userpriv", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: filepath.Join(t.TempDir(), "missing.ebuild"), Policy: ExecutionPolicy{Configured: true, UserPriv: true}}
 	_, err := RunBashWorkerWithOptions(context.Background(), request, WorkerOptions{Isolation: IsolationPortage})

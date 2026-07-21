@@ -796,6 +796,29 @@ func TestReverseELFConsumers(t *testing.T) {
 	}
 }
 
+func TestReverseELFConsumersRespectsOriginRunpath(t *testing.T) {
+	vdb := t.TempDir()
+	write := func(cpv, metadata string) {
+		dir := filepath.Join(vdb, filepath.FromSlash(cpv))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "NEEDED.ELF.2"), []byte(metadata), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("llvm-core/clang-13", "X;/usr/lib/llvm/13/lib64/libclang.so.13.0.1;libclang.so.13;;;x\n")
+	write("llvm-core/clang-14", "X;/usr/lib/llvm/14/bin/c-index-test;;$ORIGIN/../lib64;libclang.so.13;x\nX;/usr/lib/llvm/14/lib64/libclang.so.14.0.6;libclang.so.13;;;x\n")
+
+	got, err := ReverseELFConsumers(vdb, "llvm-core/clang-13")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("version-private provider leaked across RUNPATH: %v", got)
+	}
+}
+
 func TestReverseELFRemovalClosureConsumerFirst(t *testing.T) {
 	vdb := t.TempDir()
 	write := func(cpv, metadata string) {

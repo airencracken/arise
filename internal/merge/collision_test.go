@@ -15,7 +15,7 @@ func TestCheckCollisions_NoExistingPackages(t *testing.T) {
 	vdbDir := filepath.Join(tmp, "vdb")
 
 	if err := makeDestDir(destDir, map[string]string{
-		"usr/bin/app":  "binary",
+		"usr/bin/app":    "binary",
 		"usr/lib/lib.so": "library",
 	}); err != nil {
 		t.Fatalf("makeDestDir: %v", err)
@@ -93,6 +93,48 @@ func TestCheckCollisions_NoCollisionWhenUpdatingSamePackage(t *testing.T) {
 	}
 	if len(collisions) != 0 {
 		t.Errorf("expected 0 collisions when excluding same package, got %d: %v", len(collisions), collisions)
+	}
+}
+
+func TestCheckCollisions_NoCollisionWhenUpdatingRevisedPackage(t *testing.T) {
+	tmp := t.TempDir()
+	destDir := filepath.Join(tmp, "dest")
+	vdbDir := filepath.Join(tmp, "vdb")
+	installed := filepath.Join(vdbDir, "dev-lang", "python-3.9.9-r1")
+	if err := os.MkdirAll(filepath.Join(destDir, "usr", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destDir, "usr", "bin", "python3.9"), []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installed, "CONTENTS"), []byte("obj /usr/bin/python3.9 deadbeef 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	collisions, err := CheckCollisions(destDir, vdbDir, []string{"dev-lang/python"})
+	if err != nil {
+		t.Fatalf("CheckCollisions: %v", err)
+	}
+	if len(collisions) != 0 {
+		t.Fatalf("same-package revision reported as collisions: %v", collisions)
+	}
+}
+
+func TestPkgDirToCPParsesGentooVersions(t *testing.T) {
+	vdb := filepath.Join("root", "var", "db", "pkg")
+	for _, test := range []struct {
+		dir, want string
+	}{
+		{"python-3.9.9-r1", "dev-lang/python"},
+		{"python-3.10.10_p3", "dev-lang/python"},
+		{"signal-desktop-bin-7.61.0-r2", "net-im/signal-desktop-bin"},
+	} {
+		if got := pkgDirToCP(vdb, filepath.Join(vdb, strings.Split(test.want, "/")[0], test.dir)); got != test.want {
+			t.Errorf("pkgDirToCP(%q) = %q, want %q", test.dir, got, test.want)
+		}
 	}
 }
 

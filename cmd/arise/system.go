@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -128,22 +129,26 @@ func runDeselect(atomStr string) {
 	}
 	planSHA256 := worldMutationPlanSHA256("deselect", atomStr, stateSHA256)
 	if *pretend {
-		if *jsonOutput {
-			document := map[string]any{"schema": 1, "operation": "deselect", "atom": atomStr, "complete": true, "state_sha256": stateSHA256, "plan_sha256": planSHA256}
-			if err := json.NewEncoder(os.Stdout).Encode(document); err != nil {
-				fmt.Fprintf(os.Stderr, "deselect: encode plan: %v\n", err)
-				os.Exit(1)
-			}
-		} else {
+		document := map[string]any{"schema": 1, "operation": "deselect", "atom": atomStr, "complete": true, "state_sha256": stateSHA256, "plan_sha256": planSHA256}
+		if err := emitSavableMutationPlan("deselect", document); err != nil {
+			fmt.Fprintf(os.Stderr, "deselect: %v\n", err)
+			os.Exit(1)
+		}
+		if !*jsonOutput {
 			fmt.Printf("Would remove %s from world set.\nPlan SHA-256: %s\n", atomStr, planSHA256)
 		}
 		return
 	}
-	if !*experimentalLiveMutation || strings.TrimSpace(*approvePlanSHA256) == "" {
-		fmt.Fprintln(os.Stderr, "deselect: refusing mutation: require --experimental-live-mutation and --approve-plan-sha256")
+	if !*experimentalLiveMutation || (strings.TrimSpace(*approvePlanSHA256) == "" && strings.TrimSpace(*approvePlan) == "") {
+		fmt.Fprintln(os.Stderr, "deselect: refusing mutation: require --experimental-live-mutation and --approve-plan or --approve-plan-sha256")
 		os.Exit(1)
 	}
-	if err := validatePlanAuthorization(*experimentalLiveMutation, *approvePlanSHA256, planSHA256); err != nil {
+	approvedDigest, err := approvedPlanDigest(*approvePlanSHA256, *approvePlan, *planDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "deselect: refusing mutation: %v\n", err)
+		os.Exit(1)
+	}
+	if err := validatePlanAuthorization(*experimentalLiveMutation, approvedDigest, planSHA256); err != nil {
 		fmt.Fprintf(os.Stderr, "deselect: refusing mutation: %v\n", err)
 		os.Exit(1)
 	}
@@ -205,22 +210,26 @@ func runSelect(atomStr string) {
 	}
 	planSHA256 := worldMutationPlanSHA256("select", worldAtom, stateSHA256)
 	if *pretend {
-		if *jsonOutput {
-			document := map[string]any{"schema": 1, "operation": "select", "atom": worldAtom, "complete": true, "installed_vdb": installed, "state_sha256": stateSHA256, "plan_sha256": planSHA256}
-			if err := json.NewEncoder(os.Stdout).Encode(document); err != nil {
-				fmt.Fprintf(os.Stderr, "select: encode plan: %v\n", err)
-				os.Exit(1)
-			}
-		} else {
+		document := map[string]any{"schema": 1, "operation": "select", "atom": worldAtom, "complete": true, "installed_vdb": installed, "state_sha256": stateSHA256, "plan_sha256": planSHA256}
+		if err := emitSavableMutationPlan("select", document); err != nil {
+			fmt.Fprintf(os.Stderr, "select: %v\n", err)
+			os.Exit(1)
+		}
+		if !*jsonOutput {
 			fmt.Printf("Would add %s to world without rebuilding it.\nPlan SHA-256: %s\n", worldAtom, planSHA256)
 		}
 		return
 	}
-	if !*experimentalLiveMutation || strings.TrimSpace(*approvePlanSHA256) == "" {
-		fmt.Fprintln(os.Stderr, "select: refusing mutation: require --experimental-live-mutation and --approve-plan-sha256")
+	if !*experimentalLiveMutation || (strings.TrimSpace(*approvePlanSHA256) == "" && strings.TrimSpace(*approvePlan) == "") {
+		fmt.Fprintln(os.Stderr, "select: refusing mutation: require --experimental-live-mutation and --approve-plan or --approve-plan-sha256")
 		os.Exit(1)
 	}
-	if err := validatePlanAuthorization(true, *approvePlanSHA256, planSHA256); err != nil {
+	approvedDigest, err := approvedPlanDigest(*approvePlanSHA256, *approvePlan, *planDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "select: refusing mutation: %v\n", err)
+		os.Exit(1)
+	}
+	if err := validatePlanAuthorization(true, approvedDigest, planSHA256); err != nil {
 		fmt.Fprintf(os.Stderr, "select: refusing mutation: %v\n", err)
 		os.Exit(1)
 	}
@@ -246,6 +255,31 @@ func runSelect(atomStr string) {
 		os.Exit(1)
 	}
 	fmt.Printf("select: added %s to world without rebuilding it\n", worldAtom)
+}
+
+func emitSavableMutationPlan(command string, document any) error {
+	if !*jsonOutput && strings.TrimSpace(*savePlan) == "" {
+		return nil
+	}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(document); err != nil {
+		return fmt.Errorf("encode plan: %w", err)
+	}
+	if *jsonOutput {
+		if _, err := os.Stdout.Write(encoded.Bytes()); err != nil {
+			return fmt.Errorf("write plan: %w", err)
+		}
+	}
+	if strings.TrimSpace(*savePlan) != "" {
+		path, err := savePlanDocument(*savePlan, *planDir, encoded.Bytes())
+		if err != nil {
+			return fmt.Errorf("save plan: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Saved %s plan to %s\n", command, path)
+	}
+	return nil
 }
 
 // installedVDBForCP returns only VDB entries whose parsed category/package is

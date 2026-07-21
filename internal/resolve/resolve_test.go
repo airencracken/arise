@@ -272,6 +272,19 @@ func TestResolve_ExplicitInstalledTargetSelectsAvailableUpgrade(t *testing.T) {
 	}
 }
 
+func TestResolve_ReinstallRejectsInstalledVersionMissingFromRepository(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "net-libs/libsoup", "2.74.2", "2.4", "0", true, nil)
+	pkg(g, "net-libs/libsoup", "2.74.3-r1", "2.4", "0", false, nil)
+
+	cfg := DefaultResolveConfig()
+	cfg.Reinstall = true
+	_, err := Resolve(g, []string{"=net-libs/libsoup-2.74.2"}, cfg)
+	if err == nil || !strings.Contains(err.Error(), "no source ebuild is available") {
+		t.Fatalf("Resolve error = %v, want unavailable source ebuild", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: deep mode — recursive dep checking
 // ---------------------------------------------------------------------------
@@ -574,6 +587,10 @@ func TestSortPlannedActionsUsesSelectedVersionDependencies(t *testing.T) {
 	if sorted[0].Atom.CP() != "dev-build/tool" || sorted[1].Atom.CP() != "app-misc/parent" {
 		t.Fatalf("selected-version BDEPEND order = %v", collectCPV(sorted))
 	}
+	wantPrerequisite := ActionIdentity(sorted[0])
+	if !reflect.DeepEqual(sorted[1].Prerequisites, []string{wantPrerequisite}) {
+		t.Fatalf("parent prerequisites = %v, want %v", sorted[1].Prerequisites, wantPrerequisite)
+	}
 }
 
 func TestSortPlannedActionsPlacesPdependAfterParent(t *testing.T) {
@@ -609,6 +626,12 @@ func TestSortPlannedActionsCondensesDependencyCycleBeforeDependent(t *testing.T)
 	sorted := r.sortPlannedActions(actions)
 	if sorted[2].Atom.CP() != "app-misc/consumer" {
 		t.Fatalf("cyclic dependency component was not placed before its dependent: %v", collectCPV(sorted))
+	}
+	if len(sorted[0].Prerequisites) != 0 || !reflect.DeepEqual(sorted[1].Prerequisites, []string{ActionIdentity(sorted[0])}) {
+		t.Fatalf("cycle component was not serialized deterministically: %v / %v", sorted[0].Prerequisites, sorted[1].Prerequisites)
+	}
+	if !reflect.DeepEqual(sorted[2].Prerequisites, []string{ActionIdentity(sorted[1])}) {
+		t.Fatalf("consumer prerequisites = %v, want completed cycle component", sorted[2].Prerequisites)
 	}
 	r.validatePlanOrder(sorted)
 	if len(r.conflicts) != 0 {
@@ -2915,6 +2938,28 @@ func Test_collectCPV(t *testing.T) {
 	}
 }
 
+func TestVersionDependenciesMentionTransactionIsSlotAware(t *testing.T) {
+	vi := &VersionInfo{InstalledRdepend: `~llvm-core/llvm-19.1.7:${LLVM_MAJOR}=[debug=,${MULTILIB_USEDEP}]`}
+	remove13, err := atom.Parse("=llvm-core/llvm-13.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	remove19, err := atom.Parse("=llvm-core/llvm-19.1.7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if versionDependenciesMentionTransaction(vi, nil, map[string]*PkgAction{"13": {Atom: remove13, Slot: "13"}}) {
+		t.Fatal("LLVM 19 dependency treated as affected by LLVM 13 removal")
+	}
+	if !versionDependenciesMentionTransaction(vi, nil, map[string]*PkgAction{"19": {Atom: remove19, Slot: "19"}}) {
+		t.Fatal("LLVM 19 dependency did not match LLVM 19 removal")
+	}
+	vi.InstalledRdepend = "llvm-core/llvm"
+	if !versionDependenciesMentionTransaction(vi, nil, map[string]*PkgAction{"13": {Atom: remove13, Slot: "13"}}) {
+		t.Fatal("unversioned dependency did not match slotted removal")
+	}
+}
+
 func Test_hasAction(t *testing.T) {
 	actions := []PkgAction{
 		{Atom: mustParse("app-editors/vim-9.0"), Action: "install"},
@@ -3341,6 +3386,61 @@ func TestCandidateUseFlagsExcludeUnrelatedGlobalFlags(t *testing.T) {
 	}
 	if _, leaked := flags["unrelated"]; leaked {
 		t.Fatalf("unrelated global USE leaked into package state: %#v", flags)
+	}
+}
+
+func TestCandidateUseFlagsIUSEDefaultOutranksProfileButNotUser(t *testing.T) {
+	g := makeGraph()
+	vi := pkg(g, "dev-libs/libnl", "3.12.0", "3", "3", false, map[string]bool{"debug": true})
+	node := g.Packages["dev-libs/libnl"]
+
+	profile := &portage.Config{USE: []string{"-debug"}}
+	r := &resolver{portageConfig: profile, baseUseByVersion: make(map[*VersionInfo]map[string]bool), useOverrides: make(map[string]map[string]bool)}
+	if flags := r.candidateUseFlags(node, vi); !flags["debug"] {
+		t.Fatalf("profile default erased IUSE=+debug: %#v", flags)
+	}
+
+	user := &portage.Config{USE: []string{"-debug"}, UserUSE: []string{"-debug"}}
+	r = &resolver{portageConfig: user, baseUseByVersion: make(map[*VersionInfo]map[string]bool), useOverrides: make(map[string]map[string]bool)}
+	if flags := r.candidateUseFlags(node, vi); flags["debug"] {
+		t.Fatalf("explicit user -debug did not override IUSE=+debug: %#v", flags)
+	}
+}
+
+func TestDeepUpdateUnqualifiedDependencyEscapesScheduledOldSlot(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "llvm-runtimes/clang-runtime", "21.1.8", "21", "21", true, nil)
+	pkg(g, "llvm-runtimes/clang-runtime", "22", "22", "22", false, nil)
+	pkg(g, "llvm-core/clang", "21.1.8", "21", "21", true, nil)
+	pkg(g, "llvm-core/clang-common", "21.1.8", "0", "0", true, nil)
+	pkg(g, "llvm-core/clang-common", "22.1.8", "0", "0", false, nil)
+	deps(g, "llvm-core/clang", "~llvm-runtimes/clang-runtime-21.1.8:21")
+	deps(g, "llvm-core/clang", "llvm-core/clang-common")
+	deps(g, "llvm-core/clang-common", "llvm-runtimes/clang-runtime")
+
+	cfg := DefaultResolveConfig()
+	cfg.Update, cfg.Deep = true, true
+	result, err := Resolve(g, []string{"llvm-core/clang"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found22 := false
+	for _, action := range result.Install {
+		found22 = found22 || action.Atom.CP() == "llvm-runtimes/clang-runtime" && action.Slot == "22"
+	}
+	if !found22 {
+		t.Fatalf("unqualified updated dependency remained frozen at slot 21: %#v", result.Install)
+	}
+}
+
+func TestNewUseIgnoresNewlyMaskedIUSEFlag(t *testing.T) {
+	g := makeGraph()
+	installed := pkg(g, "app-crypt/pinentry", "1", "0", "0", true, map[string]bool{"gtk": true})
+	installed.InstalledIUseFlags = map[string]bool{"gtk": true}
+	candidate := pkg(g, "app-crypt/pinentry", "2", "0", "0", false, map[string]bool{"gtk": true, "selinux": false})
+	r := &resolver{portageConfig: &portage.Config{UseMask: []string{"selinux"}}}
+	if r.newUseChanged(g.Packages["app-crypt/pinentry"], installed, candidate, candidate.UseFlags) {
+		t.Fatal("new masked IUSE flag triggered --newuse")
 	}
 }
 

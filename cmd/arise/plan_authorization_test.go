@@ -88,3 +88,59 @@ func TestValidatePlanAuthorizationRequiresBothControlsAndExactDigest(t *testing.
 		t.Fatal(err)
 	}
 }
+
+func TestSavedPlanNameAndPathResolveToDigest(t *testing.T) {
+	directory := t.TempDir()
+	digest := strings.Repeat("a", 64)
+	document := []byte(`{"complete":true,"resolution":{"verified":true,"verification":"verified"},"plan_sha256":"` + digest + `"}`)
+	path, err := savePlanDocument("weekly-upgrade", directory, document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(directory, "weekly-upgrade.json") {
+		t.Fatalf("saved path=%s", path)
+	}
+	for _, reference := range []string{"weekly-upgrade", path} {
+		got, err := approvedPlanDigest("", reference, directory)
+		if err != nil || got != digest {
+			t.Fatalf("approvedPlanDigest(%q)=%q, %v", reference, got, err)
+		}
+	}
+	if _, err := approvedPlanDigest(digest, "weekly-upgrade", directory); err == nil {
+		t.Fatal("simultaneous digest and saved-plan approval accepted")
+	}
+}
+
+func TestSavedPlanNameContainingVersionDotGetsJSONSuffix(t *testing.T) {
+	directory := t.TempDir()
+	path, err := resolvePlanPath("libsoup-slot-2.4-upgrade", directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(directory, "libsoup-slot-2.4-upgrade.json")
+	if path != want {
+		t.Fatalf("resolved path=%q, want %q", path, want)
+	}
+}
+
+func TestApprovedPlanRejectsIncompleteDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "incomplete.json")
+	if err := os.WriteFile(path, []byte(`{"complete":false,"plan_sha256":"`+strings.Repeat("a", 64)+`"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := approvedPlanDigest("", path, t.TempDir()); err == nil {
+		t.Fatal("incomplete saved plan accepted")
+	}
+}
+
+func TestDescribeApprovedPlanDifferenceNamesOneshot(t *testing.T) {
+	directory := t.TempDir()
+	document := []byte(`{"complete":true,"operation":"install","plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","resolution":{"verified":true,"verification":"verified"},"options":{"backtrack":20}}`)
+	if _, err := savePlanDocument("option-test", directory, document); err != nil {
+		t.Fatal(err)
+	}
+	detail := describeApprovedPlanDifference("option-test", directory, resolve.ResolveConfig{Backtrack: 20, Oneshot: true})
+	if !strings.Contains(detail, "oneshot (saved=false, current=true)") {
+		t.Fatalf("difference = %q", detail)
+	}
+}

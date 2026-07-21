@@ -2,6 +2,7 @@
 package journal
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,7 +16,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const Version = 2
+const Version = 3
+
+const entriesLogName = "entries.jsonl"
 
 type Xattr struct {
 	Name  string `json:"name"`
@@ -136,6 +139,20 @@ func begin(base, root string, allowLiveRoot bool) (*Journal, error) {
 	if err != nil {
 		return nil, fmt.Errorf("journal: create operation: %w", err)
 	}
+	if err := os.Mkdir(filepath.Join(dir, "backups"), 0o700); err != nil {
+		return nil, fmt.Errorf("journal: create backups directory: %w", err)
+	}
+	logFile, err := os.OpenFile(filepath.Join(dir, entriesLogName), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("journal: create capture log: %w", err)
+	}
+	if err = logFile.Sync(); err != nil {
+		_ = logFile.Close()
+		return nil, fmt.Errorf("journal: sync capture log: %w", err)
+	}
+	if err := logFile.Close(); err != nil {
+		return nil, fmt.Errorf("journal: close capture log: %w", err)
+	}
 	j := &Journal{dir: dir, state: State{Version: Version, Status: "active", Root: root, LiveRoot: allowLiveRoot}, captured: make(map[string]bool)}
 	if err := j.persist(); err != nil {
 		return nil, err
@@ -152,8 +169,15 @@ func Open(dir string) (*Journal, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("journal: decode state: %w", err)
 	}
-	if (state.Version != 1 && state.Version != Version) || state.Root == "" || !filepath.IsAbs(state.Root) || (filepath.Clean(state.Root) == string(filepath.Separator) && !state.LiveRoot) || (filepath.Clean(state.Root) != string(filepath.Separator) && state.LiveRoot) {
+	if (state.Version < 1 || state.Version > Version) || state.Root == "" || !filepath.IsAbs(state.Root) || (filepath.Clean(state.Root) == string(filepath.Separator) && !state.LiveRoot) || (filepath.Clean(state.Root) != string(filepath.Separator) && state.LiveRoot) {
 		return nil, fmt.Errorf("journal: invalid state")
+	}
+	if state.Version >= 3 && state.Status == "active" {
+		logged, err := readEntryLog(dir)
+		if err != nil {
+			return nil, err
+		}
+		state.Entries = append(state.Entries, logged...)
 	}
 	j := &Journal{dir: dir, state: state, captured: make(map[string]bool)}
 	for _, entry := range state.Entries {
@@ -201,6 +225,9 @@ func (j *Journal) Capture(path string) error {
 			if err := copyFile(resolved, filepath.Join(j.dir, entry.Backup), info.Mode()); err != nil {
 				return fmt.Errorf("journal: back up %s: %w", resolved, err)
 			}
+			if err := syncDirectory(filepath.Join(j.dir, "backups")); err != nil {
+				return fmt.Errorf("journal: sync backup for %s: %w", resolved, err)
+			}
 		case info.IsDir():
 			entry.Kind = "directory"
 		case info.Mode()&os.ModeSymlink != 0:
@@ -214,8 +241,72 @@ func (j *Journal) Capture(path string) error {
 		}
 	}
 	j.state.Entries = append(j.state.Entries, entry)
+	if err := j.appendEntry(entry); err != nil {
+		j.state.Entries = j.state.Entries[:len(j.state.Entries)-1]
+		return err
+	}
 	j.captured[relative] = true
-	return j.persist()
+	return nil
+}
+
+// appendEntry publishes one durable capture record without rewriting the
+// complete transaction state. The caller has already synced any regular-file
+// backup, and no filesystem mutation may occur until this record is synced.
+func (j *Journal) appendEntry(entry Entry) error {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(j.dir, entriesLogName)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("journal: open capture log: %w", err)
+	}
+	if _, err = file.Write(append(data, '\n')); err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("journal: append capture log: %w", err)
+	}
+	return nil
+}
+
+func readEntryLog(dir string) ([]Entry, error) {
+	path := filepath.Join(dir, entriesLogName)
+	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("journal: open capture log: %w", err)
+	}
+	defer file.Close()
+	var entries []Entry
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if readErr == io.EOF {
+			// Capture does not return (and mutation therefore cannot begin) until
+			// the newline-terminated record is synced. A torn final record is safe
+			// to ignore during crash recovery.
+			break
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("journal: read capture log: %w", readErr)
+		}
+		if len(strings.TrimSpace(string(line))) == 0 {
+			continue
+		}
+		var entry Entry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return nil, fmt.Errorf("journal: decode capture log entry %d: %w", len(entries)+1, err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, nil
 }
 
 // CaptureTree records every existing entry below path without following
@@ -438,7 +529,11 @@ func (j *Journal) persist() error {
 	if err := os.Rename(temporary, filepath.Join(j.dir, "state.json")); err != nil {
 		return fmt.Errorf("journal: publish state: %w", err)
 	}
-	directory, err := os.Open(j.dir)
+	return syncDirectory(j.dir)
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
 	if err != nil {
 		return err
 	}

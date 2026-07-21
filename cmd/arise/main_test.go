@@ -813,6 +813,7 @@ func TestVdbPathToAtoms(t *testing.T) {
 }
 
 func TestBuildRebuildConfig_Defaults(t *testing.T) {
+	t.Setenv("MAKEOPTS", "-j9")
 	var calls []string
 	phaseStart := func(phase string) { calls = append(calls, "start:"+phase) }
 	phaseEnd := func(phase string, err error) {
@@ -840,8 +841,8 @@ func TestBuildRebuildConfig_Defaults(t *testing.T) {
 	if cfg.WorkDirBase != "/var/tmp/arise" {
 		t.Errorf("WorkDirBase = %q", cfg.WorkDirBase)
 	}
-	if cfg.MAKEOPTS != "-j4" {
-		t.Errorf("MAKEOPTS = %q, want -j4", cfg.MAKEOPTS)
+	if cfg.MAKEOPTS != "-j9" {
+		t.Errorf("MAKEOPTS = %q, want configured -j9; package --jobs must remain separate", cfg.MAKEOPTS)
 	}
 
 	cfg.OnPhaseStart("test")

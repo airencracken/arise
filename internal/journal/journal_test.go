@@ -1,13 +1,266 @@
 package journal
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
+
+func TestActiveJournalUsesAppendOnlyCaptureLog(t *testing.T) {
+	root, base := t.TempDir(), t.TempDir()
+	operation, err := Begin(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const captures = 200
+	for index := 0; index < captures; index++ {
+		if err := operation.Capture(filepath.Join(root, "created", fmt.Sprintf("%04d", index))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stateData, err := os.ReadFile(filepath.Join(operation.Dir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state State
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Entries) != 0 {
+		t.Fatalf("active state snapshot grew to %d entries", len(state.Entries))
+	}
+	logData, err := os.ReadFile(filepath.Join(operation.Dir(), entriesLogName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bytes.Count(logData, []byte{'\n'}); got != captures {
+		t.Fatalf("capture log records = %d, want %d", got, captures)
+	}
+	reopened, err := Open(operation.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(reopened.state.Entries); got != captures {
+		t.Fatalf("reopened entries = %d, want %d", got, captures)
+	}
+}
+
+func TestOpenIgnoresTornFinalCaptureRecord(t *testing.T) {
+	root, base := t.TempDir(), t.TempDir()
+	operation, err := Begin(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Capture(filepath.Join(root, "complete")); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(operation.Dir(), entriesLogName)
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"path":"torn`); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(operation.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(reopened.state.Entries); got != 1 {
+		t.Fatalf("reopened entries = %d, want 1", got)
+	}
+}
+
+func BenchmarkCaptureAbsent(b *testing.B) {
+	root, base := b.TempDir(), b.TempDir()
+	operation, err := Begin(base, root)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		if err := operation.Capture(filepath.Join(root, "created", fmt.Sprintf("%08d", index))); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestProcessDeathAtDurableBoundaries(t *testing.T) {
+	if targetStage := os.Getenv("ARISE_JOURNAL_DEATH_STAGE"); targetStage != "" {
+		root, base := os.Getenv("ARISE_TEST_ROOT"), os.Getenv("ARISE_TEST_JOURNALS")
+		marker := os.Getenv("ARISE_TEST_MARKER")
+		stop := func(stage string) {
+			if stage != targetStage {
+				return
+			}
+			if err := os.WriteFile(marker, []byte(stage), 0o600); err != nil {
+				os.Exit(96)
+			}
+			select {}
+		}
+		operation, err := Begin(base, root)
+		if err != nil {
+			os.Exit(95)
+		}
+		stop("begin")
+		existing, created := filepath.Join(root, "existing"), filepath.Join(root, "created")
+		if err := operation.Capture(existing); err != nil {
+			os.Exit(94)
+		}
+		stop("capture-existing")
+		if err := os.WriteFile(existing, []byte("after"), 0o600); err != nil {
+			os.Exit(93)
+		}
+		stop("mutate-existing")
+		if err := operation.Capture(created); err != nil {
+			os.Exit(92)
+		}
+		stop("capture-absent")
+		if err := os.WriteFile(created, []byte("created"), 0o600); err != nil {
+			os.Exit(91)
+		}
+		stop("mutate-absent")
+		directory := filepath.Join(root, "directory")
+		if err := operation.Capture(directory); err != nil {
+			os.Exit(88)
+		}
+		stop("capture-directory")
+		if err := os.Remove(directory); err != nil {
+			os.Exit(87)
+		}
+		stop("mutate-directory")
+		link := filepath.Join(root, "link")
+		if err := operation.Capture(link); err != nil {
+			os.Exit(86)
+		}
+		stop("capture-symlink")
+		if err := os.Remove(link); err != nil {
+			os.Exit(85)
+		}
+		if err := os.Symlink("created", link); err != nil {
+			os.Exit(84)
+		}
+		stop("mutate-symlink")
+		if err := operation.Commit(); err != nil {
+			os.Exit(90)
+		}
+		stop("commit")
+		os.Exit(89)
+	}
+
+	stages := []struct {
+		name      string
+		committed bool
+	}{
+		{name: "begin"},
+		{name: "capture-existing"},
+		{name: "mutate-existing"},
+		{name: "capture-absent"},
+		{name: "mutate-absent"},
+		{name: "capture-directory"},
+		{name: "mutate-directory"},
+		{name: "capture-symlink"},
+		{name: "mutate-symlink"},
+		{name: "commit", committed: true},
+	}
+	for _, stage := range stages {
+		stage := stage
+		t.Run(stage.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			root, base := filepath.Join(tmp, "root"), filepath.Join(tmp, "journals")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "existing"), []byte("before"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(filepath.Join(root, "directory"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("existing", filepath.Join(root, "link")); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(tmp, "ready")
+			command := exec.Command(os.Args[0], "-test.run=^TestProcessDeathAtDurableBoundaries$")
+			command.Env = append(os.Environ(),
+				"ARISE_JOURNAL_DEATH_STAGE="+stage.name, "ARISE_TEST_ROOT="+root,
+				"ARISE_TEST_JOURNALS="+base, "ARISE_TEST_MARKER="+marker,
+			)
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				if _, err := os.Stat(marker); err == nil {
+					break
+				} else if !os.IsNotExist(err) {
+					_ = command.Process.Kill()
+					t.Fatal(err)
+				}
+				if time.Now().After(deadline) {
+					_ = command.Process.Kill()
+					t.Fatalf("child did not reach %s", stage.name)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if err := command.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			if err := command.Wait(); err == nil {
+				t.Fatal("killed child exited successfully")
+			}
+			recovered, err := RecoverActive(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stage.committed {
+				if len(recovered) != 0 {
+					t.Fatalf("recovered committed journal: %v", recovered)
+				}
+				for path, want := range map[string]string{"existing": "after", "created": "created"} {
+					data, err := os.ReadFile(filepath.Join(root, path))
+					if err != nil || string(data) != want {
+						t.Fatalf("committed %s=%q err=%v", path, data, err)
+					}
+				}
+				if _, err := os.Lstat(filepath.Join(root, "directory")); !os.IsNotExist(err) {
+					t.Fatalf("committed transaction retained directory: %v", err)
+				}
+				if target, err := os.Readlink(filepath.Join(root, "link")); err != nil || target != "created" {
+					t.Fatalf("committed symlink=%q err=%v", target, err)
+				}
+				return
+			}
+			if len(recovered) != 1 {
+				t.Fatalf("recovered journals = %v", recovered)
+			}
+			data, err := os.ReadFile(filepath.Join(root, "existing"))
+			if err != nil || string(data) != "before" {
+				t.Fatalf("restored existing=%q err=%v", data, err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, "created")); !os.IsNotExist(err) {
+				t.Fatalf("rollback retained created path: %v", err)
+			}
+			if info, err := os.Stat(filepath.Join(root, "directory")); err != nil || !info.IsDir() {
+				t.Fatalf("rollback directory=%v err=%v", info, err)
+			}
+			if target, err := os.Readlink(filepath.Join(root, "link")); err != nil || target != "existing" {
+				t.Fatalf("rollback symlink=%q err=%v", target, err)
+			}
+		})
+	}
+}
 
 func TestRollbackRestoresMetadataAndXattrs(t *testing.T) {
 	root := t.TempDir()

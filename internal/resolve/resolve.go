@@ -201,6 +201,21 @@ type PkgAction struct {
 	BinaryPath     string
 	Unsorted       bool             // if true, exclude from topological sort
 	Domain         DependencyDomain // filesystem domain receiving/removing this package
+	// Prerequisites are exact planned-action identities that must commit before
+	// this action may run. Edges within an unavoidable dependency cycle are
+	// omitted so a scheduler can treat the SCC as an ordered serial component.
+	Prerequisites []string
+}
+
+// ActionIdentity is stable across process boundaries and distinguishes slots,
+// repositories and dependency domains as well as CPV.
+func ActionIdentity(action PkgAction) string {
+	atomText := "<nil>"
+	if action.Atom != nil {
+		atomText = action.Atom.String()
+	}
+	domain := normalizedActionDomain(action.Domain)
+	return strings.Join([]string{string(domain), atomText, action.Slot, action.Subslot, action.Repository}, "|")
 }
 
 // PkgNode represents a package in the dependency graph.
@@ -1031,6 +1046,14 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 			}
 			r.conflicts = append(r.conflicts, err.Error())
 		}
+		if config.NewUse {
+			if err := r.refreshPlannedParentNewUseDependencies(); err != nil {
+				if !config.KeepGoing {
+					return nil, fmt.Errorf("resolve: refresh planned-parent --newuse dependencies: %w", err)
+				}
+				r.conflicts = append(r.conflicts, err.Error())
+			}
+		}
 		r.metrics.DirectUpdateRefresh = time.Since(phaseStarted)
 	}
 	if config.OnlyDeps {
@@ -1841,14 +1864,79 @@ func (r *resolver) refreshCommittedDirectUpdates() error {
 		if err != nil {
 			return err
 		}
+		// Refresh is a second traversal of a committed parent version. Preserve
+		// the same provenance context as processDeps so a --newuse dependency
+		// action is owned by the replacement parent and cannot be retracted with
+		// the superseded installed parent.
+		owner := dependencyVersionKey(entry.node.Atom.CP(), selected.Version, selected.Slot, selected.Repository)
+		r.dependencyPath = append(r.dependencyPath, owner)
 		for _, edge := range edges {
 			if len(edge.AnyOf) > 0 || edge.Block {
 				continue
 			}
 			if err := r.processEdge(edge, 1); err != nil {
+				r.dependencyPath = r.dependencyPath[:len(r.dependencyPath)-1]
 				return err
 			}
 		}
+		r.dependencyPath = r.dependencyPath[:len(r.dependencyPath)-1]
+	}
+	return nil
+}
+
+// refreshPlannedParentNewUseDependencies closes a provenance edge case in
+// which replaying/replacing a parent retracts its already-selected dependency
+// action after that dependency was marked seen. Scope this to direct
+// dependencies of final planned parents; scanning every selected CP or every
+// installed slot invents rebuilds outside Portage's transaction closure.
+func (r *resolver) refreshPlannedParentNewUseDependencies() error {
+	actions := mapToSlice(r.toInstall)
+	for _, action := range actions {
+		if action.Atom == nil {
+			continue
+		}
+		node := r.graph.Packages[action.Atom.CP()]
+		if node == nil {
+			continue
+		}
+		parent := r.findMatchingVersion(node, action.Atom)
+		if parent == nil {
+			continue
+		}
+		edges, err := r.dependenciesForVersion(node, parent)
+		if err != nil {
+			return err
+		}
+		owner := dependencyVersionKey(node.Atom.CP(), parent.Version, parent.Slot, parent.Repository)
+		r.dependencyPath = append(r.dependencyPath, owner)
+		for _, edge := range edges {
+			if edge.Block || len(edge.AnyOf) > 0 || edge.DepAtom == nil {
+				continue
+			}
+			flags := edge.UseFlags
+			if flags == nil {
+				flags = r.candidateUseFlags(node, parent)
+			}
+			if edge.UseCond != "" && !conditionsEnabled(flags, edge.UseCond) {
+				continue
+			}
+			dep := resolveUseDependencies(edge.DepAtom, flags)
+			depNode := r.graph.Packages[dep.CP()]
+			installed := r.matchingInstalledVersionInDomain(depNode, dep, edge.Domain)
+			if installed == nil {
+				continue
+			}
+			candidate := r.findMatchingVersion(depNode, dep)
+			if candidate == nil || !candidate.Available || r.packageVersionScheduled(depNode, candidate) ||
+				!r.newUseChanged(depNode, installed, candidate, r.candidateUseFlags(depNode, candidate)) {
+				continue
+			}
+			if err := r.planDependencyInDomain(versionedConstraintAtom(dep, candidate), dep, "--newuse dependency of "+node.Atom.CP(), 1, edge.Domain); err != nil {
+				r.dependencyPath = r.dependencyPath[:len(r.dependencyPath)-1]
+				return err
+			}
+		}
+		r.dependencyPath = r.dependencyPath[:len(r.dependencyPath)-1]
 	}
 	return nil
 }
@@ -2093,7 +2181,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			if allowUpdate && vi != nil && vi.Version != nil && installed.Version != nil && vi.Version.Compare(installed.Version) > 0 {
 				needInstall = true
 			}
-			if r.config.NewUse && newUseChanged(installed, vi, r.candidateUseFlags(node, vi)) {
+			if r.config.NewUse && r.newUseChanged(node, installed, vi, r.candidateUseFlags(node, vi)) {
 				needInstall = true
 			}
 			if r.config.ChangedUse && effectiveUseChanged(installedFlags(installed), r.candidateUseFlags(node, vi)) {
@@ -2120,7 +2208,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			action = "reinstall"
 		} else if allowUpdate && vi.Version != nil && installed.Version != nil && vi.Version.Compare(installed.Version) > 0 {
 			action = "update"
-		} else if r.config.NewUse && newUseChanged(installed, vi, r.candidateUseFlags(node, vi)) {
+		} else if r.config.NewUse && r.newUseChanged(node, installed, vi, r.candidateUseFlags(node, vi)) {
 			action = "reinstall"
 		} else if r.config.ChangedUse {
 			if effectiveUseChanged(installedFlags(installed), r.candidateUseFlags(node, vi)) {
@@ -2141,6 +2229,18 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 		if !r.config.KeepGoing {
 			return mergeErr
 		}
+	}
+	// A forced source reinstall cannot use metadata from an installed VDB entry
+	// as though it were a repository ebuild. Other update modes retain their
+	// existing installed-state semantics here; their selected replacements are
+	// normally repository candidates.
+	if r.config.Reinstall && depth == 0 && r.explicitTargets[cp] && mergeType == "source" && !vi.Available {
+		rebuildErr := fmt.Errorf("no source ebuild is available for %s", bestVersionAtom(node.Atom, vi))
+		r.conflicts = append(r.conflicts, rebuildErr.Error())
+		if !r.config.KeepGoing {
+			return rebuildErr
+		}
+		return nil
 	}
 	actionDomain := r.pendingDomain
 	if actionDomain == "" {
@@ -2699,10 +2799,20 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 	if installed != nil {
 		if replacement, replaces := r.scheduledReplacement(toNode, installed, edge.Domain); replaces {
 			if versionAtomMatches(toNode.Atom, depAtom, replacement, r.candidateUseFlags(toNode, replacement)) {
-				if r.config.Deep || edge.Type == DepTypeBuild {
-					return r.processDeps(toNode, replacement, depAtom.String(), depth+1, edge.Domain)
+				// A previously scheduled exact-slot replacement satisfies this
+				// edge, but it must not freeze a later unqualified --deep --update
+				// dependency at the old slot. LLVM's clang-common transition is a
+				// real example: clang:21 schedules clang-runtime:21 before the new
+				// clang-common adds an unqualified runtime dependency selecting 22.
+				best := r.findMatchingVersion(toNode, depAtom)
+				newer := r.config.Deep && r.config.Update && best != nil && best.Version != nil &&
+					replacement.Version != nil && best.Version.Compare(replacement.Version) > 0
+				if !newer {
+					if r.config.Deep || edge.Type == DepTypeBuild {
+						return r.processDeps(toNode, replacement, depAtom.String(), depth+1, edge.Domain)
+					}
+					return nil
 				}
-				return nil
 			}
 			// The installed instance is absent from the hypothetical final state.
 			// Continue candidate resolution rather than traversing superseded VDB
@@ -2738,7 +2848,7 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 			best := r.findMatchingVersion(toNode, depAtom)
 			if best != nil && best.Version != nil && installed.Version != nil {
 				newer := r.config.Update && best.Version.Compare(installed.Version) > 0
-				rebuild := r.config.NewUse && newUseChanged(installed, best, r.candidateUseFlags(toNode, best))
+				rebuild := r.config.NewUse && r.newUseChanged(toNode, installed, best, r.candidateUseFlags(toNode, best))
 				rebuild = rebuild || (r.config.ChangedUse && effectiveUseChanged(installedFlags(installed), r.candidateUseFlags(toNode, best)))
 				rebuild = rebuild || (r.config.ChangedDeps && depsChanged(installed, best))
 				if newer || rebuild {
@@ -3061,7 +3171,15 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 	sort.Slice(candidates, func(i, j int) bool {
 		singletons := len(candidates[i].members) == 1 && len(candidates[j].members) == 1
 		if singletons && candidates[i].installed != candidates[j].installed {
-			return candidates[i].installed
+			installedCandidate := candidates[i]
+			if !installedCandidate.installed {
+				installedCandidate = candidates[j]
+			}
+			member := installedCandidate.members[0]
+			staleInstalledAlternative := r.config.Deep && r.config.Update && r.anyOfInstalledAlternativeIsNotNewest(member.depAtom, member.installedVI)
+			if !staleInstalledAlternative {
+				return candidates[i].installed
+			}
 		}
 		// Multi-atom alternatives encode an implementation tuple. Eclasses order
 		// these deliberately (for example newest configured Python first), so a
@@ -3112,7 +3230,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 					installed := chosenMember.installedVI
 					if best != nil && best.Version != nil && installed.Version != nil {
 						newer := r.config.Update && best.Version.Compare(installed.Version) > 0
-						rebuild := r.config.NewUse && newUseChanged(installed, best, r.candidateUseFlags(toNode, best))
+						rebuild := r.config.NewUse && r.newUseChanged(toNode, installed, best, r.candidateUseFlags(toNode, best))
 						rebuild = rebuild || (r.config.ChangedUse && effectiveUseChanged(installedFlags(installed), r.candidateUseFlags(toNode, best)))
 						rebuild = rebuild || (r.config.ChangedDeps && depsChanged(installed, best))
 						if newer || rebuild {
@@ -3173,6 +3291,22 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 		return nil
 	}
 	return fmt.Errorf("%s", msg)
+}
+
+func (r *resolver) anyOfInstalledAlternativeIsNotNewest(depAtom *DepAtom, installed *VersionInfo) bool {
+	if depAtom == nil || depAtom.Atom == nil || installed == nil || installed.Version == nil {
+		return false
+	}
+	node := r.graph.Packages[depAtom.Atom.CP()]
+	if node == nil {
+		return false
+	}
+	for _, vi := range node.Versions {
+		if vi != nil && vi.Installed && vi.Version != nil && vi.Version.Compare(installed.Version) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func edgeAnyOfGroups(edge *DepEdge) [][]*DepAtom {
@@ -3380,15 +3514,13 @@ func (r *resolver) processCompleteGraph() {
 				continue
 			}
 
-			for _, edge := range node.RevDeps {
-				if edge.DepAtom == nil {
+			for _, dependent := range r.installedSlotOperatorDependents(cp) {
+				if dependent == nil || !dependent.Installed || dependent.GetInstalledVersion() == nil {
 					continue
 				}
-				if edge.DepAtom.SlotOp != atom.SlotOpEq {
-					continue
-				}
-				dependent := edge.From
-				if dependent == nil || !dependent.Installed || dependent.GetInstalledVersion() == nil || (r.setScoped && !r.selectedCPs[dependent.Atom.CP()]) {
+				installedDependent := dependent.GetInstalledVersion()
+				if r.setScoped && !r.selectedCPs[dependent.Atom.CP()] &&
+					!r.seenDeps[dependencyVersionKey(dependent.Atom.CP(), installedDependent.Version, installedDependent.Slot, installedDependent.Repository)] {
 					continue
 				}
 				cpv := dependent.Atom.CP()
@@ -3396,7 +3528,6 @@ func (r *resolver) processCompleteGraph() {
 					continue // already being rebuilt
 				}
 				reason := fmt.Sprintf("slot operator rebuild (subslot change in %s)", cp)
-				installedDependent := dependent.GetInstalledVersion()
 				constraint := *dependent.Atom
 				constraint.Slot = installedDependent.Slot
 				dVI := r.findMatchingVersion(dependent, &constraint)
@@ -3421,6 +3552,61 @@ func (r *resolver) processCompleteGraph() {
 			break
 		}
 	}
+}
+
+// installedSlotOperatorDependents derives reverse := edges from the installed
+// version metadata. PkgNode.RevDeps is repository-oriented and can describe a
+// newly selected CPV rather than the installed instance whose ABI binding
+// Portage recorded; relying on it misses real complete-graph rebuilds when the
+// dependency metadata changed between those versions.
+func (r *resolver) installedSlotOperatorDependents(providerCP string) []*PkgNode {
+	var result []*PkgNode
+	for _, dependent := range r.graph.Packages {
+		if dependent == nil || !dependent.Installed {
+			continue
+		}
+		matched := false
+		for _, installed := range dependent.Versions {
+			if installed == nil || !installed.Installed {
+				continue
+			}
+			edges, err := r.dependenciesForVersion(dependent, installed)
+			if err != nil {
+				continue
+			}
+			flags := installedFlags(installed)
+			for _, edge := range edges {
+				if edge.UseCond != "" && !conditionsEnabled(flags, edge.UseCond) {
+					continue
+				}
+				atoms := []*atom.Atom{edge.DepAtom}
+				for _, group := range edgeAnyOfGroups(edge) {
+					for _, member := range group {
+						if member.UseCond == "" || conditionsEnabled(flags, member.UseCond) {
+							atoms = append(atoms, member.Atom)
+						}
+					}
+				}
+				for _, dep := range atoms {
+					if dep != nil && dep.CP() == providerCP && dep.SlotOp == atom.SlotOpEq {
+						matched = true
+						break
+					}
+				}
+				if matched {
+					break
+				}
+			}
+			if matched {
+				break
+			}
+		}
+		if matched {
+			result = append(result, dependent)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Atom.CP() < result[j].Atom.CP() })
+	return result
 }
 
 func (r *resolver) verifyPlannedState() {
@@ -3625,7 +3811,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 					continue
 				}
 			}
-			if !parentChanging && !versionDependenciesMention(vi, affectedNames) {
+			if !parentChanging && !versionDependenciesMentionTransaction(vi, changed, r.toUninstall) {
 				continue
 			}
 			edges, err := r.dependenciesForVersion(node, vi)
@@ -3755,6 +3941,48 @@ func versionDependenciesMention(vi *VersionInfo, names map[string]bool) bool {
 		if strings.Contains(raw, name) {
 			return true
 		}
+	}
+	return false
+}
+
+func versionDependenciesMentionTransaction(vi *VersionInfo, changed map[string]bool, removals map[string]*PkgAction) bool {
+	if vi == nil {
+		return false
+	}
+	raw := strings.Join([]string{
+		vi.InstalledDepend, vi.InstalledRdepend, vi.InstalledBdepend, vi.InstalledIdepend, vi.InstalledPdepend,
+		vi.Depend, vi.Rdepend, vi.Bdepend, vi.Idepend, vi.Pdepend,
+	}, " ")
+	for cp := range changed {
+		if strings.Contains(raw, cp) {
+			return true
+		}
+	}
+	for _, action := range removals {
+		if action == nil || action.Atom == nil {
+			continue
+		}
+		cp := action.Atom.CP()
+		if !strings.Contains(raw, cp) {
+			continue
+		}
+		// An exact-version dependency on a different installed slot cannot be
+		// affected by this removal. This distinction is essential for LLVM,
+		// Python, Ruby, and other multi-slot packages sharing one CP.
+		versionPrefix := cp + "-"
+		if strings.Contains(raw, versionPrefix) && action.Atom.Version != nil {
+			if strings.Contains(raw, versionPrefix+action.Atom.Version.Raw) {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(raw, cp+":") && action.Slot != "" {
+			if strings.Contains(raw, cp+":"+action.Slot) {
+				return true
+			}
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -4139,7 +4367,52 @@ func (r *resolver) sortPlannedActions(actions []PkgAction) []PkgAction {
 			}
 		}
 	}
+	r.attachPlanPrerequisites(result)
 	return result
+}
+
+func (r *resolver) attachPlanPrerequisites(actions []PkgAction) {
+	for i := range actions {
+		actions[i].Prerequisites = nil
+	}
+	out := r.plannedOrderGraph(actions)
+	componentOf, components := stronglyConnectedPlanComponents(out, len(actions))
+	componentFirst := make([]int, len(components))
+	componentLast := make([]int, len(components))
+	seen := make([]map[string]bool, len(actions))
+	addPrerequisite := func(after int, identity string) {
+		if seen[after] == nil {
+			seen[after] = make(map[string]bool)
+		}
+		if !seen[after][identity] {
+			seen[after][identity] = true
+			actions[after].Prerequisites = append(actions[after].Prerequisites, identity)
+		}
+	}
+	for _, component := range components {
+		sort.Ints(component)
+		componentID := componentOf[component[0]]
+		componentFirst[componentID] = component[0]
+		componentLast[componentID] = component[len(component)-1]
+		if len(component) < 2 {
+			continue
+		}
+		for position := 1; position < len(component); position++ {
+			addPrerequisite(component[position], ActionIdentity(actions[component[position-1]]))
+		}
+	}
+	for before, afters := range out {
+		for _, after := range afters {
+			beforeComponent, afterComponent := componentOf[before], componentOf[after]
+			if beforeComponent == afterComponent {
+				continue
+			}
+			addPrerequisite(componentFirst[afterComponent], ActionIdentity(actions[componentLast[beforeComponent]]))
+		}
+	}
+	for i := range actions {
+		sort.Strings(actions[i].Prerequisites)
+	}
 }
 
 func (r *resolver) plannedOrderGraph(actions []PkgAction) map[int][]int {
@@ -4633,6 +4906,36 @@ func newUseChanged(installed, candidate *VersionInfo, candidateFlags map[string]
 	return false
 }
 
+func (r *resolver) newUseChanged(node *PkgNode, installed, candidate *VersionInfo, candidateFlags map[string]bool) bool {
+	if installed == nil || candidate == nil || r.portageConfig == nil || node == nil || node.Atom == nil {
+		return newUseChanged(installed, candidate, candidateFlags)
+	}
+	oldDomain := installed.InstalledIUseFlags
+	if oldDomain == nil {
+		oldDomain = installedFlags(installed)
+	}
+	cpv := node.Atom.CP()
+	if candidate.Version != nil {
+		cpv += "-" + candidate.Version.Raw
+	}
+	stable := false
+	arch := r.portageConfig.MakeConf["ARCH"]
+	if arch == "" {
+		arch = gentooRuntimeArch(runtime.GOARCH)
+	}
+	for _, keyword := range strings.Fields(candidate.Keywords) {
+		stable = stable || keyword == arch
+	}
+	filtered := *candidate
+	filtered.UseFlags = cloneBoolMap(candidate.UseFlags)
+	for flag := range filtered.UseFlags {
+		if _, existed := oldDomain[flag]; !existed && r.portageConfig.UseMaskedFor(cpv, policySlot(candidate), candidate.Repository, flag, stable) {
+			delete(filtered.UseFlags, flag)
+		}
+	}
+	return newUseChanged(installed, &filtered, candidateFlags)
+}
+
 func effectiveUseChanged(old, new map[string]bool) bool {
 	for flag, enabled := range old {
 		if enabled && !new[flag] {
@@ -4979,7 +5282,13 @@ func (r *resolver) candidateUseFlags(node *PkgNode, vi *VersionInfo) map[string]
 				// graphs whose conditional flags are not backed by metadata.
 				if vi.UseFlags == nil {
 					base[name] = enabled
-				} else if _, declared := vi.UseFlags[name]; declared || implicitUseExpandFlag(r.portageConfig, name) {
+				} else if iuseDefault, declared := vi.UseFlags[name]; declared || implicitUseExpandFlag(r.portageConfig, name) {
+					// A merged profile `-flag` must not erase an enabled IUSE
+					// default. Only higher-precedence user/command/package policy
+					// or mask/force layers may do that.
+					if !enabled && declared && iuseDefault && !r.portageConfig.ExplicitUseOverride(cpv, policySlot(vi), vi.Repository, name, stable) {
+						continue
+					}
 					base[name] = enabled
 				}
 			}
@@ -5630,17 +5939,7 @@ func SaveResume(path string, result *ResolveResult) error {
 			Completed: false,
 		})
 	}
-	f, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("resolve: could not save build progress for --resume: %w", err)
-	}
-	defer func() {
-		if cerr := f.Close(); cerr != nil { /* Best effort */
-		}
-	}()
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(state); err != nil {
+	if err := writeResumeState(path, state); err != nil {
 		return fmt.Errorf("resolve: could not save build progress for --resume: %w", err)
 	}
 	return nil
@@ -5671,7 +5970,7 @@ func LoadResume(path string) ([]string, error) {
 
 // MarkResumeComplete marks a package as completed in the resume file.
 func MarkResumeComplete(path string, completedAtom string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0644)
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -5692,15 +5991,7 @@ func MarkResumeComplete(path string, completedAtom string) error {
 			break
 		}
 	}
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("resolve: could not update build progress record: %w", err)
-	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return fmt.Errorf("resolve: could not update build progress record: %w", err)
-	}
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(state); err != nil {
+	if err := writeResumeState(path, state); err != nil {
 		return fmt.Errorf("resolve: could not update build progress record: %w", err)
 	}
 	return nil
@@ -5729,15 +6020,49 @@ func SkipFirstResume(path string) error {
 			break
 		}
 	}
-	// Rewrite
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := writeResumeState(path, state); err != nil {
 		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
 	}
 	return nil
+}
+
+func writeResumeState(path string, state ResumeState) error {
+	directory := filepath.Dir(path)
+	temporary, err := os.CreateTemp(directory, ".resume-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o644); err != nil {
+		temporary.Close()
+		return err
+	}
+	encoder := json.NewEncoder(temporary)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(state); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	dir, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	if err := dir.Sync(); err != nil {
+		dir.Close()
+		return err
+	}
+	return dir.Close()
 }
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,27 @@ derive the complete repair closure, preserve safe ordering, verify the final
 installed state, and explain every rebuild/removal instead of requiring the
 operator to reconstruct the graph by trial and error.
 
+## Ecosystem interoperability principle
+
+Arise may enrich Gentoo's ecosystem, but must not capture it. Prefer durable
+artifacts that common tools can inspect and use directly: ordinary files, text,
+JSON, tar archives, VDB metadata, `emerge.log` records, hashes and detached
+signatures. Arise-specific structured formats are acceptable when they provide
+material safety or fidelity, but their schemas must be public and versioned and
+they must emit a documented, useful compatibility projection wherever existing
+tools serve the same user workflow. That projection may omit Arise-only detail,
+but must preserve the external purpose—for example conventional merge timing
+events for genlop/qlop/emlop alongside richer phase and transaction evidence.
+
+Internal indexes, databases and caches must be rebuildable from authoritative
+portable state rather than becoming the only copy of irreplaceable evidence.
+For every new durable format, ask whether a user can inspect, validate, export,
+recover or continue using its useful contents without the full Arise program.
+If common tooling cannot reasonably understand it, provide a small standalone
+reader/export path and a degraded open equivalent where one is meaningful.
+Interoperability with Portage, eix, equery and the `q` tools is a product
+contract, not an incidental side effect.
+
 ## Milestone dependency graph
 
 ```text
@@ -745,6 +766,26 @@ validity and promotion criteria, in
   Arise exceeded 120 seconds without emitting a plan and was terminated. This
   aligned scaling failure is now part of the P3 baseline rather than being
   conflated with the earlier non-equivalent probe.
+  A fresh 2026-07-20 comparison after the live Python/preserved-library cleanup
+  now resolves and verifies on both sides. Follow-up fixes made installed VDB
+  `:=` edges authoritative for reverse rebuilds, preserved explicit IUSE
+  defaults across duplicate cache declarations, allowed an unqualified updated
+  dependency to escape an already-scheduled old slot, and handled ordered Rust
+  toolchain alternatives without globally abandoning installed preference.
+  The final Python omission was a provenance edge: replaying a planned parent
+  could retract a same-version dependency rebuild after that dependency was
+  marked seen. A final pass scoped strictly to direct dependencies of planned
+  parents restores those `--newuse` actions without scanning unrelated selected
+  CPs or installed slots. The current live gate is exact: 369 Arise actions,
+  369 Portage actions, both verified/resolved, and zero normalized differences.
+  After removing the obsolete standalone `perl-core/Compress-Raw-Zlib-2.213.0`
+  generation with its installed lifecycle hooks, a fresh repository-state gate
+  again resolves a verified 369-install, zero-removal plan. All 369 actions pass
+  the read-only whole-plan preflight. Circular-dependency diagnostics remain in
+  JSON/saved plans but are shown in normal terminal output only with `--verbose`,
+  keeping large-plan summaries usable without discarding evidence. A fresh
+  independent Portage comparison on the same state is exact at 369/369, both
+  verified/resolved, with zero normalized differences.
 - [~] Resolver execution is wall-clock bounded through a context-aware API.
   `ResolveContext` cooperatively cancels target expansion, candidate search,
   complete-graph work, verification and speculative replay; the historical
@@ -917,7 +958,10 @@ from the core execution ABI; they do not block P4 closure.
   group; context cancellation sends TERM to the entire tree, escalates to KILL
   after a bounded grace period and bounds Wait even when a descendant inherited
   protocol pipes. A TERM-resistant descendant stress regression passes
-  repeatedly without leaks. Command completion also requires exactly one
+  repeatedly without leaks. Cancellation is now returned as an ordered typed
+  control/signal event and persisted with the terminal error in the durable
+  package log, so interrupted work is distinguishable from a malformed worker
+  stream. Command completion also requires exactly one
   terminal result: missing/duplicate results, trailing data and process/result
   status mismatches fail closed. Wiring FEATURES/RESTRICT policy and the complete
   environment contract remain. A poisoned-parent regression proves the worker
@@ -968,13 +1012,49 @@ from the core execution ABI; they do not block P4 closure.
   likewise reserved from environment injection. Package policy now derives a
   typed, revision-aware identity and the worker exposes protocol-owned CATEGORY,
   PN, PV, PR, P, PVR, PF, SLOT and PORTAGE_REPO_NAME; package.env cannot
-  override them. Log layout and the remaining PMS environment variables remain.
+  override them. Typed PORTAGE_BUILDDIR and PORTAGE_CONFIGROOT paths now flow
+  through package policy and isolation, and phases distinguish Portage's
+  `EBUILD_PHASE=compile` from `EBUILD_PHASE_FUNC=src_compile`. The normalized
+  VDB environment snapshot retains the complete controlled path contract.
+  Remaining PMS variables outside the declared initial contract remain.
 - [~] Implement a minimum complete helper ABI for current supported EAPIs.
   Explicit-status eapply/eapply_user, emake, econf, dodoc and einstalldocs now
   support the EAPI 7/8 default prepare/configure/compile/test/install path.
   Archive/image helpers now cover Signal's real unpack/install path, and the
-  Portage-compatible `has` primitive supports its transitive eclasses. Full
-  option semantics and the remaining helper families remain blockers.
+  Portage-compatible `has` primitive supports its transitive eclasses. The core
+  install family now includes into/insinto/exeinto, insopts/exeopts, binary and
+  sbin installation/renaming, executable/data/header/library installation,
+  directory/keepdir, renamed documentation and manual pages. Contract tests
+  assert destinations and modes. Service/config helpers now cover init.d,
+  conf.d and env.d installation/renaming; docinto and ownership changes share
+  the same image contract. Every image destination,
+  including permission and link helpers, rejects lexical traversal outside D.
+  Directory option state now controls dodir/keepdir; the live Portage oracle
+  caught that libopts and dohard are banned in both supported EAPIs and that
+  newinfo is unavailable, so Arise rejects rather than emulates them and keeps
+  static/shared library modes independent from insopts. Renamed
+  header/library/manual helpers plus info-page
+  installation have positive destination/mode tests and fail-closed argument
+  matrices. A disposable live Portage differential now executes the same helper
+  corpus for EAPI 7 and 8 and requires exact normalized image paths, object
+  types, modes, contents and symlink targets. It permanently captures the EAPI
+  8 header/conf.d/env.d option-state transition and Portage's empty-directory
+  cleanup boundary. The worker now performs that post-src_install transition:
+  EAPI 8 prunes unclaimed empty image directories, EAPI 7 retains them, and
+  keepdir markers survive both. Common eclass primitives now include in_iuse,
+  usev, use_with and use_enable with enabled/disabled, rename and value forms.
+  Negated use queries match the effective USE set. Nonfatal preserves ordinary
+  command status without leaking PORTAGE_NONFATAL, while die remains terminal;
+  both the recoverable path and Portage's terminal boundary are permanent tests.
+  The file-processing tranche is now explicit: dohtml, dosed, generic dolib,
+  libopts and dohard reject as banned for EAPI 7/8; domo installs fixed-mode
+  locale catalogs; docompress queues and exclusions drive deterministic
+  gzip/bzip2/xz/zstd post-install compression using the typed Portage setting;
+  and dostrip queues/exclusions drive policy-gated ELF stripping. Hermetic tests
+  cover compression round trips, exclusions and stripped-versus-preserved ELF
+  payloads, while the live EAPI 7/8 image differential exactly matches Portage
+  bzip2 paths, bytes, translations and modes. Full option semantics and the
+  remaining helper families remain blockers.
 - [~] Execute pkg_setup, source phases, pkg_preinst/postinst and pkg_prerm/postrm.
   The protocol rebuild path now runs setup, every source phase, preinst, a
   disposable-root merge/VDB write and postinst in order. Undefined lifecycle
@@ -1021,15 +1101,20 @@ from the core execution ABI; they do not block P4 closure.
   monotonic sequence metadata; never interleave concurrent package logs.
   Support `PORTAGE_LOG_FILTER_FILE_CMD`, the standard elog severity classes and
   at least echo/save/save-summary/syslog-compatible delivery before claiming
-  emerge logging parity. Mail and custom command delivery may remain explicit
+  emerge logging parity. Keep the structured durable package log canonical,
+  but append a locked and synced Portage-compatible transaction projection to
+  `emerge.log` so genlop, qlop, emlop and similar tools can observe both active
+  and completed Arise merges and unmerges. Compatibility output must never
+  discard or flatten the richer Arise evidence, and its failure policy must be
+  explicit and tested. Mail and custom command delivery may remain explicit
   opt-ins, but requested unsupported sinks must fail visibly. Log open/write/
   sync/finalize failures must fail closed before or during mutation rather than
   silently discarding the only recovery evidence. Separate worker stderr, QA
-  producers, persistent transaction summaries and cancellation/signal events
-  remain.
+  producers, persistent transaction summaries and externally delivered signal
+  events remain; context cancellation records are complete.
   Core logging is therefore near closure and is not a request to redesign the
   subsystem. The live-mutation blockers are production-executor hookup, exact
-  Portage formatting/differentials, cancellation and signal records, and the
+  Portage formatting/differentials, external signal records, and the
   remaining injected open/write/sync/filter/compress/rename/finalize failures.
 - [x] Preserve the static Go control plane when Python is unavailable. The
   protocol and isolation launcher are Go and execute Bash directly without
@@ -1059,8 +1144,13 @@ from the core execution ABI; they do not block P4 closure.
   `make test-shellcheck` provides optional richer linting when installed. A
   zero-user-patch regression prevents empty associative-array lookups, and a
   disposable-root end-to-end test validates phase order, installed payload,
-  lifecycle side effects and VDB creation through the versioned worker.
-- [ ] Environment snapshot comparisons with Portage.
+  lifecycle side effects and VDB creation through the versioned worker. The
+  live-tag lane additionally requires exact EAPI 7/8 Portage image-tree parity
+  for the core install/config/service/document/link helper corpus.
+- [x] Environment snapshot comparisons with Portage. The opt-in live lane runs
+  the same synthetic compile phase under Portage and Arise for EAPI 7 and 8,
+  normalizes disposable absolute paths, and requires exact identity, phase,
+  root and build-directory environment equality.
 - [x] Failure injection at every phase. EAPI 7 and 8 have a
   failure-preservation matrix for every declared setup, source and lifecycle
   phase. Each worker exits nonzero after emitting output; the durable log
@@ -1084,8 +1174,17 @@ Acceptance gate:
 
 ## P4R — representative package certification
 
-- [ ] Build and differentially certify trivial, autotools, CMake, Meson, Go,
+- [x] Build and differentially certify trivial, autotools, CMake, Meson, Go,
   Python, Rust, kernel-module, binary-only and config-protected packages.
+  A disposable synthetic corpus now certifies trivial shell, autotools-style
+  EAPI defaults, CMake, Meson, Go, Python, Rust, kernel-module, binary-only and
+  config-protected packages for both EAPI 7 and 8: Portage and Arise execute
+  unpack through install/test and produce exact normalized image
+  paths/types/modes/content. Installed executables pass the same smoke output,
+  the kernel fixture produces the same relocatable ELF module image, and the
+  protected-config fixture preserves a local edit while producing the same
+  `._cfg0000_` update in disposable merge roots. Real apulse CMake and xrandr
+  Meson disposable-root rehearsals remain additional live coverage.
 
 Acceptance gate:
 
@@ -1157,7 +1256,11 @@ Acceptance gate:
   durable success record. Replacement VDB entries, ownership/config protection,
   metadata breadth and production-command wiring remain gated. Mutation entry
   points recover active journals while holding the VDB lock; exhaustive
-  process-death injection at every persisted boundary remains gated.
+  process-death tests now kill merge and unmerge after payload/VDB mutation but
+  before commit, then prove the public retry rolls back the active journal and
+  commits a clean replacement operation. A subprocess matrix additionally
+  kills the journal after begin, every supported preimage capture and mutation,
+  and commit, covering absent, regular-file, directory and symlink state.
 - [~] Run collision/ownership validation before live-root mutation. The
   transactional merge path now runs the VDB ownership scanner before journal
   creation and rejects foreign-owned image targets without mutation. Production
@@ -1198,7 +1301,10 @@ Acceptance gate:
   journals payload plus VDB removal; injected finalization failure restores
   both. Transaction callback ordering for old-package `pkg_prerm`/`pkg_postrm`
   and new-package `pkg_postinst` is covered, including rollback after a failed
-  post-removal hook. Connecting those callbacks to the old and new versioned
+  post-removal hook. A production-path disposable-root matrix now covers fresh
+  install, upgrade, downgrade, same-version reinstall, parallel-slot
+  coexistence and ownership-aware removal with a committed journal at every
+  step. Connecting those callbacks to the old and new versioned
   P4 workers, capturing arbitrary lifecycle writes in the journal, and exact
   Portage ordering differentials remain.
 - [~] Implement collision-protect and protect-owned. The ownership scanner is
@@ -1206,13 +1312,26 @@ Acceptance gate:
   CP being replaced is excluded. A foreign-owner collision leaves files, VDB
   and journal directory untouched. FEATURES policy and full collision matrices
   remain.
-- [ ] Integrate preserve-libs and rebuild records.
+- [x] Integrate preserve-libs and rebuild records. Replacement merges with
+  `FEATURES=preserve-libs` compare old/new provided SONAMEs against installed
+  VDB consumer edges, retain the required old objects and write Portage's JSON
+  `preserved_libs_registry` format inside the payload journal. A later consumer
+  rebuild that drops the final NEEDED edge removes the unowned preserved paths
+  and registry record in its own transaction, including obsolete paths that
+  Portage records in the current provider's `CONTENTS`; that ownership metadata
+  is rewritten atomically with the cleanup. Failure before commit restores the
+  consumer VDB, provider ownership, libraries and registry together; the
+  existing structured preserved-rebuild scanner consumes the resulting record.
 - [~] Commit VDB and world changes atomically with filesystem state. World-file
   updates now hold Portage's sibling lock across load/mutate/save and use a
   same-directory, mode-preserving, file-and-directory-fsynced atomic rename;
   the CLI deselect path uses this transaction. Coupling requested world additions
   to the payload/VDB journal in one recoverable operation remains.
-- [ ] Implement rollback/recovery after interruption or process death.
+- [x] Implement rollback/recovery after interruption or process death. Merge
+  and unmerge now recover active journals immediately after taking the VDB lock,
+  before inspecting potentially partial filesystem or VDB state. Real SIGKILL
+  tests cover the terminal pre-commit mutation boundary and deterministic retry,
+  plus every public durable journal transition and supported preimage kind.
 - [~] Serialize or conflict-partition live merges. Merge and standalone unmerge
   now hold Portage's VDB mutation lock across ownership validation, journal
   recovery, filesystem/VDB mutation and commit. Finer-grained conflict
@@ -1228,7 +1347,11 @@ Acceptance gate:
 - [~] File ownership and cross-package collision fixtures cover both the scanner
   and transaction-integrated foreign-owner rejection before journal creation;
   FEATURES combinations and broader ownership matrices remain.
-- [ ] Kill process at every journal boundary and recover.
+- [x] Kill process at every journal boundary and recover. Subprocess SIGKILL
+  coverage enumerates begin, capture and post-capture mutation for absent,
+  regular-file, directory and symlink preimages, plus commit. Separate killed
+  merge/unmerge processes prove recovery and retry after full payload/VDB
+  mutation and before commit.
 - [ ] Concurrent non-conflicting and conflicting merge tests.
 
 Acceptance gate:
@@ -1238,30 +1361,80 @@ Acceptance gate:
 
 ## P7 — dependency-aware concurrent scheduler
 
-- [ ] Replace FIFO worker distribution with a DAG ready queue.
-- [ ] Release dependents only after successful dependency completion.
-- [ ] Propagate failures and implement keep-going by independent subgraph.
-- [~] Apply load-average backpressure in production workers. Linux loadavg
-  sampling and the legacy rebuild context exist; the future DAG resource
-  scheduler does not consume them yet.
+- [!] Promote dependency-aware concurrency before using Arise for the full
+  development-host world upgrade. The current production executor deliberately
+  ignores `--jobs` and serializes complete package transactions; that is a safe
+  canary but an unacceptable emerge compatibility/performance regression for a
+  369-package run. Do not connect the legacy FIFO `RebuildPackagesParallel`
+  worker pool to live ROOT: it runs complete merge transactions concurrently
+  without dependency readiness or a serialized commit boundary.
+- [ ] Split source execution into a prepared build artifact and a commit step.
+  Fetch/unpack/prepare/configure/compile/test/install-to-image may occupy
+  dependency-ready worker slots; merge, replacement lifecycle, journal/VDB
+  commit and post-commit lifecycle use a separately serialized resource. Keep
+  completed images available while waiting for their commit turn and account
+  for their disk usage.
+- [x] Replace FIFO worker distribution with a DAG ready queue. Resolver actions
+  retain stable exact prerequisite identities in durable plans; SCCs are
+  condensed and their members serialized in deterministic plan order.
+- [x] Release dependents only after successful dependency completion. In the
+  initial conservative scheduler, every prerequisite must commit before its
+  dependent begins; separating build-time from commit-time edges can widen
+  concurrency later without weakening correctness.
+- [~] Propagate failures and implement keep-going by independent subgraph. The
+  scheduler cancels and joins running peers on the first failure and never
+  releases its dependents; independent-subgraph continuation remains.
+- [x] Apply load-average backpressure in production workers. Linux loadavg
+  sampling is context-cancellable and gates each DAG worker before package
+  startup.
 - [ ] Model CPU, memory, network and merge resources separately.
-- [ ] Support fetch-ahead while respecting build and merge ordering.
+  Package worker count (`--jobs`) and per-package build parallelism (`MAKEOPTS`)
+  are independent, matching Portage; Arise no longer rewrites `MAKEOPTS` to the
+  package-worker count.
+- [x] Support fetch-ahead while respecting build and merge ordering.
+- [~] Start scheduler promotion with bounded parallel fetch-ahead. Source
+  acquisition uses a separate `--fetch-jobs` pool (default four) for both
+  fetch-only and live execution, retains Manifest verification, coalesces shared
+  distfiles through the fetcher's process/file locks, and completes before any
+  package mutation. Build and commit concurrency remain disabled until their
+  dependency/resource boundaries are certified. Concurrent terminal fetches use
+  complete event-per-line output because a single carriage-return percentage
+  line cannot safely have multiple owners; single-worker fetching retains the
+  animated percentage/rate display. The first live 369-action fetch-ahead run
+  completed successfully with four workers against the normal DISTDIR. No
+  abandoned `.part-*` files remain; `/var/cache/distfiles` is 13 GiB and the
+  root filesystem retains 27 GiB free afterward. The run exposed and directly
+  motivated the concurrent newline fix above.
 - [ ] Make output deterministic with per-package event streams.
-- [ ] Persist completed nodes for resume.
-- [ ] Avoid rebuilding successful packages after a downstream failure.
+  Production parallel mode emits one complete `Emerging (N of M)` line per
+  started action and one completion line per committed action instead of
+  letting multiple workers overwrite a single spinner label. Full compiler
+  output remains isolated in durable per-package logs.
+- [x] Persist completed nodes for resume. Completion is fsynced from the
+  transaction callback while the internal commit lock remains held, before a
+  second worker may mutate ROOT/VDB.
+- [x] Avoid rebuilding successful packages after a downstream failure.
 
 ### Tests
 
-- [ ] Assert no dependent begins before every required predecessor succeeds.
-- [ ] Assert independent branches run concurrently.
+- [x] Assert no dependent begins before every required predecessor succeeds.
+- [x] Assert independent branches run concurrently. Both mock scheduler tests
+  and a real two-package phase-protocol integration prove overlapping builds,
+  single-writer commits, valid journals/payload/VDB entries and empty resume.
 - [ ] Deterministic event/output test across repeated runs.
-- [ ] Load-average and cancellation tests.
-- [ ] Race detector and stress tests with hundreds of synthetic nodes.
+- [~] Load-average and cancellation tests. Failure cancellation and peer join
+  are covered; synthetic load transitions remain.
+- [~] Race detector and stress tests with hundreds of synthetic nodes. Targeted
+  executor/resolver/rebuild/CLI race suites pass; the large synthetic stress
+  matrix remains.
 
 Acceptance gate:
 
 - Scheduler is dependency-correct, deterministic, resumable and measurably
-  faster than serial execution on parallel graphs.
+  faster than serial execution on parallel graphs. On a same-plan integration
+  corpus, `--jobs` must change observed build overlap, preserve deterministic
+  concise terminal events and per-package logs, and avoid a material throughput
+  regression against emerge at the same job/load settings.
 
 ## P8 — wire install, update and removal end to end
 
@@ -1302,19 +1475,59 @@ action has passed these checks.
   phases, helper closure, FEATURES/RESTRICT/PROPERTIES, isolation backend,
   writable paths, log destination, disk space and every artifact before worker
   startup. Unsupported behavior must reject before mutation. The executor now
-  preflights every selected action before its first worker; disk-space and full
-  helper-closure certification remain.
+  preflights every selected action before its first worker, and
+  `--preflight-only` audits a verified large plan without applying the live
+  action-count/removal canary or fetching, building, journaling, locking or
+  mutating package state. Shell-aware comment/brace parsing fixed false
+  failures in foundational ebuilds using
+  `${var##pattern}`, quoted braces and inline metadata comments, and
+  `RESTRICT=binchecks` is recognized as disabling a check Arise does not run.
+  Live phase discovery and the build-through-`pkg_preinst` sequence now run in
+  bubblewrap with host ROOT read-only and the work/image trees writable; a
+  hostile-hook test proves an image write succeeds while its ROOT write fails.
+  Portage-compatible post-commit lifecycle handling and installed VDB
+  environment execution raise the same audit to all 369 install actions
+  passing. One separately planned obsolete Perl removal remains; its installed
+  VDB declares `pkg_postrm`, so standalone uninstall lifecycle execution must
+  land before that saved plan is handed to root. The current host
+  has `CONFIG_OVERLAY_FS` disabled, so lifecycle delta capture must not require
+  overlayfs. Disk-space and full helper-closure certification remain.
 - [!] Bind lifecycle execution to the transaction. `pkg_preinst`, old
   `pkg_prerm`/`pkg_postrm`, new `pkg_postinst`, and standalone removal hooks
   must have exact failure boundaries; every permitted ROOT write must be
-  journal-observable and recoverable.
+  journal-observable and recoverable where Arise controls the writes. The
+  baseline now follows Portage's committed-state semantics for write-capable
+  postinstall/postremove hooks: controlled payload/VDB changes commit first,
+  failures remain visible with durable logs, and resume state records the
+  package as committed rather than rebuilding it. Old removal hooks execute
+  from the installed VDB `environment.bz2`, with typed current ROOT/path values
+  restored after sourcing. Stronger rollback is an additional experimental
+  plan-bound capability with overlay/fuse-overlay lifecycle delta and Btrfs/LVM
+  snapshot providers; see
+  `docs/transaction-backends.md`. Provider probes and capacity must be
+  revalidated under the operation lock, and fallback must never silently
+  weaken an explicitly approved experimental guarantee. This host is ext4 on `/dev/dm-1`, has no
+  overlayfs kernel support, fuse-overlayfs or Btrfs, and requires privileged
+  LVM inspection before snapshot eligibility is known.
+- [~] Implement and certify EAPI 9 rather than aliasing it to EAPI 8. The phase
+  protocol enforces Bash 5.3, keeps package-manager shell variables unexported,
+  provides `pipestatus`/`ver_replacing`, bans `domo`/`assert`, and preserves
+  absolute staged symlink targets while retaining the EAPI 7/8 rewrite. The
+  first live world consumers, `dev-lang/go-1.26.4` and
+  `dev-util/github-cli-2.93.0`, now pass whole-plan preflight. Broader EAPI 9
+  eclass/helper corpus certification remains.
 - [!] Couple successful explicit installs to a journaled world addition while
   preserving `--oneshot`; never add dependency actions or failed targets.
 - [~] Add an administrator-facing recovery command that lists active journals,
   performs deterministic recovery under the VDB lock, reports preserved build
   logs, and is usable from the copied static binary. Status, targeted rollback
   and all-active rollback under the VDB lock are implemented; correlating and
-  reporting preserved logs remains.
+  reporting preserved logs remains. Treat static linkage as a tested recovery
+  invariant, not a naming convention: release/preserved binaries use
+  `CGO_ENABLED=0`, must have no ELF interpreter or host libc dependency, and the
+  static Make target now fails rather than merely printing a warning if linkage
+  regresses. An ad-hoc development build caught by `file`/`ldd` demonstrated why
+  this must be verified at the artifact boundary.
 - [~] Add a whole-action canary eligibility check for the initial live lane.
   It must reject blockers, preserve-libs transitions, unsupported helpers or
   policy, unverified artifacts, foreign-owner collisions, unsafe lifecycle
@@ -1339,19 +1552,36 @@ action has passed these checks.
 - [!] Freeze pre/post evidence for every live gate: plan JSON, repository/profile/
   VDB/world fingerprints, CONTENTS ownership, preserved-libraries registry,
   dynamic linkage, journal state, durable log path and final verifier result.
+  Verified JSON plans can now be atomically saved by path or name beneath a
+  configurable default plan directory and later supplied with `--approve-plan`;
+  the embedded SHA-256 remains the enforced authorization primitive while the
+  raw digest flag remains available for automation.
 
 The larger set gates additionally require:
 
 - [x] Preflight every action in the plan before the first merge; a late
   unsupported EAPI/helper/policy failure must not be discovered after package
   state has already changed.
-- [~] Persist resume state only after each package transaction commits, recover
+- [x] Persist resume state only after each package transaction commits, recover
   interrupted active journals before resume, and prove deterministic restart
   after fetch, build, lifecycle and merge failures. Commit-then-resume ordering
-  is wired; the failure/restart matrix remains.
+  is wired and a four-stage executor matrix proves that the committed prefix is
+  skipped while the failing package and dependent tail retry deterministically.
+  Resume initialization, completion and `--skipfirst` updates now use an
+  fsynced same-directory atomic rename instead of truncating the sole record.
 - [x] Execute serially until P7 is certified. Serial execution is acceptable
   for the initial safety gates; concurrency must not be introduced merely to
-  make a large live rehearsal finish sooner.
+  make a large live rehearsal finish sooner. The original one-or-two-action
+  live canary limit is promoted to arbitrary verified install-plan length only
+  when durable resume state is configured; every action kind is checked before
+  preflight, the entire plan preflights before mutation, and execution remains
+  serial under the operation VDB lock with state-bound revalidation.
+  The live executor writes each package's complete phase output to its own
+  durable `/var/log/portage`-compatible log and presents package ordinal/name,
+  completion events and optional estimates on the terminal. Future P7 parallel
+  execution must retain per-package logs and multiplex only concise status;
+  interleaved compiler output is not an acceptable default. Rich split/tabbed
+  viewers may consume the logs but are a separate UI, not an executor protocol.
 - [!] For `@system` and `@world`, require a conflict-free portable snapshot,
   equivalent normalized Portage plan where Portage resolves, and verified
   post-transaction state. A stronger Arise repair requires a fixture-backed
@@ -1363,17 +1593,58 @@ The larger set gates additionally require:
   gate with the required `--complete-graph` option produced the same normalized
   159-action, zero-conflict, verified plan three times; the 13 diagnostics were
   therefore an invocation error, not a post-checkpoint resolver repair list.
+  Treat package-manager self-upgrades as an evidence-driven chunk rather than
+  an unconditional special case. On the current host, shallow oneshot Portage
+  leaves seven retained Python-target constraints invalid, while its verified
+  complete-graph closure expands to 207 actions. It is therefore not a useful
+  independent bootstrap chunk for this transition and must remain inside the
+  verified world transaction unless a smaller verified frontier is found.
 - [!] Before `--emptytree`, prove boot-critical replacement ordering, static
   recovery-binary availability outside paths being replaced, bounded disk
   usage, resume/recovery after interruption, and no removal of a working
   package generation before its replacement commits.
+  Inventory host-tool dependencies used by the phase worker (`bash`, `tar`,
+  `xz`, `bzip2`, `zstd`, `unzip`, `ar`, `patch`, compilers and package-specific
+  tools). Add native archive readers only as a bounded recovery/bootstrap
+  fallback with traversal, ownership, link and decompression-bomb defenses;
+  native extraction alone must not claim arbitrary source-build independence
+  from a damaged host. Prefer preserved static recovery tools and verified
+  binary-package/bootstrap artifacts for restoring the wider toolchain.
+  Define Arise package USE flags for optional compiled recovery capabilities
+  (for example native `zstd`/`xz` and archive extraction) only when the resulting
+  binary capability set is introspectable and recorded in executable plans.
+  Keep host-tool providers as a small default where appropriate. Do not describe
+  a limited Go command runner as a shell replacement: ebuild/eclass execution
+  requires real Bash compatibility, and a preserved static Bash is preferable
+  to accidentally starting a second shell-language implementation.
+  Bound the recovery nucleus to static Arise plus a known-good static Bash and
+  the minimum code needed to inspect/authorize/recover journals and restore
+  verified artifacts. Do not accumulate static compiler/linker/toolchain copies.
+  If GCC, libc headers, the linker or broader build environment is damaged,
+  pivot to verified binary packages, a tinderbox/stage artifact or external
+  rescue media.
+  Investigate an optional pure-Go recovery linker behind an Arise package USE
+  flag, but define its contract narrowly: inspect or relink known verified
+  recovery artifacts for explicitly supported ELF architectures, object forms
+  and relocation sets. It is not a claim to replace GNU `ld`/LLD for arbitrary
+  C/C++ ebuilds. Plans and `arise info` must expose whether this capability was
+  compiled in, and unsupported inputs must fail closed to the external recovery
+  path rather than producing a best-effort binary.
 
 ### Tests
 
-- [ ] End-to-end install into an isolated ROOT.
-- [ ] Upgrade, downgrade, reinstall, slot coexistence and replacement tests.
-- [ ] End-to-end uninstall/depclean/prune tests.
-- [ ] Resume after injected fetch, build and merge failures.
+- [x] End-to-end install into an isolated ROOT. The phase-protocol source path
+  installs payload and Portage-readable VDB state with a committed journal.
+- [x] Upgrade, downgrade, reinstall, slot coexistence and replacement tests.
+  The disposable-root production path removes obsolete generations, preserves
+  both parallel-slot VDB entries and commits every transition durably.
+- [~] End-to-end uninstall/depclean/prune tests. Transactional unmerge now
+  removes an exclusively owned parallel-slot payload while retaining paths
+  co-owned by the surviving slot; planner-driven depclean/prune remain.
+- [x] Resume after injected fetch, build, lifecycle and merge failures. Public
+  merge and unmerge retries recover real process death at the pre-commit
+  boundary; the executor matrix retains exactly the failing action and tail for
+  all four stages, then completes them without rerunning the committed prefix.
 - [x] Verify pretend performs zero mutations. A copied-binary live check matched
   the Signal plan while before/after VDB and world fingerprints were identical.
 
@@ -1409,11 +1680,49 @@ path. Passing a later gate never retroactively waives an earlier one.
   9 packages/47 edges. The crda retry proved split-usr symlink journaling and
   committed a 58-entry removal, reducing it to 8/46. QtCore removal is now
   blocked by native VDB reverse-ELF verification naming its 13 installed
-  consumers; the Qt5/PyQt5 retirement closure remains to plan.
+  consumers; the Qt5/PyQt5 retirement closure remains to plan. A state-bound
+  `app-laptop/thinkfan-1.3.1` reinstall then committed successfully: its binary
+  now needs `libyaml-cpp.so.0.8`, and a fresh scan fell from 7 packages/30 edges
+  to 6/28 with exactly thinkfan's two 0.7 edges removed and no new edges. The
+  old yaml-cpp 0.7 files remain owned by the current provider VDB on this live
+  machine, so the promotion gate remains open pending state-bound cleanup and
+  final filesystem verification. Core cleanup now handles that Portage
+  ownership representation transactionally. A subsequent state-bound
+  `net-libs/libsoup:2.4` upgrade from 2.74.2 to 2.74.3-r1 committed after an
+  exact disposable upgrade rehearsal. The installed library now needs
+  `libxml2.so.16`; the old VDB entry is gone, and the preserved scan fell from
+  6 packages/28 edges to 5/22 with exactly libsoup's six `libxml2.so.2` edges
+  removed and no new edges. The first bounded two-action live cluster then
+  reinstalled `llvm-core/llvm-19.1.7` and upgraded Clang to
+  `llvm-core/clang-19.1.7-r1` after both packages passed full disposable source
+  builds. Both installed at SLOT `19/19.1`, LLVM now needs `libxml2.so.16`, and
+  the preserved scan fell from 5 packages/22 edges to 3/14 with exactly the two
+  LLVM/Clang packages and all eight expected `libxml2.so.2` edges removed and
+  no additions. The remaining closure is Python 3.10 (three OpenSSL 1.1 edges),
+  Python 3.9 (five OpenSSL/libffi edges), and repository-orphaned LLVM 13 (six
+  libffi edges).
 - [ ] Update `@system` successfully with a verified final state.
 - [ ] Update `@world` successfully with a verified final state.
 - [ ] Complete an `--emptytree` world update, proving the static Arise binary,
   operation journal and recovery tooling remain usable throughout the rebuild.
+- [ ] Add opt-in historical build-time estimates per package and for the whole
+  proposed action set, then show elapsed and estimated remaining time during
+  execution. Keep the authoritative history as an append-only, versioned JSONL
+  event log rather than an opaque database: one self-contained record per
+  attempt with package/version/slot, machine and build-profile fingerprint,
+  start/end/duration/outcome, jobs/load, relevant flags, plan identity and
+  durable log/journal references. Append under a lock, sync completed records,
+  tolerate and report a truncated final record, and rotate/archive without
+  destroying source evidence. The history must remain directly useful through
+  jq, Python, Perl, Ruby, gron and ordinary text tooling.
+  Feed default estimates only from successful compatible samples, report sample
+  count and action-set coverage, and retain failed/interrupted attempts for
+  diagnostics. Median/percentile summaries and search indexes are disposable,
+  atomically published accelerators that must be fully reconstructable from
+  JSONL. Do not make Badger or another private database authoritative for build
+  history. Estimate snapshots belong in the complete durable-plan metadata for
+  local/tinderbox comparison but remain outside execution authorization unless
+  a timing-related value such as jobs or load limit changes actual behavior.
 
 ## P9 — modern binary package support
 
@@ -1427,6 +1736,43 @@ path. Passing a later gate never retroactively waives an earlier one.
 - [ ] Absorb `quickpkg`'s role: create a metadata-complete binary package from
   an installed VDB instance, with explicit handling for preserved libraries,
   config files, hardlinks, xattrs and build IDs.
+- [ ] Export and import a versioned tinderbox state bundle that pairs saved
+  plans with the sanitized world file, profile/repository identities, complete
+  Portage configuration layering (`make.conf`, `package.*`, profile parents and
+  environment fragments), installed VDB metadata, selected ebuild/eclass and
+  Manifest identities, toolchain/ABI contract and integrity fingerprints.
+  Container import must reconstruct resolution without host paths or secrets,
+  distinguish exact-machine from portable-baseline policy, reject drift before
+  building and emit provenance linking every artifact to the bundle and plan.
+  Use a deterministic tar archive as the stable interchange primitive, with a
+  versioned canonical JSON manifest, normalized entry order/timestamps/modes/
+  ownership, per-entry hashes and a digest of the logical uncompressed bundle.
+  Compression is a transport encoding rather than bundle identity: default to
+  zstd, support at least uncompressed tar, gzip and xz, detect codecs by magic
+  rather than suffix, and permit recompression without changing logical bundle
+  identity. Import must enforce schema and resource limits and reject absolute
+  or traversing paths, device nodes, unsafe links, unexpected ownership and
+  duplicate/conflicting entries. Signing and attestations cover the logical
+  digest; compression metadata remains separately reportable.
+  Define thin bundles containing sanitized configuration, identities, installed
+  metadata, plans and hashes, plus full/offline bundles embedding the selected
+  repository/profile/ebuild/eclass/Manifest material needed to reproduce the
+  resolution. Keep the manifest capable of referencing content-addressed
+  objects later so a tinderbox can deduplicate internally or transport bundles
+  as OCI artifacts without replacing tar as the user-facing portable format.
+- [ ] Make durable plans the inspectable contract between a local client and a
+  remote tinderbox. Compare the locally resolved plan, exported state bundle,
+  remote build plan and returned artifact attestations field by field; explain
+  repository, profile, USE, ABI, dependency and toolchain divergence instead
+  of reducing it to a cache miss. Allow a client to choose among explicitly
+  compatible remote variants or a local source build, and make debugging a
+  tinderbox reproducible from the exact named/content-addressed plans on both
+  sides. The comparison format and core workflow must remain useful for a
+  single self-hosted user and must not depend on a centralized Arise service.
+  Preserve advisory estimate snapshots and their machine/sample provenance in
+  the complete durable-plan digest for local-versus-tinderbox time and savings
+  comparisons, but maintain a distinct execution-authorization digest over
+  only behavior-affecting inputs so new timing history cannot stale approval.
 - [ ] Design binary production as a reusable API for future tinderbox and
   stage4 automation, including deterministic output, provenance, signing,
   atomic repository publication and concurrent multi-package builds. Model
@@ -1442,6 +1788,28 @@ path. Passing a later gate never retroactively waives an earlier one.
   reproducible build attestations, quota/accounting, tenant-isolated builders,
   transparent cache sharing only for identical compatible contracts, and a
   self-hostable implementation with local-build fallback.
+- [ ] Layer reproducible stage4 and cloud-image production on top of portable
+  package state instead of overloading the package bundle itself. Define an
+  image recipe that references an exact state bundle and durable plan, then adds
+  kernel source/version/config and patches, module policy, initramfs generator
+  and inputs, kernel command line, init system/services, filesystem/partition/
+  mount layout, bootloader or firmware policy and image-specific configuration.
+  Keep secrets and mutable instance identity outside the reproducible recipe.
+  One recipe must be able to attest equivalent stage4 tar, raw disk, qcow2 and
+  provider-specific cloud outputs through replaceable adapters, with every
+  kernel, userspace, boot and filesystem input linked back to its plan/bundle.
+  Package-only tinderbox workers must remain usable without understanding image
+  assembly; stage4/cloud builders consume their signed outputs as a higher
+  orchestration layer.
+- [ ] Revisit the public name for the custom remote package-building service.
+  Current provisional finalists are **Portage Speed Shop** (strongest Gentoo
+  and tuned-performance character, but may imply official Portage affiliation),
+  **The Binary Garage** (best independent, approachable service identity), and
+  **Arise Package Customs** (strongest Arise-family and bespoke-package link).
+  Preserve the core product metaphor regardless of the eventual name: a durable
+  plan is a build sheet/order form that can be fulfilled locally or by a custom
+  shop to the user's exact machine and package policy, then returned with a
+  verifiable receipt. Continue brainstorming; no finalist is selected yet.
 - [ ] Retain XPAK compatibility only where useful and tested.
 
 ### Tests
@@ -1494,6 +1862,12 @@ Acceptance gate:
   traps/signals and nested sourcing on every supported Bash version.
 
 - [ ] Implement accurate `emerge --info`-equivalent output.
+- [ ] Ecosystem side quest: package the gawkextlib `gawk-json` extension in a
+  local overlay, with an upstream-quality ebuild suitable for submission to
+  Gentoo. Cover its gawk/RapidJSON requirements and test JSONL import, nested
+  arrays/objects, null/boolean handling and serialization. Keep this amusing
+  convenience strictly off Arise's critical path and do not make it a runtime
+  dependency; ordinary JSONL must remain usable through many common tools.
 - [ ] Match emerge's unknown-atom "did you mean" behavior. Generate
   deterministic typo/category suggestions from the same visible package
   snapshot used by resolution, distinguish unavailable/masked exact atoms from
@@ -1611,6 +1985,30 @@ These are product goals, not substitutes for correctness:
   security advisories, preserved rebuilds, broken linkage, stale interpreters,
   depclean candidates and pending config updates into one explainable plan,
   without turning advisory findings into automatic mutations.
+- [ ] Add an opt-in salvage planner (tentatively `--salvage-plan`, with
+  `--keep-trying` considered as an alias) for damaged large sets. Partition the
+  request into deterministic independently verifiable transaction components,
+  emit a maximal safe subset plus the excluded conflict frontier, and require a
+  separately saved/approved plan for every executable chunk. Re-resolve against
+  actual state after each committed chunk; never implement this by slicing an
+  invalid global plan or changing default `--keep-going` semantics. The same
+  component identities should support remote tinderbox distribution. Explore
+  named, independently reproducible salvage scenarios that share one frozen
+  input snapshot and emit comparable durable plans:
+  - aggressive upgrade: prefer the highest permitted versions, explore
+    explicitly proposed unmask/keyword changes, and retire obsolete slots;
+  - conservative/stable: preserve installed slots and versions where possible,
+    allowing bounded minor downgrades when they repair older constraints;
+  - optional USE shuffle: search only policy-classified non-critical flags such
+    as `test`, `doc` or `minimal`, never ABI/security/feature-critical flags by
+    an unreviewed heuristic;
+  - autounmask: produce the smallest proposed `package.use`,
+    `package.accept_keywords` and `package.unmask` delta needed for a verified
+    graph.
+  These are explicit strategies, not silent fallback. They must not write live
+  configuration while searching; each result records its policy/config delta,
+  excluded frontier and tradeoffs, passes whole-state verification, and needs
+  separate plan approval before any mutation.
 - [ ] Reproducible privacy-reviewed support bundle containing configuration and
   repository fingerprints, normalized plan/conflicts, resolver trace and
   relevant VDB metadata; redact paths, hostnames, mirrors and secrets by
@@ -1701,6 +2099,38 @@ The corpus should cover distinct semantics rather than only popular packages:
 - [ ] Differential parity report is generated and regressions fail CI.
 - [ ] Benchmarks flag material regressions without hiding correctness failures.
 - [ ] Same-snapshot Portage comparisons meet the current milestone's speed budget.
+
+## P11 — musl platform support (later)
+
+- [ ] Make libc identity a first-class platform dimension sourced from the
+  active Gentoo profile/CHOST and effective `elibc_*` policy, never inferred
+  from the development host or a hard-coded loader pathname.
+- [ ] Add an amd64 musl resolver/configuration corpus covering `sys-libs/musl`,
+  libc virtuals, profile masks/forces, USE conditionals, dependency closure and
+  exact normalized comparison with Portage. Extend to aarch64 after the first
+  architecture is exact.
+- [ ] Audit ELF and preserved-library handling for musl interpreter names,
+  loader/library search behavior, static PIE, merged-/usr layouts and the
+  absence or differing behavior of glibc-specific `ldconfig`, `ldd`,
+  `ld.so.conf` and `glibc-hwcaps`. Keep the existing glibc-hwcaps traversal an
+  explicitly glibc-only extension of otherwise libc-neutral discovery.
+- [ ] Certify the phase ABI and representative package corpus in a real musl
+  container/chroot, including configure/CMake/Meson libc detection, toolchain
+  variables, sandboxing, install images, VDB metadata and lifecycle hooks.
+- [ ] Build and execute the static recovery binary on musl, and ensure portable
+  state/tinderbox requests encode target libc and ABI so glibc and musl plans or
+  binary packages can never be confused.
+- [ ] Add CI lanes for pure-Go unit tests under musl and privileged integration
+  tests against a pinned Gentoo musl stage. Unsupported libc/architecture
+  combinations must fail with a capability diagnostic rather than silently
+  applying glibc assumptions.
+
+Acceptance gate:
+
+- An amd64 musl `@system` plan matches Portage on a frozen state snapshot,
+  representative source installs produce equivalent images/VDB state, ELF and
+  preserved-library audits pass without glibc tools, and recovery works from
+  the static Arise artifact.
 
 ## Milestones
 

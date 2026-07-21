@@ -37,6 +37,14 @@ merge, uninstall, sync or modify configuration. Captured outputs are evidence,
 not portable fixtures until sanitized and paired with an `arise state fixture`
 snapshot.
 
+The P4 environment and representative-package differentials create synthetic
+repositories and build trees under the Go test temporary directory, run EAPI
+7/8 phases under Portage and Arise, and compare normalized environments and
+image trees. The config-protected fixture additionally merges into two isolated
+temporary roots and compares preservation of the local file and creation of
+the pending `._cfg0000_` update. These tests use the invoking user and group and
+never target the live ROOT.
+
 ## Privileged read-only lane
 
 Run the reference capture explicitly through `su` as documented in
@@ -50,3 +58,12 @@ Real merge, removal and recovery validation belongs in a synthetic ROOT with
 separate ROOT/SYSROOT/BROOT, repository, VDB, distfiles and configuration. It
 must fail closed when the required isolation is unavailable. This lane remains
 a P4 acceptance gate and is never part of `go test ./...`.
+
+Verified mutation plans can be saved without shell redirection using
+`--save-plan NAME`; names resolve beneath `${PORTAGE_TMPDIR}/arise/plans` by
+default and may be redirected with `--plan-dir`. An explicit path is also
+accepted. A later state-bound command may use `--approve-plan NAME_OR_PATH`
+instead of copying the embedded SHA-256. Arise rereads the saved JSON, requires
+it to be complete and verified, and compares its digest with the freshly
+resolved plan; the file is authorization evidence, not an instruction stream.
+`--approve-plan-sha256` remains available for scripts.

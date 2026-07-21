@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -38,10 +39,22 @@ type MergeConfig struct {
 	BeforeReplacementRemoval func() error
 	AfterReplacementRemoval  func() error
 	BeforeCommit             func() error
+	AfterCommit              func() error // Portage-compatible lifecycle; failure never rolls back the committed package
 	ConfigProtect            []string
 	ConfigProtectMask        []string
+	PreserveLibs             bool
 	Environment              []byte // normalized package environment snapshot
 }
+
+// PostCommitError reports lifecycle work that failed after payload and VDB
+// commit. Callers must not retry or roll back the package transaction as if it
+// had failed before commit.
+type PostCommitError struct{ Err error }
+
+func (e *PostCommitError) Error() string {
+	return fmt.Sprintf("merge: post-commit lifecycle: %v", e.Err)
+}
+func (e *PostCommitError) Unwrap() error { return e.Err }
 
 // VdbPath returns the VDB entry path for the merge config.
 func (c MergeConfig) VdbPath() string {
@@ -55,6 +68,22 @@ func (c MergeConfig) vdbPath() string {
 // Merge walks the destDir and installs every entry into the root filesystem
 // under cfg.RootDir, then writes a VDB CONTENTS record and an environment file.
 func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr error) {
+	if !cfg.VDBLockHeld {
+		lock, err := oplock.TryAcquireVDB(cfg.VdbDir)
+		if err != nil {
+			return fmt.Errorf("merge: %w", err)
+		}
+		defer func() {
+			if releaseErr := lock.Release(); releaseErr != nil && returnErr == nil {
+				returnErr = fmt.Errorf("merge: %w", releaseErr)
+			}
+		}()
+	}
+	if cfg.JournalDir != "" {
+		if _, err := journal.RecoverActive(cfg.JournalDir); err != nil {
+			return fmt.Errorf("merge: recover interrupted journal: %w", err)
+		}
+	}
 	if filepath.Clean(cfg.RootDir) == string(filepath.Separator) && cfg.AllowLiveRoot {
 		if _, err := os.Lstat(cfg.vdbPath()); err == nil && !cfg.AllowLiveReplacement {
 			return fmt.Errorf("merge: live new-install canary refuses existing VDB entry %s", cfg.vdbPath())
@@ -75,17 +104,6 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 			return err
 		}
 	}
-	if !cfg.VDBLockHeld {
-		lock, err := oplock.TryAcquireVDB(cfg.VdbDir)
-		if err != nil {
-			return fmt.Errorf("merge: %w", err)
-		}
-		defer func() {
-			if releaseErr := lock.Release(); releaseErr != nil && returnErr == nil {
-				returnErr = fmt.Errorf("merge: %w", releaseErr)
-			}
-		}()
-	}
 	collisions, err := CheckCollisions(destDir, cfg.VdbDir, []string{cfg.Category + "/" + cfg.Package})
 	if err != nil {
 		return fmt.Errorf("merge: ownership preflight: %w", err)
@@ -94,10 +112,15 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 		return fmt.Errorf("merge: ownership preflight failed: %s", strings.Join(collisions, "; "))
 	}
 	if cfg.JournalDir == "" {
-		return merge(ctx, destDir, cfg, nil)
-	}
-	if _, err := journal.RecoverActive(cfg.JournalDir); err != nil {
-		return fmt.Errorf("merge: recover interrupted journal: %w", err)
+		if err := merge(ctx, destDir, cfg, nil); err != nil {
+			return err
+		}
+		if cfg.AfterCommit != nil {
+			if err := cfg.AfterCommit(); err != nil {
+				return &PostCommitError{Err: err}
+			}
+		}
+		return nil
 	}
 	var j *journal.Journal
 	if filepath.Clean(cfg.RootDir) == string(filepath.Separator) && cfg.AllowLiveRoot {
@@ -119,6 +142,11 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 			return fmt.Errorf("merge: commit journal %s: %v; rollback: %w", j.Dir(), err, rollbackErr)
 		}
 		return fmt.Errorf("merge: commit journal %s: %w", j.Dir(), err)
+	}
+	if cfg.AfterCommit != nil {
+		if err := cfg.AfterCommit(); err != nil {
+			return &PostCommitError{Err: err}
+		}
 	}
 	return nil
 }
@@ -279,6 +307,13 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 			linkTarget, err := os.Readlink(srcPath)
 			if err != nil {
 				return fmt.Errorf("merge: could not read symlink %s: %w", srcPath, err)
+			}
+			if cfg.VDBMetadata["EAPI"] != "9" && filepath.IsAbs(linkTarget) {
+				cleanImage := filepath.Clean(destDir)
+				cleanTarget := filepath.Clean(linkTarget)
+				if relative, relErr := filepath.Rel(cleanImage, cleanTarget); relErr == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+					linkTarget = filepath.Join(string(filepath.Separator), relative)
+				}
 			}
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 				return fmt.Errorf("merge: could not create parent directory for symlink %s: %w", targetPath, err)
@@ -490,6 +525,11 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 			}
 		}
 	}
+	if operation != nil && cfg.PreserveLibs {
+		if err := prunePreservedRegistry(operation, cfg); err != nil {
+			return err
+		}
+	}
 	if operation != nil && cfg.BeforeCommit != nil {
 		if err := cfg.BeforeCommit(); err != nil {
 			return fmt.Errorf("merge: pre-commit lifecycle: %w", err)
@@ -651,6 +691,13 @@ func removeObsoleteReplacementPayload(operation *journal.Journal, destDir, newVD
 	if err != nil {
 		return fmt.Errorf("merge: scan replacement ownership: %w", err)
 	}
+	preservedPaths := make(map[string]bool)
+	if cfg.PreserveLibs {
+		preservedPaths, err = requiredPreservedPaths(cfg.VdbDir, oldVDB, newVDB, entries)
+		if err != nil {
+			return fmt.Errorf("merge: select preserved libraries: %w", err)
+		}
+	}
 	sort.SliceStable(entries, func(i, k int) bool {
 		return strings.Count(filepath.Clean(entries[i].Path), string(filepath.Separator)) > strings.Count(filepath.Clean(entries[k].Path), string(filepath.Separator))
 	})
@@ -659,7 +706,7 @@ func removeObsoleteReplacementPayload(operation *journal.Journal, destDir, newVD
 		if err != nil {
 			return err
 		}
-		if retained[canonical] || otherOwners[canonical] {
+		if retained[canonical] || otherOwners[canonical] || preservedPaths[canonical] {
 			continue
 		}
 		if _, err := os.Lstat(target); os.IsNotExist(err) {
@@ -682,7 +729,261 @@ func removeObsoleteReplacementPayload(operation *journal.Journal, destDir, newVD
 			return err
 		}
 	}
+	if len(preservedPaths) != 0 {
+		if err := updatePreservedRegistry(operation, cfg, newVDB, preservedPaths); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func requiredPreservedPaths(vdbRoot, oldVDB, newVDB string, entries []contentsEntry) (map[string]bool, error) {
+	oldProvided, err := neededProviders(filepath.Join(oldVDB, "NEEDED.ELF.2"))
+	if err != nil {
+		return nil, err
+	}
+	newProvided, err := neededProviders(filepath.Join(newVDB, "NEEDED.ELF.2"))
+	if err != nil {
+		return nil, err
+	}
+	needed := make(map[string]bool)
+	categories, err := os.ReadDir(vdbRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, category := range categories {
+		if !category.IsDir() {
+			continue
+		}
+		packages, _ := os.ReadDir(filepath.Join(vdbRoot, category.Name()))
+		for _, pkg := range packages {
+			path := filepath.Join(vdbRoot, category.Name(), pkg.Name())
+			if !pkg.IsDir() || filepath.Clean(path) == filepath.Clean(oldVDB) || filepath.Clean(path) == filepath.Clean(newVDB) {
+				continue
+			}
+			data, readErr := os.ReadFile(filepath.Join(path, "NEEDED.ELF.2"))
+			if readErr != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				fields := strings.Split(line, ";")
+				if len(fields) >= 5 {
+					for _, soname := range strings.Split(fields[4], ",") {
+						needed[strings.TrimSpace(soname)] = true
+					}
+				}
+			}
+		}
+	}
+	preserved := make(map[string]bool)
+	for soname, providerPath := range oldProvided {
+		if !needed[soname] || newProvided[soname] != "" {
+			continue
+		}
+		providerPath = filepath.Clean(providerPath)
+		preserved[providerPath] = true
+		providerDir, providerBase := filepath.Dir(providerPath), filepath.Base(providerPath)
+		for _, entry := range entries {
+			candidate := filepath.Clean(entry.Path)
+			if entry.Type == "sym" && filepath.Dir(candidate) == providerDir {
+				base := filepath.Base(candidate)
+				if base == soname || strings.HasPrefix(providerBase, base) || strings.HasPrefix(base, soname) {
+					preserved[candidate] = true
+				}
+			}
+		}
+	}
+	return preserved, nil
+}
+
+func neededProviders(path string) (map[string]string, error) {
+	providers := make(map[string]string)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return providers, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ";")
+		if len(fields) >= 3 && fields[1] != "" && fields[2] != "" {
+			providers[fields[2]] = filepath.Clean(fields[1])
+		}
+	}
+	return providers, nil
+}
+
+func updatePreservedRegistry(operation *journal.Journal, cfg MergeConfig, ownerVDB string, paths map[string]bool) error {
+	registryPath := filepath.Join(cfg.RootDir, "var", "lib", "portage", "preserved_libs_registry")
+	records := make(map[string][]json.RawMessage)
+	if data, err := os.ReadFile(registryPath); err == nil && len(strings.TrimSpace(string(data))) != 0 {
+		if err := json.Unmarshal(data, &records); err != nil {
+			return fmt.Errorf("merge: parse preserved library registry: %w", err)
+		}
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	ownerCPV, err := filepath.Rel(cfg.VdbDir, ownerVDB)
+	if err != nil || strings.HasPrefix(ownerCPV, "..") {
+		return fmt.Errorf("merge: invalid preserved library owner %s", ownerVDB)
+	}
+	slotData, err := os.ReadFile(filepath.Join(ownerVDB, "SLOT"))
+	if err != nil {
+		return err
+	}
+	counterData, err := os.ReadFile(filepath.Join(ownerVDB, "COUNTER"))
+	if err != nil {
+		return err
+	}
+	registered := make([]string, 0, len(paths))
+	for path := range paths {
+		registered = append(registered, filepath.ToSlash(path))
+	}
+	sort.Strings(registered)
+	ownerJSON, _ := json.Marshal(filepath.ToSlash(ownerCPV))
+	counterJSON, _ := json.Marshal(strings.TrimSpace(string(counterData)))
+	pathsJSON, _ := json.Marshal(registered)
+	key := cfg.Category + "/" + cfg.Package + ":" + strings.SplitN(strings.TrimSpace(string(slotData)), "/", 2)[0]
+	records[key] = []json.RawMessage{ownerJSON, counterJSON, pathsJSON}
+	data, err := json.MarshalIndent(records, "", "\t")
+	if err != nil {
+		return err
+	}
+	if err := ensureJournaledParent(operation, cfg.RootDir, registryPath); err != nil {
+		return err
+	}
+	if operation != nil {
+		if err := operation.Capture(registryPath); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(registryPath, append(data, '\n'), 0o644); err != nil {
+		return err
+	}
+	return nil
+}
+
+func prunePreservedRegistry(operation *journal.Journal, cfg MergeConfig) error {
+	registryPath := filepath.Join(cfg.RootDir, "var", "lib", "portage", "preserved_libs_registry")
+	data, err := os.ReadFile(registryPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	records := make(map[string][]json.RawMessage)
+	if err := json.Unmarshal(data, &records); err != nil {
+		return fmt.Errorf("merge: parse preserved library registry: %w", err)
+	}
+	needed := make(map[string]bool)
+	_ = filepath.WalkDir(cfg.VdbDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() || entry.Name() != "NEEDED.ELF.2" {
+			return nil
+		}
+		metadata, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		for _, line := range strings.Split(string(metadata), "\n") {
+			fields := strings.Split(line, ";")
+			if len(fields) >= 5 {
+				for _, soname := range strings.Split(fields[4], ",") {
+					needed[strings.TrimSpace(soname)] = true
+				}
+			}
+		}
+		return nil
+	})
+	changed := false
+	for key, record := range records {
+		if len(record) != 3 {
+			continue
+		}
+		var paths []string
+		var recordedOwner string
+		if err := json.Unmarshal(record[0], &recordedOwner); err != nil || json.Unmarshal(record[2], &paths) != nil {
+			continue
+		}
+		required := false
+		for _, registered := range paths {
+			fullPath := filepath.Join(cfg.RootDir, strings.TrimPrefix(registered, string(filepath.Separator)))
+			soname := filepath.Base(registered)
+			if inspected := elfSONAME(fullPath); inspected != "" {
+				soname = inspected
+			}
+			if needed[soname] {
+				required = true
+				break
+			}
+		}
+		if required {
+			continue
+		}
+		ownerVDB := filepath.Join(cfg.VdbDir, filepath.FromSlash(recordedOwner))
+		otherOwners, err := ownershipExcluding(cfg.VdbDir, ownerVDB)
+		if err != nil {
+			return err
+		}
+		removed := make(map[string]bool)
+		for _, registered := range paths {
+			canonical := filepath.Clean(registered)
+			if otherOwners[canonical] {
+				continue
+			}
+			fullPath := filepath.Join(cfg.RootDir, strings.TrimPrefix(canonical, string(filepath.Separator)))
+			if _, err := os.Lstat(fullPath); os.IsNotExist(err) {
+				continue
+			} else if err != nil {
+				return err
+			}
+			if err := operation.Capture(fullPath); err != nil {
+				return err
+			}
+			if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			removed[canonical] = true
+		}
+		if len(removed) != 0 {
+			contentsPath := filepath.Join(ownerVDB, "CONTENTS")
+			contents, readErr := os.ReadFile(contentsPath)
+			if readErr == nil {
+				var retainedLines []string
+				for _, line := range strings.Split(string(contents), "\n") {
+					fields := strings.Fields(line)
+					if len(fields) >= 2 && removed[filepath.Clean(fields[1])] {
+						continue
+					}
+					if line != "" {
+						retainedLines = append(retainedLines, line)
+					}
+				}
+				if err := operation.Capture(contentsPath); err != nil {
+					return err
+				}
+				if err := os.WriteFile(contentsPath, []byte(strings.Join(retainedLines, "\n")+"\n"), 0o644); err != nil {
+					return err
+				}
+			} else if !os.IsNotExist(readErr) {
+				return readErr
+			}
+		}
+		delete(records, key)
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	encoded, err := json.MarshalIndent(records, "", "\t")
+	if err != nil {
+		return err
+	}
+	if err := operation.Capture(registryPath); err != nil {
+		return err
+	}
+	return os.WriteFile(registryPath, append(encoded, '\n'), 0o644)
 }
 
 func replacementPath(root, recorded string) (string, string, error) {
@@ -752,7 +1053,10 @@ type UnmergeConfig struct {
 	VDBDir         string
 	PackagePath    string
 	JournalDir     string
+	BeforeRemoval  func() error
+	AfterRemoval   func() error
 	BeforeCommit   func() error
+	AfterCommit    func() error
 	AllowLiveRoot  bool
 	ValidateLocked func() error
 	VDBLockHeld    bool // caller owns the operation-wide Portage VDB lock
@@ -781,6 +1085,9 @@ func UnmergeWithConfig(ctx context.Context, cfg UnmergeConfig) (returnErr error)
 			}
 		}()
 	}
+	if _, err := journal.RecoverActive(journalDir); err != nil {
+		return fmt.Errorf("unmerge: recover interrupted journal: %w", err)
+	}
 	if cfg.ValidateLocked != nil {
 		if err := cfg.ValidateLocked(); err != nil {
 			return fmt.Errorf("unmerge: locked state validation: %w", err)
@@ -803,9 +1110,6 @@ func UnmergeWithConfig(ctx context.Context, cfg UnmergeConfig) (returnErr error)
 	if err != nil {
 		return fmt.Errorf("unmerge: scan ownership: %w", err)
 	}
-	if _, err := journal.RecoverActive(journalDir); err != nil {
-		return fmt.Errorf("unmerge: recover interrupted journal: %w", err)
-	}
 	var operation *journal.Journal
 	if filepath.Clean(rootDir) == string(filepath.Separator) && cfg.AllowLiveRoot {
 		operation, err = journal.BeginLiveRoot(journalDir)
@@ -820,6 +1124,11 @@ func UnmergeWithConfig(ctx context.Context, cfg UnmergeConfig) (returnErr error)
 			return fmt.Errorf("%v; unmerge: rollback journal %s: %w", cause, operation.Dir(), rollbackErr)
 		}
 		return fmt.Errorf("%w (rolled back via %s)", cause, operation.Dir())
+	}
+	if cfg.BeforeRemoval != nil {
+		if err := cfg.BeforeRemoval(); err != nil {
+			return rollback(fmt.Errorf("unmerge: pre-removal lifecycle: %w", err))
+		}
 	}
 	sort.SliceStable(entries, func(i, k int) bool {
 		return strings.Count(filepath.Clean(entries[i].Path), string(filepath.Separator)) > strings.Count(filepath.Clean(entries[k].Path), string(filepath.Separator))
@@ -864,6 +1173,14 @@ func UnmergeWithConfig(ctx context.Context, cfg UnmergeConfig) (returnErr error)
 	if err := operation.RemoveTree(pkgPath); err != nil {
 		return rollback(fmt.Errorf("unmerge: remove package database directory: %w", err))
 	}
+	if cfg.AfterRemoval != nil {
+		if err := cfg.AfterRemoval(); err != nil {
+			return rollback(fmt.Errorf("unmerge: post-removal lifecycle: %w", err))
+		}
+	}
+	if err := prunePreservedRegistry(operation, MergeConfig{RootDir: rootDir, VdbDir: vdbRoot}); err != nil {
+		return rollback(fmt.Errorf("unmerge: prune preserved libraries: %w", err))
+	}
 	if cfg.BeforeCommit != nil {
 		if err := cfg.BeforeCommit(); err != nil {
 			return rollback(fmt.Errorf("unmerge: pre-commit: %w", err))
@@ -871,6 +1188,11 @@ func UnmergeWithConfig(ctx context.Context, cfg UnmergeConfig) (returnErr error)
 	}
 	if err := operation.Commit(); err != nil {
 		return rollback(fmt.Errorf("unmerge: commit journal: %w", err))
+	}
+	if cfg.AfterCommit != nil {
+		if err := cfg.AfterCommit(); err != nil {
+			return &PostCommitError{Err: err}
+		}
 	}
 	return nil
 }

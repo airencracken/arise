@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"github.com/airencracken/arise/internal/oplock"
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/preserved"
+	"github.com/airencracken/arise/internal/rebuild"
 	"github.com/airencracken/arise/internal/resolve"
 )
 
@@ -54,12 +57,44 @@ func runUninstall(args []string, dbPath, repoDir string) {
 		fmt.Fprintf(os.Stderr, "uninstall: build state graph: %v\n", err)
 		os.Exit(1)
 	}
+	// Removal verifies the installed state that will remain. Repository
+	// candidates cannot satisfy a removal unless they are also planned for
+	// installation, and their unexpanded cache metadata can contaminate a
+	// slotted installed CP with dependencies from a different version.
+	for _, node := range g.Nodes {
+		node.AvailableVersions = nil
+		node.Depends = nil
+		node.RevDepends = nil
+	}
 	portageConfig, _ := portage.LoadEffectiveConfig(*portageConfigRoot)
 	removals := make([]resolve.PkgAction, 0, len(atoms))
 	for _, a := range atoms {
 		removals = append(removals, resolve.PkgAction{Atom: a, Action: "uninstall", Domain: resolve.DomainROOT})
 	}
-	result, err := resolve.VerifyTransaction(g.ToResolveGraph(), nil, removals, resolve.ResolveConfig{PortageConfig: portageConfig, Backtrack: *backtrackVal})
+	resolveGraph := g.ToResolveGraph()
+	resolveCfg := resolve.ResolveConfig{PortageConfig: portageConfig, Backtrack: *backtrackVal}
+	baseline, baselineErr := resolve.VerifyTransaction(resolveGraph, nil, nil, resolveCfg)
+	result, err := resolve.VerifyTransaction(resolveGraph, nil, removals, resolveCfg)
+	if baselineErr == nil && baseline != nil && result != nil && len(result.Conflicts) != 0 {
+		preexisting := make(map[string]bool, len(baseline.Conflicts))
+		for _, conflict := range baseline.Conflicts {
+			preexisting[conflict] = true
+		}
+		novel := result.Conflicts[:0]
+		for _, conflict := range result.Conflicts {
+			if !preexisting[conflict] {
+				novel = append(novel, conflict)
+			}
+		}
+		result.Conflicts = novel
+		if len(novel) == 0 && result.Incomplete == nil {
+			result.Verified = true
+			result.Verification = resolve.VerificationVerified
+			if len(baseline.Conflicts) != 0 {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("%d pre-existing verification conflict(s) unchanged by removal", len(baseline.Conflicts)))
+			}
+		}
+	}
 	if err != nil || result == nil || !result.Verified || len(result.Conflicts) != 0 {
 		var conflicts []string
 		if result != nil {
@@ -75,12 +110,25 @@ func runUninstall(args []string, dbPath, repoDir string) {
 	}
 	planSHA256 := canonicalPlanSHA256(args, resolve.ResolveConfig{Backtrack: *backtrackVal}, result, stateSHA256)
 	if *pretend {
-		if *jsonOutput {
-			if err := writePlanJSON(os.Stdout, args, resolve.ResolveConfig{Backtrack: *backtrackVal}, result, nil, planTimings{StateSHA256: stateSHA256, Operation: "uninstall"}); err != nil {
+		if *jsonOutput || *savePlan != "" {
+			var encoded bytes.Buffer
+			if err := writePlanJSON(&encoded, args, resolve.ResolveConfig{Backtrack: *backtrackVal}, result, nil, planTimings{StateSHA256: stateSHA256, Operation: "uninstall"}); err != nil {
 				fmt.Fprintf(os.Stderr, "uninstall: encode plan: %v\n", err)
 				os.Exit(1)
 			}
-		} else {
+			if *jsonOutput {
+				_, _ = os.Stdout.Write(encoded.Bytes())
+			}
+			if *savePlan != "" {
+				path, err := savePlanDocument(*savePlan, *planDir, encoded.Bytes())
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "uninstall: save plan: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Fprintf(os.Stderr, "Saved plan to %s\n", path)
+			}
+		}
+		if !*jsonOutput {
 			fmt.Printf("Proposed uninstall (%d packages):\n", len(vdbPaths))
 			for _, path := range vdbPaths {
 				fmt.Printf("  %s\n", path)
@@ -89,11 +137,16 @@ func runUninstall(args []string, dbPath, repoDir string) {
 		}
 		return
 	}
-	if !*experimentalLiveMutation || strings.TrimSpace(*approvePlanSHA256) == "" {
-		fmt.Fprintln(os.Stderr, "uninstall: refusing mutation: require --experimental-live-mutation and --approve-plan-sha256")
+	if !*experimentalLiveMutation || (strings.TrimSpace(*approvePlanSHA256) == "" && strings.TrimSpace(*approvePlan) == "") {
+		fmt.Fprintln(os.Stderr, "uninstall: refusing mutation: require --experimental-live-mutation and --approve-plan or --approve-plan-sha256")
 		os.Exit(1)
 	}
-	if err := validatePlanAuthorization(true, *approvePlanSHA256, planSHA256); err != nil {
+	approvedDigest, err := approvedPlanDigest(*approvePlanSHA256, *approvePlan, *planDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: refusing mutation: %v\n", err)
+		os.Exit(1)
+	}
+	if err := validatePlanAuthorization(true, approvedDigest, planSHA256); err != nil {
 		fmt.Fprintf(os.Stderr, "uninstall: refusing mutation: %v\n", err)
 		os.Exit(1)
 	}
@@ -109,7 +162,44 @@ func runUninstall(args []string, dbPath, repoDir string) {
 		os.Exit(1)
 	}
 	for index, path := range vdbPaths {
-		if err := merge.UnmergeWithConfig(context.Background(), merge.UnmergeConfig{RootDir: commandEnv("ROOT", "/"), VDBDir: *vdbDir, PackagePath: path, JournalDir: *journalDir, AllowLiveRoot: true, VDBLockHeld: true}); err != nil {
+		rebuildCfg := buildRebuildConfig(repoDir, 0, nil, nil)
+		rebuildCfg.AllowLiveRoot = true
+		lifecycle, err := rebuild.OpenInstalledLifecycle(path, rebuildCfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "uninstall: prepare installed lifecycle for %s: %v\n", atoms[index], err)
+			os.Exit(1)
+		}
+		closed := false
+		var lifecycleErrors []error
+		cfg := merge.UnmergeConfig{RootDir: commandEnv("ROOT", "/"), VDBDir: *vdbDir, PackagePath: path, JournalDir: *journalDir, AllowLiveRoot: true, VDBLockHeld: true,
+			BeforeRemoval: func() error {
+				if hookErr := lifecycle.Run(context.Background(), "pkg_prerm"); hookErr != nil {
+					lifecycleErrors = append(lifecycleErrors, hookErr)
+				}
+				return nil
+			},
+			AfterRemoval: func() error {
+				if hookErr := lifecycle.Run(context.Background(), "pkg_postrm"); hookErr != nil {
+					lifecycleErrors = append(lifecycleErrors, hookErr)
+				}
+				return nil
+			},
+			AfterCommit: func() error {
+				closeErr := lifecycle.Close()
+				closed = true
+				return errors.Join(append(lifecycleErrors, closeErr)...)
+			},
+		}
+		if err := merge.UnmergeWithConfig(context.Background(), cfg); err != nil {
+			if !closed {
+				_ = lifecycle.Close()
+				closed = true
+			}
+			var committed *merge.PostCommitError
+			if errors.As(err, &committed) {
+				fmt.Fprintf(os.Stderr, "Removed %s with a committed package journal, but lifecycle finalization failed: %v\n", atoms[index], committed)
+				os.Exit(1)
+			}
 			fmt.Fprintf(os.Stderr, "uninstall: after %d/%d committed removals: %v\n", index, len(vdbPaths), err)
 			os.Exit(1)
 		}
@@ -130,11 +220,55 @@ func validateUninstallVDB(vdbPath string) error {
 		return fmt.Errorf("read stored ebuild: %w", err)
 	}
 	for _, phase := range []string{"pkg_prerm()", "pkg_postrm()"} {
-		if strings.Contains(string(stored), phase) {
+		if strings.Contains(string(stored), phase) && !lifecycleNoopWithLiveRoot(string(stored), strings.TrimSuffix(phase, "()")) {
 			return fmt.Errorf("certified lane forbids custom %s", strings.TrimSuffix(phase, "()"))
 		}
 	}
 	return nil
+}
+
+// lifecycleNoopWithLiveRoot recognizes stored lifecycle functions whose whole
+// body is guarded by [[ -z ${ROOT} ... ]]. Arise's certified live lane binds
+// ROOT=/, so these bodies cannot execute. Keep this deliberately structural:
+// an else/elif, unguarded command, or unfamiliar condition fails closed.
+func lifecycleNoopWithLiveRoot(ebuild, phase string) bool {
+	lines := strings.Split(ebuild, "\n")
+	header := phase + "() {"
+	start := -1
+	for index, line := range lines {
+		if strings.TrimSpace(line) == header {
+			start = index + 1
+			break
+		}
+	}
+	if start < 0 {
+		return false
+	}
+	guardDepth, guards := 0, 0
+	for _, line := range lines[start:] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if trimmed == "}" {
+			return guards > 0 && guardDepth == 0
+		}
+		if strings.HasPrefix(trimmed, "if [[ -z ${ROOT}") && (strings.HasSuffix(trimmed, "]] ; then") || strings.HasSuffix(trimmed, "]]; then")) {
+			if guardDepth != 0 {
+				return false
+			}
+			guardDepth, guards = 1, guards+1
+			continue
+		}
+		if trimmed == "fi" && guardDepth == 1 {
+			guardDepth = 0
+			continue
+		}
+		if guardDepth != 1 || strings.HasPrefix(trimmed, "else") || strings.HasPrefix(trimmed, "elif") {
+			return false
+		}
+	}
+	return false
 }
 
 func validateELFRemovalOrder(vdbDir string, cpvs []string) error {

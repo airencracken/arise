@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/airencracken/arise/internal/binpkg"
@@ -78,11 +82,6 @@ func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phase
 		}
 	}
 
-	makeOpts := fmt.Sprintf("-j%d", jobs)
-	if jobs <= 0 {
-		makeOpts = portageCfg.MAKEOPTS
-	}
-
 	cfg := &rebuild.RebuildConfig{
 		RepoDir:       repoDir,
 		DistfilesDir:  *distfilesDir,
@@ -92,7 +91,7 @@ func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phase
 		CFLAGS:        portageCfg.CFLAGS,
 		CXXFLAGS:      portageCfg.CXXFLAGS,
 		LDFLAGS:       portageCfg.MakeConf["LDFLAGS"],
-		MAKEOPTS:      makeOpts,
+		MAKEOPTS:      portageCfg.MAKEOPTS,
 		Arch:          portageCfg.MakeConf["ARCH"],
 		Features:      featConfig,
 		GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]),
@@ -342,7 +341,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	resolutionDuration := time.Since(resolutionStarted)
 	stateSHA256 := ""
 	stateFingerprintStarted := time.Now()
-	if result.Verified && (jsonMode || *experimentalLiveMutation || *approvePlanSHA256 != "") {
+	if result.Verified && (jsonMode || *savePlan != "" || *experimentalLiveMutation || *approvePlanSHA256 != "" || *approvePlan != "") {
 		stateSHA256, err = mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "arise: fingerprint mutation state: %v\n", err)
@@ -350,13 +349,28 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 	}
 	stateFingerprintDuration := time.Since(stateFingerprintStarted)
-	if jsonMode {
-		if jsonErr := writePlanJSON(os.Stdout, targets, cfg, result, err, planTimings{
+	if jsonMode || *savePlan != "" {
+		var encoded bytes.Buffer
+		if jsonErr := writePlanJSON(&encoded, targets, cfg, result, err, planTimings{
 			Total: resolutionDuration, Index: openDuration, State: stateDuration, Graph: graphDuration, Solver: solverDuration,
 			StateFingerprint: stateFingerprintDuration, StateSHA256: stateSHA256,
 		}); jsonErr != nil {
 			fmt.Fprintf(os.Stderr, "encode JSON plan: %v\n", jsonErr)
 			exitAfterRuntimeProfiles(1)
+		}
+		if jsonMode {
+			if _, writeErr := os.Stdout.Write(encoded.Bytes()); writeErr != nil {
+				fmt.Fprintf(os.Stderr, "write JSON plan: %v\n", writeErr)
+				exitAfterRuntimeProfiles(1)
+			}
+		}
+		if *savePlan != "" {
+			path, saveErr := savePlanDocument(*savePlan, *planDir, encoded.Bytes())
+			if saveErr != nil {
+				fmt.Fprintf(os.Stderr, "save plan: %v\n", saveErr)
+				exitAfterRuntimeProfiles(1)
+			}
+			fmt.Fprintf(os.Stderr, "Saved plan to %s\n", path)
 		}
 	}
 	if !cfg.Quiet {
@@ -422,14 +436,19 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 	}
-	if len(result.Warnings) > 0 && !cfg.Quiet {
+	displayWarnings := warningsForDisplay(result.Warnings, cfg.Verbose)
+	if len(displayWarnings) > 0 && !cfg.Quiet {
 		fmt.Println("\nWarnings:")
-		for _, warning := range result.Warnings {
+		for _, warning := range displayWarnings {
 			fmt.Printf("  %s\n", warning)
 		}
 	}
 
 	if !cfg.Quiet {
+		estimates := mergeEstimates(nil)
+		if *showEstimates {
+			estimates = loadMergeEstimates(*emergeLog)
+		}
 		fmt.Printf("\n%s\n", planHeading(result, cfg.FetchOnly))
 
 		if cfg.Tree && !cfg.FetchOnly {
@@ -437,7 +456,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		} else {
 			for _, a := range result.Install {
 				label := displayedActionLabel(a.Action, cfg.FetchOnly)
-				fmt.Printf("  %s %s\n", colorIcon(a.Action, label), colorActionAtom(a))
+				fmt.Printf("  %s %s", colorIcon(a.Action, label), colorActionAtom(a))
+				if estimate, ok := estimates.forAction(a); ok {
+					fmt.Printf("  (estimated %s)", formatEstimate(estimate))
+				}
+				fmt.Println()
 				if cfg.Verbose {
 					if a.Reason != "" {
 						fmt.Printf("           reason: %s\n", a.Reason)
@@ -453,6 +476,21 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 		printActionTotals(result.Install, *distfilesDir, cfg.Verbose, cfg.FetchOnly)
+		if *showEstimates {
+			var total time.Duration
+			covered := 0
+			for _, action := range result.Install {
+				if estimate, ok := estimates.forAction(action); ok {
+					total += estimate
+					covered++
+				}
+			}
+			if covered > 0 {
+				fmt.Printf("Estimated merge time: %s (%d of %d packages with history)\n", formatEstimate(total), covered, len(result.Install))
+			} else {
+				fmt.Println("Estimated merge time: unavailable (no matching history)")
+			}
+		}
 	}
 
 	if len(result.Conflicts) > 0 {
@@ -506,6 +544,33 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		os.Remove(*resumeFile)
 		return
 	}
+	if *preflightOnly {
+		if err := planExecutionVerificationError(result); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			exitAfterRuntimeProfiles(1)
+		}
+		rebuildCfg := buildRebuildConfig(repoDir, cfg.Jobs, nil, nil)
+		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
+			rebuildCfg.AllowLiveRoot = true
+		}
+		if err := os.MkdirAll(rebuildCfg.WorkDirBase, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "Preflight could not prepare work directory %s: %v\n", rebuildCfg.WorkDirBase, err)
+			exitAfterRuntimeProfiles(1)
+		}
+		failures := executor.PreflightAll(result, *rebuildCfg)
+		if len(result.Uninstall) > 0 {
+			fmt.Fprintf(os.Stderr, "Preflight notice: %d removal action(s) require the uninstall transaction path and are not covered by package build preflight.\n", len(result.Uninstall))
+		}
+		if len(failures) > 0 {
+			fmt.Fprintf(os.Stderr, "Preflight failed for %d of %d install actions:\n\n", len(failures), len(result.Install))
+			for _, failure := range failures {
+				fmt.Fprintf(os.Stderr, "  %v\n", failure)
+			}
+			exitAfterRuntimeProfiles(1)
+		}
+		fmt.Printf("Preflight passed for all %d install actions; no package state was mutated.\n", len(result.Install))
+		return
+	}
 
 	// Pretend is a read-only operation and must work for unprivileged users.
 	if cfg.Pretend {
@@ -520,7 +585,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	// before execution. The merge lock and journal provide the mutation-side
 	// boundary; a changed package database, policy, recipe, or eclass changes
 	// the canonical plan digest and fails closed here.
-	if *experimentalLiveMutation || *approvePlanSHA256 != "" {
+	if *experimentalLiveMutation || *approvePlanSHA256 != "" || *approvePlan != "" {
 		currentStateSHA256, fingerprintErr := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
 		if fingerprintErr != nil {
 			fmt.Fprintf(os.Stderr, "arise: refusing execution: refresh mutation-state fingerprint: %v\n", fingerprintErr)
@@ -533,13 +598,22 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		stateSHA256 = currentStateSHA256
 	}
 	actualPlanSHA256 := canonicalPlanSHA256(targets, cfg, result, stateSHA256)
-	if err := validatePlanAuthorization(*experimentalLiveMutation, *approvePlanSHA256, actualPlanSHA256); err != nil {
+	approvedDigest, approvalErr := approvedPlanDigest(*approvePlanSHA256, *approvePlan, *planDir)
+	if approvalErr != nil {
+		fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", approvalErr)
+		os.Exit(1)
+	}
+	if err := validatePlanAuthorization(*experimentalLiveMutation, approvedDigest, actualPlanSHA256); err != nil {
+		if detail := describeApprovedPlanDifference(*approvePlan, *planDir, cfg); detail != "" {
+			err = fmt.Errorf("%w; %s", err, detail)
+		}
 		fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", err)
 		os.Exit(1)
 	}
 	if cfg.FetchOnly {
 		progress := newFetchProgress(!cfg.Quiet, os.Stdout)
-		if err := fetchPlanActions(context.Background(), result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: progress.Report}, &fetch.Fetcher{}); err != nil {
+		progress.setConcurrent(normalizedFetchJobs(*fetchJobs, len(result.Install)) > 1)
+		if err := fetchPlanActions(context.Background(), result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: progress.Report}, &fetch.Fetcher{}, *fetchJobs); err != nil {
 			fmt.Fprintf(os.Stderr, "arise: fetch-only failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -553,7 +627,21 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			fmt.Fprintln(os.Stderr, "arise: refusing execution: disposable executor currently requires --oneshot until world addition joins the package journal")
 			os.Exit(1)
 		}
-		rebuildCfg := buildRebuildConfig(repoDir, 1, nil, nil)
+		// Package transactions remain dependency-ordered by the executor, while
+		// the package's build system follows explicit --jobs or configured
+		// MAKEOPTS. Serializing every compiler invocation made large canaries look
+		// stalled and diverged from the approved Portage configuration.
+		rebuildCfg := buildRebuildConfig(repoDir, cfg.Jobs, nil, nil)
+		rebuildCfg.Fetcher = &fetch.Fetcher{}
+		fetchProgress := newFetchProgress(!cfg.Quiet, os.Stdout)
+		fetchProgress.setConcurrent(normalizedFetchJobs(*fetchJobs, len(result.Install)) > 1)
+		if !cfg.Quiet {
+			fmt.Printf("Fetching source artifacts with %d concurrent job(s)...\n", normalizedFetchJobs(*fetchJobs, len(result.Install)))
+		}
+		if err := fetchPlanActions(context.Background(), result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: fetchProgress.Report}, rebuildCfg.Fetcher, *fetchJobs); err != nil {
+			fmt.Fprintf(os.Stderr, "arise: fetch-ahead failed before package mutation: %v\n", err)
+			os.Exit(1)
+		}
 		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
 			rebuildCfg.AllowLiveRoot = true
 		}
@@ -567,8 +655,49 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 			return nil
 		}
-		if err := executor.Execute(context.Background(), result, executor.Config{Rebuild: *rebuildCfg, ResumePath: *resumeFile, ValidateLocked: lockedStateValidation}); err != nil {
-			fmt.Fprintf(os.Stderr, "arise: execution failed: %v\n", err)
+		compatLog, logErr := openPortageMergeLog(*emergeLog)
+		if logErr != nil {
+			fmt.Fprintf(os.Stderr, "arise: open Portage-compatible merge log: %v\n", logErr)
+			os.Exit(1)
+		}
+		execCtx, cancelExecution := context.WithCancel(context.Background())
+		defer cancelExecution()
+		executionEstimates := mergeEstimates(nil)
+		if *showEstimates {
+			executionEstimates = loadMergeEstimates(*emergeLog)
+		}
+		executionProgress := startTerminalProgressMode("Executing package transaction...", !cfg.Quiet && !jsonMode, cfg.Jobs <= 1)
+		executionErr := executor.Execute(execCtx, result, executor.Config{
+			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, ValidateLocked: lockedStateValidation,
+			OnActionStart: func(index, total int, action resolve.PkgAction) {
+				message := fmt.Sprintf("Emerging (%d of %d) %s", index, total, executionActionLabel(action))
+				if *showEstimates {
+					if estimate, ok := executionEstimates.forAction(action); ok {
+						message += " (estimated " + formatEstimate(estimate) + ")"
+					}
+				}
+				if executionProgress.enabled {
+					executionProgress.setLabel(message)
+				} else {
+					executionProgress.message(">>> " + message)
+				}
+				if compatLog.event(false, index, total, action) != nil {
+					cancelExecution()
+				}
+			},
+			OnActionComplete: func(index, total int, action resolve.PkgAction) {
+				executionProgress.message(fmt.Sprintf(">>> Completed emerge (%d of %d) %s", index, total, executionActionLabel(action)))
+				if compatLog.event(true, index, total, action) != nil {
+					cancelExecution()
+				}
+			},
+		})
+		executionProgress.stop()
+		if logErr := compatLog.close(); executionErr == nil && logErr != nil {
+			executionErr = fmt.Errorf("Portage-compatible merge log: %w", logErr)
+		}
+		if executionErr != nil {
+			printExecutionError(os.Stderr, executionErr)
 			os.Exit(1)
 		}
 		if !cfg.Quiet {
@@ -582,6 +711,74 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	// that was not executed, including fetch-only requests.
 	fmt.Fprintln(os.Stderr, unsupportedExecutionMessage(cfg))
 	os.Exit(1)
+}
+
+func warningsForDisplay(warnings []string, verbose bool) []string {
+	if verbose {
+		return warnings
+	}
+	visible := make([]string, 0, len(warnings))
+	for _, warning := range warnings {
+		if strings.HasPrefix(warning, "circular dependency: ") {
+			continue
+		}
+		visible = append(visible, warning)
+	}
+	return visible
+}
+
+func printExecutionError(w io.Writer, err error) {
+	fmt.Fprintln(w, "arise: package transaction failed")
+	fmt.Fprintln(w)
+	const maxDetails = 6
+	details := make([]string, 0, maxDetails)
+	durableLog := ""
+	for err != nil {
+		message := err.Error()
+		cause := errors.Unwrap(err)
+		if cause != nil {
+			if at := strings.Index(message, cause.Error()); at >= 0 {
+				message = message[:at] + message[at+len(cause.Error()):]
+			}
+		}
+		if start := strings.LastIndex(message, "(durable log: "); start >= 0 {
+			if end := strings.Index(message[start:], ")"); end >= 0 {
+				durableLog = strings.TrimSpace(message[start+len("(durable log:") : start+end])
+				message = message[:start] + message[start+end+1:]
+			}
+		}
+		message = strings.Trim(message, ":; \t\r\n")
+		if line := strings.TrimSpace(strings.SplitN(message, "\n", 2)[0]); line != "" && len(details) < maxDetails {
+			if len(line) > 160 {
+				line = line[:157] + "..."
+			}
+			details = append(details, line)
+		}
+		err = cause
+	}
+	for _, detail := range details {
+		fmt.Fprintf(w, "  %s\n", detail)
+	}
+	if durableLog != "" {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "  Log file:")
+		fmt.Fprintf(w, "    '%s'\n", durableLog)
+	}
+	fmt.Fprintln(w)
+}
+
+func executionActionLabel(action resolve.PkgAction) string {
+	if action.Atom == nil {
+		return "<nil>"
+	}
+	label := action.Atom.CP()
+	if action.Atom.Version != nil && action.Atom.Version.Raw != "" {
+		label += "-" + action.Atom.Version.Raw
+	}
+	if action.Repository != "" {
+		label += "::" + action.Repository
+	}
+	return label
 }
 
 func planHeading(result *resolve.ResolveResult, fetchOnly bool) string {
@@ -618,30 +815,71 @@ func planExecutionVerificationError(result *resolve.ResolveResult) error {
 	return nil
 }
 
-func fetchPlanActions(ctx context.Context, actions []resolve.PkgAction, baseConfig fetch.FetchConfig, fetcher *fetch.Fetcher) error {
+func fetchPlanActions(ctx context.Context, actions []resolve.PkgAction, baseConfig fetch.FetchConfig, fetcher *fetch.Fetcher, jobs int) error {
 	if fetcher == nil {
 		return fmt.Errorf("fetch-only: nil fetcher")
 	}
-	for _, action := range actions {
-		if action.Atom == nil || action.RepositoryPath == "" {
-			return fmt.Errorf("fetch-only: source action lacks package or repository identity")
+	jobs = normalizedFetchJobs(jobs, len(actions))
+	errs := make([]error, len(actions))
+	indices := make(chan int)
+	var workers sync.WaitGroup
+	for worker := 0; worker < jobs; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range indices {
+				errs[index] = fetchPlanAction(ctx, actions[index], baseConfig, fetcher)
+			}
+		}()
+	}
+	for index := range actions {
+		select {
+		case <-ctx.Done():
+			close(indices)
+			workers.Wait()
+			return ctx.Err()
+		case indices <- index:
 		}
-		if action.MergeType == "binary" {
-			return fmt.Errorf("fetch-only: binary acquisition for %s is not implemented", action.Atom)
-		}
-		if strings.TrimSpace(action.SrcURI) == "" {
-			continue
-		}
-		manifest := filepath.Join(action.RepositoryPath, action.Atom.Category, action.Atom.Package, "Manifest")
-		mirrorGroups, err := fetch.LoadMirrorGroups(filepath.Join(action.RepositoryPath, "profiles", "thirdpartymirrors"))
+	}
+	close(indices)
+	workers.Wait()
+	for _, err := range errs {
 		if err != nil {
-			return fmt.Errorf("%s: %w", action.Atom, err)
+			return err
 		}
-		config := baseConfig
-		config.MirrorGroups = mirrorGroups
-		if _, err := fetcher.AcquireManifest(ctx, manifest, action.SrcURI, action.UseFlags, config); err != nil {
-			return fmt.Errorf("%s: %w", action.Atom, err)
-		}
+	}
+	return nil
+}
+
+func normalizedFetchJobs(jobs, actions int) int {
+	if jobs < 1 {
+		jobs = 1
+	}
+	if actions > 0 && jobs > actions {
+		return actions
+	}
+	return jobs
+}
+
+func fetchPlanAction(ctx context.Context, action resolve.PkgAction, baseConfig fetch.FetchConfig, fetcher *fetch.Fetcher) error {
+	if action.Atom == nil || action.RepositoryPath == "" {
+		return fmt.Errorf("fetch-only: source action lacks package or repository identity")
+	}
+	if action.MergeType == "binary" {
+		return fmt.Errorf("fetch-only: binary acquisition for %s is not implemented", action.Atom)
+	}
+	if strings.TrimSpace(action.SrcURI) == "" {
+		return nil
+	}
+	manifest := filepath.Join(action.RepositoryPath, action.Atom.Category, action.Atom.Package, "Manifest")
+	mirrorGroups, err := fetch.LoadMirrorGroups(filepath.Join(action.RepositoryPath, "profiles", "thirdpartymirrors"))
+	if err != nil {
+		return fmt.Errorf("%s: %w", action.Atom, err)
+	}
+	config := baseConfig
+	config.MirrorGroups = mirrorGroups
+	if _, err := fetcher.AcquireManifest(ctx, manifest, action.SrcURI, action.UseFlags, config); err != nil {
+		return fmt.Errorf("%s: %w", action.Atom, err)
 	}
 	return nil
 }

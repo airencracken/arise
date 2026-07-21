@@ -20,7 +20,8 @@ build:
 
 static:
 	CGO_ENABLED=0 $(GO) build -ldflags="-s -w" -o $(BINARY) ./cmd/arise/
-	@file $(BINARY) | grep -q "statically linked" && echo "static build: OK" || echo "static build: dynamic"
+	@file $(BINARY) | grep -q "statically linked" || { file $(BINARY); echo "static build: FAILED" >&2; exit 1; }
+	@echo "static build: OK"
 
 #
 # Tests
@@ -54,13 +55,13 @@ test-race:
 test-integration:
 	@if [ -d /var/db/repos/gentoo/metadata/md5-cache ]; then \
 		echo "Running integration tests against live Gentoo tree..."; \
-		$(GO) test -tags=live_portage ./internal/integration/ -count=1 -v -timeout 10m; \
+		$(GO) test -tags=live_portage ./internal/integration/ ./internal/phaseproto/ ./internal/rebuild/ -count=1 -v -timeout 10m; \
 	else \
 		echo "No Gentoo tree found. Skipping."; \
 	fi
 
 test-live-portage-compile:
-	$(GO) test -tags=live_portage ./internal/integration ./internal/benchmark -run '^$$' -count=1
+	$(GO) test -tags=live_portage ./internal/integration ./internal/benchmark ./internal/phaseproto ./internal/rebuild -run '^$$' -count=1
 
 test-coverage:
 	$(GO) test $(COVERAGE_CORE_PKGS) -coverpkg=./... -coverprofile=/tmp/arise-coverage.out -covermode=atomic -count=1 -timeout 60s

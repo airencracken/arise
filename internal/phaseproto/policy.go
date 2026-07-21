@@ -24,6 +24,7 @@ type PackagePolicy struct {
 	PR            string
 	Slot          string
 	WorkDir       string
+	BuildDir      string
 	SourceDir     string
 	ImageDir      string
 	RootDir       string
@@ -115,7 +116,10 @@ func EvaluateExecutionPolicy(featureText, restrictText, propertyText string, use
 			policy.Tests = enabled
 		case "nostrip":
 			policy.Strip = !enabled
-		case "split-log", "compress-build-logs", "fail-clean", "buildpkg", "collision-protect", "protect-owned", "preserve-libs", "xattr":
+		case "split-log", "compress-build-logs", "fail-clean", "buildpkg", "collision-protect", "protect-owned", "preserve-libs", "xattr",
+			"assume-digests", "binpkg-docompress", "binpkg-dostrip", "binpkg-logs", "buildpkg-live", "compress-index",
+			"config-protect-if-modified", "distlocks", "ebuild-locks", "merge-sync", "merge-wait", "news", "parallel-fetch",
+			"parallel-install", "pkgdir-index-trusted", "unknown-features-warn", "unmerge-logs", "unmerge-orphans", "userfetch", "usersync":
 		default:
 			if enabled {
 				return policy, fmt.Errorf("unsupported enabled FEATURE %q", name)
@@ -147,7 +151,7 @@ func EvaluateExecutionPolicy(featureText, restrictText, propertyText string, use
 			policy.Strip = false
 		case "interactive":
 			policy.Interactive = false
-		case "mirror", "primaryuri", "bindist", "parallel":
+		case "mirror", "primaryuri", "bindist", "parallel", "binchecks":
 		default:
 			return policy, fmt.Errorf("unsupported enabled RESTRICT behavior %q", name)
 		}
@@ -179,7 +183,8 @@ var packageEnvironmentReserved = map[string]bool{
 	"SHELLOPTS": true, "PATH": true, "WORKDIR": true, "T": true,
 	"S": true, "D": true, "ED": true, "ROOT": true, "SYSROOT": true,
 	"BROOT": true, "HOME": true, "TMPDIR": true, "TMP": true, "TEMP": true,
-	"PORTAGE_LOG_FILE": true,
+	"PORTAGE_LOG_FILE": true, "PORTAGE_BUILDDIR": true,
+	"PORTAGE_CONFIGROOT": true, "EBUILD_PHASE": true, "EBUILD_PHASE_FUNC": true,
 }
 
 var packageIdentityEnvironment = map[string]bool{
@@ -259,6 +264,8 @@ func ApplyPackagePolicy(request Request, policy PackagePolicy) (Request, error) 
 	request.EclassDirs = eclassDirs
 	request.UserPatchDirs = patchDirs
 	request.WorkDir = policy.WorkDir
+	request.BuildDir = policy.BuildDir
+	request.ConfigRoot = policy.ConfigRoot
 	request.SourceDir = policy.SourceDir
 	request.ImageDir = policy.ImageDir
 	request.RootDir = policy.RootDir

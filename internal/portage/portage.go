@@ -38,7 +38,13 @@ func cachedPolicyAtom(raw string) (*atom.Atom, bool) {
 type Config struct {
 	MakeConf map[string]string
 
-	USE             []string
+	USE []string
+	// UserUSE and CommandUSE retain the layers which outrank package-internal
+	// IUSE defaults. USE is the fully merged effective profile/config value and
+	// cannot by itself distinguish a profile `-flag` from an explicit user
+	// override of IUSE="+flag".
+	UserUSE         []string
+	CommandUSE      []string
 	CFLAGS          string
 	CXXFLAGS        string
 	MAKEOPTS        string
@@ -155,6 +161,7 @@ func loadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.UserUSE = append([]string(nil), cfg.USE...)
 	profileLink := filepath.Join(portageConfigRoot, "make.profile")
 	if _, err := os.Lstat(profileLink); os.IsNotExist(err) {
 		return cfg, nil
@@ -313,6 +320,9 @@ func (cfg *Config) ApplyCommandEnvironment(environ []string) {
 		name, value, ok := strings.Cut(entry, "=")
 		if ok && commandEnvironmentVariables[name] {
 			assignments = append(assignments, configAssignment{key: name, value: value})
+			if name == "USE" {
+				cfg.CommandUSE = splitShWords(value)
+			}
 		}
 	}
 	if len(assignments) == 0 {
@@ -338,6 +348,57 @@ func (cfg *Config) ApplyCommandEnvironment(environ []string) {
 	cfg.UseExpandImplicit = splitShWords(cfg.MakeConf["USE_EXPAND_IMPLICIT"])
 	cfg.USE = appendUseExpand(cfg.USE, cfg.UseExpand, cfg.MakeConf)
 	cfg.USE = applyEffectiveGlobalUse(cfg.USE, cfg.UseForce, cfg.UseMask)
+}
+
+// ExplicitUseOverride reports whether a layer with higher precedence than the
+// package's IUSE defaults mentions flag. Profile make.defaults deliberately do
+// not count: Portage's pkginternal layer lets IUSE="+flag" override a profile
+// default, while make.conf, package.use, command USE and mask/force policy may
+// override it again.
+func (cfg *Config) ExplicitUseOverride(cpv, slot, repo, flag string, stable bool) bool {
+	if cfg == nil || flag == "" {
+		return false
+	}
+	mentions := func(changes []string) bool {
+		for _, change := range changes {
+			if strings.TrimPrefix(change, "-") == flag {
+				return true
+			}
+		}
+		return false
+	}
+	if mentions(cfg.UserUSE) || mentions(cfg.CommandUSE) || mentions(cfg.PackageUseFor(cpv, slot, repo)) ||
+		mentions(cfg.UseForce) || mentions(cfg.UseMask) {
+		return true
+	}
+	if stable && (mentions(cfg.UseStableForce) || mentions(cfg.UseStableMask)) {
+		return true
+	}
+	return mentions(packagePolicyChangesFor(cfg.PackageUseForceRules, cpv, slot, repo)) ||
+		mentions(packagePolicyChangesFor(cfg.PackageUseMaskRules, cpv, slot, repo)) ||
+		stable && (mentions(packagePolicyChangesFor(cfg.PackageUseStableForceRules, cpv, slot, repo)) ||
+			mentions(packagePolicyChangesFor(cfg.PackageUseStableMaskRules, cpv, slot, repo)))
+}
+
+// UseMaskedFor reports the final profile/package mask state for one flag.
+func (cfg *Config) UseMaskedFor(cpv, slot, repo, flag string, stable bool) bool {
+	masked := false
+	apply := func(changes []string) {
+		for _, change := range changes {
+			if strings.TrimPrefix(change, "-") == flag {
+				masked = !strings.HasPrefix(change, "-")
+			}
+		}
+	}
+	apply(cfg.UseMask)
+	if stable {
+		apply(cfg.UseStableMask)
+	}
+	apply(packagePolicyChangesFor(cfg.PackageUseMaskRules, cpv, slot, repo))
+	if stable {
+		apply(packagePolicyChangesFor(cfg.PackageUseStableMaskRules, cpv, slot, repo))
+	}
+	return masked
 }
 
 var packageExecutionEnvironmentVariables = map[string]bool{

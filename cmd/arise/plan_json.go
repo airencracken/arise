@@ -13,6 +13,7 @@ type jsonPlan struct {
 	Schema      int                      `json:"schema"`
 	Operation   string                   `json:"operation"`
 	Targets     []string                 `json:"targets"`
+	Options     planOptions              `json:"options"`
 	Complete    bool                     `json:"complete"`
 	Resolution  jsonResolution           `json:"resolution"`
 	Actions     []jsonAction             `json:"actions"`
@@ -58,17 +59,18 @@ type jsonResolution struct {
 }
 
 type jsonAction struct {
-	Action      string   `json:"action"`
-	CPV         string   `json:"cpv"`
-	Slot        string   `json:"slot,omitempty"`
-	Subslot     string   `json:"subslot,omitempty"`
-	Repository  string   `json:"repository,omitempty"`
-	MergeType   string   `json:"merge_type,omitempty"`
-	BinaryPath  string   `json:"binary_path,omitempty"`
-	Reason      string   `json:"reason,omitempty"`
-	Domain      string   `json:"domain"`
-	UseEnabled  []string `json:"use_enabled,omitempty"`
-	UseDisabled []string `json:"use_disabled,omitempty"`
+	Action        string   `json:"action"`
+	CPV           string   `json:"cpv"`
+	Slot          string   `json:"slot,omitempty"`
+	Subslot       string   `json:"subslot,omitempty"`
+	Repository    string   `json:"repository,omitempty"`
+	MergeType     string   `json:"merge_type,omitempty"`
+	BinaryPath    string   `json:"binary_path,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
+	Domain        string   `json:"domain"`
+	UseEnabled    []string `json:"use_enabled,omitempty"`
+	UseDisabled   []string `json:"use_disabled,omitempty"`
+	Prerequisites []string `json:"prerequisites,omitempty"`
 }
 
 type planTimings struct {
@@ -91,6 +93,7 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 	}
 	document := jsonPlan{
 		Schema: 1, Operation: operation, Targets: append([]string(nil), targets...),
+		Options:  optionsForPlan(cfg),
 		Complete: resolveErr == nil && result.Verified && len(result.Conflicts) == 0,
 		Resolution: jsonResolution{
 			Verified: result.Verified, Verification: result.Verification,
@@ -160,7 +163,7 @@ func jsonActions(actions []resolve.PkgAction) []jsonAction {
 		if domain == "" {
 			domain = resolve.DomainROOT
 		}
-		item := jsonAction{Action: action.Action, CPV: cpv, Slot: action.Slot, Subslot: action.Subslot, Repository: action.Repository, MergeType: action.MergeType, BinaryPath: action.BinaryPath, Reason: action.Reason, Domain: string(domain)}
+		item := jsonAction{Action: action.Action, CPV: cpv, Slot: action.Slot, Subslot: action.Subslot, Repository: action.Repository, MergeType: action.MergeType, BinaryPath: action.BinaryPath, Reason: action.Reason, Domain: string(domain), Prerequisites: append([]string(nil), action.Prerequisites...)}
 		for flag, enabled := range action.UseFlags {
 			if enabled {
 				item.UseEnabled = append(item.UseEnabled, flag)
@@ -170,6 +173,7 @@ func jsonActions(actions []resolve.PkgAction) []jsonAction {
 		}
 		sort.Strings(item.UseEnabled)
 		sort.Strings(item.UseDisabled)
+		sort.Strings(item.Prerequisites)
 		result = append(result, item)
 	}
 	return result

@@ -26,7 +26,7 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 		Install: []resolve.PkgAction{{
 			Atom: planTestAtom(t, "dev-libs/example-2"), Action: "update", Reason: "world target",
 			Slot: "0", Subslot: "2", Repository: "gentoo",
-			UseFlags: map[string]bool{"zeta": true, "alpha": true, "debug": false},
+			UseFlags: map[string]bool{"zeta": true, "alpha": true, "debug": false}, Prerequisites: []string{"ROOT|dev-libs/dependency-1|0||gentoo"},
 		}},
 		BacktrackLevel:  1,
 		DecisionHistory: []resolve.BacktrackDecision{{Kind: "version", Key: "dev-libs/example:0", From: "1", To: "2"}},
@@ -60,6 +60,9 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 	}
 	if len(document.Actions) != 1 || document.Actions[0].Domain != string(resolve.DomainROOT) || !reflect.DeepEqual(document.Actions[0].UseEnabled, []string{"alpha", "zeta"}) || !reflect.DeepEqual(document.Actions[0].UseDisabled, []string{"debug"}) {
 		t.Fatalf("action = %#v", document.Actions)
+	}
+	if !reflect.DeepEqual(document.Actions[0].Prerequisites, result.Install[0].Prerequisites) {
+		t.Fatalf("action prerequisites = %#v", document.Actions[0].Prerequisites)
 	}
 	if !reflect.DeepEqual(document.Resolution.Decisions, result.DecisionHistory) {
 		t.Fatalf("decisions = %#v", document.Resolution.Decisions)

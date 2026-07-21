@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -30,6 +31,118 @@ func makeDestDir(base string, entries map[string]string) error {
 		}
 	}
 	return nil
+}
+
+func TestTransactionalProcessDeathRecovery(t *testing.T) {
+	if mode := os.Getenv("ARISE_MERGE_DEATH_HELPER"); mode != "" {
+		root, image := os.Getenv("ARISE_TEST_ROOT"), os.Getenv("ARISE_TEST_IMAGE")
+		vdb, journals, marker := os.Getenv("ARISE_TEST_VDB"), os.Getenv("ARISE_TEST_JOURNALS"), os.Getenv("ARISE_TEST_MARKER")
+		pauseBeforeCommit := func() error {
+			if err := os.WriteFile(marker, []byte("ready"), 0o600); err != nil {
+				return err
+			}
+			select {}
+		}
+		switch mode {
+		case "merge":
+			_ = Merge(context.Background(), image, MergeConfig{RootDir: root, VdbDir: vdb, Category: "cat", Package: "pkg", Version: "1", JournalDir: journals, BeforeCommit: pauseBeforeCommit})
+		case "unmerge":
+			_ = UnmergeWithConfig(context.Background(), UnmergeConfig{RootDir: root, VDBDir: vdb, PackagePath: filepath.Join(vdb, "cat", "pkg-1"), JournalDir: journals, BeforeCommit: pauseBeforeCommit})
+		}
+		os.Exit(97)
+	}
+
+	runUntilMutationThenKill := func(mode, root, image, vdb, journals string) {
+		t.Helper()
+		marker := filepath.Join(filepath.Dir(journals), mode+"-ready")
+		command := exec.Command(os.Args[0], "-test.run=^TestTransactionalProcessDeathRecovery$")
+		command.Env = append(os.Environ(),
+			"ARISE_MERGE_DEATH_HELPER="+mode, "ARISE_TEST_ROOT="+root,
+			"ARISE_TEST_IMAGE="+image, "ARISE_TEST_VDB="+vdb,
+			"ARISE_TEST_JOURNALS="+journals, "ARISE_TEST_MARKER="+marker,
+		)
+		if err := command.Start(); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, err := os.Stat(marker); err == nil {
+				break
+			} else if !os.IsNotExist(err) {
+				_ = command.Process.Kill()
+				t.Fatal(err)
+			}
+			if time.Now().After(deadline) {
+				_ = command.Process.Kill()
+				t.Fatalf("%s child did not reach the pre-commit boundary", mode)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if err := command.Process.Kill(); err != nil {
+			t.Fatal(err)
+		}
+		if err := command.Wait(); err == nil {
+			t.Fatalf("%s child unexpectedly exited successfully", mode)
+		}
+	}
+
+	t.Run("merge retry recovers killed transaction", func(t *testing.T) {
+		tmp := t.TempDir()
+		root, image := filepath.Join(tmp, "root"), filepath.Join(tmp, "image")
+		vdb, journals := filepath.Join(root, "var", "db", "pkg"), filepath.Join(tmp, "journals")
+		if err := makeDestDir(image, map[string]string{"usr/share/pkg/payload": "new"}); err != nil {
+			t.Fatal(err)
+		}
+		runUntilMutationThenKill("merge", root, image, vdb, journals)
+		if err := Merge(context.Background(), image, MergeConfig{RootDir: root, VdbDir: vdb, Category: "cat", Package: "pkg", Version: "1", JournalDir: journals}); err != nil {
+			t.Fatalf("merge retry: %v", err)
+		}
+		for _, path := range []string{filepath.Join(root, "usr", "share", "pkg", "payload"), filepath.Join(vdb, "cat", "pkg-1", "CONTENTS")} {
+			if _, err := os.Stat(path); err != nil {
+				t.Fatalf("recovered merge result %s: %v", path, err)
+			}
+		}
+		assertRecoveryJournalPair(t, journals)
+	})
+
+	t.Run("unmerge retry recovers killed transaction", func(t *testing.T) {
+		tmp := t.TempDir()
+		root, image := filepath.Join(tmp, "root"), filepath.Join(tmp, "image")
+		vdb := filepath.Join(root, "var", "db", "pkg")
+		if err := makeDestDir(image, map[string]string{"usr/share/pkg/payload": "installed"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := Merge(context.Background(), image, MergeConfig{RootDir: root, VdbDir: vdb, Category: "cat", Package: "pkg", Version: "1", JournalDir: filepath.Join(tmp, "install-journals")}); err != nil {
+			t.Fatal(err)
+		}
+		journals := filepath.Join(tmp, "unmerge-journals")
+		runUntilMutationThenKill("unmerge", root, image, vdb, journals)
+		packagePath := filepath.Join(vdb, "cat", "pkg-1")
+		if err := UnmergeAt(context.Background(), root, vdb, packagePath, journals); err != nil {
+			t.Fatalf("unmerge retry: %v", err)
+		}
+		for _, path := range []string{filepath.Join(root, "usr", "share", "pkg", "payload"), packagePath} {
+			if _, err := os.Lstat(path); !os.IsNotExist(err) {
+				t.Fatalf("recovered unmerge retained %s: %v", path, err)
+			}
+		}
+		assertRecoveryJournalPair(t, journals)
+	})
+}
+
+func assertRecoveryJournalPair(t *testing.T, directory string) {
+	t.Helper()
+	summaries, err := journal.List(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses := make(map[string]int)
+	for _, summary := range summaries {
+		statuses[summary.Status]++
+	}
+	if len(summaries) != 2 || statuses["rolled-back"] != 1 || statuses["committed"] != 1 {
+		t.Fatalf("recovery journals = %#v", summaries)
+	}
 }
 
 func TestValidateLiveNewInstallTargetsIsStrictlyAdditive(t *testing.T) {
@@ -151,6 +264,42 @@ func TestMerge_BasicFiles(t *testing.T) {
 	envPath := filepath.Join(vdbDir, "app-shells", "testpkg-1.0", ".environment")
 	if _, err := os.Stat(envPath); err != nil {
 		t.Errorf("environment file not found: %v", err)
+	}
+}
+
+func TestAbsoluteImageSymlinkTargetDependsOnEAPI(t *testing.T) {
+	for _, test := range []struct {
+		eapi       string
+		wantStaged bool
+	}{{"8", false}, {"9", true}} {
+		t.Run("EAPI-"+test.eapi, func(t *testing.T) {
+			tmp := t.TempDir()
+			dest := filepath.Join(tmp, "image")
+			root := filepath.Join(tmp, "root")
+			vdb := filepath.Join(root, "var", "db", "pkg")
+			if err := os.MkdirAll(filepath.Join(dest, "usr", "lib"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			stagedTarget := filepath.Join(dest, "usr", "lib", "target")
+			if err := os.Symlink(stagedTarget, filepath.Join(dest, "usr", "lib", "link")); err != nil {
+				t.Fatal(err)
+			}
+			cfg := MergeConfig{RootDir: root, VdbDir: vdb, Category: "cat", Package: "pkg", Version: "1", VDBMetadata: map[string]string{"EAPI": test.eapi}}
+			if err := Merge(context.Background(), dest, cfg); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.Readlink(filepath.Join(root, "usr", "lib", "link"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "/usr/lib/target"
+			if test.wantStaged {
+				want = stagedTarget
+			}
+			if got != want {
+				t.Fatalf("target=%q want=%q", got, want)
+			}
+		})
 	}
 }
 
@@ -642,6 +791,126 @@ func TestTransactionalUpgradeRollsBackAfterPayloadCleanupFailure(t *testing.T) {
 	}
 }
 
+func TestTransactionalUpgradePreservesRequiredLibraryAndRegistry(t *testing.T) {
+	tmp := t.TempDir()
+	root, image := filepath.Join(tmp, "root"), filepath.Join(tmp, "image")
+	vdb := filepath.Join(root, "var", "db", "pkg")
+	oldVDB := filepath.Join(vdb, "dev-libs", "provider-1")
+	consumerVDB := filepath.Join(vdb, "app-misc", "consumer-1")
+	for _, directory := range []string{oldVDB, consumerVDB, filepath.Join(root, "usr", "lib"), image} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldLibrary := filepath.Join(root, "usr", "lib", "libarise.so.1.0")
+	oldSONAME := filepath.Join(root, "usr", "lib", "libarise.so.1")
+	if err := os.WriteFile(oldLibrary, []byte("old-library"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("libarise.so.1.0", oldSONAME); err != nil {
+		t.Fatal(err)
+	}
+	oldContents := "obj /usr/lib/libarise.so.1.0 md5 1\nsym /usr/lib/libarise.so.1 -> libarise.so.1.0 1\n"
+	for name, value := range map[string]string{
+		"CONTENTS": oldContents, "SLOT": "0\n", "COUNTER": "7\n",
+		"NEEDED.ELF.2": "X86_64;/usr/lib/libarise.so.1.0;libarise.so.1;;;x86_64\n",
+	} {
+		if err := os.WriteFile(filepath.Join(oldVDB, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(consumerVDB, "CONTENTS"), []byte("obj /usr/bin/consumer md5 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(consumerVDB, "NEEDED.ELF.2"), []byte("X86_64;/usr/bin/consumer;;;libarise.so.1;x86_64\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"SLOT": "0\n", "COUNTER": "8\n"} {
+		if err := os.WriteFile(filepath.Join(consumerVDB, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := makeDestDir(image, map[string]string{"usr/lib/libarise.so.2.0": "new-library"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := MergeConfig{
+		RootDir: root, VdbDir: vdb, Category: "dev-libs", Package: "provider", Version: "2",
+		JournalDir: filepath.Join(tmp, "journals"), ReplacedVDBPath: oldVDB, PreserveLibs: true,
+		VDBMetadata: map[string]string{"SLOT": "0", "NEEDED.ELF.2": "X86_64;/usr/lib/libarise.so.2.0;libarise.so.2;;;x86_64"},
+	}
+	if err := Merge(context.Background(), image, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{oldLibrary, oldSONAME} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("required preserved library %s: %v", path, err)
+		}
+	}
+	registryPath := filepath.Join(root, "var", "lib", "portage", "preserved_libs_registry")
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"dev-libs/provider:0", "dev-libs/provider-2", "/usr/lib/libarise.so.1", "/usr/lib/libarise.so.1.0"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("preserved registry missing %q: %s", want, data)
+		}
+	}
+	if _, err := os.Lstat(oldVDB); !os.IsNotExist(err) {
+		t.Fatalf("old provider VDB retained: %v", err)
+	}
+	// Portage records preserved paths in the current provider's CONTENTS. The
+	// final-consumer cleanup must remove that ownership as well as the files.
+	providerContents := filepath.Join(vdb, "dev-libs", "provider-2", "CONTENTS")
+	currentContents, err := os.ReadFile(providerContents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(providerContents, append(currentContents, []byte(oldContents)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	consumerImage := filepath.Join(tmp, "consumer-image")
+	if err := makeDestDir(consumerImage, map[string]string{"usr/bin/consumer": "rebuilt-without-old-soname"}); err != nil {
+		t.Fatal(err)
+	}
+	consumerCfg := MergeConfig{
+		RootDir: root, VdbDir: vdb, Category: "app-misc", Package: "consumer", Version: "2",
+		JournalDir: filepath.Join(tmp, "consumer-journals"), ReplacedVDBPath: consumerVDB,
+		PreserveLibs: true, VDBMetadata: map[string]string{"SLOT": "0"},
+		BeforeCommit: func() error { return fmt.Errorf("injected consumer finalization failure") },
+	}
+	if err := Merge(context.Background(), consumerImage, consumerCfg); err == nil || !strings.Contains(err.Error(), "injected consumer finalization failure") {
+		t.Fatalf("failed consumer rebuild = %v", err)
+	}
+	for _, path := range []string{oldLibrary, oldSONAME, filepath.Join(consumerVDB, "CONTENTS")} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("rollback did not restore %s: %v", path, err)
+		}
+	}
+	data, err = os.ReadFile(registryPath)
+	if err != nil || !strings.Contains(string(data), "dev-libs/provider:0") {
+		t.Fatalf("rollback registry = %q, %v", data, err)
+	}
+	consumerCfg.BeforeCommit = nil
+	consumerCfg.JournalDir = filepath.Join(tmp, "consumer-retry-journals")
+	if err := Merge(context.Background(), consumerImage, consumerCfg); err != nil {
+		t.Fatalf("consumer rebuild: %v", err)
+	}
+	for _, path := range []string{oldLibrary, oldSONAME} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("unused preserved library retained %s: %v", path, err)
+		}
+	}
+	data, err = os.ReadFile(registryPath)
+	if err != nil || strings.TrimSpace(string(data)) != "{}" {
+		t.Fatalf("pruned preserved registry = %q, %v", data, err)
+	}
+	data, err = os.ReadFile(providerContents)
+	if err != nil || strings.Contains(string(data), "libarise.so.1") {
+		t.Fatalf("provider CONTENTS retained preserved ownership = %q, %v", data, err)
+	}
+}
+
 func TestTransactionalMergeWritesValidatedVDBMetadata(t *testing.T) {
 	tmp := t.TempDir()
 	destDir := filepath.Join(tmp, "dest")
@@ -755,13 +1024,40 @@ func TestTransactionalReplacementLifecycleOrdering(t *testing.T) {
 	cfg := MergeConfig{RootDir: rootDir, VdbDir: vdbDir, Category: "cat", Package: "pkg", Version: "2", JournalDir: filepath.Join(tmp, "journals"), ReplacedVDBPath: oldEntry,
 		BeforeReplacementRemoval: func() error { order = append(order, "pkg_prerm"); return nil },
 		AfterReplacementRemoval:  func() error { order = append(order, "pkg_postrm"); return nil },
-		BeforeCommit:             func() error { order = append(order, "pkg_postinst"); return nil },
+		AfterCommit:              func() error { order = append(order, "pkg_postinst"); return nil },
 	}
 	if err := Merge(context.Background(), destDir, cfg); err != nil {
 		t.Fatal(err)
 	}
 	if got := strings.Join(order, ","); got != "pkg_prerm,pkg_postrm,pkg_postinst" {
 		t.Fatalf("lifecycle order=%s", got)
+	}
+}
+
+func TestPostCommitLifecycleFailureRetainsCommittedPackage(t *testing.T) {
+	tmp := t.TempDir()
+	image, root := filepath.Join(tmp, "image"), filepath.Join(tmp, "root")
+	if err := makeDestDir(image, map[string]string{"usr/bin/tool": "payload"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := MergeConfig{
+		RootDir: root, VdbDir: filepath.Join(root, "var", "db", "pkg"), Category: "cat", Package: "pkg", Version: "1",
+		JournalDir: filepath.Join(tmp, "journals"), AfterCommit: func() error { return fmt.Errorf("injected postinst failure") },
+	}
+	err := Merge(context.Background(), image, cfg)
+	var committed *PostCommitError
+	if !errors.As(err, &committed) {
+		t.Fatalf("error=%v, want PostCommitError", err)
+	}
+	if data, readErr := os.ReadFile(filepath.Join(root, "usr", "bin", "tool")); readErr != nil || string(data) != "payload" {
+		t.Fatalf("committed payload=%q err=%v", data, readErr)
+	}
+	if _, statErr := os.Stat(cfg.VdbPath()); statErr != nil {
+		t.Fatalf("committed VDB missing: %v", statErr)
+	}
+	summaries, listErr := journal.List(cfg.JournalDir)
+	if listErr != nil || len(summaries) != 1 || summaries[0].Status != "committed" {
+		t.Fatalf("journal summaries=%#v err=%v", summaries, listErr)
 	}
 }
 
@@ -936,6 +1232,39 @@ func TestTransactionalUnmergeRollsBackPayloadAndVDB(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(pkgPath, "CONTENTS")); err != nil {
 		t.Fatalf("VDB after rollback: %v", err)
+	}
+}
+
+func TestUnmergeLifecycleOrderingAndPostCommitFailure(t *testing.T) {
+	tmp := t.TempDir()
+	root, image := filepath.Join(tmp, "root"), filepath.Join(tmp, "image")
+	vdb := filepath.Join(root, "var", "db", "pkg")
+	if err := makeDestDir(image, map[string]string{"usr/bin/app": "payload"}); err != nil {
+		t.Fatal(err)
+	}
+	mergeCfg := MergeConfig{RootDir: root, VdbDir: vdb, Category: "cat", Package: "app", Version: "1", JournalDir: filepath.Join(tmp, "merge-journals")}
+	if err := Merge(context.Background(), image, mergeCfg); err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	err := UnmergeWithConfig(context.Background(), UnmergeConfig{
+		RootDir: root, VDBDir: vdb, PackagePath: mergeCfg.VdbPath(), JournalDir: filepath.Join(tmp, "unmerge-journals"),
+		BeforeRemoval: func() error { order = append(order, "pkg_prerm"); return nil },
+		AfterRemoval:  func() error { order = append(order, "pkg_postrm"); return nil },
+		AfterCommit:   func() error { order = append(order, "committed"); return fmt.Errorf("postrm failed") },
+	})
+	var committed *PostCommitError
+	if !errors.As(err, &committed) {
+		t.Fatalf("error=%v, want PostCommitError", err)
+	}
+	if got := strings.Join(order, ","); got != "pkg_prerm,pkg_postrm,committed" {
+		t.Fatalf("order=%s", got)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "usr", "bin", "app")); !os.IsNotExist(statErr) {
+		t.Fatalf("payload survived committed removal: %v", statErr)
+	}
+	if _, statErr := os.Stat(mergeCfg.VdbPath()); !os.IsNotExist(statErr) {
+		t.Fatalf("VDB survived committed removal: %v", statErr)
 	}
 }
 

@@ -36,3 +36,37 @@ func TestValidateELFRemovalOrder(t *testing.T) {
 		t.Fatalf("duplicate error=%v", err)
 	}
 }
+
+func TestLifecycleNoopWithLiveRoot(t *testing.T) {
+	clang := `pkg_postrm() {
+	if [[ -z ${ROOT} && -f ${EPREFIX}/usr/share/eselect/modules/compiler-shadow.eselect ]] ; then
+		eselect compiler-shadow clean all
+	fi
+}`
+	if !lifecycleNoopWithLiveRoot(clang, "pkg_postrm") {
+		t.Fatal("ROOT-empty guarded Clang hook rejected")
+	}
+	for name, body := range map[string]string{
+		"unguarded": `pkg_postrm() {
+	eselect compiler-shadow clean all
+}`,
+		"else": `pkg_postrm() {
+	if [[ -z ${ROOT} ]] ; then
+		true
+	else
+		eselect compiler-shadow clean all
+	fi
+}`,
+		"different guard": `pkg_postrm() {
+	if [[ -n ${ROOT} ]] ; then
+		eselect compiler-shadow clean all
+	fi
+}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if lifecycleNoopWithLiveRoot(body, "pkg_postrm") {
+				t.Fatal("unsafe lifecycle body accepted")
+			}
+		})
+	}
+}

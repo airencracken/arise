@@ -554,11 +554,11 @@ func ReverseELFConsumers(vdbRoot, installedCPV string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read linkage metadata for %s: %w", installedCPV, err)
 	}
-	provided := make(map[string]bool)
+	provided := make(map[string][]string)
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Split(line, ";")
 		if len(fields) >= 3 && fields[2] != "" {
-			provided[fields[2]] = true
+			provided[fields[2]] = append(provided[fields[2]], filepath.Clean(fields[1]))
 		}
 	}
 	if len(provided) == 0 {
@@ -595,7 +595,7 @@ func ReverseELFConsumers(vdbRoot, installedCPV string) ([]string, error) {
 					continue
 				}
 				for _, needed := range strings.Split(fields[4], ",") {
-					if provided[needed] {
+					if providerReachableFromRunpath(fields[1], fields[3], provided[needed]) {
 						seen[cpv] = true
 					}
 				}
@@ -608,6 +608,39 @@ func ReverseELFConsumers(vdbRoot, installedCPV string) ([]string, error) {
 	}
 	sort.Strings(consumers)
 	return consumers, nil
+}
+
+func providerReachableFromRunpath(binary, runpath string, providerPaths []string) bool {
+	if len(providerPaths) == 0 {
+		return false
+	}
+	if strings.TrimSpace(runpath) == "" {
+		return true
+	}
+	origin := filepath.Dir(binary)
+	for _, raw := range strings.Split(runpath, ":") {
+		raw = strings.ReplaceAll(raw, "${ORIGIN}", origin)
+		raw = strings.ReplaceAll(raw, "$ORIGIN", origin)
+		if !filepath.IsAbs(raw) {
+			raw = filepath.Join(origin, raw)
+		}
+		directory := filepath.Clean(raw)
+		for _, providerPath := range providerPaths {
+			if filepath.Dir(filepath.Clean(providerPath)) == directory {
+				return true
+			}
+		}
+	}
+	// RUNPATH is searched before the loader's default directories, which remain
+	// eligible as a fallback. Version-private providers outside the encoded
+	// RUNPATH are not reachable.
+	for _, providerPath := range providerPaths {
+		switch filepath.Dir(filepath.Clean(providerPath)) {
+		case "/lib", "/lib64", "/usr/lib", "/usr/lib64":
+			return true
+		}
+	}
+	return false
 }
 
 // ReverseELFRemovalClosure expands a provider through all installed ELF

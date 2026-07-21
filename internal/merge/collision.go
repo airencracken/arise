@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/airencracken/arise/internal/metadata"
 )
 
 func CheckCollisions(destDir, vdbRoot string, excludeCPs []string) ([]string, error) {
@@ -156,22 +158,21 @@ func detectCrossCollisions(destFiles []string, vdbOwners map[string]string) []st
 
 func pkgDirToCP(vdbRoot, pkgDir string) string {
 	rel, err := filepath.Rel(vdbRoot, pkgDir)
-	if err != nil {
-		dirname := filepath.Dir(pkgDir)
-		base := filepath.Base(pkgDir)
-		cat := filepath.Base(dirname)
-		return cat + "/" + base
+	if err == nil {
+		category, pkg, _, parseErr := metadata.ParseCPV(filepath.ToSlash(rel))
+		if parseErr == nil {
+			return category + "/" + pkg
+		}
 	}
-	// VDB paths are category/package-version, convert to category/package
-	parts := strings.SplitN(rel, string(os.PathSeparator), 2)
-	if len(parts) != 2 {
+
+	// Keep malformed or non-relative paths diagnosable. Valid VDB CPVs always
+	// take the parser path above, including revisions and hyphenated package
+	// names that cannot be split correctly at the final hyphen.
+	dirname := filepath.Dir(pkgDir)
+	base := filepath.Base(pkgDir)
+	category := filepath.Base(dirname)
+	if category == "." || category == string(filepath.Separator) {
 		return strings.ReplaceAll(rel, string(os.PathSeparator), "/")
 	}
-	cat := parts[0]
-	pkgVer := parts[1]
-	idx := strings.LastIndex(pkgVer, "-")
-	if idx < 0 {
-		return cat + "/" + pkgVer
-	}
-	return cat + "/" + pkgVer[:idx]
+	return category + "/" + base
 }

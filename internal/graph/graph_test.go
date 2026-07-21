@@ -598,6 +598,15 @@ func TestToResolveGraph_IUSEDefaults(t *testing.T) {
 	}
 }
 
+func TestToResolveGraph_IUSEExplicitDefaultSurvivesImplicitDuplicate(t *testing.T) {
+	m := makeMeta("dev-libs", "libnl", "3.12.0", "", "", "")
+	m.IUSE = "+debug python debug"
+	vi := NewFromInstalled([]*metadata.PackageMetadata{m}).ToResolveGraph().Packages["dev-libs/libnl"].GetBestVersion()
+	if vi == nil || !vi.UseFlags["debug"] {
+		t.Fatalf("duplicate cache IUSE erased +debug: %#v", vi)
+	}
+}
+
 func TestToResolveGraph_DepTypeTranslation(t *testing.T) {
 	m := makeMeta(
 		"sys-apps", "foo", "1.0",
