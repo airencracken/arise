@@ -1,5 +1,9 @@
 # Additional command-line reference tools
 
+> Archived on 2026-07-24. This repository-snapshot inventory informed the
+> maintained fixture and benchmark matrices. Package availability and versions
+> below reflect the 2026-07-17 snapshot and are not current requirements.
+
 This inventory is derived from the active Gentoo repository snapshot. These
 packages are not prerequisites for Arise and should not be installed blindly;
 they are candidates for independent fixture views and competitive comparisons.

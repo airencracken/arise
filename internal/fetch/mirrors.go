@@ -7,11 +7,13 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	"golang.org/x/crypto/blake2b"
 )
 
 func automaticGentooSources(name string, cfg FetchConfig) []string {
 	seen := make(map[string]bool)
-	var result []string
+	var bases []string
 	for _, base := range cfg.GentooMirrors {
 		base = strings.TrimRight(strings.TrimSpace(base), "/")
 		if base == "" {
@@ -20,13 +22,24 @@ func automaticGentooSources(name string, cfg FetchConfig) []string {
 		if !strings.HasSuffix(base, "/distfiles") {
 			base += "/distfiles"
 		}
-		candidate := base + "/" + name
-		parsed, err := url.Parse(candidate)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || seen[candidate] {
+		parsed, err := url.Parse(base)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || seen[base] {
 			continue
 		}
-		seen[candidate] = true
-		result = append(result, candidate)
+		seen[base] = true
+		bases = append(bases, base)
+	}
+	// Gentoo's current distfile layout is `filename-hash BLAKE2B 8`,
+	// meaning the first byte of the BLAKE2b-512 filename digest is a
+	// directory component. Keep the historical flat path as a fallback for
+	// independently operated mirrors that have not adopted this layout.
+	digest := blake2b.Sum512([]byte(name))
+	result := make([]string, 0, len(bases)*2)
+	for _, base := range bases {
+		result = append(result, fmt.Sprintf("%s/%02x/%s", base, digest[0], name))
+	}
+	for _, base := range bases {
+		result = append(result, base+"/"+name)
 	}
 	return result
 }

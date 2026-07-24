@@ -28,7 +28,11 @@ type FetchConfig struct {
 	MirrorGroups    map[string][]string
 	RestrictMirrors bool
 	PrimaryURI      bool
-	Progress        func(Progress)
+	// ManualOnly verifies existing DISTDIR entries but forbids every network
+	// source. Callers use the typed ManualFetchRequiredError to decide whether
+	// pkg_nofetch diagnostics are appropriate.
+	ManualOnly bool
+	Progress   func(Progress)
 }
 
 func (c *FetchConfig) defaults() {

@@ -111,10 +111,20 @@ func (l *PackageLog) WriteRecord(sequence uint64, job, phase, kind, stream, mess
 	if _, err := io.WriteString(l.writer, line); err != nil {
 		return fmt.Errorf("phase log: write %s: %w", l.path, err)
 	}
-	if l.filter == nil {
-		if err := l.file.Sync(); err != nil {
-			return fmt.Errorf("phase log: sync record %s: %w", l.path, err)
-		}
+	return nil
+}
+
+// Sync establishes a durable worker-batch boundary without forcing every
+// individual log line through a synchronous filesystem commit.
+func (l *PackageLog) Sync() error {
+	if l == nil || l.closed || l.file == nil {
+		return fmt.Errorf("phase log: sync after finalization")
+	}
+	if l.filter != nil {
+		return nil
+	}
+	if err := l.file.Sync(); err != nil {
+		return fmt.Errorf("phase log: sync %s: %w", l.path, err)
 	}
 	return nil
 }

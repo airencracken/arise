@@ -64,7 +64,10 @@ func mergeContinuations(raw string) []string {
 	for i := 0; i < len(rawLines); i++ {
 		line := rawLines[i]
 		trimmed := strings.TrimRight(line, " \t")
-		if strings.HasSuffix(trimmed, "\\") {
+		code := strings.TrimRight(stripShellComment(line), " \t")
+		// A backslash inside a shell comment is inert. Treating it as a line
+		// continuation can consume a following function-closing brace.
+		if strings.HasSuffix(code, "\\") {
 			buf.WriteString(strings.TrimSuffix(trimmed, "\\"))
 			continue
 		}
@@ -92,6 +95,7 @@ type parser struct {
 	inFunc         bool
 	funcName       string
 	funcLines      []string
+	heredocEnd     string
 	pendingFunc    string
 	pendingVarName string
 	pendingVarBuf  []string
@@ -268,7 +272,16 @@ func (p *parser) startFunction(name, line string) {
 
 func (p *parser) processFuncLine(line string) {
 	p.funcLines = append(p.funcLines, line)
+	if p.heredocEnd != "" {
+		if strings.TrimSpace(line) == p.heredocEnd {
+			p.heredocEnd = ""
+		}
+		return
+	}
 	p.braceDepth += countBracesNoComment(line)
+	if delimiter := shellHeredocDelimiter(line); delimiter != "" {
+		p.heredocEnd = delimiter
+	}
 	if p.braceDepth <= 0 {
 		p.finishFunction()
 	}
@@ -290,6 +303,63 @@ func (p *parser) finishFunction() {
 	p.inFunc = false
 	p.funcName = ""
 	p.funcLines = nil
+	p.heredocEnd = ""
+}
+
+func shellHeredocDelimiter(line string) string {
+	var quote byte
+	escaped := false
+	for i := 0; i+1 < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' && quote != '\'' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if ch == '#' && (i == 0 || isShellCommentBoundary(line[i-1])) {
+			return ""
+		}
+		if ch != '<' || line[i+1] != '<' || i > 0 && line[i-1] == '<' {
+			continue
+		}
+		cursor := i + 2
+		if cursor < len(line) && line[cursor] == '<' {
+			continue
+		}
+		if cursor < len(line) && line[cursor] == '-' {
+			cursor++
+		}
+		for cursor < len(line) && (line[cursor] == ' ' || line[cursor] == '\t') {
+			cursor++
+		}
+		if cursor < len(line) && (line[cursor] == '\'' || line[cursor] == '"') {
+			cursor++
+		}
+		start := cursor
+		for cursor < len(line) && (line[cursor] == '_' ||
+			line[cursor] >= 'a' && line[cursor] <= 'z' ||
+			line[cursor] >= 'A' && line[cursor] <= 'Z' ||
+			line[cursor] >= '0' && line[cursor] <= '9') {
+			cursor++
+		}
+		if cursor > start {
+			return line[start:cursor]
+		}
+	}
+	return ""
 }
 
 func countBracesNoComment(line string) int {
@@ -319,12 +389,25 @@ func countBracesNoComment(line string) int {
 		}
 		switch ch {
 		case '{':
-			depth++
+			// Count shell grouping/function braces, not parameter expansion or
+			// brace expansion such as ${value} and file{a,b}. Structural braces
+			// are shell tokens and therefore have token boundaries.
+			if shellBraceToken(line, i) {
+				depth++
+			}
 		case '}':
-			depth--
+			if shellBraceToken(line, i) {
+				depth--
+			}
 		}
 	}
 	return depth
+}
+
+func shellBraceToken(line string, index int) bool {
+	before := index == 0 || strings.ContainsRune(" \t\r\n;|&()", rune(line[index-1]))
+	after := index+1 == len(line) || strings.ContainsRune(" \t\r\n;|&()", rune(line[index+1]))
+	return before && after
 }
 
 // stripShellComment does not confuse parameter trimming (${value##pattern})

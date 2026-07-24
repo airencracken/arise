@@ -84,7 +84,8 @@ This prints `static build: OK` if the binary is statically linked.
 make release VERSION=$V
 ```
 
-This runs `vendor`, `static`, and `test` (again), then:
+This runs `download` (module download and verification), `static`, and `test`
+again, then:
 
 ```
 git tag -a "v$V" -m "arise v$V"
@@ -203,18 +204,16 @@ arise env-update
 
 If a bad release goes out:
 
-1. **arise repo**: delete the tag and re-push:
-   ```sh
-   git tag -d v$V
-   git push origin :refs/tags/v$V
-   ```
-
-2. **arise-overlay repo**: revert the commit and re-generate with the correct
-   version:
+1. Do not delete, move, or recreate the published tag. Mark the GitHub release
+   as deprecated and document the failure so existing source and Manifest
+   digests remain reproducible.
+2. Revert or mask the broken overlay ebuild as appropriate:
    ```sh
    git revert HEAD
    git push origin master
    ```
+3. Fix the issue and publish a new patch version through the complete release
+   process. Never reuse the broken version number.
 
 ---
 

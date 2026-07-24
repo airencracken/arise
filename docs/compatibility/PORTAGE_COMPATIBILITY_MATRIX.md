@@ -3,8 +3,9 @@
 This is the tracking ledger for Arise's user-visible Portage compatibility.
 The CLI inventory is derived from `emerge(1)`, not only `emerge --help`; help
 output is a smoke check because it omits options and interaction semantics. The
-current reference host uses Portage 3.0.77. Reference changes require an
-explicit matrix review and fixture update.
+current reference host uses Portage 3.0.81.2, installed through Arise on
+2026-07-24. Reference changes require an explicit matrix review and fixture
+update.
 
 Status values are `supported`, `partial`, `planned`, and `not-applicable`.
 `Supported` requires a behavior test, not merely successful parsing.
@@ -32,7 +33,7 @@ Status values are `supported`, `partial`, `planned`, and `not-applicable`.
 | `-K`, `--usepkgonly` | same | partial | fail-closed local selection implemented |
 | `--binpkg-respect-use` | same | partial | local USE matching; remote P9 open |
 | `-j`, `--jobs=N` | same | supported | speculative resolver determinism tests |
-| `-l`, `--load-average=N` | same | partial | parsed/configured; scheduler enforcement open |
+| `-l`, `--load-average=N` | same | supported | context-aware scheduler throttle and configuration tests |
 | `--resolver-timeout=DURATION` | Arise extension | supported | structured context cancellation tests |
 
 The executable registration subset lives in
@@ -49,7 +50,7 @@ subset of the man-page inventory, not a claim of full emerge CLI parity.
 | `DISTDIR` | distfile cache | supported | CLI/fetch tests |
 | `PKGDIR` | binary package directory | supported | binpkg selection tests |
 | `PORTAGE_TMPDIR` | work/resume base | partial | paths tested; lifecycle parity is P4 |
-| `PORTAGE_BINHOST` | binary hosts | planned | P9 |
+| `PORTAGE_BINHOST` | binary hosts | partial | ordered URL parsing and remote download tests; Packages-index/signature breadth remains P9 |
 | `FEATURES` | execution/package features | partial | typed P4 policy; precedence open |
 | `USE`, `ACCEPT_KEYWORDS`, `ACCEPT_LICENSE` | resolver policy | supported | layered config tests |
 | `MAKEOPTS`, `CFLAGS`, `CXXFLAGS` | build environment | partial | P4 differential gate open |
@@ -96,11 +97,13 @@ Important `make.conf` variables are tracked independently from file parsing:
 
 | Interface | Status | Enforcement/notes |
 |---|---|---|
-| `/var/db/pkg/*/*/CONTENTS` | partial | Portage root-relative obj/dir/sym records; full metadata differential open |
-| `environment.bz2` | partial | native deterministic snapshot and decompression tests; variable differential open |
+| `/var/db/pkg/*/*/CONTENTS` | partial | Portage root-relative obj/dir/sym records; empty packages publish exactly zero bytes; full metadata differential open |
+| `environment.bz2` | partial | native deterministic snapshot and decompression tests; old-lifecycle discovery strips stale sandbox/preload execution controls; variable differential open |
 | `NEEDED`, `NEEDED.ELF.2` | partial | native ELF dynamic-section generation; multilib corpus differential open |
 | `BUILD_TIME`, package/global `COUNTER` | partial | VDB-locked journaled allocation and rollback; Portage differential open |
-| `/var/lib/portage/world` | partial | locked atomic deselect; merge-coupled additions remain gated |
+| installed built slot bindings | partial | new merges expand `:=` to explicit `slot/subslot=` metadata; unexpanded historical `:=` is not treated as a concrete rebuild binding |
+| `/var/lib/portage/world` | partial | locked atomic deselect; merge-coupled additions and `emaint`-equivalent check/fix remain gated |
+| `/var/log/emerge.log` | partial | locked compatibility projection; readers tolerate historical NUL padding and append fails closed on NUL-corrupt logs; wider tool-format differential open |
 | Portage VDB lock | supported subset | held across ownership validation, recovery, mutation and commit |
 
 ## Maintenance rules

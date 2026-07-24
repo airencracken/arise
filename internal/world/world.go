@@ -241,13 +241,13 @@ func (ws *WorldSet) Deselect(atomStr string) {
 
 // PreservedRebuild returns the list of packages needing rebuild from
 // preserved-rebuild, for use with the @preserved-rebuild set.
-func PreservedRebuild() ([]string, error) {
-	return preserved.RebuildNeeded("/", "/var/db/pkg")
+func PreservedRebuild(root, vdbRoot string) ([]string, error) {
+	return preserved.RebuildNeeded(root, vdbRoot)
 }
 
 // ExpandSet expands a set name into its atom list.
 // The depGraph parameter is used for sets that require package graph traversal.
-func ExpandSet(setName string, vdbRoot string) ([]string, error) {
+func ExpandSet(setName, root, vdbRoot string) ([]string, error) {
 	switch setName {
 	case "@module-rebuild":
 		return expandModuleRebuild(vdbRoot)
@@ -256,7 +256,7 @@ func ExpandSet(setName string, vdbRoot string) ([]string, error) {
 	case "@x11-module-rebuild":
 		return expandX11ModuleRebuild(vdbRoot)
 	case "@preserved-rebuild":
-		return PreservedRebuild()
+		return PreservedRebuild(root, vdbRoot)
 	default:
 		return nil, fmt.Errorf("world: unknown package set %q", setName)
 	}

@@ -2,8 +2,8 @@ package env
 
 import (
 	crand "crypto/rand"
-	mrand "math/rand"
 	"fmt"
+	mrand "math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -94,9 +94,9 @@ func TestReadEnvDirSkipsDirectories(t *testing.T) {
 func TestReadEnvDirSkipsDotFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeEnvDir(t, dir, map[string]string{
-		"00basic":  `PATH="/usr/bin"`,
-		".hidden":  `SECRET="nope"`,
-		".swp":     `SECRET="nope"`,
+		"00basic": `PATH="/usr/bin"`,
+		".hidden": `SECRET="nope"`,
+		".swp":    `SECRET="nope"`,
 	})
 
 	entries, err := ReadEnvDir(dir)
@@ -492,7 +492,6 @@ PATH="/usr/bin"
 MISSING_EQUALS
    
 VAR_WITH_SPACES  =  "hello"`,
-
 	})
 
 	entries, err := ReadEnvDir(dir)
@@ -515,9 +514,16 @@ VAR_WITH_SPACES  =  "hello"`,
 }
 
 func TestRunLdConfig(t *testing.T) {
-	err := RunLdConfig("/")
-	if err == nil {
-		t.Error("expected error for unimplemented ldconfig")
+	root := t.TempDir()
+	tool := filepath.Join(root, "sbin", "ldconfig")
+	if err := os.MkdirAll(filepath.Dir(tool), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunLdConfig(root); err != nil {
+		t.Fatalf("RunLdConfig: %v", err)
 	}
 }
 

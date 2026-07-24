@@ -5,11 +5,13 @@ Go. Core state inspection, configuration evaluation, resolution and fetching
 do not require Portage's Python runtime. Ebuild execution intentionally uses
 Bash and remains experimental.
 
-> **Development status:** repository sync, indexing, search, and installed
-> package queries are usable foundations. The emerge-compatible resolver,
-> ebuild executor, transactional merge/unmerge, and maintenance operations are
-> experimental and are not yet safe replacements for Portage on a live system.
-> See [the latest development checkpoint](docs/audits/CHECKPOINT_P3_P6_2026-07-18.md),
+> **Development status:** repository sync, indexing, search, installed-package
+> queries, verified planning, source rebuilds, and journaled live-root package
+> transactions are implemented. Resolver, execution, recovery, and maintenance
+> compatibility remain experimental and are not a general replacement for
+> Portage. Live mutation requires an explicit experimental gate and approval of
+> an exact verified saved plan. See the
+> [Portage self-hosting milestone](docs/evidence/PORTAGE_SELF_HOSTING_MILESTONE_2026-07-24.md),
 > [documentation index](docs/README.md), and [punch list](PUNCHLIST.md).
 > The moving-target test policy is documented in
 > [the compatibility contract](COMPATIBILITY.md).
@@ -34,8 +36,8 @@ Arise is therefore being built around these priorities:
 
 - **Recovery-oriented control plane**: one statically linked Go binary can
   inspect package state and construct verified plans when Portage's Python
-  environment is damaged. Safe live repair still requires the unfinished
-  execution and transaction milestones.
+  environment is damaged. Experimental live repair crosses explicit verified
+  plan, preflight, operation-lock, journal, and recovery gates.
 - **Performance**: BadgerDB-backed metadata queries can avoid repeated
   filesystem scans and shell invocations. Dependency resolution runs in one
   process over an immutable snapshot and is designed to use independent CPU
@@ -64,6 +66,11 @@ Arise is therefore being built around these priorities:
 The core design rules are:
 
 - **Pure Go, static binary** — `CGO_ENABLED=0`, no dynamic linking.
+- **Optional integrations stay optional** — an enhancement that adds an Arise
+  runtime dependency must retain a functional baseline fallback and be exposed
+  through an explicit Gentoo USE flag. Bubblewrap and filesystem snapshot
+  providers may strengthen execution or recovery, but cannot gate ordinary
+  control-plane or Portage-compatible behavior.
 - **Filesystem is sovereign** — BadgerDB and immutable sidecars accelerate
   queries; they are never the source of truth.
 - **Pragmatic fallback** — build phases that require Bash or Make run through
@@ -170,12 +177,15 @@ Commands:
   install         Resolve package installation (execution gated)
   update          Resolve an @world update (execution gated)
   uninstall       Propose package removal (execution gated)
+  recover         Inspect or roll back durable package journals
   depclean        Propose orphan removal (execution gated)
   prune           Propose old-version removal (execution gated)
+  select          Add an installed package to @world
   deselect        Remove from @world set
   search          Search packages (eix-familiar surface)
   installed       List installed CP atoms or CPVs
   query           Look up package metadata
+  state           Emit deterministic repository/VDB comparison state
   info            Partial system information
   equery          Package queries (equery-familiar surface)
   audit           Audit Python/Perl site-packages
@@ -187,6 +197,7 @@ Commands:
   config          Run pkg_config phase
   news            Display Gentoo news (GLEP 42)
   quickpkg        Create binary package
+  bench           Run built-in microbenchmarks
 ```
 
 ## Features
@@ -232,15 +243,15 @@ validates normalized package names after each build. Current indexing creates a
 complete immutable generation, publishes it atomically and retains a rollback
 generation. Cache-footprint publication is temporarily withheld because the
 harness must follow generation symlinks before its numbers are trustworthy.
-The current `@system` samples and normalized outcome record are preserved in
+The dated `@system` samples and normalized outcome record are preserved in
 [`P3_SYSTEM_SHALLOW_TIMINGS_2026-07-18.json`](docs/evidence/P3_SYSTEM_SHALLOW_TIMINGS_2026-07-18.json).
 
 Not yet claimed:
 
 - The isolated `emerge --metadata` workload is ready but still needs a
   privileged run because Portage enforces root/portage-group access.
-- Deep, newuse, complete-graph `@world` planning now has an exact 369-action
-  same-snapshot comparison with Portage and a successful whole-plan preflight.
+- A 2026-07-18 deep, newuse, complete-graph `@world` snapshot produced an exact
+  369-action comparison with Portage and a successful whole-plan preflight.
   No resolver speedup is published yet because that result has not completed
   the repeated, correctness-gated benchmark protocol.
 - A successful experimental deep `@world` execution is not yet evidence of
@@ -294,8 +305,8 @@ the intended compatibility surface, not completed behavioral parity.
 ## Build
 
 ```sh
-make build          # default build
-make static         # static binary (CGO_ENABLED=0)
+make build          # verified static binary (CGO_ENABLED=0)
+make static         # alias for the canonical static build
 make test           # run tests
 make test-race      # race detector
 make test-coverage  # coverage report
@@ -308,6 +319,10 @@ make clean          # remove artifacts
 
 Requirements: Go 1.26.3+, Linux (primary target).
 
+The Gentoo ebuild enables the `static` USE flag by default. Explicitly
+disabling it opts into a cgo-enabled dynamic build; the default installation
+retains the standalone recovery guarantee.
+
 The default suite is hermetic: it does not invoke host Portage tools or open
 loopback listeners. Live comparisons are opt-in and timeout-bounded. See
 [`docs/testing/TEST_LANES.md`](docs/testing/TEST_LANES.md).
@@ -319,34 +334,46 @@ cmd/arise/           CLI entry point
 internal/
   atom/             Gentoo atom parser (>=cat/pkg-1.0:slot=[use])
   audit/            Python/Perl VDB auditor
+  benchmark/        Live/reference comparison workloads
   binpkg/           XPAK binary package read/write
   color/            ANSI color output
   depstring/        DEPEND/RDEPEND string parser
+  distfiles/        Manifest parsing and artifact verification
   ebuild/           Ebuild file parser
   eclass/           Eclass file parser and inherit resolution
   env/              env-update implementation
   equery/           Package query (belongs, files, uses, etc.)
+  executor/         Dependency-aware parallel action scheduler
   features/         FEATURES engine
-  distfiles/        Manifest parsing and artifact verification
   fetch/            Atomic, mirror-aware verified source acquisition
   graph/            Dependency graph builder
   ingest/           gob encoding to BadgerDB
+  installedquery/   Constrained ROOT/BROOT installed-package queries
   integration/      portageq comparison test framework
+  journal/          Durable package transaction journal and recovery
+  lifecycletrace/   Optional lifecycle filesystem syscall capture
+  log/              Structured logging primitives
   merge/            DESTDIR merge + VDB writing + collision detection
   metadata/         md5-cache parser and PackageMetadata struct
   nameindex/        Immutable, checksummed package-name sidecar
   news/             GLEP 42 news reader
+  oplock/           Portage-compatible operation locking
+  packagestate/     Mutation authorization state fingerprints
+  perf/             Correctness-gated benchmark reports
   phase/            Build phase executor (unpack, configure, compile, install)
   phaseproto/       Versioned isolated Go-to-Bash ebuild protocol
-  oplock/           Portage-compatible operation locking
-  perf/             Correctness-gated benchmark harness and reports
+  plancompare/      Normalized saved-plan comparison
   portage/          /etc/portage config parser
   preserved/        @preserved-rebuild and revdep-rebuild scanner
   profile/          Profile inheritance chain parser
   rebuild/          Full rebuild pipeline (fetch -> build -> merge)
+  repoaudit/        Whole-repository ebuild/eclass compatibility audit
   resolve/          Dependency resolver with backtracking
+  resolversnapshot/ Portable resolver-state snapshots
   search/           eix-style package search
+  snapshotstore/    Immutable snapshot publication and retention
   sync/             Repository sync (git + rsync fallback)
+  vdb/              Installed package metadata and ownership records
   walker/           Parallel md5-cache tree walker
   world/            @world, @system set management
 ```

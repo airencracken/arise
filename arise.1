@@ -1,6 +1,6 @@
 .\" arise(1) - Gentoo Package Manager
 .\" Maintained for the development command surface
-.TH ARISE 1 "2026-07-19" "arise development" "Gentoo Package Manager"
+.TH ARISE 1 "2026-07-24" "arise development" "Gentoo Package Manager"
 
 .SH NAME
 arise \- an experimental recovery-oriented package manager for Gentoo Linux
@@ -28,9 +28,12 @@ and
 It stores package metadata in a BadgerDB key-value store and operates directly
 against the Gentoo repository tree and VDB, without depending on Python or Bash
 for core operations. Build phases that require shell scripts execute via
-\fBos/exec\fR to the appropriate build tools (make, bash, patch, etc.). General
-live-root install, update, removal, depclean and rebuild execution remains
-disabled until the execution-ABI and transaction acceptance gates pass.
+\fBos/exec\fR to the appropriate build tools (make, bash, patch, etc.).
+Experimental live-root install and update execution requires the explicit
+live-mutation gate and approval of an exact verified saved plan. Source
+transactions use isolated phase workers, durable logs, operation locking,
+package journals, and resumable dependency-aware scheduling. Removal, depclean,
+and broader maintenance mutation remain gated.
 
 The design priorities are correctness, usefulness, performance, and
 reliability.  Repair planning is intended to derive and verify a complete
@@ -119,13 +122,22 @@ the wall-clock limit without changing the independent backtrack ceiling.
 .TP
 \fB\-\-experimental-live-mutation\fR
 Enable the development mutation path. This is not sufficient authorization by
-itself. Live root is limited to the additive single-package canary eligibility
-rules; general mutation remains disabled.
+itself; an exact verified plan must also be approved.
 .TP
 \fB\-\-approve-plan-sha256\fR \fIDIGEST\fR
 Authorize exactly the displayed canonical verified-plan digest. The digest is
 bound to VDB, world, configuration, selected recipes and inherited eclasses;
 state drift before execution fails closed.
+.TP
+\fB\-\-save-plan\fR \fIPATH-OR-NAME\fR
+Save the complete generated JSON plan for later inspection and approval.
+.TP
+\fB\-\-approve-plan\fR \fIPATH-OR-NAME\fR
+Authorize execution from an exact saved plan. The current package and policy
+state is revalidated before mutation.
+.TP
+\fB\-\-preflight-only\fR
+Validate every planned package without fetching, building, or mutating.
 .TP
 \fB\-\-journal-dir\fR \fIPATH\fR
 Directory containing durable package transaction journals.
@@ -147,9 +159,6 @@ Reinstall when dependency specifications have changed.
 .TP
 \fB\-noreplace\fR
 Do not reinstall the exact same version if already installed.
-.TP
-\fB\-exclude\fR \fIpkg\fR
-Exclude a package from installation (repeatable).
 .TP
 \fB\-resume\fR
 Resume the last interrupted operation.
@@ -184,6 +193,21 @@ How to handle build dependencies (default: n).
 .TP
 \fB\-ignore-built-slot-operator-deps\fR \fIy|n\fR
 Ignore slot operator rebuilds (default: n).
+.TP
+\fB\-\-plan-dir\fR \fIPATH\fR
+Directory used for named saved plans.
+.TP
+\fB\-\-resume-file\fR \fIPATH\fR
+Path containing resumable package-action state.
+.TP
+\fB\-\-work-dir\fR \fIPATH\fR
+Package build and transaction workspace.
+.TP
+\fB\-\-fetch-jobs\fR \fIN\fR
+Concurrent source fetch and verification jobs.
+.TP
+\fB\-\-show-estimates\fR
+Show advisory historical per-package and serial-total merge-time estimates.
 
 .SS Search Flags
 .TP
@@ -298,13 +322,14 @@ Dump output in eix-compatible format.
 
 .TP
 \fBinstall\fR [\fIflags\fR] \fIatoms...\fR
-Resolve one or more packages. General execution is gated; use \fB\-\-pretend\fR.
-Manifest-verified \fB\-\-fetchonly\fR is the bounded non-pretend exception.
+Resolve one or more packages. Live execution requires the experimental
+mutation gate and approval of an exact verified saved plan. Prefer
+\fB\-\-pretend\fR and full preflight before mutation.
 
 .TP
 \fBupdate\fR [\fIflags\fR] [\fIatoms...\fR]
-Resolve updates. If no atoms are specified, resolve @world. General execution
-is gated; use \fB\-\-pretend\fR.
+Resolve updates. If no atoms are specified, resolve @world. Live execution uses
+the same experimental saved-plan approval gate as \fBinstall\fR.
 
 .TP
 \fBuninstall\fR [\fIflags\fR] \fIatoms...\fR
@@ -321,6 +346,10 @@ Propose old-version removal without mutation.
 .TP
 \fBdeselect\fR \fIatom\fR
 Remove a package from the @world set without uninstalling it.
+.TP
+\fBselect\fR \fIatom\fR
+Add exactly one installed package atom to the @world set using locked,
+state-bound mutation.
 .TP
 \fBrecover status\fR
 List durable package transaction journals and their states.
@@ -352,6 +381,11 @@ atoms with an equals sign, \fB\-q\fR suppresses explanatory text, and
 \fBquery\fR \fIatom\fR
 Look up metadata for a specific package from the database.
 Display description, homepage, license, and other cached metadata.
+
+.TP
+\fBstate\fR \fIsubcommand\fR
+Emit deterministic available or installed package state for parity, snapshot,
+and differential workflows.
 
 .TP
 \fBinfo\fR
@@ -391,7 +425,8 @@ List installed packages matching a pattern.
 .TP
 \fBsync\fR
 Synchronize the Gentoo repository. Uses \fBgit\fR(1) as primary method with
-\fBrsync\fR(1) fallback. Requires \fB\-repo-url\fR to be set.
+\fBrsync\fR(1) fallback, then atomically publish the refreshed resolver index.
+Success means both stages completed. Requires \fB\-repo-url\fR to be set.
 
 .TP
 \fBindex\fR
@@ -401,7 +436,8 @@ directory in parallel and ingests all package metadata into BadgerDB.
 .TP
 \fBaudit\fR \fIpython|perl\fR [\fIflags\fR]
 Audit installed packages for outdated Python or Perl site-packages.
-With \fB\-\-fix\fR, schedules the affected packages for rebuild.
+With \fB\-\-fix \-\-pretend\fR, list the affected rebuild set. Non-pretend
+\fB\-\-fix\fR remains gated and fails explicitly.
 Replaces \fBpython-updater\fR and \fBperl-cleaner\fR.
 
 .TP
@@ -413,6 +449,11 @@ Equivalent to \fBemerge @preserved-rebuild\fR.
 \fBrevdep-rebuild\fR [\fIflags\fR]
 Full reverse dependency scan for broken ELF dependencies.
 Replaces \fBrevdep-rebuild\fR(1).
+
+.TP
+\fBbench\fR
+Run Arise's built-in microbenchmark report. Correctness-gated external
+comparisons use the dedicated performance harness.
 
 .SS System Configuration
 

@@ -46,7 +46,10 @@ func runSync(dbPath, repoPath, repoURL string) {
 		fmt.Fprintf(os.Stderr, "\n%s %v\n", color.Red("Sync failed:"), err)
 		os.Exit(1)
 	}
-	fmt.Printf("\n%s Repository synchronized in %s\n", color.Green("Done."), time.Since(started).Round(time.Millisecond))
+	fmt.Printf("\n%s Repository checkout synchronized in %s\n", color.Green("Fetched."), time.Since(started).Round(time.Millisecond))
+	fmt.Printf("\n%s\n", color.Bold("Refreshing resolver index"))
+	runIndex(dbPath, repoPath)
+	fmt.Printf("\n%s Repository and resolver index synchronized in %s\n", color.Green("Done."), time.Since(started).Round(time.Millisecond))
 }
 
 func printSyncChanges(changes sync.ChangeSummary) {

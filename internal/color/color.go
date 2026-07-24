@@ -88,6 +88,8 @@ func Cyan(s string) string {
 	return fmt.Sprintf("%s%s%s", ansiCyan, s, ansiReset)
 }
 
+func Blue(s string) string { return styled(s, ansiBlue) }
+
 func Magenta(s string) string { return styled(s, ansiMagenta) }
 
 func Bold(s string) string {

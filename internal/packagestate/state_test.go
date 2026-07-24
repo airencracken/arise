@@ -39,7 +39,7 @@ func TestCapturePreservesAndSortsAllState(t *testing.T) {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			t.Fatal(err)
 		}
-		for name, value := range map[string]string{"SLOT": "3", "repository": "gentoo", "EAPI": "8", "USE": "ssl threads", "IUSE": "+ssl threads", "RDEPEND": "dev-libs/openssl"} {
+		for name, value := range map[string]string{"SLOT": "3", "repository": "gentoo", "EAPI": "8", "USE": "ssl threads", "IUSE": "+ssl threads", "RDEPEND": "dev-libs/openssl", "CONTENTS": ""} {
 			if err := os.WriteFile(filepath.Join(dir, name), []byte(value+"\n"), 0644); err != nil {
 				t.Fatal(err)
 			}

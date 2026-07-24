@@ -46,3 +46,21 @@ func TestScanPreservesInstalledVersionsSlotsAndState(t *testing.T) {
 		t.Fatalf("dependency state lost: %+v", got)
 	}
 }
+
+func TestScanIgnoresInterruptedPartialRecord(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "sys-kernel", "gentoo-sources-7.1.3")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "SLOT"), []byte("7.1.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packages, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 0 {
+		t.Fatalf("partial VDB directory treated as installed: %+v", packages)
+	}
+}

@@ -5,11 +5,13 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/airencracken/arise/internal/fetch"
+	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/resolve"
 	"github.com/airencracken/arise/internal/search"
 )
@@ -856,6 +858,35 @@ func TestBuildRebuildConfig_ZeroJobs(t *testing.T) {
 	cfg := buildRebuildConfig("/tmp/repo", 0, nil, nil)
 	if cfg.MAKEOPTS == "-j0" {
 		t.Error("MAKEOPTS should fall back to env when jobs <= 0")
+	}
+}
+
+func TestBuildRebuildConfigLoadsOverlayMasterChain(t *testing.T) {
+	root := t.TempDir()
+	master, overlay := filepath.Join(root, "gentoo"), filepath.Join(root, "guru")
+	for _, directory := range []string{filepath.Join(master, "eclass"), filepath.Join(overlay, "eclass"), filepath.Join(overlay, "metadata"), filepath.Join(root, "repos.conf")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(overlay, "metadata", "layout.conf"), []byte("masters = gentoo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	conf := "[gentoo]\nlocation = " + master + "\n[guru]\nlocation = " + overlay + "\n"
+	if err := os.WriteFile(filepath.Join(root, "repos.conf", "repositories.conf"), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := *portageConfigRoot
+	*portageConfigRoot = root
+	t.Cleanup(func() { *portageConfigRoot = previous })
+	cfg := buildRebuildConfig(overlay, 1, nil, nil)
+	directories, err := portage.EclassLookupDirectories(cfg.Repositories, "guru")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(overlay, "eclass"), filepath.Join(master, "eclass")}
+	if !reflect.DeepEqual(directories, want) {
+		t.Fatalf("overlay eclass lookup = %v, want %v", directories, want)
 	}
 }
 

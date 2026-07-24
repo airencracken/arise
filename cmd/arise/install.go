@@ -12,8 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/binpkg"
 	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/distfiles"
@@ -45,6 +47,9 @@ func liveMutationNeedsWorldJournal(targets []string, cfg resolve.ResolveConfig) 
 	if cfg.Oneshot {
 		return false
 	}
+	if len(targets) == 1 && strings.HasPrefix(targets[0], "@") {
+		return false
+	}
 	return len(targets) != 1 || targets[0] != "@world"
 }
 
@@ -69,7 +74,11 @@ func colorActionAtom(action resolve.PkgAction) string {
 		atomText = color.Bold(atomText)
 	}
 	if action.Slot != "" {
-		atomText += color.Yellow(":" + action.Slot)
+		slot := action.Slot
+		if action.Subslot != "" && action.Subslot != action.Slot {
+			slot += "/" + action.Subslot
+		}
+		atomText += color.Yellow(":" + slot)
 	}
 	if action.Repository != "" {
 		atomText += color.Magenta("::" + action.Repository)
@@ -113,6 +122,9 @@ func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phase
 		PortageConfig: portageCfg,
 		ConfigRoot:    *portageConfigRoot,
 		JournalDir:    *journalDir,
+	}
+	if repositories, err := portage.RepositoryPolicyOrder(filepath.Join(*portageConfigRoot, "repos.conf")); err == nil {
+		cfg.Repositories = repositories
 	}
 	if portageCfg != nil {
 		cfg.PhaseLogDir = portageCfg.MakeConf["PORTAGE_LOGDIR"]
@@ -192,6 +204,24 @@ func resolveFlagsToConfig(update, deepParam bool) resolve.ResolveConfig {
 
 func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveConfig) {
 	jsonMode := *jsonOutput
+	rootDir := commandEnv("ROOT", "/")
+	cfg.PackageSetExpander = func(setName string) ([]string, error) {
+		return world.ExpandSet(setName, rootDir, *vdbDir)
+	}
+	for _, target := range targets {
+		if target == "@preserved-rebuild" {
+			cfg.Reinstall = true
+			cfg.Oneshot = true
+		}
+	}
+	// Portage's ordinary -uD @world/@system operation repairs the selected
+	// installed closure as providers change. Requiring users to add Arise's
+	// lower-level --complete-graph switch makes the familiar emerge invocation
+	// produce a knowingly non-executable plan, so enable that repair mode for
+	// deep set updates.
+	if cfg.Update && cfg.Deep && targetsNeedCompleteGraph(targets) {
+		cfg.CompleteGraph = true
+	}
 	if jsonMode {
 		cfg.Quiet = true
 	}
@@ -313,18 +343,19 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	}
 
 	resolutionStarted := time.Now()
-	progress := startTerminalProgress("Calculating dependencies...", !cfg.Quiet && !jsonMode)
+	progress := startTerminalProgressMode("Calculating dependencies...", !cfg.Quiet && !jsonMode, false)
 	stageStarted := time.Now()
+	progress.setStatus("Loading resolver index...")
 	db, err := ingest.OpenReadOnlyDB(dbPath)
 	if err != nil {
 		progress.stop()
 		fmt.Fprintf(os.Stderr, "resolve: open db: %v\n", err)
 		os.Exit(1)
 	}
-	defer db.Close()
 	openDuration := time.Since(stageStarted)
 
 	stageStarted = time.Now()
+	progress.setStatus("Building installed-state graph...")
 	g, err := graph.BuildFromState(db, *vdbDir, 0)
 	if err != nil {
 		progress.stop()
@@ -334,11 +365,13 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	stateDuration := time.Since(stageStarted)
 
 	stageStarted = time.Now()
+	progress.setStatus("Constructing resolver graph...")
 	rg := g.ToResolveGraph()
 	graphDuration := time.Since(stageStarted)
 
 	stageStarted = time.Now()
-	resolveCtx := context.Background()
+	progress.setStatus("Solving dependency graph...")
+	resolveCtx := commandContext
 	cancelResolve := func() {}
 	if *resolverTimeout > 0 {
 		resolveCtx, cancelResolve = context.WithTimeout(resolveCtx, *resolverTimeout)
@@ -346,6 +379,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	defer cancelResolve()
 	result, err := resolve.ResolveContext(resolveCtx, rg, targets, cfg)
 	solverDuration := time.Since(stageStarted)
+	if closeErr := db.Close(); closeErr != nil {
+		progress.stop()
+		fmt.Fprintf(os.Stderr, "resolve: close db: %v\n", closeErr)
+		exitAfterRuntimeProfiles(1)
+	}
 	progress.stop()
 	if result == nil {
 		result = &resolve.ResolveResult{}
@@ -462,16 +500,23 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			estimates = loadMergeEstimates(*emergeLog)
 		}
 		fmt.Printf("\n%s\n", planHeading(result, cfg.FetchOnly))
+		downloadSizes := planActionDownloadSizes(result.Install, *distfilesDir, cfg.Verbose)
 
 		if cfg.Tree && !cfg.FetchOnly {
 			fmt.Print(resolve.FormatTree(result.Install, rg))
 		} else {
 			for _, a := range result.Install {
-				label := displayedActionLabel(a.Action, cfg.FetchOnly)
-				fmt.Printf("  %s %s", colorIcon(a.Action, label), colorActionAtom(a))
+				fmt.Printf("  %s %s", portageActionHeader(a, cfg.FetchOnly), colorActionAtom(a))
+				if previous := portagePreviousIdentity(a); previous != "" {
+					fmt.Printf(" [%s]", previous)
+				}
 				if estimate, ok := estimates.forAction(a); ok {
 					fmt.Printf("  (estimated %s)", formatEstimate(estimate))
 				}
+				if use := portageUseDisplay(a); use != "" {
+					fmt.Printf(" %s", use)
+				}
+				fmt.Printf(" %s KiB", formatInteger((downloadSizes[resolve.ActionIdentity(a)]+1023)/1024))
 				fmt.Println()
 				if cfg.Verbose {
 					if a.Reason != "" {
@@ -487,7 +532,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				fmt.Printf("  [%s] %s\n", color.Red(a.Action), a.Atom)
 			}
 		}
-		printActionTotals(result.Install, *distfilesDir, cfg.Verbose, cfg.FetchOnly)
+		printActionTotals(result.Install, downloadSizes, cfg.FetchOnly)
 		if *showEstimates {
 			var total time.Duration
 			covered := 0
@@ -561,6 +606,19 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			fmt.Fprintln(os.Stderr, err)
 			exitAfterRuntimeProfiles(1)
 		}
+		// A read-only preflight does not require mutation authorization, but when
+		// the caller supplies one it must audit the same approval that execution
+		// will enforce. Otherwise a stale saved plan can appear to pass preflight
+		// and then fail before the real run starts.
+		if *approvePlanSHA256 != "" || *approvePlan != "" {
+			// Supplying approval to read-only preflight means "audit this
+			// digest", not "enable mutation". The live-mutation pairing is
+			// enforced only on the execution path below.
+			if err := requestedPlanAuthorizationError(true, *approvePlanSHA256, *approvePlan, *planDir, targets, cfg, result, stateSHA256); err != nil {
+				fmt.Fprintf(os.Stderr, "arise: refusing preflight: %v\n", err)
+				exitAfterRuntimeProfiles(1)
+			}
+		}
 		rebuildCfg := buildRebuildConfig(repoDir, cfg.Jobs, nil, nil)
 		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
 			rebuildCfg.AllowLiveRoot = true
@@ -580,7 +638,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 			exitAfterRuntimeProfiles(1)
 		}
-		fmt.Printf("Preflight passed for all %d install actions; no package state was mutated.\n", len(result.Install))
+		fmt.Printf("Preflight passed for all %d install actions (recipe/policy only); build tools were not executed and no package state was mutated.\n", len(result.Install))
 		return
 	}
 
@@ -609,23 +667,14 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 		stateSHA256 = currentStateSHA256
 	}
-	actualPlanSHA256 := canonicalPlanSHA256(targets, cfg, result, stateSHA256)
-	approvedDigest, approvalErr := approvedPlanDigest(*approvePlanSHA256, *approvePlan, *planDir)
-	if approvalErr != nil {
-		fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", approvalErr)
-		os.Exit(1)
-	}
-	if err := validatePlanAuthorization(*experimentalLiveMutation, approvedDigest, actualPlanSHA256); err != nil {
-		if detail := describeApprovedPlanDifference(*approvePlan, *planDir, cfg); detail != "" {
-			err = fmt.Errorf("%w; %s", err, detail)
-		}
+	if err := requestedPlanAuthorizationError(*experimentalLiveMutation, *approvePlanSHA256, *approvePlan, *planDir, targets, cfg, result, stateSHA256); err != nil {
 		fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", err)
 		os.Exit(1)
 	}
 	if cfg.FetchOnly {
 		progress := newFetchProgress(!cfg.Quiet, os.Stdout)
 		progress.setConcurrent(normalizedFetchJobs(*fetchJobs, len(result.Install)) > 1)
-		if err := fetchPlanActions(context.Background(), result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: progress.Report}, &fetch.Fetcher{}, *fetchJobs); err != nil {
+		if err := fetchPlanActions(commandContext, result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: progress.Report}, &fetch.Fetcher{}, *fetchJobs); err != nil {
 			fmt.Fprintf(os.Stderr, "arise: fetch-only failed: %v\n", err)
 			os.Exit(1)
 		}
@@ -643,17 +692,16 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		// the package's build system follows explicit --jobs or configured
 		// MAKEOPTS. Serializing every compiler invocation made large canaries look
 		// stalled and diverged from the approved Portage configuration.
+		executionProgress := startTerminalProgressMode("Executing package transaction...", !cfg.Quiet && !jsonMode, cfg.Jobs <= 1)
 		rebuildCfg := buildRebuildConfig(repoDir, cfg.Jobs, nil, nil)
 		rebuildCfg.Fetcher = &fetch.Fetcher{}
 		fetchProgress := newFetchProgress(!cfg.Quiet, os.Stdout)
-		fetchProgress.setConcurrent(normalizedFetchJobs(*fetchJobs, len(result.Install)) > 1)
-		if !cfg.Quiet {
-			fmt.Printf("Fetching source artifacts with %d concurrent job(s)...\n", normalizedFetchJobs(*fetchJobs, len(result.Install)))
-		}
-		if err := fetchPlanActions(context.Background(), result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: fetchProgress.Report}, rebuildCfg.Fetcher, *fetchJobs); err != nil {
-			fmt.Fprintf(os.Stderr, "arise: fetch-ahead failed before package mutation: %v\n", err)
-			os.Exit(1)
-		}
+		// Fetch and package events share one terminal owner. Even a serial
+		// package job can have concurrent fetch workers, so disable the separate
+		// carriage-return display and route complete lines through that owner.
+		fetchProgress.setConcurrent(true)
+		fetchProgress.line = executionProgress.message
+		rebuildCfg.FetchProgress = fetchProgress.Report
 		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
 			rebuildCfg.AllowLiveRoot = true
 		}
@@ -672,17 +720,25 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			fmt.Fprintf(os.Stderr, "arise: open Portage-compatible merge log: %v\n", logErr)
 			os.Exit(1)
 		}
-		execCtx, cancelExecution := context.WithCancel(context.Background())
+		execCtx, cancelExecution := context.WithCancel(commandContext)
 		defer cancelExecution()
 		executionEstimates := mergeEstimates(nil)
 		if *showEstimates {
 			executionEstimates = loadMergeEstimates(*emergeLog)
 		}
-		executionProgress := startTerminalProgressMode("Executing package transaction...", !cfg.Quiet && !jsonMode, cfg.Jobs <= 1)
+		var completedActions atomic.Int64
+		initialStatus := fmt.Sprintf(">>> Jobs: 0 of %d complete", len(result.Install))
+		if load := currentLoadAverages(); load != "" {
+			initialStatus += "    Load avg: " + load
+		}
+		executionProgress.setStatus(initialStatus)
 		executionErr := executor.Execute(execCtx, result, executor.Config{
-			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, ValidateLocked: lockedStateValidation,
+			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation,
+			OnSpaceWait: func(path string, available, required uint64) {
+				executionProgress.message(fmt.Sprintf(">>> %s has insufficient free space; package parallelism reduced (free: %s, required: %s)", path, formatSize(int64(available)), formatSize(int64(required))))
+			},
 			OnActionStart: func(index, total int, action resolve.PkgAction) {
-				message := fmt.Sprintf("Emerging (%d of %d) %s", index, total, executionActionLabel(action))
+				message := fmt.Sprintf("Building package (%d of %d) %s", index, total, colorActionAtom(action))
 				if *showEstimates {
 					if estimate, ok := executionEstimates.forAction(action); ok {
 						message += " (estimated " + formatEstimate(estimate) + ")"
@@ -697,8 +753,47 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 					cancelExecution()
 				}
 			},
+			OnActionInstall: func(index, total int, action resolve.PkgAction) {
+				executionProgress.message(fmt.Sprintf(">>> Installing into image (%d of %d) %s", index, total, colorActionAtom(action)))
+			},
+			OnActionStage: func(index, total int, action resolve.PkgAction, stage string) {
+				executionProgress.clearProgress()
+				labels := map[string]string{
+					"validate": "Validating package image",
+					"merge":    "Preparing package merge",
+					"sync":     "Syncing package contents",
+					"commit":   "Committing package transaction",
+					"finalize": "Finalizing package",
+				}
+				if label := labels[stage]; label != "" {
+					executionProgress.message(fmt.Sprintf(">>> %s (%d of %d) %s", label, index, total, colorActionAtom(action)))
+				}
+			},
+			OnActionProgress: func(index, total int, action resolve.PkgAction, stage string, current, stageTotal int) {
+				if stage == "merge" && stageTotal > 0 {
+					executionProgress.setProgress(fmt.Sprintf(">>> Installing package contents (%d of %d) %s: %d/%d entries (%.1f%%)", index, total, colorActionAtom(action), current, stageTotal, 100*float64(current)/float64(stageTotal)), current, stageTotal)
+				}
+			},
+			OnActionNotice: func(index, total int, action resolve.PkgAction, class, message string) {
+				prefix := " *"
+				if class != "" && class != "INFO" {
+					prefix += " " + strings.ToLower(class) + ":"
+				}
+				for _, line := range strings.Split(message, "\n") {
+					if strings.TrimSpace(line) != "" {
+						executionProgress.message(prefix + " " + strings.TrimSpace(line))
+					}
+				}
+			},
 			OnActionComplete: func(index, total int, action resolve.PkgAction) {
-				executionProgress.message(fmt.Sprintf(">>> Completed emerge (%d of %d) %s", index, total, executionActionLabel(action)))
+				executionProgress.clearProgress()
+				executionProgress.message(fmt.Sprintf(">>> Completed package (%d of %d) %s", index, total, colorActionAtom(action)))
+				completed := completedActions.Add(1)
+				status := fmt.Sprintf(">>> Jobs: %d of %d complete", completed, total)
+				if load := currentLoadAverages(); load != "" {
+					status += "    Load avg: " + load
+				}
+				executionProgress.setStatus(status)
 				if compatLog.event(true, index, total, action) != nil {
 					cancelExecution()
 				}
@@ -709,8 +804,15 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			executionErr = fmt.Errorf("Portage-compatible merge log: %w", logErr)
 		}
 		if executionErr != nil {
+			if errors.Is(executionErr, context.Canceled) {
+				printExecutionInterrupted(os.Stderr)
+				os.Exit(130)
+			}
 			printExecutionError(os.Stderr, executionErr)
 			os.Exit(1)
+		}
+		if !cfg.Quiet {
+			printPostTransactionSummary(os.Stdout, rebuildCfg.RootDir, rebuildCfg.VdbDir, repoDir, rebuildCfg.PortageConfig)
 		}
 		if !cfg.Quiet {
 			fmt.Println("All package transactions committed successfully.")
@@ -723,6 +825,194 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	// that was not executed, including fetch-only requests.
 	fmt.Fprintln(os.Stderr, unsupportedExecutionMessage(cfg))
 	os.Exit(1)
+}
+
+func targetsNeedCompleteGraph(targets []string) bool {
+	for _, target := range targets {
+		if target == "@world" || target == "@system" {
+			return true
+		}
+	}
+	return false
+}
+
+func currentLoadAverages() string {
+	data, err := os.ReadFile("/proc/loadavg")
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(data))
+	if len(fields) < 3 {
+		return ""
+	}
+	return strings.Join(fields[:3], ", ")
+}
+
+func portageActionHeader(action resolve.PkgAction, fetchOnly bool) string {
+	if fetchOnly {
+		return "[" + color.Green("fetch") + "]"
+	}
+	kind := "ebuild"
+	if action.MergeType == "binary" {
+		kind = "binary"
+	}
+	coloredKind := color.Green(kind)
+	if kind == "binary" {
+		coloredKind = color.Magenta(kind)
+	}
+	attributes := []string{" ", " ", " ", " ", " ", " ", " "}
+	switch action.Action {
+	case "install":
+		attributes[1] = color.Green("N")
+	case "reinstall":
+		attributes[2] = color.Yellow("R")
+	case "update":
+		if action.InstalledVersion != "" && action.Atom != nil && action.Atom.Version != nil {
+			installed, installedErr := atom.ParseVersion(action.InstalledVersion)
+			if installedErr == nil && action.Atom.Version.Compare(installed) < 0 {
+				attributes[5] = color.Blue("D")
+			} else {
+				attributes[4] = color.Cyan("U")
+			}
+		} else {
+			attributes[4] = color.Cyan("U")
+		}
+	}
+	return fmt.Sprintf("[%s %s]", coloredKind, strings.Join(attributes, ""))
+}
+
+func portagePreviousIdentity(action resolve.PkgAction) string {
+	if action.InstalledVersion == "" {
+		return ""
+	}
+	identity := action.InstalledVersion
+	if action.InstalledSlot != "" {
+		identity += ":" + action.InstalledSlot
+		if action.InstalledSubslot != "" && action.InstalledSubslot != action.InstalledSlot {
+			identity += "/" + action.InstalledSubslot
+		}
+	}
+	if action.InstalledRepository != "" {
+		identity += "::" + action.InstalledRepository
+	}
+	return identity
+}
+
+func portageUseDisplay(action resolve.PkgAction) string {
+	type useBucket struct{ enabled, disabled, removed []string }
+	currentIUse := make(map[string]bool)
+	for _, raw := range strings.Fields(action.IUse) {
+		flag := strings.TrimLeft(raw, "+-")
+		if flag != "" {
+			currentIUse[flag] = true
+		}
+	}
+	all := make(map[string]bool, len(currentIUse)+len(action.InstalledIUseFlags))
+	for flag := range currentIUse {
+		all[flag] = true
+	}
+	for flag := range action.InstalledIUseFlags {
+		all[flag] = true
+	}
+	flags := make([]string, 0, len(all))
+	for flag := range all {
+		flags = append(flags, flag)
+	}
+	sort.Strings(flags)
+	hidden := make(map[string]bool, len(action.UseExpandHidden))
+	for _, name := range action.UseExpandHidden {
+		hidden[name] = true
+	}
+	buckets := map[string]*useBucket{"USE": {}}
+	groupFlag := func(flag string) (string, string) {
+		for _, name := range action.UseExpand {
+			prefix := strings.ToLower(name) + "_"
+			if strings.HasPrefix(flag, prefix) {
+				return name, strings.TrimPrefix(flag, prefix)
+			}
+		}
+		return "USE", flag
+	}
+	for _, flag := range flags {
+		group, displayFlag := groupFlag(flag)
+		if hidden[group] {
+			continue
+		}
+		bucket := buckets[group]
+		if bucket == nil {
+			bucket = &useBucket{}
+			buckets[group] = bucket
+		}
+		currentDomain := currentIUse[flag]
+		oldDomain := action.InstalledIUseFlags[flag]
+		current := action.UseFlags[flag]
+		old := action.InstalledUseFlags[flag]
+		forced := action.ForcedUseFlags[flag] || action.MaskedUseFlags[flag]
+		if !currentDomain {
+			marker := color.Yellow("-"+displayFlag) + "%"
+			if old {
+				marker += "*"
+			}
+			bucket.removed = append(bucket.removed, "("+marker+")")
+			continue
+		}
+		var marker string
+		if current {
+			switch {
+			case action.InstalledVersion == "" || oldDomain && old:
+				marker = color.Red(displayFlag)
+			case !oldDomain:
+				marker = color.Yellow(displayFlag) + "%*"
+			default:
+				marker = color.Green(displayFlag) + "*"
+			}
+		} else {
+			switch {
+			case action.InstalledVersion == "" || oldDomain && !old:
+				marker = color.Blue("-" + displayFlag)
+			case !oldDomain:
+				marker = color.Yellow("-" + displayFlag)
+				if !forced {
+					marker += "%"
+				}
+			default:
+				marker = color.Green("-"+displayFlag) + "*"
+			}
+		}
+		if forced {
+			marker = "(" + marker + ")"
+		}
+		if current {
+			bucket.enabled = append(bucket.enabled, marker)
+		} else {
+			bucket.disabled = append(bucket.disabled, marker)
+		}
+	}
+	groups := make([]string, 0, len(buckets))
+	for name := range buckets {
+		if name != "USE" {
+			groups = append(groups, name)
+		}
+	}
+	sort.Strings(groups)
+	groups = append([]string{"USE"}, groups...)
+	var displays []string
+	for _, name := range groups {
+		bucket := buckets[name]
+		values := append(append(append([]string(nil), bucket.enabled...), bucket.disabled...), bucket.removed...)
+		if len(values) != 0 {
+			displays = append(displays, name+`="`+strings.Join(values, " ")+`"`)
+		}
+	}
+	return strings.Join(displays, " ")
+}
+
+func printExecutionInterrupted(w io.Writer) {
+	fmt.Fprintln(w, "arise: interrupted by user")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Completed package progress has been preserved.")
+	fmt.Fprintln(w, "  Rerun preflight to calculate a continuation plan.")
+	fmt.Fprintln(w)
 }
 
 func warningsForDisplay(warnings []string, verbose bool) []string {
@@ -742,7 +1032,7 @@ func warningsForDisplay(warnings []string, verbose bool) []string {
 func printExecutionError(w io.Writer, err error) {
 	fmt.Fprintln(w, "arise: package transaction failed")
 	fmt.Fprintln(w)
-	const maxDetails = 6
+	const maxDetails = 10
 	details := make([]string, 0, maxDetails)
 	durableLog := ""
 	for err != nil {
@@ -760,7 +1050,13 @@ func printExecutionError(w io.Writer, err error) {
 			}
 		}
 		message = strings.Trim(message, ":; \t\r\n")
-		if line := strings.TrimSpace(strings.SplitN(message, "\n", 2)[0]); line != "" && len(details) < maxDetails {
+		lines := strings.Split(message, "\n")
+		selected := executionDiagnosticLines(lines)
+		for _, rawLine := range selected {
+			line := strings.TrimSpace(rawLine)
+			if line == "" || len(details) >= maxDetails {
+				continue
+			}
 			if len(line) > 160 {
 				line = line[:157] + "..."
 			}
@@ -777,6 +1073,43 @@ func printExecutionError(w io.Writer, err error) {
 		fmt.Fprintf(w, "    '%s'\n", durableLog)
 	}
 	fmt.Fprintln(w)
+}
+
+func executionDiagnosticLines(lines []string) []string {
+	if len(lines) <= 4 {
+		return lines
+	}
+	signals := []string{
+		"error:", " error ", "failed", "failure", "cannot ", "can't ",
+		"permission denied", "undefined reference", "no rule to make target",
+		"not found", "no such file", "fatal:", "segmentation fault",
+	}
+	selected := make(map[int]bool)
+	for index, line := range lines {
+		lower := " " + strings.ToLower(line) + " "
+		for _, signal := range signals {
+			if !strings.Contains(lower, signal) {
+				continue
+			}
+			for contextIndex := max(0, index-1); contextIndex <= min(len(lines)-1, index+1); contextIndex++ {
+				selected[contextIndex] = true
+			}
+			break
+		}
+	}
+	if len(selected) == 0 {
+		return append([]string{lines[0]}, lines[len(lines)-3:]...)
+	}
+	result := make([]string, 0, min(6, len(selected)))
+	for index, line := range lines {
+		if selected[index] {
+			result = append(result, line)
+			if len(result) == 6 {
+				break
+			}
+		}
+	}
+	return result
 }
 
 func executionActionLabel(action resolve.PkgAction) string {
@@ -926,11 +1259,9 @@ func sortedUseFlags(flags map[string]bool) ([]string, []string) {
 	return enabled, disabled
 }
 
-func printActionTotals(actions []resolve.PkgAction, distdir string, verbose, fetchOnly bool) {
-	counts := make(map[string]int)
-	var downloadBytes int64
+func planActionDownloadSizes(actions []resolve.PkgAction, distdir string, verbose bool) map[string]int64 {
+	sizes := make(map[string]int64, len(actions))
 	for _, action := range actions {
-		counts[action.Action]++
 		if action.Atom == nil {
 			continue
 		}
@@ -941,7 +1272,17 @@ func printActionTotals(actions []resolve.PkgAction, distdir string, verbose, fet
 			}
 			continue
 		}
-		downloadBytes += size
+		sizes[resolve.ActionIdentity(action)] = size
+	}
+	return sizes
+}
+
+func printActionTotals(actions []resolve.PkgAction, downloadSizes map[string]int64, fetchOnly bool) {
+	counts := make(map[string]int)
+	var downloadBytes int64
+	for _, action := range actions {
+		counts[action.Action]++
+		downloadBytes += downloadSizes[resolve.ActionIdentity(action)]
 	}
 	packageWord := "packages"
 	if len(actions) == 1 {

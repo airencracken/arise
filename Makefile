@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
+.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -10,18 +10,16 @@ DOCDIR ?= $(PREFIX)/share/doc/arise
 
 GO ?= go
 GOFLAGS ?= -trimpath -ldflags="-s -w"
-CGO_ENABLED ?= 0
 COVERAGE_CORE_PKGS := $(shell $(GO) list ./cmd/... ./internal/... | grep -Ev '/(benchmark|binpkg|fetch|integration)$$')
 
 all: build test vet
 
 build:
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -o $(BINARY) ./cmd/arise/
-
-static:
-	CGO_ENABLED=0 $(GO) build -ldflags="-s -w" -o $(BINARY) ./cmd/arise/
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BINARY) ./cmd/arise/
 	@file $(BINARY) | grep -q "statically linked" || { file $(BINARY); echo "static build: FAILED" >&2; exit 1; }
 	@echo "static build: OK"
+
+static: build
 
 #
 # Tests
@@ -63,6 +61,12 @@ test-integration:
 test-live-portage-compile:
 	$(GO) test -tags=live_portage ./internal/integration ./internal/benchmark ./internal/phaseproto ./internal/rebuild -run '^$$' -count=1
 
+PORTAGE_REPO ?= /var/db/repos/gentoo
+AUDIT_OUTPUT ?= /tmp/arise-repository-compatibility.json
+
+audit-repo:
+	$(GO) run ./cmd/arise-repo-audit -repo $(PORTAGE_REPO) -worker internal/phaseproto/worker.sh -output $(AUDIT_OUTPUT)
+
 test-coverage:
 	$(GO) test $(COVERAGE_CORE_PKGS) -coverpkg=./... -coverprofile=/tmp/arise-coverage.out -covermode=atomic -count=1 -timeout 60s
 	$(GO) tool cover -func=/tmp/arise-coverage.out > /tmp/arise-coverage-functions.txt
@@ -102,8 +106,8 @@ bench-json:
 bench-all: bench bench-compare
 
 perf-harness:
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -o arise-perf ./cmd/arise-perf/
-	CGO_ENABLED=$(CGO_ENABLED) $(GO) build $(GOFLAGS) -o arise-perf-table ./cmd/arise-perf-table/
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o arise-perf ./cmd/arise-perf/
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o arise-perf-table ./cmd/arise-perf-table/
 
 perf-table: perf-harness
 	@test -n "$(REPORTS)" || { echo "REPORTS='/tmp/report1.json /tmp/report2.json' is required"; exit 1; }
@@ -131,13 +135,13 @@ lint:
 #
 
 clean:
-	rm -f $(BINARY) arise-perf arise-perf-table
+	rm -f $(BINARY) arise-perf arise-perf-table arise.info
 	rm -f /tmp/arise-coverage.out /tmp/arise-coverage.html
 	$(GO) clean -testcache
 
 BASHCOMPDIR ?= $(PREFIX)/share/bash-completion/completions
 
-install: build
+install: build info
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 755 $(BINARY) $(DESTDIR)$(BINDIR)/
 	install -d $(DESTDIR)$(MANDIR)/man1
@@ -163,8 +167,12 @@ man:
 	./$(BINARY) --help 2>&1 || $(GO) run ./cmd/arise/ --help 2>&1 || true
 	@echo "Man page: see arise.1"
 
-info:
-	@echo "Info page: see arise.info (generate with: texi2any --info arise.texi)"
+info: arise.info
+	@echo "Info page: arise.info"
+
+arise.info: arise.texi
+	@command -v makeinfo >/dev/null 2>&1 || { echo "makeinfo is required to build arise.info" >&2; exit 1; }
+	makeinfo --no-split -o $@ $<
 
 docs: man info
 	@echo "Documentation built."

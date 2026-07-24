@@ -12,12 +12,19 @@ import (
 )
 
 type terminalProgress struct {
-	output  bool
-	enabled bool
-	done    chan struct{}
-	wait    sync.WaitGroup
-	mu      sync.Mutex
-	label   string
+	output         bool
+	enabled        bool // animation is reserved for work with measured progress events
+	terminal       bool
+	animate        bool
+	displayed      bool
+	done           chan struct{}
+	wait           sync.WaitGroup
+	mu             sync.Mutex
+	writer         io.Writer
+	label          string
+	status         string
+	transient      string
+	progressBucket int
 }
 
 var progressFrames = [...]string{"|", "/", "-", "\\"}
@@ -27,15 +34,20 @@ func startTerminalProgress(label string, enabled bool) *terminalProgress {
 }
 
 func startTerminalProgressMode(label string, output, animate bool) *terminalProgress {
-	p := &terminalProgress{output: output, enabled: output && animate && term.IsTerminal(int(os.Stdout.Fd())), label: label}
-	if !p.enabled {
+	terminal := output && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(os.Stdout.Fd()))
+	p := &terminalProgress{output: output, enabled: terminal && animate, terminal: terminal, animate: animate, writer: os.Stdout, label: label}
+	if !p.terminal {
 		return p
 	}
 	p.done = make(chan struct{})
 	p.wait.Add(1)
 	go func() {
 		defer p.wait.Done()
-		ticker := time.NewTicker(80 * time.Millisecond)
+		latency := 2 * time.Second
+		if p.animate {
+			latency = 80 * time.Millisecond
+		}
+		ticker := time.NewTicker(latency)
 		defer ticker.Stop()
 		frame := 0
 		p.render(frame)
@@ -55,7 +67,30 @@ func startTerminalProgressMode(label string, output, animate bool) *terminalProg
 func (p *terminalProgress) render(frame int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	fmt.Printf("\r%s %s", progressFrames[frame], p.label)
+	p.renderLocked(frame)
+}
+
+func (p *terminalProgress) renderLocked(frame int) {
+	if !p.terminal {
+		return
+	}
+	line := p.transient
+	if line == "" {
+		line = p.status
+	}
+	if line == "" && p.animate {
+		line = progressFrames[frame] + " " + p.label
+	}
+	if line == "" {
+		return
+	}
+	if file, ok := p.writer.(*os.File); ok {
+		if width, _, err := term.GetSize(int(file.Fd())); err == nil && width > 0 && len(line) > width {
+			line = line[:width]
+		}
+	}
+	fmt.Fprintf(p.writer, "\r\033[K%s", line)
+	p.displayed = true
 }
 
 func (p *terminalProgress) setLabel(label string) {
@@ -67,26 +102,81 @@ func (p *terminalProgress) setLabel(label string) {
 	p.mu.Unlock()
 }
 
+func (p *terminalProgress) setStatus(status string) {
+	if p == nil || !p.output {
+		return
+	}
+	p.mu.Lock()
+	p.status = status
+	if p.terminal {
+		p.renderLocked(0)
+	} else {
+		fmt.Fprintln(p.writer, status)
+	}
+	p.mu.Unlock()
+}
+
+// setProgress updates one transient measurement in place on a terminal. For
+// redirected output it emits only ten-percent milestones and completion, so a
+// large merge does not turn one measurement into thousands of log records.
+func (p *terminalProgress) setProgress(message string, current, total int) {
+	if p == nil || !p.output || total <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.transient = message
+	if p.terminal {
+		p.renderLocked(0)
+		return
+	}
+	bucket := current * 10 / total
+	if bucket > p.progressBucket || current >= total {
+		fmt.Fprintln(p.writer, message)
+		p.progressBucket = bucket
+	}
+}
+
+func (p *terminalProgress) clearProgress() {
+	if p == nil || !p.output {
+		return
+	}
+	p.mu.Lock()
+	p.transient = ""
+	p.progressBucket = -1
+	if p.terminal {
+		p.renderLocked(0)
+	}
+	p.mu.Unlock()
+}
+
 func (p *terminalProgress) message(message string) {
 	if p == nil || !p.output {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.enabled {
-		fmt.Print("\r\033[K")
+	if p.terminal && p.displayed {
+		fmt.Fprint(p.writer, "\r\033[K")
+		p.displayed = false
 	}
-	fmt.Println(message)
+	fmt.Fprintln(p.writer, message)
+	if p.terminal && p.status != "" {
+		p.renderLocked(0)
+	}
 }
 
 func (p *terminalProgress) stop() {
-	if p == nil || !p.enabled {
+	if p == nil || !p.terminal {
 		return
 	}
 	close(p.done)
 	p.wait.Wait()
 	p.mu.Lock()
-	fmt.Print("\r\033[K")
+	if p.displayed {
+		fmt.Fprint(p.writer, "\r\033[K\n")
+		p.displayed = false
+	}
 	p.mu.Unlock()
 }
 
@@ -97,6 +187,7 @@ type fetchProgress struct {
 	started  map[string]time.Time
 	last     map[string]time.Time
 	active   bool
+	line     func(string)
 }
 
 func newFetchProgress(enabled bool, writer io.Writer) *fetchProgress {
@@ -125,13 +216,13 @@ func (p *fetchProgress) Report(event fetch.Progress) {
 	now := time.Now()
 	switch event.Stage {
 	case fetch.ProgressChecking:
-		fmt.Fprintf(p.writer, ">>> Checking %s\n", event.Artifact)
+		p.writeLine(">>> Checking %s", event.Artifact)
 	case fetch.ProgressCached:
-		fmt.Fprintf(p.writer, ">>> Using verified distfile %s\n", event.Artifact)
+		p.writeLine(">>> Using verified distfile %s", event.Artifact)
 	case fetch.ProgressDownload:
 		if p.started[event.Artifact].IsZero() {
 			p.started[event.Artifact] = now
-			fmt.Fprintf(p.writer, ">>> Downloading %s\n", event.Source)
+			p.writeLine(">>> Downloading %s", event.Source)
 		}
 		if !p.terminal || (event.Downloaded < event.Total && now.Sub(p.last[event.Artifact]) < 100*time.Millisecond) {
 			return
@@ -150,11 +241,20 @@ func (p *fetchProgress) Report(event fetch.Progress) {
 		p.active = true
 	case fetch.ProgressVerifying:
 		p.finishLine()
-		fmt.Fprintf(p.writer, ">>> Verifying %s against Manifest\n", event.Artifact)
+		p.writeLine(">>> Verifying %s against Manifest", event.Artifact)
 	case fetch.ProgressComplete:
 		p.finishLine()
-		fmt.Fprintf(p.writer, ">>> Fetched and verified %s\n", event.Artifact)
+		p.writeLine(">>> Fetched and verified %s", event.Artifact)
 	}
+}
+
+func (p *fetchProgress) writeLine(format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	if p.line != nil {
+		p.line(message)
+		return
+	}
+	fmt.Fprintln(p.writer, message)
 }
 
 func (p *fetchProgress) finishLine() {

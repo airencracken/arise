@@ -938,6 +938,70 @@ func TestRevdepRebuild_DoesNotRequireLDD(t *testing.T) {
 	}
 }
 
+func TestRevdepRebuildUsesInstalledLinkageMetadata(t *testing.T) {
+	root := t.TempDir()
+	vdb := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "usr", "lib64"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "usr", "lib64", "libpresent.so.1"), []byte("present"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "usr", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "usr", "bin", "protoc"), []byte("installed payload"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkg := filepath.Join(vdb, "dev-libs", "protobuf-31.1")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metadata := "X86_64;/usr/bin/protoc;;;libpresent.so.1,libabsl_missing.so.2505.0.0;x86_64\n"
+	if err := os.WriteFile(filepath.Join(pkg, "NEEDED.ELF.2"), []byte(metadata), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := RevdepRebuild(root, vdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"dev-libs/protobuf-31.1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("broken installed linkage = %v, want %v", got, want)
+	}
+}
+
+func TestRevdepRebuildMatchesPortageSONAMEProvidersBeyondRunpath(t *testing.T) {
+	root := t.TempDir()
+	vdb := t.TempDir()
+	consumer := "/opt/tool/lib/rustlib/target/bin/rust-objcopy"
+	provider := "/opt/tool/lib/libLLVM.so.22"
+	for _, path := range []string{consumer, provider} {
+		full := filepath.Join(root, strings.TrimPrefix(path, "/"))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte("installed payload"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pkg := filepath.Join(vdb, "dev-lang", "rust-bin-1.95.0")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metadata := "X86_64;" + provider + ";libLLVM.so.22;;;x86_64\n" +
+		"X86_64;" + consumer + ";;$ORIGIN/../lib;libLLVM.so.22;x86_64\n"
+	if err := os.WriteFile(filepath.Join(pkg, "NEEDED.ELF.2"), []byte(metadata), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := RevdepRebuild(root, vdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("Portage-compatible SONAME provider was reported broken: %v", got)
+	}
+}
+
 // --------------------------------------------------------------------------
 // vdbContentsMap
 // --------------------------------------------------------------------------

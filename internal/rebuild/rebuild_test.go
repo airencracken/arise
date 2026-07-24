@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,11 +21,34 @@ import (
 	"testing"
 
 	"github.com/airencracken/arise/internal/ebuild"
+	"github.com/airencracken/arise/internal/fetch"
 	"github.com/airencracken/arise/internal/journal"
 	mergepkg "github.com/airencracken/arise/internal/merge"
 	"github.com/airencracken/arise/internal/phaseproto"
 	"github.com/airencracken/arise/internal/portage"
 )
+
+type rebuildRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f rebuildRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestPhaseBrootMatchesNativePortagePrefixContract(t *testing.T) {
+	if got := phaseBroot("/"); got != "" {
+		t.Fatalf("native BROOT = %q, want empty", got)
+	}
+	if got := phaseBroot("/build-host"); got != "/build-host" {
+		t.Fatalf("cross BROOT = %q, want /build-host", got)
+	}
+}
+
+func TestUseFlagsWithArchSelectsImplicitArchitecture(t *testing.T) {
+	got := useFlagsWithArch(map[string]bool{"ssl": true, "test": false}, "amd64")
+	if !got["amd64"] || !got["ssl"] || got["test"] {
+		t.Fatalf("architecture-aware USE = %#v", got)
+	}
+}
 
 func TestFindEbuild(t *testing.T) {
 	tmp := t.TempDir()
@@ -70,6 +94,178 @@ func TestFindEbuild(t *testing.T) {
 	})
 }
 
+func TestAllowLifecycleRootWritesIsScopedAndDoesNotMutateBase(t *testing.T) {
+	base := phaseproto.Request{RootDir: "/target", Env: map[string]string{"SANDBOX_WRITE": "/build", "USE": "test"}, Policy: phaseproto.ExecutionPolicy{Configured: true, Sandbox: true, NetworkSandbox: true, IPCSandbox: true, PIDSandbox: true, MountSandbox: true}}
+	compile := applyPortageLifecyclePolicy(base, "src_compile")
+	if compile.Env["SANDBOX_WRITE"] != "/build" {
+		t.Fatalf("compile SANDBOX_WRITE=%q", compile.Env["SANDBOX_WRITE"])
+	}
+	if !compile.Policy.Sandbox {
+		t.Fatal("src_compile unexpectedly disabled sandbox")
+	}
+	for _, phase := range []string{"pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm"} {
+		request := applyPortageLifecyclePolicy(base, phase)
+		if request.Env["SANDBOX_WRITE"] != "/build:/target" {
+			t.Fatalf("%s SANDBOX_WRITE=%q", phase, request.Env["SANDBOX_WRITE"])
+		}
+		if request.Policy.Sandbox {
+			t.Fatalf("%s retained Portage sandbox", phase)
+		}
+		if request.Policy.NetworkSandbox || request.Policy.IPCSandbox || request.Policy.PIDSandbox {
+			t.Fatalf("%s retained host-incompatible namespaces: %#v", phase, request.Policy)
+		}
+		if !request.Policy.MountSandbox {
+			t.Fatalf("%s unexpectedly disabled Portage mount namespace", phase)
+		}
+	}
+	for _, phase := range []string{"pkg_setup", "pkg_pretend"} {
+		request := applyPortageLifecyclePolicy(base, phase)
+		if request.Policy.Sandbox || request.Policy.NetworkSandbox || request.Policy.IPCSandbox {
+			t.Fatalf("%s did not receive Portage free/host policy: %#v", phase, request.Policy)
+		}
+		if !request.Policy.PIDSandbox || !request.Policy.MountSandbox {
+			t.Fatalf("%s lost retained namespaces: %#v", phase, request.Policy)
+		}
+	}
+	if base.Env["SANDBOX_WRITE"] != "/build" {
+		t.Fatalf("base request was mutated: %#v", base.Env)
+	}
+	if !base.Policy.Sandbox {
+		t.Fatal("base policy was mutated")
+	}
+}
+
+func TestApplyPortageUserprivPolicyByPhase(t *testing.T) {
+	base := phaseproto.Request{Policy: phaseproto.ExecutionPolicy{Configured: true, Sandbox: true, UserPriv: true, UserSandbox: true}}
+	for _, phase := range []string{"src_unpack", "src_prepare", "src_configure", "src_compile", "src_test"} {
+		got := applyPortageLifecyclePolicy(base, phase)
+		if !got.Policy.DropPrivileges || !got.Policy.Sandbox {
+			t.Fatalf("%s policy = %+v", phase, got.Policy)
+		}
+	}
+	for _, phase := range []string{"pkg_setup", "src_install", "pkg_preinst", "pkg_postinst"} {
+		got := applyPortageLifecyclePolicy(base, phase)
+		if got.Policy.DropPrivileges {
+			t.Fatalf("%s unexpectedly drops privileges: %+v", phase, got.Policy)
+		}
+	}
+	withoutUserSandbox := base
+	withoutUserSandbox.Policy.UserSandbox = false
+	got := applyPortageLifecyclePolicy(withoutUserSandbox, "src_compile")
+	if !got.Policy.DropPrivileges || got.Policy.Sandbox {
+		t.Fatalf("userpriv without usersandbox policy = %+v", got.Policy)
+	}
+}
+
+func TestProtocolBuildPhasesKeepsPreinstOutOfBuildSandbox(t *testing.T) {
+	phases := protocolBuildPhases(phaseproto.ExecutionPolicy{Configured: true})
+	for _, phase := range phases {
+		if phase == "pkg_preinst" {
+			t.Fatalf("pkg_preinst inherited build-worker isolation: %v", phases)
+		}
+	}
+	if got := phases[len(phases)-1]; got != "src_install" {
+		t.Fatalf("last build phase=%q phases=%v", got, phases)
+	}
+}
+
+func TestPhaseFailureDiagnosticsPreferCausalContextOverMakeCleanupTail(t *testing.T) {
+	var events []phaseproto.Event
+	for _, message := range []string{
+		"checking compiler", "building generated source", "source.c:41: error: missing declaration", "compilation terminated",
+		"make[4]: *** [source.o] Error 1", "make[4]: Leaving directory '/build/a'", "make[3]: Leaving directory '/build'",
+		"make[2]: Leaving directory '/build'", "make[1]: Leaving directory '/build'", "make: Leaving directory '/build'",
+	} {
+		events = append(events, phaseproto.Event{Kind: "log", Message: message})
+	}
+	got := phaseFailureDiagnostics(events, 5)
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "missing declaration") {
+		t.Fatalf("causal diagnostic missing: %q", joined)
+	}
+	if strings.Contains(joined, "make[1]: Leaving") {
+		t.Fatalf("cleanup tail displaced causal context: %q", joined)
+	}
+}
+
+func TestPhaseFailureDiagnosticsNamesSilentFailingPhase(t *testing.T) {
+	events := []phaseproto.Event{
+		{Kind: "phase", Message: "src_install"},
+		{Kind: "log", Message: "make[1]: Leaving directory '/build'"},
+	}
+	got := phaseFailureDiagnostics(events, 5)
+	if joined := strings.Join(got, "\n"); joined != "phase src_install returned non-zero status without an explicit error diagnostic" {
+		t.Fatalf("silent diagnostic = %q", joined)
+	}
+}
+
+func TestRegenerateLiveInfoIndexReportsAllFailures(t *testing.T) {
+	base := t.TempDir()
+	root, image := filepath.Join(base, "root"), filepath.Join(base, "image")
+	for _, directory := range []string{filepath.Join(root, "usr/share/info"), filepath.Join(image, "usr/share/info")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"one.info", "two.info"} {
+		if err := os.WriteFile(filepath.Join(root, "usr/share/info", name), []byte("manual"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(image, "usr/share/info", name), []byte("manual"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installer := filepath.Join(base, "install-info")
+	if err := os.WriteFile(installer, []byte("#!/bin/sh\necho broken >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result := regenerateLiveInfoIndexReport(root, image, true, installer)
+	if result.Processed != 2 || len(result.Errors) != 2 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestRegenerateLiveInfoIndexReplacesGeneratedVariants(t *testing.T) {
+	base := t.TempDir()
+	root, image := filepath.Join(base, "root"), filepath.Join(base, "image")
+	installedInfo, stagedInfo := filepath.Join(root, "usr", "share", "info"), filepath.Join(image, "usr", "share", "info")
+	for _, directory := range []string{installedInfo, stagedInfo} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{filepath.Join(installedInfo, "manual.info.gz"), filepath.Join(stagedInfo, "manual.info.gz"), filepath.Join(installedInfo, "dir.gz")} {
+		if err := os.WriteFile(path, []byte("manual"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("manual.info", filepath.Join(installedInfo, "manual-ref.info")); err != nil {
+		t.Fatal(err)
+	}
+	installer := filepath.Join(base, "install-info")
+	calls := filepath.Join(base, "calls")
+	script := fmt.Sprintf("#!/bin/sh\nindex=${1#--dir-file=}\nprintf '%%s\\n' \"$2\" >> %q\nprintf regenerated > \"$index\"\n", calls)
+	if err := os.WriteFile(installer, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := regenerateLiveInfoIndex(root, image, true, installer); err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(installedInfo, "dir")); err != nil || string(raw) != "regenerated" {
+		t.Fatalf("regenerated index = %q, %v", raw, err)
+	}
+	if _, err := os.Lstat(filepath.Join(installedInfo, "dir.gz")); !os.IsNotExist(err) {
+		t.Fatalf("old compressed index remains: %v", err)
+	}
+	invocations, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(invocations), "manual-ref.info") {
+		t.Fatalf("dangling compatibility symlink passed to install-info: %s", invocations)
+	}
+}
+
 func TestPreflightHasVersionQueriesUsesInstalledVDB(t *testing.T) {
 	tmp := t.TempDir()
 	repo, vdb := filepath.Join(tmp, "repo"), filepath.Join(tmp, "vdb")
@@ -108,6 +304,298 @@ func TestPreflightHasVersionQueriesUsesInstalledVDB(t *testing.T) {
 		if !answers[query] {
 			t.Fatalf("has_version %s = false, answers=%v", query, answers)
 		}
+	}
+}
+
+func TestPreflightBestVersionsSelectsHighestInstalledCPVByDomain(t *testing.T) {
+	rootVDB, brootVDB := filepath.Join(t.TempDir(), "root"), filepath.Join(t.TempDir(), "broot")
+	for _, directory := range []string{
+		filepath.Join(rootVDB, "dev-python", "gpep517-18"),
+		filepath.Join(brootVDB, "dev-python", "gpep517-18"),
+		filepath.Join(brootVDB, "dev-python", "gpep517-19"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := preflightBestVersions(rootVDB, brootVDB)
+	if got["r\tdev-python/gpep517"] != "dev-python/gpep517-18" {
+		t.Fatalf("root best version = %q", got["r\tdev-python/gpep517"])
+	}
+	if got["b\tdev-python/gpep517"] != "dev-python/gpep517-19" {
+		t.Fatalf("build-root best version = %q", got["b\tdev-python/gpep517"])
+	}
+}
+
+func TestPreflightHasVersionQueriesExpandsEbuildVariables(t *testing.T) {
+	tmp := t.TempDir()
+	repo, vdb := filepath.Join(tmp, "repo"), filepath.Join(tmp, "vdb")
+	installed := filepath.Join(vdb, "dev-lang", "go-1.25.0")
+	if err := os.MkdirAll(installed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"SLOT": "0\n", "repository": "gentoo\n"} {
+		if err := os.WriteFile(filepath.Join(installed, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuildPath := filepath.Join(tmp, "go-1.26.ebuild")
+	content := "EAPI=8\nGO_BOOTSTRAP_MIN=1.24.6\nsrc_compile() { has_version -b \">=dev-lang/go-${GO_BOOTSTRAP_MIN}\"; has_version -b \">=dev-lang/go-bootstrap-${GO_BOOTSTRAP_MIN}\"; }\n"
+	if err := os.WriteFile(ebuildPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eb, err := ebuild.ParseEbuild(ebuildPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := preflightHasVersionQueries(ebuildPath, eb, []portage.RepoEntry{{Name: "gentoo", Location: repo}}, "gentoo", t.TempDir(), vdb, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !answers[">=dev-lang/go-1.24.6"] {
+		t.Fatalf("expanded Go query not satisfied: %v", answers)
+	}
+	if answer, exists := answers[">=dev-lang/go-bootstrap-1.24.6"]; !exists || answer {
+		t.Fatalf("expanded bootstrap query = %t, exists=%t; answers=%v", answer, exists, answers)
+	}
+}
+
+func TestPreflightHasVersionQueriesExpandsDerivedPVInEclass(t *testing.T) {
+	tmp := t.TempDir()
+	repo, vdb := filepath.Join(tmp, "repo"), filepath.Join(tmp, "vdb")
+	eclassDir := filepath.Join(repo, "eclass")
+	installed := filepath.Join(vdb, "dev-qt", "qtdeclarative-6.11.1")
+	for _, directory := range []string{eclassDir, installed} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(eclassDir, "qt6-build.eclass"), []byte(`probe() { has_version -d "~dev-qt/qtdeclarative-${PV}"; }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"SLOT": "6/6.11.1\n", "repository": "gentoo\n"} {
+		if err := os.WriteFile(filepath.Join(installed, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuildPath := filepath.Join(tmp, "repo", "dev-qt", "qt5compat", "qt5compat-6.11.1.ebuild")
+	if err := os.MkdirAll(filepath.Dir(ebuildPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ebuildPath, []byte("EAPI=8\ninherit qt6-build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eb, err := ebuild.ParseEbuild(ebuildPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := preflightHasVersionQueries(ebuildPath, eb, []portage.RepoEntry{{Name: "gentoo", Location: repo}}, "gentoo", vdb, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !answers["~dev-qt/qtdeclarative-6.11.1"] {
+		t.Fatalf("derived PV query not satisfied: %v", answers)
+	}
+}
+
+func TestPreflightHasVersionQueriesEnumeratesRustEclassSlots(t *testing.T) {
+	tmp := t.TempDir()
+	repo, brootVDB := filepath.Join(tmp, "repo"), filepath.Join(tmp, "broot-vdb")
+	eclassDir := filepath.Join(repo, "eclass")
+	installed := filepath.Join(brootVDB, "dev-lang", "rust-bin-1.94.1")
+	for _, directory := range []string{eclassDir, installed} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rustEclass := `declare -a -g -r _RUST_SLOTS_ORDERED=(
+	"9999"
+	"1.95.0"
+	"1.94.1"
+)
+_get_rust_slot() {
+	local slot
+	for slot in "${_RUST_SLOTS_ORDERED[@]}"; do
+		has_version -b "dev-lang/rust:${slot}"
+		has_version -b "dev-lang/rust-bin:${slot}"
+	done
+}`
+	if err := os.WriteFile(filepath.Join(eclassDir, "rust.eclass"), []byte(rustEclass), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cargoEclass := `case ${EAPI} in
+	8) ;;
+	*) die "unsupported" ;;
+esac
+if [[ -n ${CRATE_PATHS_OVERRIDE} ]]; then
+	CRATES="${CRATES} ${CRATE_PATHS_OVERRIDE}"
+fi
+inherit rust
+`
+	if err := os.WriteFile(filepath.Join(eclassDir, "cargo.eclass"), []byte(cargoEclass), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"SLOT": "1.94.1\n", "repository": "gentoo\n"} {
+		if err := os.WriteFile(filepath.Join(installed, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuildPath := filepath.Join(tmp, "cbindgen-1.ebuild")
+	if err := os.WriteFile(ebuildPath, []byte("EAPI=8\nif use rust; then\n\tinherit cargo\nfi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eb, err := ebuild.ParseEbuild(ebuildPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eb.Inherit) != 0 {
+		t.Fatalf("test requires a conditional inherit omitted by the metadata parser: %v", eb.Inherit)
+	}
+	answers, err := preflightHasVersionQueries(ebuildPath, eb, []portage.RepoEntry{{Name: "gentoo", Location: repo}}, "gentoo", t.TempDir(), brootVDB, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !answers["dev-lang/rust-bin:1.94.1"] {
+		t.Fatalf("installed Rust slot missing from snapshot: %v", answers)
+	}
+	for _, query := range []string{"dev-lang/rust:9999", "dev-lang/rust-bin:1.95.0"} {
+		if answer, exists := answers[query]; !exists || answer {
+			t.Fatalf("query %q answer=%t exists=%t, snapshot=%v", query, answer, exists, answers)
+		}
+	}
+}
+
+func TestPreflightHasVersionQueriesIncludesAbsentPythonCompatSlots(t *testing.T) {
+	tmp := t.TempDir()
+	repo, vdb := filepath.Join(tmp, "repo"), filepath.Join(tmp, "vdb")
+	eclassDir := filepath.Join(repo, "eclass")
+	installed := filepath.Join(vdb, "dev-lang", "python-3.14.9")
+	for _, directory := range []string{eclassDir, installed} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(eclassDir, "distutils-r1.eclass"), []byte("# transitively inherits python-r1 in the real repository\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"SLOT": "3.14\n", "repository": "gentoo\n"} {
+		if err := os.WriteFile(filepath.Join(installed, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuildPath := filepath.Join(tmp, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuildPath, []byte("EAPI=8\nPYTHON_COMPAT=( python3_{12..15} python3_{14..15}t )\nPYTHON_REQ_USE=\"threads(+)\"\ninherit distutils-r1\npython_check_deps() { python_has_version \"dev-python/setuptools[${PYTHON_USEDEP}]\"; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eb, err := ebuild.ParseEbuild(ebuildPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := preflightHasVersionQueries(ebuildPath, eb, []portage.RepoEntry{{Name: "gentoo", Location: repo}}, "gentoo", t.TempDir(), vdb, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !answers["dev-lang/python:3.14"] {
+		t.Fatalf("installed Python slot missing from snapshot: %v", answers)
+	}
+	if answer, exists := answers["dev-lang/python:3.15"]; !exists || answer {
+		t.Fatalf("absent Python slot answer=%t exists=%t, snapshot=%v", answer, exists, answers)
+	}
+	if !answers["dev-lang/python:3.14[threads(+)]"] {
+		t.Fatalf("installed qualified Python slot missing from snapshot: %v", answers)
+	}
+	if answer, exists := answers["dev-lang/python:3.15[threads(+)]"]; !exists || answer {
+		t.Fatalf("absent qualified Python slot answer=%t exists=%t, snapshot=%v", answer, exists, answers)
+	}
+	for _, minor := range []string{"12", "13", "14", "15"} {
+		query := "dev-python/setuptools[python_targets_python3_" + minor + "(-)]"
+		if _, exists := answers[query]; !exists {
+			t.Fatalf("dynamic python_check_deps query %q missing from snapshot: %v", query, answers)
+		}
+	}
+}
+
+func TestPreflightHasVersionQueriesFollowsTransitivePythonEclass(t *testing.T) {
+	tmp := t.TempDir()
+	repo, vdb := filepath.Join(tmp, "repo"), filepath.Join(tmp, "vdb")
+	eclassDir := filepath.Join(repo, "eclass")
+	installed := filepath.Join(vdb, "dev-lang", "python-3.14.9")
+	for _, directory := range []string{eclassDir, installed} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(eclassDir, "gstreamer-meson.eclass"), []byte("PYTHON_COMPAT=( python3_{12..14} )\ninherit python-any-r1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(eclassDir, "python-any-r1.eclass"), []byte("inherit python-utils-r1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(eclassDir, "python-utils-r1.eclass"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"SLOT": "3.14\n", "repository": "gentoo\n"} {
+		if err := os.WriteFile(filepath.Join(installed, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuildPath := filepath.Join(tmp, "gstreamer-1.ebuild")
+	if err := os.WriteFile(ebuildPath, []byte("EAPI=8\ninherit gstreamer-meson\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eb, err := ebuild.ParseEbuild(ebuildPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, err := preflightHasVersionQueries(ebuildPath, eb, []portage.RepoEntry{{Name: "gentoo", Location: repo}}, "gentoo", t.TempDir(), vdb, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{"dev-lang/python:3.12", "dev-lang/python:3.13", "dev-lang/python:3.14"} {
+		if _, exists := answers[query]; !exists {
+			t.Fatalf("transitive Python query %q missing from snapshot: %v", query, answers)
+		}
+	}
+}
+
+func TestDynamicPythonQueriesExpandsPlainBraceRange(t *testing.T) {
+	got := dynamicPythonQueries("PYTHON_COMPAT=( python3_{11..14} )\n")
+	want := []string{
+		"dev-lang/python:3.11",
+		"dev-lang/python:3.12",
+		"dev-lang/python:3.13",
+		"dev-lang/python:3.14",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("plain Python brace range = %v, want %v", got, want)
+	}
+}
+
+func TestDynamicPythonUseDepQueriesExpandsArbitraryPackageAtoms(t *testing.T) {
+	source := `python_check_deps() {
+	python_has_version "dev-python/setuptools[${PYTHON_USEDEP}]" &&
+		python_has_version 'dev-python/installer[${PYTHON_SINGLE_USEDEP}]'
+}`
+	got := dynamicPythonUseDepQueries(source, []string{"3.13", "3.14"})
+	want := []string{
+		"dev-python/installer[python_single_target_python3_13(-)]",
+		"dev-python/installer[python_single_target_python3_14(-)]",
+		"dev-python/setuptools[python_targets_python3_13(-)]",
+		"dev-python/setuptools[python_targets_python3_14(-)]",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("dynamic Python USE-dependency queries = %v, want %v", got, want)
+	}
+}
+
+func TestShellArrayValuesSupportsLiteralAndDescendingBraceSlots(t *testing.T) {
+	source := `declare -g -r _LLVM_KNOWN_SLOTS=( {22..20} )
+declare -a -g -r _RUST_SLOTS_ORDERED=( "9999" "1.95.0" "1.94.1" )`
+	if got, want := shellArrayValues(source, "_LLVM_KNOWN_SLOTS"), []string{"20", "21", "22"}; !slices.Equal(got, want) {
+		t.Fatalf("LLVM slots = %v, want %v", got, want)
+	}
+	if got, want := shellArrayValues(source, "_RUST_SLOTS_ORDERED"), []string{"1.94.1", "1.95.0", "9999"}; !slices.Equal(got, want) {
+		t.Fatalf("Rust slots = %v, want %v", got, want)
 	}
 }
 
@@ -729,6 +1217,296 @@ pkg_postinst() { printf 'postinst\n' > "${ROOT}/postinst-marker"; }
 	}
 }
 
+func TestMaterializeInstalledEnvironmentRemovesStaleIsolationControls(t *testing.T) {
+	if _, err := exec.LookPath("bzip2"); err != nil {
+		t.Skip("bzip2 is not installed")
+	}
+	vdb := t.TempDir()
+	plain := filepath.Join(t.TempDir(), "environment")
+	content := "export EAPI='8'\n" +
+		"export SANDBOX_WRITE='/stale/build'\n" +
+		"declare -x SANDBOX_READ='/stale/read'\n" +
+		"export LD_PRELOAD='/stale/libsandbox.so'\n" +
+		"export FEATURES='sandbox'\n"
+	if err := os.WriteFile(plain, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := os.OpenFile(filepath.Join(vdb, "environment.bz2"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("bzip2", "-c", plain)
+	command.Stdout = compressed
+	if err := command.Run(); err != nil {
+		compressed.Close()
+		t.Fatal(err)
+	}
+	if err := compressed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path, err := materializeInstalledEnvironment(vdb, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "SANDBOX_") || strings.Contains(text, "LD_PRELOAD") {
+		t.Fatalf("materialized environment retained isolation controls:\n%s", text)
+	}
+	if !strings.Contains(text, "export EAPI='8'") || !strings.Contains(text, "export FEATURES='sandbox'") {
+		t.Fatalf("materialized environment lost package state:\n%s", text)
+	}
+}
+
+func TestExpandBuiltSlotOperatorsRecordsInstalledSubslot(t *testing.T) {
+	vdb := t.TempDir()
+	provider := filepath.Join(vdb, "dev-libs", "jsoncpp-1.9.8")
+	if err := os.MkdirAll(provider, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"SLOT": "0/27", "repository": "gentoo", "USE": "", "IUSE": "",
+	} {
+		if err := os.WriteFile(filepath.Join(provider, name), []byte(value+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := expandBuiltSlotOperatorsInDependency(
+		"ssl? ( >=dev-libs/jsoncpp-1.9:= ) dev-libs/other:=", vdb, map[string]bool{"ssl": true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "ssl? ( >=dev-libs/jsoncpp-1.9:0/27= ) dev-libs/other:=" {
+		t.Fatalf("expanded dependency = %q", got)
+	}
+}
+
+func TestPhaseProtocolDoesNotPrecreateSourceDirectoryBeforeUnpack(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	tmp := t.TempDir()
+	repo, root := filepath.Join(tmp, "repo"), filepath.Join(tmp, "root")
+	vdb, work, dist := filepath.Join(root, "var", "db", "pkg"), filepath.Join(tmp, "work"), filepath.Join(tmp, "distfiles")
+	packageDir := filepath.Join(repo, "dev-lang", "renamed-source")
+	for _, directory := range []string{filepath.Join(repo, "eclass"), packageDir, root, vdb, work, dist} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuild := `EAPI=8
+src_unpack() {
+  [[ ! -e ${S} ]] || die "S was created before src_unpack"
+  mkdir extracted || die
+  printf 'payload\n' > extracted/components || die
+  mv extracted "${S}" || die
+}
+src_install() {
+  [[ -f ./components ]] || die "source tree was nested below S"
+  insinto /usr/share/renamed-source
+  doins components
+}`
+	if err := os.WriteFile(filepath.Join(packageDir, "renamed-source-1.ebuild"), []byte(ebuild), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := RebuildConfig{RepoDir: repo, DistfilesDir: dist, RootDir: root, VdbDir: vdb, WorkDirBase: work,
+		PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}}}
+	if err := RebuildPackage(context.Background(), "dev-lang/renamed-source-1", &cfg); err != nil {
+		t.Fatalf("custom source rename rebuild: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "usr", "share", "renamed-source", "components")); err != nil {
+		t.Fatalf("renamed source payload missing: %v", err)
+	}
+}
+
+func TestRestrictedFetchCacheMissRunsPkgNofetchBeforeMutation(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	tmp := t.TempDir()
+	repo, root := filepath.Join(tmp, "repo"), filepath.Join(tmp, "root")
+	packageDir := filepath.Join(repo, "app-misc", "manual")
+	cfg := RebuildConfig{
+		RepoDir: repo, DistfilesDir: filepath.Join(tmp, "distfiles"), RootDir: root,
+		VdbDir: filepath.Join(root, "var", "db", "pkg"), WorkDirBase: filepath.Join(tmp, "work"),
+		PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+	}
+	for _, directory := range []string{filepath.Join(repo, "eclass"), packageDir, cfg.DistfilesDir, root, cfg.VdbDir, cfg.WorkDirBase} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload := []byte("manual artifact")
+	digest := sha512.Sum512(payload)
+	if err := os.WriteFile(filepath.Join(packageDir, "Manifest"), []byte(fmt.Sprintf("DIST manual.tar %d SHA512 %x\n", len(payload), digest)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuildText := `EAPI=8
+SRC_URI="https://invalid.example/manual.tar"
+RESTRICT="fetch"
+pkg_nofetch() { eerror "place manual.tar in DISTDIR"; }
+src_install() { die "build must not start"; }
+`
+	if err := os.WriteFile(filepath.Join(packageDir, "manual-1.ebuild"), []byte(ebuildText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var phases, notices []string
+	cfg.OnPhaseStart = func(phase string) { phases = append(phases, phase) }
+	cfg.OnNotice = func(_, message string) { notices = append(notices, message) }
+	err := RebuildPackage(context.Background(), "app-misc/manual-1", &cfg)
+	var required *fetch.ManualFetchRequiredError
+	if !errors.As(err, &required) {
+		t.Fatalf("RebuildPackage error = %v, want ManualFetchRequiredError", err)
+	}
+	if !slices.Equal(phases, []string{"pkg_nofetch"}) {
+		t.Fatalf("phase starts = %v, want only pkg_nofetch", phases)
+	}
+	if !slices.ContainsFunc(notices, func(message string) bool { return strings.Contains(message, "place manual.tar in DISTDIR") }) {
+		t.Fatalf("pkg_nofetch notices = %v", notices)
+	}
+	entries, readErr := os.ReadDir(root)
+	if readErr != nil || len(entries) != 1 || entries[0].Name() != "var" {
+		t.Fatalf("ROOT changed before fetch completion: entries=%v err=%v", entries, readErr)
+	}
+}
+
+func TestRestrictedFetchUsesVerifiedDISTDIRWithoutPkgNofetch(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	tmp := t.TempDir()
+	repo, root := filepath.Join(tmp, "repo"), filepath.Join(tmp, "root")
+	packageDir := filepath.Join(repo, "app-misc", "manual-cached")
+	cfg := RebuildConfig{
+		RepoDir: repo, DistfilesDir: filepath.Join(tmp, "distfiles"), RootDir: root,
+		VdbDir: filepath.Join(root, "var", "db", "pkg"), WorkDirBase: filepath.Join(tmp, "work"),
+		PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+	}
+	for _, directory := range []string{filepath.Join(repo, "eclass"), packageDir, cfg.DistfilesDir, root, cfg.VdbDir, cfg.WorkDirBase} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload := []byte("already downloaded")
+	digest := sha512.Sum512(payload)
+	if err := os.WriteFile(filepath.Join(packageDir, "Manifest"), []byte(fmt.Sprintf("DIST manual.tar %d SHA512 %x\n", len(payload), digest)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.DistfilesDir, "manual.tar"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuildText := `EAPI=8
+SRC_URI="https://invalid.example/manual.tar"
+RESTRICT="fetch"
+pkg_nofetch() { die "pkg_nofetch must not run for a verified cache entry"; }
+src_unpack() { mkdir -p "${S}"; cp "${DISTDIR}/manual.tar" "${S}/payload"; }
+src_install() { insinto /usr/share/manual-cached; doins payload; }
+`
+	if err := os.WriteFile(filepath.Join(packageDir, "manual-cached-1.ebuild"), []byte(ebuildText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RebuildPackage(context.Background(), "app-misc/manual-cached-1", &cfg); err != nil {
+		t.Fatalf("RebuildPackage: %v", err)
+	}
+	installed, err := os.ReadFile(filepath.Join(root, "usr", "share", "manual-cached", "payload"))
+	if err != nil || !bytes.Equal(installed, payload) {
+		t.Fatalf("installed payload = %q err=%v", installed, err)
+	}
+}
+
+func TestFailedOrdinaryFetchRunsExplicitPkgNofetchOverride(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	tmp := t.TempDir()
+	repo, root := filepath.Join(tmp, "repo"), filepath.Join(tmp, "root")
+	packageDir := filepath.Join(repo, "app-misc", "custom-nofetch")
+	cfg := RebuildConfig{
+		RepoDir: repo, DistfilesDir: filepath.Join(tmp, "distfiles"), RootDir: root,
+		VdbDir: filepath.Join(root, "var", "db", "pkg"), WorkDirBase: filepath.Join(tmp, "work"),
+		PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+		Fetcher: &fetch.Fetcher{Client: &http.Client{Transport: rebuildRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("synthetic unavailable source")
+		})}},
+	}
+	for _, directory := range []string{filepath.Join(repo, "eclass"), packageDir, cfg.DistfilesDir, root, cfg.VdbDir, cfg.WorkDirBase} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payload := []byte("unavailable")
+	digest := sha512.Sum512(payload)
+	if err := os.WriteFile(filepath.Join(packageDir, "Manifest"), []byte(fmt.Sprintf("DIST source.tar %d SHA512 %x\n", len(payload), digest)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuildText := `EAPI=8
+SRC_URI="https://invalid.example/source.tar"
+pkg_nofetch() { eerror "custom upstream acquisition instructions"; }
+`
+	if err := os.WriteFile(filepath.Join(packageDir, "custom-nofetch-1.ebuild"), []byte(ebuildText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var phases, notices []string
+	cfg.OnPhaseStart = func(phase string) { phases = append(phases, phase) }
+	cfg.OnNotice = func(_, message string) { notices = append(notices, message) }
+	err := RebuildPackage(context.Background(), "app-misc/custom-nofetch-1", &cfg)
+	if err == nil || !strings.Contains(err.Error(), "all sources failed") {
+		t.Fatalf("RebuildPackage error = %v", err)
+	}
+	if !slices.Equal(phases, []string{"pkg_nofetch"}) {
+		t.Fatalf("phase starts = %v", phases)
+	}
+	if !slices.ContainsFunc(notices, func(message string) bool {
+		return strings.Contains(message, "custom upstream acquisition instructions")
+	}) {
+		t.Fatalf("pkg_nofetch notices = %v", notices)
+	}
+}
+
+func TestRebuildPackageRevisionUsesPWithoutRevision(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	root := filepath.Join(tmp, "root")
+	vdb := filepath.Join(root, "var", "db", "pkg")
+	work := filepath.Join(tmp, "work")
+	packageDir := filepath.Join(repo, "app-misc", "revision-test")
+	for _, directory := range []string{filepath.Join(repo, "eclass"), packageDir, root, vdb, work, filepath.Join(tmp, "distfiles")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ebuildContent := `EAPI=8
+src_unpack() {
+	[[ ${PV} == 1.2.3 && ${PR} == r1 && ${PVR} == 1.2.3-r1 ]] || return 41
+	[[ ${P} == revision-test-1.2.3 && ${PF} == revision-test-1.2.3-r1 ]] || return 42
+	[[ ${S} == "${WORKDIR}/revision-test-1.2.3" ]] || return 43
+	mkdir -p "${S}"
+	printf 'revision identity\n' > "${S}/payload"
+}
+src_install() { insinto /usr/share/revision-test; doins payload; }
+`
+	if err := os.WriteFile(filepath.Join(packageDir, "revision-test-1.2.3-r1.ebuild"), []byte(ebuildContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := RebuildConfig{
+		RepoDir: repo, DistfilesDir: filepath.Join(tmp, "distfiles"), RootDir: root, VdbDir: vdb, WorkDirBase: work,
+		PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+	}
+	if err := RebuildPackage(context.Background(), "app-misc/revision-test-1.2.3-r1", &cfg); err != nil {
+		t.Fatalf("revisioned protocol rebuild: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "usr", "share", "revision-test", "payload")); err != nil {
+		t.Fatalf("revisioned package payload: %v", err)
+	}
+}
+
 func TestRebuildPackageDisposableRootReplacementMatrix(t *testing.T) {
 	if _, err := exec.LookPath("sandbox"); err != nil {
 		t.Skip("Portage sandbox is not installed")
@@ -860,7 +1638,7 @@ func TestRebuildPackagePostinstFailureRetainsCommittedTransactionAndPreservesLog
 S="${WORKDIR}/${P}"
 src_unpack() { mkdir -p "${S}"; printf 'transaction payload\n' > "${S}/payload"; }
 src_install() { insinto /usr/share/failure-test; doins payload; }
-pkg_postinst() { printf 'postinst failure\n'; return 29; }
+pkg_postinst() { printf 'postinst failure\n'; die 'postinst failed'; }
 `, eapi)
 			if err := os.WriteFile(filepath.Join(packageDir, "failure-test-1.ebuild"), []byte(ebuildContent), 0o644); err != nil {
 				t.Fatal(err)
@@ -880,7 +1658,7 @@ pkg_postinst() { printf 'postinst failure\n'; return 29; }
 				},
 			}
 			err := RebuildPackage(context.Background(), "app-misc/failure-test-1", &cfg)
-			if err == nil || !strings.Contains(err.Error(), "pkg_postinst") || !strings.Contains(err.Error(), "exit status 29") {
+			if err == nil || !strings.Contains(err.Error(), "pkg_postinst") || !strings.Contains(err.Error(), "exit status 1") {
 				t.Fatalf("postinst failure = %v", err)
 			}
 			if !commitCallbackCalled {
@@ -909,7 +1687,7 @@ pkg_postinst() { printf 'postinst failure\n'; return 29; }
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(content), "postinst failure") || !strings.Contains(string(content), "exit_code=29") || !strings.Contains(string(content), "terminal-error") {
+			if !strings.Contains(string(content), "postinst failure") || !strings.Contains(string(content), "exit_code=1") || !strings.Contains(string(content), "terminal-error") {
 				t.Fatalf("durable postinst log = %s", content)
 			}
 		})
@@ -1165,7 +1943,7 @@ func TestPhaseRequestEnvironmentPreservesPackageEnvPrecedence(t *testing.T) {
 		PortageConfig: &portage.Config{MakeConf: map[string]string{"CFLAGS": "-O2", "CHOST": "x86_64-pc-linux-gnu"}},
 	}
 	got := phaseRequestEnvironment(cfg, "ssl", "source.tar")
-	if len(got) != 2 || got["USE"] != "ssl" || got["A"] != "source.tar" {
+	if len(got) != 2 || got["USE"] != "amd64 ssl" || got["A"] != "source.tar" {
 		t.Fatalf("configured request overrides = %#v", got)
 	}
 
@@ -1175,5 +1953,38 @@ func TestPhaseRequestEnvironmentPreservesPackageEnvPrecedence(t *testing.T) {
 		if got[name] != want {
 			t.Fatalf("fallback %s = %q, want %q", name, got[name], want)
 		}
+	}
+}
+
+func TestEnabledUseWithArchSuppliesImplicitArchitecture(t *testing.T) {
+	got := enabledUseWithArch(map[string]bool{"ssl": true, "test": false, "amd64": true}, "amd64")
+	if got != "amd64 ssl" {
+		t.Fatalf("effective phase USE=%q", got)
+	}
+}
+
+func TestProtocolVDBMetadataUsesSelectedPackageUSE(t *testing.T) {
+	directory := t.TempDir()
+	ebuildFile := filepath.Join(directory, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuildFile, []byte("EAPI=8\nSLOT=0\nIUSE=ssl\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eb, err := ebuild.ParseEbuild(ebuildFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := phaseproto.Request{
+		Env:     map[string]string{"USE": "ssl alsa bluetooth qt6 x264"},
+		Package: phaseproto.PackageIdentity{Slot: "0", Repository: "gentoo"},
+	}
+	metadata := protocolVDBMetadata(eb, ebuildFile, "app-misc", "pkg-1", "ssl verify-sig", map[string]bool{"ssl": true, "test": false, "abi_x86_64": true}, request, nil)
+	if metadata["ARISE_PHASE_ENV_ABI"] != portage.PhaseEnvironmentABI {
+		t.Fatalf("phase environment ABI = %q", metadata["ARISE_PHASE_ENV_ABI"])
+	}
+	if got, want := metadata["USE"], "abi_x86_64 ssl"; got != want {
+		t.Fatalf("VDB USE=%q want=%q", got, want)
+	}
+	if got, want := metadata["IUSE"], "ssl verify-sig"; got != want {
+		t.Fatalf("VDB IUSE=%q want=%q", got, want)
 	}
 }

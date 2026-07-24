@@ -539,6 +539,7 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 			vi := rg.AddVersionFromRepository(cp, installed.Version, installed.Slot, installed.Subslot, true, use, "", installed.Repository)
 			vi.InstalledIUseFlags = iuse
 			vi.InstalledEAPI = installed.EAPI
+			vi.InstalledPhaseEnvABI = installed.PhaseEnvABI
 			if vi.EAPI == "" {
 				vi.EAPI = installed.EAPI
 			}

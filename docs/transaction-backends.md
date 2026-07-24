@@ -16,11 +16,23 @@ lifecycle programs.
 
 ### Captured lifecycle
 
+This tier is an additional, USE-gated Arise enhancement. Its absence never
+disables the Portage-compatible baseline.
+
 Lifecycle hooks run against a copy-on-write view of ROOT. Arise validates the
 resulting delta, captures every destination preimage in its journal, and then
 applies the delta. Candidate providers include kernel overlayfs and
 fuse-overlayfs. Provider availability is never assumed from the filesystem
 type alone; a disposable mount/write/remove probe is required.
+
+The dependency-free baseline may instead stop lifecycle filesystem syscalls
+before mutation and durably capture each preimage in the same journal. This
+preserves Portage's phase isolation semantics without requiring a copy-on-write
+filesystem. Ptrace is the initial implementation path; seccomp user
+notification may provide a runtime-selected selective-notification backend once
+its multithreaded argument-race handling proves the identical guarantee. Their
+fail-closed coverage and promotion tests are specified in
+`planning/LIFECYCLE_TRANSACTION_PLAN.md`.
 
 ### Filesystem snapshot
 
@@ -42,6 +54,20 @@ it matches Portage's broad transaction ordering. Arise's native journal still
 protects mutations that Arise controls directly.
 
 ## Selection contract
+
+Portage-compatible phase isolation and lifecycle ordering are the baseline,
+independent of every
+rollback provider in this document. Arise mirrors Portage's phase-specific
+`sandbox`, `usersandbox`, network, IPC, PID, mount and privilege behavior even
+when no experimental provider is available. Bubblewrap is optional hardening;
+it must never be required to resolve, preflight or execute an ordinary live
+transaction.
+
+Likewise, Arise's static Go process does not protect an installed Python
+interpreter merely because Portage would currently be running under it. Python
+versions remain governed by the normal dependency, slot, USE, ABI and
+whole-state validation rules. Arise adds no package-manager-survival retention
+or ordering edge for the current interpreter or its owning package.
 
 Additional rollback providers are experimental strengthening layers. Their
 user-facing policy should distinguish at least:

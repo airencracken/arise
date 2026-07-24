@@ -15,24 +15,25 @@ import (
 
 // Package is the package-manager state retained for one installed CPV.
 type Package struct {
-	Category   string
-	Package    string
-	Version    string
-	Slot       string
-	Subslot    string
-	Repository string
-	Use        []string
-	IUse       []string
-	Depend     string
-	RDepend    string
-	BDepend    string
-	IDepend    string
-	PDepend    string
-	BuildTime  int64
-	BuildID    string
-	Counter    int64
-	EAPI       string
-	Contents   string
+	Category    string
+	Package     string
+	Version     string
+	Slot        string
+	Subslot     string
+	Repository  string
+	Use         []string
+	IUse        []string
+	Depend      string
+	RDepend     string
+	BDepend     string
+	IDepend     string
+	PDepend     string
+	BuildTime   int64
+	BuildID     string
+	PhaseEnvABI string
+	Counter     int64
+	EAPI        string
+	Contents    string
 }
 
 func (p Package) CP() string  { return p.Category + "/" + p.Package }
@@ -72,6 +73,19 @@ func Scan(root string) ([]Package, error) {
 				continue
 			}
 			dir := filepath.Join(root, category.Name(), entry.Name())
+			// A directory name is not an installed package. Interrupted merges may
+			// leave an empty or partial VDB directory before journal rollback. Only
+			// records with the minimum committed Portage metadata are authoritative.
+			valid := true
+			for _, required := range []string{"CONTENTS", "EAPI", "SLOT", "repository"} {
+				if info, statErr := os.Stat(filepath.Join(dir, required)); statErr != nil || !info.Mode().IsRegular() {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				continue
+			}
 			read := func(name string) string {
 				data, err := os.ReadFile(filepath.Join(dir, name))
 				if err != nil {
@@ -85,7 +99,8 @@ func Scan(root string) ([]Package, error) {
 				Repository: read("repository"), Use: strings.Fields(read("USE")), IUse: strings.Fields(read("IUSE")),
 				Depend: read("DEPEND"), RDepend: read("RDEPEND"), BDepend: read("BDEPEND"),
 				IDepend: read("IDEPEND"), PDepend: read("PDEPEND"), EAPI: read("EAPI"),
-				BuildTime: parseInt(read("BUILD_TIME")), BuildID: read("BUILD_ID"), Counter: parseInt(read("COUNTER")),
+				BuildTime: parseInt(read("BUILD_TIME")), BuildID: read("BUILD_ID"),
+				PhaseEnvABI: read("ARISE_PHASE_ENV_ABI"), Counter: parseInt(read("COUNTER")),
 				Contents: read("CONTENTS"),
 			})
 		}

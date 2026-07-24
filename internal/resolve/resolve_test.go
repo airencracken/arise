@@ -285,6 +285,26 @@ func TestResolve_ReinstallRejectsInstalledVersionMissingFromRepository(t *testin
 	}
 }
 
+func TestResolve_ReinstallOnlyForcesExplicitTarget(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "llvm-core/clang", "22.1.8", "22", "22.1", true, nil)
+	pkg(g, "llvm-core/clang", "22.1.8", "22", "22.1", false, nil)
+	deps(g, "llvm-core/clang", "llvm-runtimes/compiler-rt:22")
+	pkg(g, "llvm-runtimes/compiler-rt", "22.1.8", "22", "0", true, nil)
+	pkg(g, "llvm-runtimes/compiler-rt", "22.1.8", "22", "0", false, nil)
+
+	cfg := DefaultResolveConfig()
+	cfg.Reinstall = true
+	cfg.Deep = true
+	result, err := Resolve(g, []string{"=llvm-core/clang-22.1.8"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Install) != 1 || result.Install[0].Atom.CP() != "llvm-core/clang" || result.Install[0].Action != "reinstall" {
+		t.Fatalf("forced reinstall plan = %#v, want only explicit clang target", result.Install)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test: deep mode — recursive dep checking
 // ---------------------------------------------------------------------------
@@ -636,6 +656,39 @@ func TestSortPlannedActionsCondensesDependencyCycleBeforeDependent(t *testing.T)
 	r.validatePlanOrder(sorted)
 	if len(r.conflicts) != 0 {
 		t.Fatalf("unavoidable intra-component order was treated as a conflict: %v", r.conflicts)
+	}
+}
+
+func TestSortPlannedActionsPreservesBuildPrerequisitesInsideRuntimeCycle(t *testing.T) {
+	g := makeGraph()
+	gemato := pkg(g, "app-portage/gemato", "20.12", "0", "0", false, nil)
+	gpep517 := pkg(g, "dev-python/gpep517", "19", "0", "0", false, nil)
+	installer := pkg(g, "dev-python/installer", "1.0.1", "0", "0", false, nil)
+	portage := pkg(g, "sys-apps/portage", "3.0", "0", "0", false, nil)
+	gemato.Bdepend = "dev-python/gpep517[python_targets_python3_14(-)?]"
+	gpep517.Bdepend = "dev-python/installer"
+	portage.Rdepend = "app-portage/gemato"
+	installer.Rdepend = "sys-apps/portage"
+
+	r := &resolver{graph: g}
+	actions := []PkgAction{
+		{Atom: mustParse("app-portage/gemato-20.12"), Slot: "0", UseFlags: map[string]bool{"python_targets_python3_14": true}},
+		{Atom: mustParse("sys-apps/portage-3.0"), Slot: "0"},
+		{Atom: mustParse("dev-python/gpep517-19"), Slot: "0", UseFlags: map[string]bool{"python_targets_python3_14": true}},
+		{Atom: mustParse("dev-python/installer-1.0.1"), Slot: "0"},
+	}
+	sorted := r.sortPlannedActions(actions)
+	positions := make(map[string]int)
+	for i := range sorted {
+		positions[sorted[i].Atom.CP()] = i
+	}
+	if positions["dev-python/installer"] >= positions["dev-python/gpep517"] ||
+		positions["dev-python/gpep517"] >= positions["app-portage/gemato"] {
+		t.Fatalf("build prerequisites were broken to satisfy runtime cycle: %v", collectCPV(sorted))
+	}
+	gematoAction := sorted[positions["app-portage/gemato"]]
+	if len(gematoAction.Prerequisites) == 0 {
+		t.Fatalf("gemato has no serialized prerequisite: %v", collectCPV(sorted))
 	}
 }
 
@@ -1034,12 +1087,8 @@ func TestResolve_CompleteGraphConcept(t *testing.T) {
 	// newer libbar available with changed subslot
 	pkg(g, "dev-libs/libbar", "3.0", "0/2", "2", false, nil)
 
-	// libfoo has slot operator on libbar
-	for _, edge := range g.Packages["dev-libs/libfoo"].Deps {
-		if edge.To != nil && edge.To.Atom.CP() == "dev-libs/libbar" {
-			edge.DepAtom.SlotOp = atom.SlotOpEq
-		}
-	}
+	// libfoo's installed VDB metadata records the built slot/subslot binding.
+	setSlotOp(g, "dev-libs/libfoo", "dev-libs/libbar", atom.SlotOpEq)
 
 	cfg := DefaultResolveConfig()
 	cfg.Update = true
@@ -2482,6 +2531,25 @@ func TestNewUseChangedIgnoresImplicitEffectiveUseDomain(t *testing.T) {
 	}
 }
 
+func TestResolverNewUseIgnoresImplicitFlagsPresentOnlyInRepositoryIUSE(t *testing.T) {
+	installed := &VersionInfo{
+		InstalledUseFlags:  map[string]bool{"ssl": true, "abi_x86_64": true, "arch_amd64": true},
+		InstalledIUseFlags: map[string]bool{"ssl": true},
+	}
+	candidate := &VersionInfo{
+		UseFlags: map[string]bool{"ssl": false, "abi_x86_64": false, "arch_amd64": false},
+	}
+	r := &resolver{portageConfig: &portage.Config{UseExpandImplicit: []string{"ABI_X86", "ARCH"}}}
+	flags := map[string]bool{"ssl": true, "abi_x86_64": true, "arch_amd64": true}
+	a, err := atom.Parse("app-misc/example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.newUseChanged(&PkgNode{Atom: a}, installed, candidate, flags) {
+		t.Fatal("repository implicit IUSE values must not replay an otherwise unchanged package")
+	}
+}
+
 func TestResolve_NewUseAndChangedUseClassification(t *testing.T) {
 	makeCase := func() *DepGraph {
 		g := makeGraph()
@@ -2749,6 +2817,104 @@ func TestResolve_WorldSetEmpty(t *testing.T) {
 
 	if len(atoms) != 0 {
 		t.Errorf("expected 0 atoms from empty @world, got %d", len(atoms))
+	}
+}
+
+func TestResolveReinstallsOlderArisePhaseEnvironmentABI(t *testing.T) {
+	g := makeGraph()
+	installed := pkg(g, "app-misc/example", "1", "0", "0", true, nil)
+	installed.InstalledPhaseEnvABI = "older"
+
+	result, err := Resolve(g, []string{"app-misc/example"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(result.Install) != 1 || result.Install[0].Action != "reinstall" {
+		t.Fatalf("environment ABI repair plan = %#v", result.Install)
+	}
+}
+
+func TestResolveDoesNotTreatUnmarkedPortagePackageAsOldAriseABI(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "app-misc/example", "1", "0", "0", true, nil)
+
+	result, err := Resolve(g, []string{"app-misc/example"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(result.Install) != 0 {
+		t.Fatalf("unmarked installed package unexpectedly rebuilt: %#v", result.Install)
+	}
+}
+
+func TestResolveRetainsCompatiblePhaseEnvironmentABI(t *testing.T) {
+	g := makeGraph()
+	installed := pkg(g, "app-misc/example", "1", "0", "0", true, nil)
+	installed.InstalledPhaseEnvABI = "2"
+
+	result, err := Resolve(g, []string{"app-misc/example"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(result.Install) != 0 {
+		t.Fatalf("compatible ABI-2 artifact unexpectedly rebuilt: %#v", result.Install)
+	}
+}
+
+func TestExpandTargetsPreservedRebuildUsesSetSemantics(t *testing.T) {
+	g := makeGraph()
+	cfg := DefaultResolveConfig()
+	var expanded string
+	cfg.PackageSetExpander = func(name string) ([]string, error) {
+		expanded = name
+		return []string{"=dev-libs/example-1"}, nil
+	}
+	r := &resolver{
+		graph:              g,
+		config:             cfg,
+		toInstall:          make(map[string]*PkgAction),
+		toUninstall:        make(map[string]*PkgAction),
+		conflicts:          []string{},
+		seenDeps:           make(map[string]bool),
+		explicitTargets:    make(map[string]bool),
+		backtrackRemaining: cfg.Backtrack,
+	}
+
+	atoms, err := r.expandTargets([]string{"@preserved-rebuild"})
+	if err != nil {
+		t.Fatalf("expand preserved-rebuild: %v", err)
+	}
+	if expanded != "@preserved-rebuild" || len(atoms) != 1 || atoms[0].String() != "=dev-libs/example-1" {
+		t.Fatalf("expansion=%q atoms=%v", expanded, atoms)
+	}
+	if !r.config.Reinstall || !r.config.Oneshot {
+		t.Fatalf("preserved-rebuild flags: reinstall=%v oneshot=%v", r.config.Reinstall, r.config.Oneshot)
+	}
+	if !r.explicitTargets["dev-libs/example"] {
+		t.Fatal("expanded package was not marked as an explicit rebuild target")
+	}
+}
+
+func TestExpandTargetsPreservedRebuildEmpty(t *testing.T) {
+	cfg := DefaultResolveConfig()
+	cfg.PackageSetExpander = func(name string) ([]string, error) { return nil, nil }
+	r := &resolver{
+		graph:              makeGraph(),
+		config:             cfg,
+		toInstall:          make(map[string]*PkgAction),
+		toUninstall:        make(map[string]*PkgAction),
+		conflicts:          []string{},
+		seenDeps:           make(map[string]bool),
+		explicitTargets:    make(map[string]bool),
+		backtrackRemaining: cfg.Backtrack,
+	}
+
+	atoms, err := r.expandTargets([]string{"@preserved-rebuild"})
+	if err != nil {
+		t.Fatalf("expand empty preserved-rebuild: %v", err)
+	}
+	if len(atoms) != 0 {
+		t.Fatalf("empty preserved-rebuild expanded to %v", atoms)
 	}
 }
 
@@ -5598,7 +5764,9 @@ func TestResolve_DependencyUseConstraintSurvivesCandidatePinning(t *testing.T) {
 	available := pkg(g, "dev-python/library", "1", "0", "0", false, map[string]bool{"python_targets_python3_14": true})
 	available.UseFlags = map[string]bool{"python_targets_python3_14": true}
 
-	result, err := Resolve(g, []string{"app-misc/consumer"}, DefaultResolveConfig())
+	cfg := DefaultResolveConfig()
+	cfg.Update, cfg.Deep, cfg.NewUse, cfg.CompleteGraph = true, true, true, true
+	result, err := Resolve(g, []string{"app-misc/consumer"}, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5608,6 +5776,106 @@ func TestResolve_DependencyUseConstraintSurvivesCandidatePinning(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("USE-incompatible installed dependency was incorrectly accepted: %v", result.Install)
+	}
+}
+
+func TestResolve_DependencyUseConstraintRebuildsCoalescedInstalledCandidate(t *testing.T) {
+	g := makeGraph()
+	consumer := pkg(g, "app-misc/consumer", "2", "0", "0", false, nil)
+	consumer.Rdepend = "dev-python/library[python_targets_python3_14]"
+	library := pkg(g, "dev-python/library", "1", "0", "0", true, map[string]bool{"python_targets_python3_14": true})
+	// Live ingestion coalesces an installed CPV and the identical repository CPV
+	// into one record, retaining distinct installed and candidate USE domains.
+	library.Available = true
+	library.InstalledUseFlags = map[string]bool{"python_targets_python3_14": false}
+	library.InstalledIUseFlags = map[string]bool{"python_targets_python3_14": true}
+	library.UseFlags = map[string]bool{"python_targets_python3_14": true}
+
+	result, err := Resolve(g, []string{"app-misc/consumer"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, conflict := range result.Conflicts {
+		if strings.Contains(conflict, "python_targets_python3_14") {
+			t.Fatalf("coalesced candidate left an unsatisfied USE dependency: %v", result.Conflicts)
+		}
+	}
+	for _, action := range result.Install {
+		if action.Atom.CP() == "dev-python/library" && action.UseFlags["python_targets_python3_14"] {
+			return
+		}
+	}
+	t.Fatalf("USE-incompatible coalesced installed dependency was retained: %v", result.Install)
+}
+
+func TestResolve_DependencyUseConstraintUpgradesToNewerCandidate(t *testing.T) {
+	g := makeGraph()
+	oldConsumer := pkg(g, "app-misc/consumer", "1", "0", "0", true, map[string]bool{"python_targets_python3_13": true})
+	oldConsumer.InstalledUseFlags = map[string]bool{"python_targets_python3_13": true}
+	consumer := pkg(g, "app-misc/consumer", "2", "0", "0", false, map[string]bool{"python_targets_python3_14": true})
+	consumer.Rdepend = ">=dev-python/library-1[python_targets_python3_14(-)]"
+	installed := pkg(g, "dev-python/library", "1", "0", "0", true, map[string]bool{"python_targets_python3_14": false})
+	installed.InstalledUseFlags = map[string]bool{"python_targets_python3_14": false}
+	available := pkg(g, "dev-python/library", "2", "0", "0", false, map[string]bool{"python_targets_python3_14": true})
+	available.Available = true
+
+	cfg := DefaultResolveConfig()
+	cfg.Update, cfg.Deep, cfg.NewUse, cfg.CompleteGraph = true, true, true, true
+	result, err := Resolve(g, []string{"app-misc/consumer"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range result.Install {
+		if action.Atom.CP() == "dev-python/library" && action.Atom.Version.Raw == "2" && action.UseFlags["python_targets_python3_14"] {
+			return
+		}
+	}
+	t.Fatalf("newer USE-compatible dependency was not selected: install=%v conflicts=%v", result.Install, result.Conflicts)
+}
+
+func TestResolve_CompleteGraphRebuildsReverseDependencyForUseTransition(t *testing.T) {
+	g := makeGraph()
+	oldLibrary := pkg(g, "dev-python/library", "1", "0", "0", true, map[string]bool{"python_targets_python3_13": true})
+	oldLibrary.InstalledUseFlags = map[string]bool{"python_targets_python3_13": true}
+	pkg(g, "dev-python/library", "2", "0", "0", false, map[string]bool{"python_targets_python3_14": true})
+	oldConsumer := pkg(g, "app-misc/consumer", "1", "0", "0", true, map[string]bool{"python_targets_python3_13": true})
+	oldConsumer.InstalledUseFlags = map[string]bool{"python_targets_python3_13": true}
+	oldConsumer.InstalledRdepend = "dev-python/library[python_targets_python3_13(-)]"
+	newConsumer := pkg(g, "app-misc/consumer", "2", "0", "0", false, map[string]bool{"python_targets_python3_14": true})
+	newConsumer.Rdepend = "dev-python/library[python_targets_python3_14(-)]"
+	cfg := DefaultResolveConfig()
+	cfg.Update, cfg.Deep, cfg.NewUse, cfg.CompleteGraph = true, true, true, true
+
+	result, err := Resolve(g, []string{"dev-python/library"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, action := range result.Install {
+		found[action.Atom.CP()] = true
+	}
+	if !found["dev-python/library"] || !found["app-misc/consumer"] || len(result.Conflicts) != 0 {
+		t.Fatalf("USE transition did not rebuild reverse dependency: install=%v conflicts=%v", result.Install, result.Conflicts)
+	}
+}
+
+func TestVerifyPlannedProviderOverlaysSeparateInstalledRootGraph(t *testing.T) {
+	g := makeGraph()
+	consumer := pkg(g, "app-misc/consumer", "2", "0", "0", false, map[string]bool{"python_targets_python3_14": true})
+	consumer.Rdepend = "dev-python/library[python_targets_python3_14(-)]"
+	pkg(g, "dev-python/library", "2", "0", "0", false, map[string]bool{"python_targets_python3_14": true})
+	installed := makeGraph()
+	oldLibrary := pkg(installed, "dev-python/library", "1", "0", "0", true, map[string]bool{"python_targets_python3_13": true})
+	oldLibrary.InstalledUseFlags = map[string]bool{"python_targets_python3_13": true}
+	cfg := DefaultResolveConfig()
+	cfg.InstalledByDomain = map[DependencyDomain]*DepGraph{DomainROOT: installed}
+
+	result, err := Resolve(g, []string{"app-misc/consumer"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Conflicts) != 0 {
+		t.Fatalf("planned provider disappeared behind separate installed graph: %v", result.Conflicts)
 	}
 }
 
@@ -6864,6 +7132,62 @@ func TestConsumeBacktrackDoesNotRechargeDecisionPaidByEarlierReplay(t *testing.T
 	}
 }
 
+func TestConsumeBacktrackDoesNotRechargeDecisionWithinAttempt(t *testing.T) {
+	r := &resolver{backtrackRemaining: 2, chargedDecisions: make(map[string]bool)}
+	for range 2 {
+		if err := r.consumeBacktrack("version", "dev-python/docutils:0", "0.23", "0.22.4"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r.backtrackRemaining != 1 || len(r.decisionHistory) != 1 {
+		t.Fatalf("identical in-attempt repair was charged repeatedly: remaining=%d history=%v", r.backtrackRemaining, r.decisionHistory)
+	}
+}
+
+func TestVerificationRepairStateKeyDetectsCandidateReplacement(t *testing.T) {
+	graph := makeGraph()
+	old := pkg(graph, "dev-python/docutils", "0.22.4", "0", "0", false, nil)
+	newer := pkg(graph, "dev-python/docutils", "0.23", "0", "0", false, nil)
+	r := &resolver{
+		toInstall:   make(map[string]*PkgAction),
+		toUninstall: make(map[string]*PkgAction),
+		constraints: make(map[string][]*atom.Atom),
+	}
+	r.toInstall[versionActionKey("dev-python/docutils", newer)] = &PkgAction{Atom: bestVersionAtom(graph.Packages["dev-python/docutils"].Atom, newer), Slot: "0"}
+	before := r.verificationRepairStateKey()
+	delete(r.toInstall, versionActionKey("dev-python/docutils", newer))
+	r.toInstall[versionActionKey("dev-python/docutils", old)] = &PkgAction{Atom: bestVersionAtom(graph.Packages["dev-python/docutils"].Atom, old), Slot: "0"}
+	if after := r.verificationRepairStateKey(); after == before {
+		t.Fatal("candidate replacement did not change verifier repair state")
+	}
+}
+
+func TestResolve_LaterConstraintCancelsIncompatibleScheduledUpdate(t *testing.T) {
+	graph := makeGraph()
+	installed := pkg(graph, "dev-python/docutils", "0.22.4", "0", "0", true, nil)
+	installed.Available = true
+	pkg(graph, "dev-python/docutils", "0.23", "0", "0", false, nil)
+	loose := pkg(graph, "app-misc/loose-consumer", "1", "0", "0", false, nil)
+	loose.Rdepend = ">=dev-python/docutils-0.21"
+	tight := pkg(graph, "dev-python/sphinx", "9.1.0", "0", "0", false, nil)
+	tight.Rdepend = "<dev-python/docutils-0.23"
+
+	cfg := DefaultResolveConfig()
+	cfg.Update, cfg.Deep = true, true
+	result, err := Resolve(graph, []string{"app-misc/loose-consumer", "dev-python/sphinx"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified || len(result.Conflicts) != 0 {
+		t.Fatalf("compatible installed candidate did not resolve shared constraints: %#v", result)
+	}
+	for _, action := range result.Install {
+		if action.Atom != nil && action.Atom.CP() == "dev-python/docutils" {
+			t.Fatalf("stale docutils replacement remained scheduled: %#v", action)
+		}
+	}
+}
+
 func TestResolveRewindsEarlierAnyOfAfterWholeStateConflict(t *testing.T) {
 	graph := makeGraph()
 	consumer := pkg(graph, "app-misc/consumer", "1", "0", "0", false, nil)
@@ -7768,6 +8092,12 @@ func setSlotOp(g *DepGraph, fromCP, toCP string, op atom.SlotOp) {
 	for _, edge := range g.Packages[fromCP].Deps {
 		if edge.To != nil && edge.To.Atom.CP() == toCP {
 			edge.DepAtom.SlotOp = op
+			if op == atom.SlotOpEq {
+				if installed := edge.To.GetInstalledVersion(); installed != nil {
+					edge.DepAtom.Slot = installed.Slot
+					edge.DepAtom.Subslot = installed.Subslot
+				}
+			}
 		}
 	}
 }
@@ -7799,6 +8129,80 @@ func TestProcessCompleteGraph_SubslotChangeRebuildsSlotOpRevDeps(t *testing.T) {
 	}
 	if !consumerRebuilt {
 		t.Error("consumer should be rebuilt when somelib subslot changes")
+	}
+}
+
+func TestProcessCompleteGraph_WorldProviderRebuildsInstalledConsumerOutsideTraversal(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-lang/go", "1.26.4", "0", "1.26.4", true, nil)
+	pkg(g, "dev-lang/go", "1.26.5", "0", "1.26.5", false, nil)
+	consumer := pkg(g, "dev-go/gopls", "0.21.1", "0", "0", true, nil)
+	pkg(g, "dev-go/gopls", "0.21.1", "0", "0", false, nil)
+	consumer.EAPI = "8"
+	consumer.InstalledEAPI = "8"
+	consumer.DependencyMetadataKnown = true
+	consumer.InstalledBdepend = ">=dev-lang/go-1.24.11:0/1.26.4="
+
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.Deep = true
+	cfg.CompleteGraph = true
+	cfg.WorldSet = &WorldSet{Entries: []string{"dev-lang/go"}}
+
+	result, err := Resolve(g, []string{"@world"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasAction(result.Install, "dev-go/gopls-0.21.1", "reinstall") {
+		t.Fatalf("complete graph omitted installed consumer outside world traversal: %v", result.Install)
+	}
+}
+
+func TestProcessCompleteGraph_RebuildsStaleInstalledSlotOperatorBinding(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-lang/go", "1.26.4", "0", "1.26.4", true, nil)
+	consumer := pkg(g, "dev-util/github-cli", "2.93.0", "0", "0", true, nil)
+	pkg(g, "dev-util/github-cli", "2.93.0", "0", "0", false, nil)
+	consumer.EAPI = "8"
+	consumer.InstalledEAPI = "8"
+	consumer.DependencyMetadataKnown = true
+	consumer.InstalledBdepend = ">=dev-lang/go-1.24.11:0/1.26.3="
+
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.Deep = true
+	cfg.CompleteGraph = true
+
+	result, err := Resolve(g, []string{"dev-util/github-cli"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hasAction(result.Install, "dev-util/github-cli-2.93.0", "reinstall") {
+		t.Fatalf("stale installed := binding did not rebuild consumer: %v", result.Install)
+	}
+}
+
+func TestProcessCompleteGraph_CurrentInstalledSlotOperatorBindingIsClean(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-lang/go", "1.26.4", "0", "1.26.4", true, nil)
+	consumer := pkg(g, "dev-util/github-cli", "2.93.0", "0", "0", true, nil)
+	pkg(g, "dev-util/github-cli", "2.93.0", "0", "0", false, nil)
+	consumer.EAPI = "8"
+	consumer.InstalledEAPI = "8"
+	consumer.DependencyMetadataKnown = true
+	consumer.InstalledBdepend = ">=dev-lang/go-1.24.11:0/1.26.4="
+
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.Deep = true
+	cfg.CompleteGraph = true
+
+	result, err := Resolve(g, []string{"dev-util/github-cli"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if actionForCP(result.Install, "dev-util/github-cli") {
+		t.Fatalf("current installed := binding triggered rebuild: %v", result.Install)
 	}
 }
 

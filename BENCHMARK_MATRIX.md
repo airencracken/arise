@@ -40,18 +40,18 @@ loss does not fail the build.
 | Resolution | Standard @world plan | emerge -puDN @world | — | immutable snapshot | correctness-gated workload added; live parity remains open |
 | Resolution | Recovery @world plan | emerge -puDN --keep-going --with-bdeps=y --complete-graph --backtrack=1000 @world | — | immutable snapshot | correctness-gated workload added; current deep complete-graph diagnostic is 313 vs 317 actions |
 | Resolution | Backtracking/slot conflict | emerge -p | — | fixture snapshot | workload needed |
-| Fetch | Fetch-only, warm DISTDIR | emerge -f | — | temp ROOT/DISTDIR | implementation needed |
-| Fetch | Fetch-only, cold DISTDIR | emerge -f | — | local mirror + temp ROOT | implementation needed |
-| Build | One trivial source package | emerge | — | isolated ROOT | implementation needed |
-| Build | Independent build DAG | emerge --jobs | — | isolated ROOT | implementation needed |
-| Binary packages | Local binary install | emerge -K | — | isolated ROOT | implementation needed |
-| Binary packages | Remote binhost install | emerge -G | — | isolated ROOT/binhost | implementation needed |
-| Install | New package transaction | emerge | — | isolated ROOT | journaled merge/VDB prototype exists; lifecycle differential gate open |
-| Install | Upgrade/reinstall/slot coexistence | emerge | — | isolated ROOT | replacement payload/VDB rollback covered; lifecycle and preserve-libs open |
+| Fetch | Fetch-only, warm DISTDIR | emerge -f | — | temp ROOT/DISTDIR | verified fetch implementation/tests exist; comparison workload needed |
+| Fetch | Fetch-only, cold DISTDIR | emerge -f | — | local mirror + temp ROOT | mirror-aware verified fetch tests exist; comparison workload needed |
+| Build | One trivial source package | emerge | — | isolated ROOT | disposable-root source-build tests exist; timed comparison workload needed |
+| Build | Independent build DAG | emerge --jobs | — | isolated ROOT | dependency-aware scheduler tests/live use exist; deterministic comparison workload needed |
+| Binary packages | Local binary install | emerge -K | — | isolated ROOT | local selection/install implementation is partial; comparison workload needed |
+| Binary packages | Remote binhost install | emerge -G | — | isolated ROOT/binhost | URL parsing/download implementation is partial; Packages-index/signature and comparison work remain |
+| Install | New package transaction | emerge | — | isolated ROOT | journaled payload/VDB transaction and live evidence exist; broad lifecycle differential gate open |
+| Install | Upgrade/reinstall/slot coexistence | emerge | — | isolated ROOT | replacement payload/VDB rollback and live reinstall/upgrade evidence exist; broader preserve-libs corpus open |
 | Removal | Uninstall | emerge -C | — | isolated ROOT | explicit-ROOT journaled removal covered; lifecycle differential gate open |
 | Removal | Depclean calculation | emerge -pc | — | immutable snapshot | workload needed |
 | Removal | Depclean execution | emerge -c | — | isolated ROOT | implementation needed |
-| Recovery | Resume after build failure | emerge --resume | — | isolated ROOT | implementation needed |
+| Recovery | Resume after build failure | emerge --resume | — | isolated ROOT | state-bound resume/continuation implementation and tests exist; comparison workload needed |
 | Recovery | Crash recovery during merge | Portage safety behavior | — | isolated ROOT | durable recovery implemented; exhaustive kill-boundary matrix open |
 | Maintenance | Preserved rebuild scan | emerge @preserved-rebuild | revdep-rebuild | isolated/live read-only | workload needed |
 | Maintenance | News/config/env queries | Portage tools | eselect/dispatch-conf | isolated ROOT | workload needed |

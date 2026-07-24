@@ -159,11 +159,7 @@ func ScanBrokenLinks(root string) ([]BrokenLink, error) {
 }
 
 func loaderLibraryNames(root string) map[string]bool {
-	directories := make(map[string]bool)
-	for _, relative := range libSearchPaths {
-		directories[filepath.Join(root, relative)] = true
-	}
-	readLoaderConfig(filepath.Join(root, "etc/ld.so.conf"), root, directories, make(map[string]bool))
+	directories := loaderSearchDirectories(root)
 	available := make(map[string]bool)
 	for directory := range directories {
 		entries, err := os.ReadDir(directory)
@@ -183,6 +179,40 @@ func loaderLibraryNames(root string) map[string]bool {
 		}
 	}
 	return available
+}
+
+func loaderSearchDirectories(root string) map[string]bool {
+	directories := make(map[string]bool)
+	for _, relative := range libSearchPaths {
+		directories[filepath.Join(root, relative)] = true
+	}
+	readLoaderConfig(filepath.Join(root, "etc/ld.so.conf"), root, directories, make(map[string]bool))
+	return directories
+}
+
+func neededLibraryReachable(root, binary, runpath, library string, loaderDirectories map[string]bool) bool {
+	search := make(map[string]bool, len(loaderDirectories)+4)
+	for directory := range loaderDirectories {
+		search[directory] = true
+	}
+	origin := filepath.Dir(binary)
+	for _, raw := range strings.Split(runpath, ":") {
+		if raw == "" {
+			continue
+		}
+		raw = strings.ReplaceAll(raw, "${ORIGIN}", origin)
+		raw = strings.ReplaceAll(raw, "$ORIGIN", origin)
+		if !filepath.IsAbs(raw) {
+			raw = filepath.Join(origin, raw)
+		}
+		search[filepath.Join(root, strings.TrimPrefix(filepath.Clean(raw), string(filepath.Separator)))] = true
+	}
+	for directory := range search {
+		if info, err := os.Stat(filepath.Join(directory, library)); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func collectLibraryNames(directory string, available map[string]bool, recursive bool) {
@@ -812,27 +842,79 @@ func RebuildReasons(root, vdbRoot string) ([]RebuildReason, error) {
 // RevdepRebuild performs a full reverse dependency scan, checking all
 // installed packages for broken shared library links.
 func RevdepRebuild(root, vdbRoot string) ([]string, error) {
-	contentsMap, err := vdbContentsMap(vdbRoot)
+	categories, err := os.ReadDir(vdbRoot)
 	if err != nil {
-		return nil, fmt.Errorf("could not read installed package database contents: %w", err)
+		return nil, fmt.Errorf("could not read installed package database: %w", err)
 	}
 
 	needRebuild := make(map[string]bool)
-	available := loaderLibraryNames(root)
-
-	for filePath, pkgKey := range contentsMap {
-		fullPath := filepath.Join(root, filePath)
-		if !isELF(fullPath) {
+	// Portage's linkage consistency scan matches installed providers by ELF
+	// class/ABI and SONAME.  It does not reject a provider merely because the
+	// consumer's recorded RUNPATH would not find it (ldd can therefore be
+	// stricter than revdep-rebuild for private toolchain layouts).
+	providers := make(map[string]bool)
+	for _, category := range categories {
+		if !category.IsDir() {
 			continue
 		}
-		needed, elfErr := elfNeededLibraries(fullPath)
-		if elfErr != nil {
+		packages, _ := os.ReadDir(filepath.Join(vdbRoot, category.Name()))
+		for _, pkg := range packages {
+			if !pkg.IsDir() {
+				continue
+			}
+			metadata, readErr := os.ReadFile(filepath.Join(vdbRoot, category.Name(), pkg.Name(), "NEEDED.ELF.2"))
+			if readErr != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(metadata), "\n") {
+				fields := strings.Split(line, ";")
+				if len(fields) < 5 || strings.TrimSpace(fields[2]) == "" {
+					continue
+				}
+				payload := filepath.Join(root, strings.TrimPrefix(filepath.Clean(fields[1]), string(filepath.Separator)))
+				if info, statErr := os.Stat(payload); statErr == nil && !info.IsDir() {
+					providers[fields[0]+"\x00"+strings.TrimSpace(fields[2])] = true
+				}
+			}
+		}
+	}
+	loaderNames := loaderLibraryNames(root)
+	for _, category := range categories {
+		if !category.IsDir() {
 			continue
 		}
-		for _, library := range needed {
-			if !available[library] {
-				needRebuild[pkgKey] = true
-				break
+		packages, _ := os.ReadDir(filepath.Join(vdbRoot, category.Name()))
+		for _, pkg := range packages {
+			if !pkg.IsDir() {
+				continue
+			}
+			metadata, readErr := os.ReadFile(filepath.Join(vdbRoot, category.Name(), pkg.Name(), "NEEDED.ELF.2"))
+			if readErr != nil {
+				continue
+			}
+			broken := false
+			for _, line := range strings.Split(string(metadata), "\n") {
+				fields := strings.Split(line, ";")
+				if len(fields) < 5 {
+					continue
+				}
+				binaryPath := filepath.Join(root, strings.TrimPrefix(filepath.Clean(fields[1]), string(filepath.Separator)))
+				if info, statErr := os.Stat(binaryPath); statErr != nil || info.IsDir() {
+					// Stale VDB linkage rows for payload paths that no longer
+					// exist cannot represent a currently broken executable.
+					continue
+				}
+				for _, library := range strings.Split(fields[4], ",") {
+					library = strings.TrimSpace(library)
+					if library != "" && !providers[fields[0]+"\x00"+library] && !loaderNames[library] {
+						needRebuild[category.Name()+"/"+pkg.Name()] = true
+						broken = true
+						break
+					}
+				}
+				if broken {
+					break
+				}
 			}
 		}
 	}

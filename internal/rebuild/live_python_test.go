@@ -24,6 +24,9 @@ func TestLivePythonLegacyClusterPreflight(t *testing.T) {
 	}
 	readUse := func(cpv string) map[string]bool {
 		data, err := os.ReadFile(filepath.Join("/var/db/pkg", filepath.FromSlash(cpv), "USE"))
+		if os.IsNotExist(err) {
+			t.Skipf("installed parity fixture %s is no longer present", cpv)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}

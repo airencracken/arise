@@ -1,7 +1,21 @@
 # Configuration and state ownership
 
 Arise interoperates with Portage without claiming Portage's configuration
-namespace. The ownership boundary is:
+namespace.
+
+## Current implementation
+
+- `/etc/portage` is the implemented shared package-policy input.
+- `/var/lib/arise/data` is the default indexed metadata database.
+- Work trees, journals, resume state, and named plans default beneath
+  `${PORTAGE_TMPDIR:-/var/tmp}/arise`; command-line flags can relocate each.
+- `/var/log/emerge.log` is the default Portage-compatible merge-timing output.
+- Arise-specific system configuration under `/etc/arise` and canonical native
+  history under `/var/log/arise` are not yet general implemented interfaces.
+
+## Target ownership boundary
+
+The maintained target layout is:
 
 - `/etc/portage` is shared Gentoo package policy. Arise reads it for profiles,
   repositories, package policy, toolchain settings, and familiar emerge
@@ -25,6 +39,6 @@ Portage itself accepts. If Arise needs richer data, it stores the canonical form
 in an Arise-owned namespace and emits a deliberately degraded, compatible view
 for existing ecosystem tools.
 
-User-scoped configuration follows the same separation through the XDG base
-directories and must not silently override system package policy with a second,
-incompatible copy of `/etc/portage`.
+Future user-scoped configuration should follow the same separation through the
+XDG base directories and must not silently override system package policy with
+a second, incompatible copy of `/etc/portage`.

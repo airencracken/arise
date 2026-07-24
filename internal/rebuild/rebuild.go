@@ -1,6 +1,7 @@
 package rebuild
 
 import (
+	"bufio"
 	stdbzip2 "compress/bzip2"
 	"context"
 	"errors"
@@ -12,15 +13,19 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/binpkg"
+	"github.com/airencracken/arise/internal/depstring"
 	"github.com/airencracken/arise/internal/distfiles"
 	"github.com/airencracken/arise/internal/ebuild"
+	envupdate "github.com/airencracken/arise/internal/env"
 	"github.com/airencracken/arise/internal/features"
 	"github.com/airencracken/arise/internal/fetch"
+	"github.com/airencracken/arise/internal/installedquery"
 	"github.com/airencracken/arise/internal/merge"
 	"github.com/airencracken/arise/internal/phase"
 	"github.com/airencracken/arise/internal/phaseproto"
@@ -49,6 +54,7 @@ type RebuildConfig struct {
 	Features      *features.Config
 	UseFlags      map[string]bool
 	Fetcher       *fetch.Fetcher
+	FetchProgress func(fetch.Progress)
 	GentooMirrors []string
 	// PhaseProtocol selects the versioned, eclass-aware Bash execution ABI.
 	// Host installation remains gated by the caller's transaction boundary.
@@ -56,6 +62,7 @@ type RebuildConfig struct {
 	Repositories         []portage.RepoEntry
 	Repository           string
 	SelectedSlot         string // exact resolver-selected slot/subslot metadata
+	SelectedIUSE         string // exact resolver-selected repository IUSE metadata
 	PortageConfig        *portage.Config
 	ConfigRoot           string
 	PhaseLogDir          string
@@ -66,6 +73,10 @@ type RebuildConfig struct {
 	VDBLockHeld          bool // serial executor owns the operation-wide VDB lock
 	CommitLock           sync.Locker
 	CallbackLock         sync.Locker
+	// PostCommitContext drives lifecycle hooks after the payload/VDB transaction
+	// is durable. Parallel executors set this to their outer context so a sibling
+	// build failure cannot interrupt pkg_postrm/pkg_postinst mid-transaction.
+	PostCommitContext context.Context
 	// OnTransactionCommit runs while CommitLock is still held after the package
 	// journal commits. A non-nil argument is a committed-state lifecycle error.
 	OnTransactionCommit func(error) error
@@ -79,6 +90,9 @@ type RebuildConfig struct {
 
 	OnPhaseStart func(phase string)
 	OnPhaseEnd   func(phase string, err error)
+	OnStage      func(stage string)
+	OnProgress   func(stage string, current, total int)
+	OnNotice     func(class, message string)
 	OnError      func(pkg string, err error)
 }
 
@@ -100,6 +114,39 @@ func (c *RebuildConfig) dependencyRoots() (string, string) {
 	return sysroot, broot
 }
 
+// phaseBroot converts the filesystem location used to resolve BROOT
+// dependencies into Portage's ebuild-visible prefix value.  For a native
+// build, Portage exports an empty BROOT (not "/"); exposing "/" makes eclasses
+// construct paths such as //usr/bin/python, which CMake treats as network
+// paths when DESTDIR is active.
+func phaseBroot(broot string) string {
+	if filepath.Clean(broot) == "/" {
+		return ""
+	}
+	return broot
+}
+
+func runPhaseWorker(ctx context.Context, request phaseproto.Request, cfg *RebuildConfig, options phaseproto.WorkerOptions) ([]phaseproto.Event, error) {
+	helper, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("phase runtime query helper: %w", err)
+	}
+	helper, err = filepath.Abs(helper)
+	if err != nil {
+		return nil, fmt.Errorf("phase runtime query helper path: %w", err)
+	}
+	rootVDB := cfg.VdbDir
+	_, broot := cfg.dependencyRoots()
+	brootVDB := rootVDB
+	if filepath.Clean(broot) != filepath.Clean(cfg.RootDir) {
+		brootVDB = filepath.Join(broot, "var", "db", "pkg")
+	}
+	request.QueryHelper = helper
+	request.QueryRootVDB = rootVDB
+	request.QueryBrootVDB = brootVDB
+	return phaseproto.RunBashWorkerWithOptions(ctx, request, options)
+}
+
 func (c *RebuildConfig) firePhaseStart(phase string) {
 	if c.CallbackLock != nil {
 		c.CallbackLock.Lock()
@@ -110,6 +157,26 @@ func (c *RebuildConfig) firePhaseStart(phase string) {
 	}
 }
 
+func (c *RebuildConfig) fireProgress(stage string, current, total int) {
+	if c.CallbackLock != nil {
+		c.CallbackLock.Lock()
+		defer c.CallbackLock.Unlock()
+	}
+	if c.OnProgress != nil {
+		c.OnProgress(stage, current, total)
+	}
+}
+
+func (c *RebuildConfig) fireNotice(class, message string) {
+	if c.CallbackLock != nil {
+		c.CallbackLock.Lock()
+		defer c.CallbackLock.Unlock()
+	}
+	if c.OnNotice != nil {
+		c.OnNotice(class, message)
+	}
+}
+
 func (c *RebuildConfig) firePhaseEnd(phase string, err error) {
 	if c.CallbackLock != nil {
 		c.CallbackLock.Lock()
@@ -117,6 +184,16 @@ func (c *RebuildConfig) firePhaseEnd(phase string, err error) {
 	}
 	if c.OnPhaseEnd != nil {
 		c.OnPhaseEnd(phase, err)
+	}
+}
+
+func (c *RebuildConfig) fireStage(stage string) {
+	if c.CallbackLock != nil {
+		c.CallbackLock.Lock()
+		defer c.CallbackLock.Unlock()
+	}
+	if c.OnStage != nil {
+		c.OnStage(stage)
 	}
 }
 
@@ -194,22 +271,34 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 		if mirrorErr != nil {
 			return fmt.Errorf("rebuild: load mirror policy: %w", mirrorErr)
 		}
-		fetchCfg := fetch.FetchConfig{DistfilesDir: cfg.DistfilesDir, GentooMirrors: cfg.GentooMirrors, MirrorGroups: mirrorGroups}
-		restrict, policyErr := phaseproto.EvaluatePolicyExpression(cleanEbuildValue(eb.Vars()["RESTRICT"]), cfg.UseFlags)
+		fetchCfg := fetch.FetchConfig{DistfilesDir: cfg.DistfilesDir, GentooMirrors: cfg.GentooMirrors, MirrorGroups: mirrorGroups, Progress: cfg.FetchProgress}
+		fetchUse := useFlagsWithArch(cfg.UseFlags, cfg.Arch)
+		restrict, policyErr := phaseproto.EvaluatePolicyExpression(cleanEbuildValue(eb.Vars()["RESTRICT"]), fetchUse)
 		if policyErr != nil {
 			return fmt.Errorf("rebuild: evaluate RESTRICT for fetch: %w", policyErr)
 		}
+		manualOnly := false
 		for _, name := range restrict {
 			switch name {
 			case "mirror":
 				fetchCfg.RestrictMirrors = true
 			case "primaryuri":
 				fetchCfg.PrimaryURI = true
+			case "fetch":
+				manualOnly = true
 			}
 		}
+		fetchCfg.ManualOnly = manualOnly
 		var err error
-		verified, err = cfg.fetcher().AcquireManifest(ctx, filepath.Join(filepath.Dir(ebuildFile), "Manifest"), srcURI, cfg.UseFlags, fetchCfg)
+		verified, err = cfg.fetcher().AcquireManifest(ctx, filepath.Join(filepath.Dir(ebuildFile), "Manifest"), srcURI, fetchUse, fetchCfg)
 		if err != nil {
+			var manual *fetch.ManualFetchRequiredError
+			_, customNofetch := eb.RawPhases["pkg_nofetch"]
+			if cfg.PhaseProtocol && (errors.As(err, &manual) || customNofetch) {
+				if nofetchErr := runPackageNofetch(ctx, atomStr, eb, ebuildFile, workDir, destDir, cfg); nofetchErr != nil {
+					err = fmt.Errorf("%w; pkg_nofetch: %v", err, nofetchErr)
+				}
+			}
 			cfg.fireError(atomStr, fmt.Errorf("rebuild: failed to fetch source files: %w", err))
 			return fmt.Errorf("rebuild: could not acquire verified source files: %w", err)
 		}
@@ -326,7 +415,7 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 	preflightImage := filepath.Join(preflightDir, "image")
 	preflightTemp := filepath.Join(preflightDir, "temp")
 	preflightHome := filepath.Join(preflightDir, "home")
-	for _, directory := range []string{preflightWork, preflightSource, preflightImage, preflightTemp, preflightHome} {
+	for _, directory := range []string{preflightWork, preflightImage, preflightTemp, preflightHome} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			return fmt.Errorf("rebuild: create preflight directory: %w", err)
 		}
@@ -354,28 +443,27 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 		repositories = []portage.RepoEntry{{Name: repository, Location: cfg.RepoDir}}
 	}
 	p := a.Package + "-" + a.Version.Raw
-	request := phaseproto.Request{Protocol: phaseproto.Version, ID: "preflight", Command: "run_phase", Phase: "pkg_setup", EAPI: eb.EAPI, Ebuild: ebuildFile, Env: map[string]string{"USE": enabledUse(cfg.UseFlags)}}
+	request := phaseproto.Request{Protocol: phaseproto.Version, ID: "preflight", Command: "run_phase", Phase: "pkg_setup", EAPI: eb.EAPI, Ebuild: ebuildFile, Env: map[string]string{"USE": enabledUseWithArch(cfg.UseFlags, cfg.Arch)}}
+	request.InstallQAChecks, err = installQAChecks(cfg.RepoDir)
+	if err != nil {
+		return fmt.Errorf("rebuild: preflight install QA checks: %w", err)
+	}
 	_, preflightBroot := cfg.dependencyRoots()
-	request.HasVersion, err = preflightHasVersionQueries(ebuildFile, eb, repositories, repository, cfg.VdbDir, filepath.Join(preflightBroot, "var", "db", "pkg"), cfg.HasVersion)
+	request.HasVersion, err = preflightHasVersionQueries(ebuildFile, eb, repositories, repository, cfg.VdbDir, filepath.Join(preflightBroot, "var", "db", "pkg"), cfg.HasVersion, request.InstallQAChecks...)
 	if err != nil {
 		return fmt.Errorf("rebuild: preflight has_version queries: %w", err)
 	}
+	request.BestVersion = preflightBestVersions(cfg.VdbDir, filepath.Join(preflightBroot, "var", "db", "pkg"))
 	sysroot, broot := cfg.dependencyRoots()
 	request, err = phaseproto.ApplyPackagePolicy(request, phaseproto.PackagePolicy{
 		Configuration: cfg.PortageConfig, Repositories: repositories, Repository: repository,
 		ConfigRoot: cfg.ConfigRoot, CPV: a.Category + "/" + p, Category: a.Category, PN: a.Package, P: p, PR: "r0", Slot: selectedEbuildSlot(cfg, eb),
 		WorkDir: preflightWork, SourceDir: preflightSource, ImageDir: preflightImage,
-		RootDir: cfg.RootDir, SysrootDir: sysroot, BrootDir: broot, TempDir: preflightTemp, HomeDir: preflightHome,
+		RootDir: cfg.RootDir, SysrootDir: sysroot, BrootDir: phaseBroot(broot), TempDir: preflightTemp, HomeDir: preflightHome,
 		Restrict: cleanEbuildValue(eb.Vars()["RESTRICT"]), Properties: cleanEbuildValue(eb.Vars()["PROPERTIES"]), Use: cfg.UseFlags,
 	})
 	if err != nil {
 		return fmt.Errorf("rebuild: preflight phase policy: %w", err)
-	}
-	if request.Policy.UserPriv {
-		return fmt.Errorf("rebuild: preflight userpriv is unsupported by the worker")
-	}
-	if !request.Policy.Fetch && strings.TrimSpace(eb.Vars()["SRC_URI"]) != "" {
-		return fmt.Errorf("rebuild: preflight RESTRICT=fetch/pkg_nofetch is unsupported")
 	}
 	if request.Policy.Sandbox {
 		if _, err := exec.LookPath("sandbox"); err != nil {
@@ -383,9 +471,6 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 		}
 	}
 	if cfg.AllowLiveRoot {
-		if _, err := exec.LookPath("bwrap"); err != nil {
-			return fmt.Errorf("rebuild: live lifecycle isolation requires bubblewrap: %w", err)
-		}
 		// The initial live lane permits only packages whose sourced ebuild/eclass
 		// closure defines no package lifecycle hooks. Their defaults are no-ops,
 		// leaving the image and VDB as the complete mutable write set captured by
@@ -393,7 +478,7 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 		rejectLifecycle := func(label string, discovery phaseproto.Request, relevant, allowed map[string]bool) error {
 			discovery.ID = "live-lifecycle-preflight"
 			discovery.Command, discovery.Phase = "discover_phases", ""
-			events, err := phaseproto.RunBashWorkerWithOptions(context.Background(), discovery, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationBubblewrap})
+			events, err := runPhaseWorker(context.Background(), discovery, cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage})
 			if err != nil {
 				var detail []string
 				for _, event := range events {
@@ -416,35 +501,11 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 			}
 			return nil
 		}
-		newAllowed := make(map[string]bool)
-		// Live setup and preinstall run with ROOT mounted read-only while the
-		// work tree and staged image remain writable. They therefore cannot
-		// escape the journal by changing the host filesystem.
-		newAllowed["pkg_setup"], newAllowed["pkg_preinst"], newAllowed["pkg_postinst"] = true, true, true
-		if inheritsEclass(eb, "python-any-r1") || inheritsEclass(eb, "python-single-r1") || inheritsEclass(eb, "python-r1") {
-			// These eclasses export pkg_setup solely to select and validate the
-			// build-time interpreter before compilation; they do not mutate ROOT.
-			newAllowed["pkg_setup"] = true
-		}
-		for _, phaseName := range []string{"pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm"} {
-			if advisoryLifecycleOnly(ebuildFile, phaseName) || lifecycleSafeWithExplicitROOT(ebuildFile, phaseName) {
-				newAllowed[phaseName] = true
-			}
-		}
-		for _, phaseName := range []string{"pkg_pretend", "pkg_setup", "pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm"} {
-			if lifecycleOnlyDisabledUseGuards(ebuildFile, phaseName, cfg.UseFlags) {
-				newAllowed[phaseName] = true
-			}
-		}
-		if inheritsEclass(eb, "xdg") {
-			// Provisional only: the completed image is rejected before merge if
-			// it contains payload that could make these hooks write live caches.
-			newAllowed["pkg_preinst"], newAllowed["pkg_postinst"], newAllowed["pkg_postrm"] = true, true, true
-		}
-		newRelevant := map[string]bool{"pkg_setup": true, "pkg_preinst": true, "pkg_postinst": true}
-		if err := rejectLifecycle("new", request, newRelevant, newAllowed); err != nil {
-			return err
-		}
+		// Portage permits custom pkg_setup and pkg_preinst with its phase-specific
+		// free/sandbox policy and does not transactionally capture arbitrary writes
+		// from them. The default Arise lane mirrors that behavior. Syscall-level
+		// lifecycle capture is an optional, USE-gated strengthening feature and
+		// must never be a prerequisite for Portage-compatible execution.
 		if cfg.AllowLiveUpgrade {
 			replaced, err := findInstalledReplacement(cfg.VdbDir, a.Category, a.Package, a.Version.Raw, selectedEbuildSlot(cfg, eb))
 			if err != nil {
@@ -496,6 +557,28 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 			}
 		}
 	}
+	// Portage evaluates pkg_pretend after resolution and before any build or
+	// package mutation. It receives the selected package environment but no
+	// state handoff from pkg_setup, which has not run yet.
+	pretend := request
+	pretend.ID = "preflight-pkg-pretend"
+	pretend.Command, pretend.Phase = "run_phase", "pkg_pretend"
+	pretend = applyPortageLifecyclePolicy(pretend, "pkg_pretend")
+	cfg.firePhaseStart("pkg_pretend")
+	events, pretendErr := runPhaseWorker(context.Background(), pretend, cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage})
+	for _, event := range events {
+		if event.Kind == "elog" && strings.TrimSpace(event.Message) != "" {
+			cfg.fireNotice(event.Stream, strings.TrimSpace(event.Message))
+		}
+	}
+	cfg.firePhaseEnd("pkg_pretend", pretendErr)
+	if pretendErr != nil {
+		diagnostics := phaseFailureDiagnostics(events, 20)
+		if len(diagnostics) != 0 {
+			return fmt.Errorf("rebuild: pkg_pretend: %w: %s", pretendErr, strings.Join(diagnostics, "\n"))
+		}
+		return fmt.Errorf("rebuild: pkg_pretend: %w", pretendErr)
+	}
 	return nil
 }
 
@@ -510,7 +593,25 @@ func materializeInstalledEnvironment(vdbPath, directory string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	_, copyErr := io.Copy(output, stdbzip2.NewReader(input))
+	scanner := bufio.NewScanner(stdbzip2.NewReader(input))
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	writer := bufio.NewWriter(output)
+	var copyErr error
+	for scanner.Scan() {
+		line := scanner.Text()
+		if installedEnvironmentOverridesIsolation(line) {
+			continue
+		}
+		if _, copyErr = writer.WriteString(line + "\n"); copyErr != nil {
+			break
+		}
+	}
+	if copyErr == nil {
+		copyErr = scanner.Err()
+	}
+	if copyErr == nil {
+		copyErr = writer.Flush()
+	}
 	closeErr := output.Close()
 	if copyErr != nil {
 		return "", copyErr
@@ -519,6 +620,25 @@ func materializeInstalledEnvironment(vdbPath, directory string) (string, error) 
 		return "", closeErr
 	}
 	return path, nil
+}
+
+func installedEnvironmentOverridesIsolation(line string) bool {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 0 {
+		return false
+	}
+	index := 0
+	if fields[0] == "export" {
+		index = 1
+	} else if fields[0] == "declare" {
+		for index = 1; index < len(fields) && strings.HasPrefix(fields[index], "-"); index++ {
+		}
+	}
+	if index >= len(fields) {
+		return false
+	}
+	name := strings.SplitN(fields[index], "=", 2)[0]
+	return name == "LD_PRELOAD" || strings.HasPrefix(name, "SANDBOX_")
 }
 
 func inheritsEclass(eb *ebuild.Ebuild, name string) bool {
@@ -531,24 +651,6 @@ func inheritsEclass(eb *ebuild.Ebuild, name string) bool {
 }
 
 var xdgPayloadPrefixes = []string{"usr/share/applications/", "usr/share/icons/", "usr/share/mime/"}
-
-func hasXDGPayloadInImage(image string) bool {
-	for _, prefix := range xdgPayloadPrefixes {
-		found := false
-		path := filepath.Join(image, filepath.FromSlash(strings.TrimSuffix(prefix, "/")))
-		_ = filepath.WalkDir(path, func(_ string, entry os.DirEntry, err error) error {
-			if err == nil && !entry.IsDir() {
-				found = true
-				return filepath.SkipAll
-			}
-			return nil
-		})
-		if found {
-			return true
-		}
-	}
-	return false
-}
 
 func hasXDGPayloadInContents(path string) bool {
 	data, err := os.ReadFile(path)
@@ -724,8 +826,35 @@ func enabledUse(flags map[string]bool) string {
 	return strings.Join(names, " ")
 }
 
+func enabledUseWithArch(flags map[string]bool, arch string) string {
+	names := useFlagsWithArch(flags, arch)
+	ordered := make([]string, 0, len(names))
+	for name, enabled := range names {
+		if enabled {
+			ordered = append(ordered, name)
+		}
+	}
+	sort.Strings(ordered)
+	return strings.Join(ordered, " ")
+}
+
+func useFlagsWithArch(flags map[string]bool, arch string) map[string]bool {
+	result := make(map[string]bool, len(flags)+1)
+	for name, enabled := range flags {
+		result[name] = enabled
+	}
+	if arch = strings.TrimSpace(arch); arch != "" {
+		result[arch] = true
+	}
+	return result
+}
+
 func phaseRequestEnvironment(cfg *RebuildConfig, use, artifacts string) map[string]string {
-	result := map[string]string{"USE": use, "A": artifacts}
+	useFlags := make(map[string]bool)
+	for _, name := range strings.Fields(use) {
+		useFlags[name] = true
+	}
+	result := map[string]string{"USE": enabledUseWithArch(useFlags, cfg.Arch), "A": artifacts}
 	// ApplyPackagePolicy composes make.conf, package.env, and command overrides
 	// when effective Portage configuration is available. Reinjecting global
 	// flags as request overrides here would incorrectly outrank package.env.
@@ -739,13 +868,83 @@ func phaseRequestEnvironment(cfg *RebuildConfig, use, artifacts string) map[stri
 	return result
 }
 
+// runPackageNofetch emits the package's manual acquisition instructions after
+// a RESTRICT=fetch cache miss. It deliberately runs before every build and ROOT
+// mutation, with the same package policy used by the normal phase protocol.
+func runPackageNofetch(ctx context.Context, atomStr string, eb *ebuild.Ebuild, ebuildFile, workDir, destDir string, cfg *RebuildConfig) error {
+	a, err := atom.Parse(atomStr)
+	if err != nil || a.Version == nil {
+		return fmt.Errorf("package identity: %w", err)
+	}
+	cat, pn, pvr := a.Category, a.Package, a.Version.Raw
+	pv, pr := pvr, "r0"
+	if a.Version.Revision >= 0 {
+		pr = fmt.Sprintf("r%d", a.Version.Revision)
+		pv = strings.TrimSuffix(pvr, "-"+pr)
+	}
+	p, pf := pn+"-"+pv, pn+"-"+pvr
+	repository := cfg.Repository
+	if repository == "" {
+		repository = "selected"
+	}
+	repositories := append([]portage.RepoEntry(nil), cfg.Repositories...)
+	if len(repositories) == 0 {
+		repositories = []portage.RepoEntry{{Name: repository, Location: cfg.RepoDir}}
+	}
+	tempDir, homeDir := filepath.Join(workDir, "nofetch-temp"), filepath.Join(workDir, "nofetch-home")
+	for _, directory := range []string{workDir, destDir, tempDir, homeDir} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			return fmt.Errorf("create directory %s: %w", directory, err)
+		}
+	}
+	request := phaseproto.Request{
+		Protocol: phaseproto.Version, ID: strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + pf + "-pkg_nofetch"),
+		Command: "run_phase", Phase: "pkg_nofetch", EAPI: eb.EAPI, Ebuild: ebuildFile,
+		Env: phaseRequestEnvironment(cfg, enabledUse(cfg.UseFlags), ""),
+	}
+	sysroot, broot := cfg.dependencyRoots()
+	request, err = phaseproto.ApplyPackagePolicy(request, phaseproto.PackagePolicy{
+		Configuration: cfg.PortageConfig, Repositories: repositories, Repository: repository,
+		ConfigRoot: cfg.ConfigRoot, CPV: cat + "/" + pf, Category: cat, PN: pn, P: p, PR: pr,
+		Slot: selectedEbuildSlot(cfg, eb), WorkDir: workDir, BuildDir: workDir,
+		SourceDir: filepath.Join(workDir, p), ImageDir: destDir, RootDir: cfg.RootDir,
+		SysrootDir: sysroot, BrootDir: phaseBroot(broot), TempDir: tempDir, HomeDir: homeDir,
+		Restrict: cleanEbuildValue(eb.Vars()["RESTRICT"]), Properties: cleanEbuildValue(eb.Vars()["PROPERTIES"]), Use: cfg.UseFlags,
+	})
+	if err != nil {
+		return fmt.Errorf("phase policy: %w", err)
+	}
+	cfg.firePhaseStart("pkg_nofetch")
+	events, phaseErr := runPhaseWorker(ctx, request, cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage})
+	for _, event := range events {
+		if event.Kind == "elog" && strings.TrimSpace(event.Message) != "" {
+			cfg.fireNotice(event.Stream, strings.TrimSpace(event.Message))
+		}
+	}
+	cfg.firePhaseEnd("pkg_nofetch", phaseErr)
+	if phaseErr != nil {
+		diagnostics := phaseFailureDiagnostics(events, 20)
+		if len(diagnostics) != 0 {
+			return fmt.Errorf("%w: %s", phaseErr, strings.Join(diagnostics, "\n"))
+		}
+	}
+	return phaseErr
+}
+
 func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Ebuild, ebuildFile, workDir, destDir string, verified distfiles.VerifiedSet, cfg *RebuildConfig) (returnErr error) {
 	a, err := atom.Parse(atomStr)
 	if err != nil || a.Version == nil {
 		return fmt.Errorf("rebuild: protocol package identity: %w", err)
 	}
-	cat, pn, version := a.Category, a.Package, a.Version.Raw
-	p := pn + "-" + version
+	cat, pn, pvr := a.Category, a.Package, a.Version.Raw
+	pv := pvr
+	pr := "r0"
+	if a.Version.Revision >= 0 {
+		pr = fmt.Sprintf("r%d", a.Version.Revision)
+		pv = strings.TrimSuffix(pvr, "-"+pr)
+	}
+	p := pn + "-" + pv
+	pf := pn + "-" + pvr
 	repository := cfg.Repository
 	repositories := append([]portage.RepoEntry(nil), cfg.Repositories...)
 	if repository == "" {
@@ -755,7 +954,10 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		repositories = []portage.RepoEntry{{Name: repository, Location: cfg.RepoDir}}
 	}
 	sourceDir := filepath.Join(workDir, p)
-	for _, directory := range []string{sourceDir, destDir, filepath.Join(workDir, "temp"), filepath.Join(workDir, "home")} {
+	// Portage creates WORKDIR before src_unpack but does not pre-create S.
+	// Custom unpack phases commonly rename an extracted tree to ${S}; creating
+	// it here would turn that rename into an unintended nested directory.
+	for _, directory := range []string{destDir, filepath.Join(workDir, "temp"), filepath.Join(workDir, "home")} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			return fmt.Errorf("rebuild: protocol directory %s: %w", directory, err)
 		}
@@ -775,7 +977,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 				return fmt.Errorf("rebuild: PORTAGE_LOG_FILTER_FILE_CMD is empty")
 			}
 		}
-		packageLog, err = phaseproto.NewPackageLog(phaseproto.PackageLogOptions{Root: cfg.PhaseLogDir, TempDir: filepath.Join(workDir, "temp"), Category: cat, PF: p, Split: cfg.SplitLogs, FilterCommand: filterCommand})
+		packageLog, err = phaseproto.NewPackageLog(phaseproto.PackageLogOptions{Root: cfg.PhaseLogDir, TempDir: filepath.Join(workDir, "temp"), Category: cat, PF: pf, Split: cfg.SplitLogs, FilterCommand: filterCommand})
 		if err != nil {
 			return fmt.Errorf("rebuild: reserve durable phase log: %w", err)
 		}
@@ -802,20 +1004,25 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		Protocol: phaseproto.Version, ID: "policy-preflight", Command: "run_phase", Phase: "pkg_setup", EAPI: eb.EAPI, Ebuild: ebuildFile,
 		Env: requestEnv,
 	}
+	base.InstallQAChecks, err = installQAChecks(cfg.RepoDir)
+	if err != nil {
+		return fmt.Errorf("rebuild: install QA checks: %w", err)
+	}
 	_, queryBroot := cfg.dependencyRoots()
-	base.HasVersion, err = preflightHasVersionQueries(ebuildFile, eb, repositories, repository, cfg.VdbDir, filepath.Join(queryBroot, "var", "db", "pkg"), cfg.HasVersion)
+	base.HasVersion, err = preflightHasVersionQueries(ebuildFile, eb, repositories, repository, cfg.VdbDir, filepath.Join(queryBroot, "var", "db", "pkg"), cfg.HasVersion, base.InstallQAChecks...)
 	if err != nil {
 		return fmt.Errorf("rebuild: preflight has_version queries: %w", err)
 	}
+	base.BestVersion = preflightBestVersions(cfg.VdbDir, filepath.Join(queryBroot, "var", "db", "pkg"))
 	if len(verified.Artifacts) != 0 {
 		base.Distfiles = &verified
 	}
 	sysroot, broot := cfg.dependencyRoots()
 	base, err = phaseproto.ApplyPackagePolicy(base, phaseproto.PackagePolicy{
 		Configuration: cfg.PortageConfig, Repositories: repositories, Repository: repository,
-		ConfigRoot: cfg.ConfigRoot, CPV: cat + "/" + p, Category: cat, PN: pn, P: p, PR: "r0",
+		ConfigRoot: cfg.ConfigRoot, CPV: cat + "/" + pf, Category: cat, PN: pn, P: p, PR: pr,
 		Slot: selectedEbuildSlot(cfg, eb), WorkDir: workDir, BuildDir: workDir, SourceDir: sourceDir, ImageDir: destDir,
-		RootDir: cfg.RootDir, SysrootDir: sysroot, BrootDir: broot,
+		RootDir: cfg.RootDir, SysrootDir: sysroot, BrootDir: phaseBroot(broot),
 		TempDir: filepath.Join(workDir, "temp"), HomeDir: filepath.Join(workDir, "home"),
 		Restrict: cleanEbuildValue(eb.Vars()["RESTRICT"]), Properties: cleanEbuildValue(eb.Vars()["PROPERTIES"]), Use: cfg.UseFlags,
 	})
@@ -829,16 +1036,22 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		base.Env["DEFAULT_ABI"] = "amd64"
 	}
 	var packageEvents []phaseproto.Event
-	run := func(phaseName string) error {
+	runWithContext := func(phaseCtx context.Context, phaseName string) error {
 		if strings.HasPrefix(phaseName, "pkg_") && lifecycleOnlyDisabledUseGuards(ebuildFile, phaseName, cfg.UseFlags) {
 			return nil
 		}
 		request := base
-		request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + p + "-" + phaseName)
+		request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + pf + "-" + phaseName)
 		request.Command, request.Phase = "run_phase", phaseName
+		request = applyPortageLifecyclePolicy(request, phaseName)
 		cfg.firePhaseStart(phaseName)
-		events, phaseErr := phaseproto.RunBashWorkerWithOptions(ctx, request, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage, DurableLog: packageLog})
+		events, phaseErr := runPhaseWorker(phaseCtx, request, cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage, DurableLog: packageLog})
 		packageEvents = append(packageEvents, events...)
+		for _, event := range events {
+			if event.Kind == "elog" && strings.TrimSpace(event.Message) != "" {
+				cfg.fireNotice(event.Stream, strings.TrimSpace(event.Message))
+			}
+		}
 		cfg.firePhaseEnd(phaseName, phaseErr)
 		if phaseErr != nil {
 			var logs []string
@@ -847,6 +1060,9 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 					logs = append(logs, event.Message)
 				}
 			}
+			if len(logs) > 20 {
+				logs = logs[len(logs)-20:]
+			}
 			if len(logs) != 0 {
 				return fmt.Errorf("rebuild: phase protocol %s: %w: %s", phaseName, phaseErr, strings.Join(logs, "\n"))
 			}
@@ -854,6 +1070,12 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		}
 		return nil
 	}
+	run := func(phaseName string) error { return runWithContext(ctx, phaseName) }
+	postCommitCtx := ctx
+	if cfg.PostCommitContext != nil {
+		postCommitCtx = cfg.PostCommitContext
+	}
+	runPostCommit := func(phaseName string) error { return runWithContext(postCommitCtx, phaseName) }
 	buildPhases := protocolBuildPhases(base.Policy)
 	filteredPhases := buildPhases[:0]
 	for _, phaseName := range buildPhases {
@@ -866,7 +1088,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	var replacedVDB string
 	var runOld func(string) error
 	if cfg.AllowLiveUpgrade {
-		replacedVDB, err = findInstalledReplacement(cfg.VdbDir, cat, pn, version, selectedEbuildSlot(cfg, eb))
+		replacedVDB, err = findInstalledReplacement(cfg.VdbDir, cat, pn, pvr, selectedEbuildSlot(cfg, eb))
 		if err != nil {
 			return fmt.Errorf("rebuild: select installed replacement lifecycle: %w", err)
 		}
@@ -887,11 +1109,21 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		oldBase.ImageDir = ""
 		runOld = func(phaseName string) error {
 			request := oldBase
-			request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + p + "-old-" + phaseName)
+			request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + pf + "-old-" + phaseName)
 			request.Command, request.Phase = "run_phase", phaseName
+			request = applyPortageLifecyclePolicy(request, phaseName)
 			cfg.firePhaseStart(phaseName)
-			events, phaseErr := phaseproto.RunBashWorkerWithOptions(ctx, request, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage, DurableLog: packageLog})
+			phaseCtx := ctx
+			if phaseName == "pkg_postrm" {
+				phaseCtx = postCommitCtx
+			}
+			events, phaseErr := runPhaseWorker(phaseCtx, request, cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage, DurableLog: packageLog})
 			packageEvents = append(packageEvents, events...)
+			for _, event := range events {
+				if event.Kind == "elog" && strings.TrimSpace(event.Message) != "" {
+					cfg.fireNotice(event.Stream, strings.TrimSpace(event.Message))
+				}
+			}
 			cfg.firePhaseEnd(phaseName, phaseErr)
 			if phaseErr != nil {
 				return fmt.Errorf("old %s: %w", phaseName, phaseErr)
@@ -899,75 +1131,106 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 			return nil
 		}
 	}
-	batch := base
-	batch.ID = strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + p + "-build")
-	batch.Command, batch.Phase, batch.Phases = "run_phases", "", append([]string(nil), buildPhases...)
-	batch.EmitMetadata = true
+	phaseEnvironment := filepath.Join(workDir, "phase.environment")
 	for _, phaseName := range buildPhases {
+		request := base
+		request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + pf + "-" + phaseName)
+		request.Command, request.Phase = "run_phase", phaseName
+		request.EmitMetadata = true
+		if _, statErr := os.Stat(phaseEnvironment); statErr == nil {
+			request.EnvironmentOverlay = phaseEnvironment
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("rebuild: inspect saved phase environment: %w", statErr)
+		}
+		request.SaveEnvironment = phaseEnvironment
+		request = applyPortageLifecyclePolicy(request, phaseName)
 		cfg.firePhaseStart(phaseName)
-	}
-	buildIsolation := phaseproto.IsolationPortage
-	if cfg.AllowLiveRoot {
-		buildIsolation = phaseproto.IsolationBubblewrap
-	}
-	batchEvents, batchErr := phaseproto.RunBashWorkerWithOptions(ctx, batch, phaseproto.WorkerOptions{Isolation: buildIsolation, DurableLog: packageLog})
-	packageEvents = append(packageEvents, batchEvents...)
-	for _, phaseName := range buildPhases {
-		cfg.firePhaseEnd(phaseName, batchErr)
-	}
-	if batchErr != nil {
-		var logs []string
-		for _, event := range batchEvents {
-			if event.Kind == "log" && event.Message != "" {
-				logs = append(logs, event.Message)
+		// Live package execution uses Portage's sandbox model. Each phase owns a
+		// worker so phase-specific policy and userpriv credentials cannot leak
+		// across setup, build, install, and lifecycle boundaries.
+		events, phaseErr := runPhaseWorker(ctx, request, cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage, DurableLog: packageLog})
+		packageEvents = append(packageEvents, events...)
+		cfg.firePhaseEnd(phaseName, phaseErr)
+		if phaseErr != nil {
+			logs := phaseFailureDiagnostics(events, 20)
+			if len(logs) != 0 {
+				return fmt.Errorf("rebuild: phase protocol %s: %w: %s", phaseName, phaseErr, strings.Join(logs, "\n"))
 			}
+			return fmt.Errorf("rebuild: phase protocol %s: %w", phaseName, phaseErr)
 		}
-		if len(logs) != 0 {
-			return fmt.Errorf("rebuild: phase protocol build sequence: %w: %s", batchErr, strings.Join(logs, "\n"))
+	}
+	base.EnvironmentOverlay = phaseEnvironment
+	if executionFeatureEnabled(base.Policy.Features, "fixlafiles") {
+		fixed, warnings, fixErr := fixLaFiles(destDir)
+		if fixErr != nil {
+			return fmt.Errorf("rebuild: fix .la files: %w", fixErr)
 		}
-		return fmt.Errorf("rebuild: phase protocol build sequence: %w", batchErr)
+		if fixed != 0 {
+			cfg.fireNotice("INFO", fmt.Sprintf("Fixed %d libtool archive files.", fixed))
+		}
+		for _, warning := range warnings {
+			cfg.fireNotice("QA", warning.Error())
+		}
+	}
+	// Portage runs pkg_preinst unsandboxed with host IPC/network/PID access
+	// after src_install has produced the image and before any payload is copied
+	// into ROOT. It cannot share the build worker's isolation policy.
+	if err := run("pkg_preinst"); err != nil {
+		return err
 	}
 	if cfg.CommitLock != nil {
 		cfg.CommitLock.Lock()
 		defer cfg.CommitLock.Unlock()
 	}
-	if cfg.AllowLiveRoot && inheritsEclass(eb, "xdg") && hasXDGPayloadInImage(destDir) {
-		return fmt.Errorf("rebuild: live canary forbids xdg lifecycle cache writes for an image containing desktop, icon, or MIME payload")
-	}
 	journalDir := cfg.JournalDir
 	if journalDir == "" {
 		journalDir = filepath.Join(workDir, "journal")
 	}
+	vdbMetadata := protocolVDBMetadata(eb, ebuildFile, cat, pf, cfg.SelectedIUSE, cfg.UseFlags, base, packageEvents)
+	if err := expandBuiltSlotOperators(vdbMetadata, cfg); err != nil {
+		return fmt.Errorf("rebuild: expand built slot operators: %w", err)
+	}
 	mergeCfg := merge.MergeConfig{
-		RootDir: cfg.RootDir, VdbDir: cfg.VdbDir, Category: cat, Package: pn, Version: version,
+		RootDir: cfg.RootDir, VdbDir: cfg.VdbDir, Category: cat, Package: pn, Version: pvr,
 		JournalDir:           journalDir,
 		AllowLiveRoot:        cfg.AllowLiveRoot,
 		AllowLiveReplacement: cfg.AllowLiveReplacement,
 		VDBLockHeld:          cfg.VDBLockHeld,
-		VDBMetadata:          protocolVDBMetadata(eb, ebuildFile, cat, p, base, batchEvents),
+		VDBMetadata:          vdbMetadata,
 		Environment:          protocolEnvironmentSnapshot(base),
+		OnStage:              cfg.fireStage,
+		OnProgress:           cfg.fireProgress,
 		// Portage runs pkg_postinst after payload/VDB commit and retains the
 		// installed package if the hook fails. Arise journals its own merge first,
 		// then preserves the same committed-state lifecycle semantics.
-		AfterCommit: func() error { return run("pkg_postinst") },
+		AfterCommit: func() error {
+			postinstErr := runPostCommit("pkg_postinst")
+			refreshLiveInfoIndex(cfg, destDir, "/usr/bin/install-info")
+			envErr := refreshLiveEnvironment(cfg)
+			return errors.Join(postinstErr, envErr)
+		},
 	}
-	var oldLifecycleErrors []error
 	if runOld != nil {
 		mergeCfg.BeforeReplacementRemoval = func() error {
 			if hookErr := runOld("pkg_prerm"); hookErr != nil {
-				oldLifecycleErrors = append(oldLifecycleErrors, hookErr)
+				// Portage reports removal-hook failures but continues safely
+				// unmerging the replaced instance. They do not make the newly
+				// committed replacement a failed package job.
+				cfg.fireNotice("WARN", hookErr.Error())
 			}
 			return nil
 		}
 		mergeCfg.AfterReplacementRemoval = func() error {
 			if hookErr := runOld("pkg_postrm"); hookErr != nil {
-				oldLifecycleErrors = append(oldLifecycleErrors, hookErr)
+				cfg.fireNotice("WARN", hookErr.Error())
 			}
 			return nil
 		}
 		mergeCfg.AfterCommit = func() error {
-			postinstErr := run("pkg_postinst")
-			return errors.Join(append(oldLifecycleErrors, postinstErr)...)
+			postinstErr := runPostCommit("pkg_postinst")
+			refreshLiveInfoIndex(cfg, destDir, "/usr/bin/install-info")
+			envErr := refreshLiveEnvironment(cfg)
+			return errors.Join(postinstErr, envErr)
 		}
 	}
 	if cfg.Features != nil && cfg.Features.IsEnabled(features.FeatPreserveLibs) {
@@ -1005,28 +1268,184 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	return nil
 }
 
-var staticHasVersionQuery = regexp.MustCompile(`\bhas_version[[:space:]]+(?:-([bdr])[[:space:]]+)?(?:"([^"$[:space:]]+)"|'([^'$[:space:]]+)'|([^"'$[:space:];]+))`)
+var infoIndexNames = []string{"dir", "dir.Z", "dir.gz", "dir.bz2", "dir.lzma", "dir.lz", "dir.xz", "dir.zst", "dir.info", "dir.info.Z", "dir.info.gz", "dir.info.bz2", "dir.info.lzma", "dir.info.lz", "dir.info.xz", "dir.info.zst"}
 
-func preflightHasVersionQueries(ebuildFile string, eb *ebuild.Ebuild, repositories []portage.RepoEntry, repository, rootVDB, brootVDB string, configured map[string]bool) (map[string]bool, error) {
+type infoIndexResult struct {
+	Processed int
+	Errors    []error
+}
+
+func refreshLiveInfoIndex(cfg *RebuildConfig, imageDir, installInfo string) {
+	result := regenerateLiveInfoIndexReport(cfg.RootDir, imageDir, cfg.AllowLiveRoot, installInfo)
+	if result.Processed == 0 && len(result.Errors) == 0 {
+		return
+	}
+	cfg.fireNotice("INFO", "Regenerating GNU info directory index...")
+	cfg.fireNotice("INFO", fmt.Sprintf("Processed %d info files; %d errors.", result.Processed, len(result.Errors)))
+	for _, err := range result.Errors {
+		cfg.fireNotice("WARN", err.Error())
+	}
+}
+
+func refreshLiveEnvironment(cfg *RebuildConfig) error {
+	result, err := envupdate.UpdateRoot(cfg.RootDir, "", true)
+	if err != nil {
+		return fmt.Errorf("post-merge env-update: %w", err)
+	}
+	cfg.fireNotice("INFO", fmt.Sprintf("Regenerated environment from %d env.d files.", result.EnvironmentFiles))
+	if result.LdconfigRan {
+		cfg.fireNotice("INFO", "Regenerated dynamic linker cache with ldconfig -X.")
+	}
+	return nil
+}
+
+func installQAChecks(repoDir string) ([]string, error) {
+	directories := []string{
+		"/usr/local/lib/install-qa-check.d",
+		"/usr/lib/install-qa-check.d",
+		filepath.Join(repoDir, "metadata", "install-qa-check.d"),
+		"/usr/lib/portage/install-qa-check.d",
+	}
+	// Modern Portage installs its shell helpers below an implementation-specific
+	// pythonX.Y directory. The unversioned path is retained for older layouts.
+	versioned, globErr := filepath.Glob("/usr/lib/portage/python*/install-qa-check.d")
+	if globErr != nil {
+		return nil, fmt.Errorf("discover versioned Portage install QA checks: %w", globErr)
+	}
+	sort.Strings(versioned)
+	directories = append(directories, versioned...)
+	selected := make(map[string]string)
+	for _, directory := range directories {
+		entries, err := os.ReadDir(directory)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", directory, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			if _, exists := selected[entry.Name()]; !exists {
+				selected[entry.Name()] = filepath.Join(directory, entry.Name())
+			}
+		}
+	}
+	names := make([]string, 0, len(selected))
+	for name := range selected {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	checks := make([]string, 0, len(names))
+	for _, name := range names {
+		checks = append(checks, selected[name])
+	}
+	return checks, nil
+}
+
+func regenerateLiveInfoIndex(rootDir, imageDir string, live bool, installInfo string) error {
+	return errors.Join(regenerateLiveInfoIndexReport(rootDir, imageDir, live, installInfo).Errors...)
+}
+
+func regenerateLiveInfoIndexReport(rootDir, imageDir string, live bool, installInfo string) infoIndexResult {
+	var result infoIndexResult
+	if !live {
+		return result
+	}
+	stagedDir := filepath.Join(imageDir, "usr", "share", "info")
+	stagedEntries, err := os.ReadDir(stagedDir)
+	if os.IsNotExist(err) {
+		return result
+	}
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("refresh Info index: inspect staged manuals: %w", err))
+		return result
+	}
+	hasManual := false
+	for _, entry := range stagedEntries {
+		if !entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") && !slices.Contains(infoIndexNames, entry.Name()) {
+			hasManual = true
+			break
+		}
+	}
+	if !hasManual {
+		return result
+	}
+	if _, err := os.Stat(installInfo); err != nil {
+		if os.IsNotExist(err) {
+			return result
+		}
+		result.Errors = append(result.Errors, fmt.Errorf("refresh Info index: inspect install-info: %w", err))
+		return result
+	}
+	infoDir := filepath.Join(rootDir, "usr", "share", "info")
+	entries, err := os.ReadDir(infoDir)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Errorf("refresh Info index: read %s: %w", infoDir, err))
+		return result
+	}
+	for _, name := range infoIndexNames {
+		if err := os.Remove(filepath.Join(infoDir, name)); err != nil && !os.IsNotExist(err) {
+			result.Errors = append(result.Errors, fmt.Errorf("refresh Info index: remove old %s: %w", name, err))
+			return result
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	index := filepath.Join(infoDir, "dir")
+	for _, entry := range entries {
+		// Compression can intentionally leave compatibility symlinks such as
+		// bashref.info -> bash.info dangling beside bash.info.gz. The real
+		// compressed manual is sufficient to populate the index; never pass
+		// symlinks or other special entries to install-info.
+		if !entry.Type().IsRegular() || strings.HasPrefix(entry.Name(), ".") || slices.Contains(infoIndexNames, entry.Name()) {
+			continue
+		}
+		manual := filepath.Join(infoDir, entry.Name())
+		result.Processed++
+		if output, err := exec.Command(installInfo, "--dir-file="+index, manual).CombinedOutput(); err != nil && !strings.Contains(strings.ToLower(string(output)), "no info dir entry in") {
+			result.Errors = append(result.Errors, fmt.Errorf("install-info: %s for %s", strings.TrimSpace(string(output)), manual))
+		}
+	}
+	return result
+}
+
+var staticHasVersionQuery = regexp.MustCompile(`\bhas_version[[:space:]]+(?:-([bdr])[[:space:]]+)?(?:"([^"$[:space:]]+)"|'([^'$[:space:]]+)'|([^"'$[:space:];]+))`)
+var expandedHasVersionQuery = regexp.MustCompile(`\bhas_version[[:space:]]+(?:-([bdr])[[:space:]]+)?"([^"]*\$[^"]*)"`)
+
+func preflightHasVersionQueries(ebuildFile string, eb *ebuild.Ebuild, repositories []portage.RepoEntry, repository, rootVDB, brootVDB string, configured map[string]bool, additionalFiles ...string) (map[string]bool, error) {
 	result := make(map[string]bool, len(configured))
 	for query, answer := range configured {
 		result[query] = answer
 	}
-	files := []string{ebuildFile}
+	files := append([]string{ebuildFile}, additionalFiles...)
 	eclassDirs, err := portage.EclassLookupDirectories(repositories, repository)
 	if err != nil {
 		return nil, err
 	}
-	for _, name := range eb.Inherit {
-		for _, directory := range eclassDirs {
-			candidate := filepath.Join(directory, name+".eclass")
-			if _, err := os.Stat(candidate); err == nil {
-				files = append(files, candidate)
-				break
-			}
-		}
+	initialInherits := append([]string(nil), eb.Inherit...)
+	ebuildData, err := os.ReadFile(ebuildFile)
+	if err != nil {
+		return nil, err
+	}
+	// Runtime Bash decides whether conditional inherits execute. Preflight
+	// nevertheless needs a conservative superset so an eclass selected by a
+	// USE/version conditional cannot introduce an unseen has_version query.
+	initialInherits = append(initialInherits, staticInheritedEclasses(string(ebuildData))...)
+	eclassFiles, err := inheritedEclassClosure(initialInherits, eclassDirs)
+	if err != nil {
+		return nil, err
+	}
+	files = append(files, eclassFiles...)
+	inheritedEclasses := make(map[string]bool, len(initialInherits)+len(eclassFiles))
+	for _, name := range initialInherits {
+		inheritedEclasses[name] = true
+	}
+	for _, path := range eclassFiles {
+		inheritedEclasses[strings.TrimSuffix(filepath.Base(path), ".eclass")] = true
 	}
 	queries := make(map[string]string)
+	derived := derivedEbuildIdentityVariables(ebuildFile)
 	for _, path := range files {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -1042,6 +1461,23 @@ func preflightHasVersionQueries(ebuildFile string, eb *ebuild.Ebuild, repositori
 			}
 			queries[query] = match[1]
 		}
+		for _, match := range expandedHasVersionQuery.FindAllStringSubmatch(string(data), -1) {
+			complete := true
+			query := os.Expand(match[2], func(name string) string {
+				value, exists := eb.Vars()[name]
+				if !exists {
+					value, exists = derived[name]
+				}
+				if !exists {
+					complete = false
+					return ""
+				}
+				return cleanEbuildValue(value)
+			})
+			if complete && query != "" && !strings.ContainsAny(query, "$ \t\r\n") {
+				queries[query] = match[1]
+			}
+		}
 	}
 	for query, domain := range queries {
 		if _, exists := result[query]; exists {
@@ -1051,13 +1487,13 @@ func preflightHasVersionQueries(ebuildFile string, eb *ebuild.Ebuild, repositori
 		if domain == "b" {
 			vdb = brootVDB
 		}
-		result[query] = installedAtomMatch(vdb, query)
+		setHasVersionAnswer(result, domain, query, installedAtomMatch(vdb, query))
 	}
 	// vala.eclass constructs its build-host probe from the installed API slot
 	// and VALA_USE_DEPEND inside a loop, so it cannot appear as a static quoted
 	// atom. Expand that finite input set during preflight instead of granting the
 	// worker general VDB access.
-	if slices.Contains(eb.Inherit, "vala") {
+	if inheritedEclasses["vala"] {
 		valaUse := strings.Fields(cleanEbuildValue(eb.Vars()["VALA_USE_DEPEND"]))
 		var useParts []string
 		for _, flag := range valaUse {
@@ -1085,18 +1521,66 @@ func preflightHasVersionQueries(ebuildFile string, eb *ebuild.Ebuild, repositori
 					continue
 				}
 				query := "dev-lang/vala:" + slot + suffix
-				result[query] = installedAtomMatch(brootVDB, query)
+				setHasVersionAnswer(result, "b", query, installedAtomMatch(brootVDB, query))
 			}
 		}
 	}
 	pythonEclass := false
-	for _, inherited := range eb.Inherit {
-		if strings.HasPrefix(inherited, "python-") {
+	for inherited := range inheritedEclasses {
+		// distutils-r1 is the normal public entry point for Python packages and
+		// inherits python-r1/python-any-r1 transitively.
+		if strings.HasPrefix(inherited, "python-") || inherited == "distutils-r1" {
 			pythonEclass = true
 			break
 		}
 	}
 	if pythonEclass {
+		// python-any-r1 probes every compatible implementation in preference
+		// order, including implementations that are not installed.  Snapshot
+		// both the positive and negative answers from the finite declarations;
+		// collecting only installed slots leaves the first absent interpreter as
+		// an un-preflighted query in the phase worker.
+		pythonReqUses := make(map[string]bool)
+		if value := cleanEbuildValue(eb.Vars()["PYTHON_REQ_USE"]); value != "" {
+			pythonReqUses[value] = true
+		}
+		var pythonSources []string
+		for _, path := range files {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return nil, readErr
+			}
+			source := string(data)
+			pythonSources = append(pythonSources, source)
+			for _, match := range pythonReqUseRE.FindAllStringSubmatch(source, -1) {
+				if value := strings.TrimSpace(match[1]); value != "" {
+					pythonReqUses[value] = true
+				}
+			}
+		}
+		for _, source := range pythonSources {
+			for _, query := range dynamicPythonQueries(source) {
+				setHasVersionAnswer(result, "b", query, installedAtomMatch(brootVDB, query))
+				for pythonReqUse := range pythonReqUses {
+					qualified := query + "[" + pythonReqUse + "]"
+					setHasVersionAnswer(result, "b", qualified, installedAtomMatch(brootVDB, qualified))
+				}
+			}
+		}
+		// python_check_deps commonly calls python_has_version with a package
+		// atom qualified by the per-implementation PYTHON_USEDEP variables.
+		// Those variables exist only inside _python_run_check_deps, so ordinary
+		// shell-variable expansion cannot discover the concrete worker queries.
+		// Materialize the finite PYTHON_COMPAT set here for arbitrary atoms.
+		var implementations []string
+		for _, query := range dynamicPythonQueries(strings.Join(pythonSources, "\n")) {
+			implementations = append(implementations, strings.TrimPrefix(query, "dev-lang/python:"))
+		}
+		for _, source := range pythonSources {
+			for _, query := range dynamicPythonUseDepQueries(source, implementations) {
+				setHasVersionAnswer(result, "b", query, installedAtomMatch(brootVDB, query))
+			}
+		}
 		entries, _ := os.ReadDir(filepath.Join(brootVDB, "dev-lang"))
 		for _, entry := range entries {
 			if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "python-") {
@@ -1112,10 +1596,34 @@ func preflightHasVersionQueries(ebuildFile string, eb *ebuild.Ebuild, repositori
 			}
 			slot := strings.SplitN(strings.TrimSpace(string(slotData)), "/", 2)[0]
 			query := "dev-lang/python:" + slot
-			result[query] = installedAtomMatch(brootVDB, query)
+			setHasVersionAnswer(result, "b", query, installedAtomMatch(brootVDB, query))
 		}
 	}
-	if slices.Contains(eb.Inherit, "autotools") {
+	for _, path := range eclassFiles {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil, readErr
+		}
+		switch filepath.Base(path) {
+		case "llvm.eclass":
+			for _, slot := range shellArrayValues(string(data), "_LLVM_KNOWN_SLOTS") {
+				query := "llvm-core/llvm:" + slot
+				setHasVersionAnswer(result, "b", query, installedAtomMatch(brootVDB, query))
+			}
+		case "rust.eclass":
+			useSuffix := ""
+			if value := cleanEbuildValue(eb.Vars()["RUST_REQ_USE"]); value != "" {
+				useSuffix = "[" + value + "]"
+			}
+			for _, slot := range shellArrayValues(string(data), "_RUST_SLOTS_ORDERED") {
+				for _, cp := range []string{"dev-lang/rust", "dev-lang/rust-bin"} {
+					query := cp + ":" + slot + useSuffix
+					setHasVersionAnswer(result, "b", query, installedAtomMatch(brootVDB, query))
+				}
+			}
+		}
+	}
+	if inheritedEclasses["autotools"] {
 		for _, path := range files {
 			if filepath.Base(path) != "autotools.eclass" {
 				continue
@@ -1125,11 +1633,210 @@ func preflightHasVersionQueries(ebuildFile string, eb *ebuild.Ebuild, repositori
 				return nil, err
 			}
 			for _, query := range dynamicAutotoolsQueries(string(data)) {
-				result[query] = installedAtomMatch(brootVDB, query)
+				setHasVersionAnswer(result, "b", query, installedAtomMatch(brootVDB, query))
 			}
 		}
 	}
 	return result, nil
+}
+
+func setHasVersionAnswer(result map[string]bool, domain, query string, answer bool) {
+	if domain == "" || domain == "d" {
+		domain = "r"
+	}
+	result[domain+"\t"+query] = answer
+	// Retain the old key for API compatibility. The worker always prefers the
+	// domain-qualified entry, which prevents ROOT/BROOT collisions.
+	result[query] = answer
+}
+
+func derivedEbuildIdentityVariables(ebuildFile string) map[string]string {
+	stem := strings.TrimSuffix(filepath.Base(ebuildFile), ".ebuild")
+	category := filepath.Base(filepath.Dir(filepath.Dir(ebuildFile)))
+	parsed, err := atom.Parse(category + "/" + stem)
+	if err != nil {
+		return nil
+	}
+	pn, pv, pvr, pr := parsed.Package, "", "", "r0"
+	if parsed.Version != nil {
+		pv = parsed.Version.Raw
+		pvr = pv
+		if index := strings.LastIndex(pv, "-r"); index >= 0 {
+			if _, err := strconv.Atoi(pv[index+2:]); err == nil {
+				pr = pv[index+1:]
+				pv = pv[:index]
+			}
+		}
+		if pr != "r0" {
+			pvr = pv + "-" + pr
+		}
+	}
+	p := pn
+	if pv != "" {
+		p += "-" + pv
+	}
+	pf := p
+	if pr != "r0" {
+		pf += "-" + pr
+	}
+	return map[string]string{
+		"CATEGORY": category, "PN": pn, "PV": pv, "PR": pr,
+		"P": p, "PVR": pvr, "PF": pf,
+	}
+}
+
+func inheritedEclassClosure(initial, directories []string) ([]string, error) {
+	seen := make(map[string]bool)
+	var result []string
+	queue := append([]string(nil), initial...)
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		var path string
+		for _, directory := range directories {
+			candidate := filepath.Join(directory, name+".eclass")
+			if _, err := os.Stat(candidate); err == nil {
+				path = candidate
+				break
+			}
+		}
+		if path == "" {
+			continue
+		}
+		result = append(result, path)
+		parsed, err := ebuild.ParseEbuild(path)
+		if err != nil {
+			return nil, fmt.Errorf("parse inherited eclass %s: %w", path, err)
+		}
+		inherited := append([]string(nil), parsed.Inherit...)
+		// The metadata parser deliberately skips commands while inside shell
+		// conditionals. Real eclasses can place a later, unconditional inherit
+		// after complex case/if preambles, so conservatively union static inherit
+		// lines to keep the transitive eclass closure complete.
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		inherited = append(inherited, staticInheritedEclasses(string(data))...)
+		queue = append(queue, inherited...)
+	}
+	return result, nil
+}
+
+var staticInheritLine = regexp.MustCompile(`(?m)^[[:space:]]*inherit[[:space:]]+([^#\r\n]+)`)
+var staticEclassName = regexp.MustCompile(`^[A-Za-z0-9+_.-]+$`)
+
+func staticInheritedEclasses(source string) []string {
+	var result []string
+	for _, match := range staticInheritLine.FindAllStringSubmatch(source, -1) {
+		for _, name := range strings.Fields(match[1]) {
+			if staticEclassName.MatchString(name) {
+				result = append(result, name)
+			}
+		}
+	}
+	return result
+}
+
+var pythonImplementationRE = regexp.MustCompile(`\bpython3_([0-9]+)(?:t)?\b`)
+var pythonImplementationRangeRE = regexp.MustCompile(`\bpython3_\{([0-9]+)\.\.([0-9]+)\}(?:t)?`)
+var pythonReqUseRE = regexp.MustCompile(`(?m)^[[:space:]]*PYTHON_REQ_USE[[:space:]]*=[[:space:]]*["']([^"']*)["']`)
+var pythonUseDepQueryRE = regexp.MustCompile(`\b(?:python_)?has_version[[:space:]]+(?:-[bdr][[:space:]]+)?["']([^"']*\$\{PYTHON_(?:SINGLE_)?USEDEP\}[^"']*)["']`)
+
+func dynamicPythonQueries(source string) []string {
+	minors := make(map[int]bool)
+	for _, match := range pythonImplementationRE.FindAllStringSubmatch(source, -1) {
+		if minor, err := strconv.Atoi(match[1]); err == nil {
+			minors[minor] = true
+		}
+	}
+	for _, match := range pythonImplementationRangeRE.FindAllStringSubmatch(source, -1) {
+		start, startErr := strconv.Atoi(match[1])
+		end, endErr := strconv.Atoi(match[2])
+		if startErr != nil || endErr != nil || start > end || end-start > 100 {
+			continue
+		}
+		for minor := start; minor <= end; minor++ {
+			minors[minor] = true
+		}
+	}
+	result := make([]string, 0, len(minors))
+	for minor := range minors {
+		result = append(result, fmt.Sprintf("dev-lang/python:3.%d", minor))
+	}
+	sort.Strings(result)
+	return result
+}
+
+func dynamicPythonUseDepQueries(source string, implementations []string) []string {
+	seen := make(map[string]bool)
+	for _, match := range pythonUseDepQueryRE.FindAllStringSubmatch(source, -1) {
+		for _, implementation := range implementations {
+			impl := "python" + strings.ReplaceAll(implementation, ".", "_")
+			query := strings.ReplaceAll(match[1], "${PYTHON_USEDEP}", "python_targets_"+impl+"(-)")
+			query = strings.ReplaceAll(query, "${PYTHON_SINGLE_USEDEP}", "python_single_target_"+impl+"(-)")
+			if query != "" && !strings.Contains(query, "${") {
+				seen[query] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for query := range seen {
+		result = append(result, query)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func shellArrayValues(source, name string) []string {
+	expression := regexp.MustCompile(`(?s)\b` + regexp.QuoteMeta(name) + `\s*=\s*\((.*?)\)`)
+	match := expression.FindStringSubmatch(source)
+	if match == nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	braceRange := regexp.MustCompile(`^\{([0-9]+)\.\.([0-9]+)\}$`)
+	for _, field := range strings.Fields(match[1]) {
+		field = strings.Trim(field, `"'`)
+		if parts := braceRange.FindStringSubmatch(field); parts != nil {
+			start, startErr := strconv.Atoi(parts[1])
+			end, endErr := strconv.Atoi(parts[2])
+			if startErr != nil || endErr != nil || absInt(start-end) > 100 {
+				continue
+			}
+			step := 1
+			if start > end {
+				step = -1
+			}
+			for value := start; ; value += step {
+				seen[strconv.Itoa(value)] = true
+				if value == end {
+					break
+				}
+			}
+			continue
+		}
+		if field != "" && !strings.ContainsAny(field, "$(){}") {
+			seen[field] = true
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for value := range seen {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func dynamicAutotoolsQueries(source string) []string {
@@ -1162,28 +1869,39 @@ func dynamicAutotoolsQueries(source string) []string {
 }
 
 func installedAtomMatch(vdbDir, query string) bool {
-	categories, err := os.ReadDir(vdbDir)
-	if err != nil {
-		return false
-	}
-	for _, category := range categories {
-		if !category.IsDir() {
+	matched, err := installedquery.Match(vdbDir, query, nil)
+	return err == nil && matched
+}
+
+func preflightBestVersions(rootVDB, brootVDB string) map[string]string {
+	result := make(map[string]string)
+	for domain, vdbDir := range map[string]string{"r": rootVDB, "b": brootVDB} {
+		categories, err := os.ReadDir(vdbDir)
+		if err != nil {
 			continue
 		}
-		packages, _ := os.ReadDir(filepath.Join(vdbDir, category.Name()))
-		for _, pkg := range packages {
-			if !pkg.IsDir() {
+		for _, category := range categories {
+			if !category.IsDir() {
 				continue
 			}
-			path := filepath.Join(vdbDir, category.Name(), pkg.Name())
-			slot, _ := os.ReadFile(filepath.Join(path, "SLOT"))
-			repo, _ := os.ReadFile(filepath.Join(path, "repository"))
-			if portage.PackageAtomMatches(query, category.Name()+"/"+pkg.Name(), strings.TrimSpace(string(slot)), strings.TrimSpace(string(repo))) {
-				return true
+			packages, _ := os.ReadDir(filepath.Join(vdbDir, category.Name()))
+			for _, pkg := range packages {
+				if !pkg.IsDir() {
+					continue
+				}
+				candidate, err := atom.Parse(category.Name() + "/" + pkg.Name())
+				if err != nil || candidate.Version == nil {
+					continue
+				}
+				key := domain + "\t" + candidate.CP()
+				current, _ := atom.Parse(result[key])
+				if current == nil || current.Version == nil || candidate.Version.Compare(current.Version) > 0 {
+					result[key] = category.Name() + "/" + pkg.Name()
+				}
 			}
 		}
 	}
-	return false
+	return result
 }
 
 func findInstalledReplacement(vdbDir, category, packageName, newVersion, slot string) (string, error) {
@@ -1253,13 +1971,17 @@ func protocolEnvironmentSnapshot(request phaseproto.Request) []byte {
 	return []byte(snapshot.String())
 }
 
-func protocolVDBMetadata(eb *ebuild.Ebuild, ebuildFile, category, pf string, request phaseproto.Request, events []phaseproto.Event) map[string]string {
+func protocolVDBMetadata(eb *ebuild.Ebuild, ebuildFile, category, pf, selectedIUSE string, selectedUse map[string]bool, request phaseproto.Request, events []phaseproto.Event) map[string]string {
 	vars := eb.Vars()
 	metadata := map[string]string{
 		"CATEGORY": category, "PF": pf, "EAPI": eb.EAPI,
-		"SLOT":       request.Package.Slot,
-		"repository": request.Package.Repository,
-		"USE":        request.Env["USE"],
+		"SLOT":                request.Package.Slot,
+		"repository":          request.Package.Repository,
+		"ARISE_PHASE_ENV_ABI": portage.PhaseEnvironmentABI,
+		// The resolver action owns the package-local effective USE domain.
+		// request.Env also carries global/package.env execution settings and must
+		// never be serialized wholesale into the installed VDB USE record.
+		"USE": enabledUse(selectedUse),
 	}
 	for _, name := range []string{"DEPEND", "RDEPEND", "BDEPEND", "IDEPEND", "PDEPEND", "IUSE", "REQUIRED_USE", "LICENSE", "PROPERTIES", "RESTRICT", "DEFINED_PHASES", "INHERITED"} {
 		metadata[name] = strings.Trim(vars[name], "\"'")
@@ -1269,10 +1991,113 @@ func protocolVDBMetadata(eb *ebuild.Ebuild, ebuildFile, category, pf string, req
 			metadata[event.Class] = event.Message
 		}
 	}
+	if strings.TrimSpace(selectedIUSE) != "" {
+		metadata["IUSE"] = selectedIUSE
+	}
 	if data, err := os.ReadFile(ebuildFile); err == nil {
 		metadata[pf+".ebuild"] = string(data)
 	}
 	return metadata
+}
+
+func expandBuiltSlotOperators(metadata map[string]string, cfg *RebuildConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("missing rebuild configuration")
+	}
+	sysroot, broot := cfg.dependencyRoots()
+	rootVDB := cfg.VdbDir
+	brootVDB := rootVDB
+	if filepath.Clean(broot) != filepath.Clean(cfg.RootDir) {
+		brootVDB = filepath.Join(broot, "var", "db", "pkg")
+	}
+	sysrootVDB := rootVDB
+	if filepath.Clean(sysroot) != filepath.Clean(cfg.RootDir) {
+		sysrootVDB = filepath.Join(sysroot, "var", "db", "pkg")
+	}
+	for _, field := range []string{"DEPEND", "RDEPEND", "BDEPEND", "IDEPEND", "PDEPEND"} {
+		raw := strings.TrimSpace(metadata[field])
+		if raw == "" {
+			continue
+		}
+		vdbDir := rootVDB
+		switch field {
+		case "DEPEND":
+			vdbDir = sysrootVDB
+		case "BDEPEND":
+			vdbDir = brootVDB
+		}
+		expanded, err := expandBuiltSlotOperatorsInDependency(raw, vdbDir, cfg.UseFlags)
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		metadata[field] = expanded
+	}
+	return nil
+}
+
+func expandBuiltSlotOperatorsInDependency(raw, vdbDir string, callerUse map[string]bool) (string, error) {
+	tree, err := depstring.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	var walk func(depstring.DepNode) error
+	walk = func(current depstring.DepNode) error {
+		switch node := current.(type) {
+		case *depstring.AtomDep:
+			dependency, err := atom.ParsePackageAtom(node.Atom)
+			if err != nil {
+				return err
+			}
+			if dependency.SlotOp != atom.SlotOpEq || dependency.Subslot != "" {
+				return nil
+			}
+			cpv, err := installedquery.Best(vdbDir, node.Atom, callerUse)
+			if err != nil {
+				return err
+			}
+			if cpv == "" {
+				return nil
+			}
+			installed, err := atom.Parse(cpv)
+			if err != nil {
+				return err
+			}
+			slotData, err := os.ReadFile(filepath.Join(vdbDir, installed.Category, installed.Package+"-"+installed.Version.Raw, "SLOT"))
+			if err != nil {
+				return err
+			}
+			parts := strings.SplitN(strings.TrimSpace(string(slotData)), "/", 2)
+			dependency.Slot = parts[0]
+			dependency.Subslot = parts[0]
+			if len(parts) == 2 && parts[1] != "" {
+				dependency.Subslot = parts[1]
+			}
+			node.Atom = dependency.String()
+		case *depstring.AllOfGroup:
+			for _, child := range node.Children {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case *depstring.AnyOfGroup:
+			for _, child := range node.Children {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case *depstring.UseConditional:
+			for _, child := range node.Children {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(tree); err != nil {
+		return "", err
+	}
+	return tree.String(), nil
 }
 
 func cleanEbuildValue(value string) string {
@@ -1287,6 +2112,110 @@ func effectiveEbuildSlot(eb *ebuild.Ebuild) string {
 	return slot
 }
 
+func phaseFailureDiagnostics(events []phaseproto.Event, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	var logs []string
+	lastPhase := ""
+	for _, event := range events {
+		if event.Kind == "phase" && strings.TrimSpace(event.Message) != "" {
+			lastPhase = strings.TrimSpace(event.Message)
+		}
+		if (event.Kind == "log" || event.Kind == "elog") && strings.TrimSpace(event.Message) != "" {
+			logs = append(logs, event.Message)
+		}
+	}
+	causal := []string{
+		"error:", " error ", "failed", "failure", "cannot ", "can't ",
+		"permission denied", "undefined reference", "no rule to make target",
+		"not found", "no such file", "no space left on device", "disk quota exceeded", "unrecognized option", "unknown option",
+		"assertion", "fatal:", "segmentation fault", "aborted",
+	}
+	selected := make(map[int]bool)
+	for index, line := range logs {
+		lower := " " + strings.ToLower(line) + " "
+		matched := false
+		for _, signal := range causal {
+			if strings.Contains(lower, signal) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		for contextIndex := max(0, index-2); contextIndex <= min(len(logs)-1, index+2); contextIndex++ {
+			selected[contextIndex] = true
+		}
+	}
+	if len(selected) == 0 {
+		message := "phase returned non-zero status without an explicit error diagnostic"
+		if lastPhase != "" {
+			message = "phase " + lastPhase + " returned non-zero status without an explicit error diagnostic"
+		}
+		return []string{message}
+	}
+	result := make([]string, 0, min(limit, len(selected)))
+	for index, line := range logs {
+		if selected[index] {
+			result = append(result, line)
+			if len(result) == limit {
+				break
+			}
+		}
+	}
+	return result
+}
+
+// applyPortageLifecyclePolicy mirrors doebuild.py's _unsandboxed_phases,
+// _ipc_phases and _global_pid_phases for the installed-package lifecycle
+// phases Arise currently executes. pkg_pretend is run during preflight;
+// pkg_setup is the first independently executed build-side phase.
+func applyPortageLifecyclePolicy(request phaseproto.Request, phaseName string) phaseproto.Request {
+	request.Policy.DropPrivileges = false
+	switch phaseName {
+	case "pkg_setup", "pkg_pretend":
+		request.Policy.Sandbox = false
+		request.Policy.NetworkSandbox = false
+		request.Policy.IPCSandbox = false
+		// Portage retains pid-sandbox for setup/pretend; they are not in
+		// doebuild.py's _global_pid_phases.
+		return request
+	case "pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm":
+	case "src_unpack", "src_prepare", "src_configure", "src_compile", "src_test":
+		if request.Policy.UserPriv {
+			request.Policy.DropPrivileges = true
+			// Portage's usersandbox feature controls whether its sandbox is
+			// retained for phases that already execute as the portage user.
+			request.Policy.Sandbox = request.Policy.UserSandbox
+		}
+		return request
+	default:
+		return request
+	}
+	environment := make(map[string]string, len(request.Env)+1)
+	for name, value := range request.Env {
+		environment[name] = value
+	}
+	root := filepath.Clean(request.RootDir)
+	if existing := environment["SANDBOX_WRITE"]; existing != "" {
+		environment["SANDBOX_WRITE"] = existing + ":" + root
+	} else {
+		environment["SANDBOX_WRITE"] = root
+	}
+	request.Env = environment
+	// Portage's doebuild._unsandboxed_phases runs setup/pretend and installed
+	// lifecycle phases with free=True. SANDBOX_WRITE=/ is not equivalent:
+	// the LD_PRELOAD sandbox can still reject capability and other xattr
+	// operations required by helpers such as fcaps.eclass.
+	request.Policy.Sandbox = false
+	request.Policy.NetworkSandbox = false
+	request.Policy.IPCSandbox = false
+	request.Policy.PIDSandbox = false
+	return request
+}
+
 func selectedEbuildSlot(cfg *RebuildConfig, eb *ebuild.Ebuild) string {
 	if cfg != nil && strings.TrimSpace(cfg.SelectedSlot) != "" {
 		return strings.TrimSpace(cfg.SelectedSlot)
@@ -1299,7 +2228,18 @@ func protocolBuildPhases(policy phaseproto.ExecutionPolicy) []string {
 	if !policy.Configured || policy.Tests {
 		phases = append(phases, "src_test")
 	}
-	return append(phases, "src_install", "pkg_preinst")
+	return append(phases, "src_install")
+}
+
+func executionFeatureEnabled(features []string, requested string) bool {
+	enabled := false
+	for _, token := range features {
+		name := strings.TrimPrefix(token, "-")
+		if name == requested {
+			enabled = !strings.HasPrefix(token, "-")
+		}
+	}
+	return enabled
 }
 
 func artifactNames(artifacts []distfiles.Artifact) []string {

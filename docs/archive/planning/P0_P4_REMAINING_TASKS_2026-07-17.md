@@ -1,6 +1,8 @@
 # P0-P4 remaining-task breakdown
 
-> Working development plan; reconcile with the root punch list before pruning.
+> Archived on 2026-07-24. This bounded July 17 task breakdown was superseded by
+> `PUNCHLIST.md`, later parity audits, and maintained topic plans. It is
+> preserved for design provenance and is not a current task list.
 
 This is the executable breakdown behind the punch-list status as of
 2026-07-17. A task is not complete until its listed validation is automated.

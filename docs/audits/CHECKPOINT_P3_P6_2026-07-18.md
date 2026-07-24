@@ -1,7 +1,8 @@
 # P3/P4/P6 checkpoint — 2026-07-18
 
-This is the current consolidated development checkpoint. `PUNCHLIST.md` is the
-authoritative gate ledger; older audits are historical snapshots.
+> Historical checkpoint. It was the consolidated state on 2026-07-18 and was
+> superseded by later execution-parity audits and the 2026-07-24 Portage
+> self-hosting milestone. `PUNCHLIST.md` is the authoritative live gate ledger.
 
 ## Demonstrated now
 

@@ -43,7 +43,7 @@ func DeliverElog(events []Event, options ElogOptions) ([]string, error) {
 		return nil, nil
 	}
 	for _, sink := range options.Sinks {
-		switch strings.SplitN(sink, ":", 2)[0] {
+		switch normalizeElogSink(sink) {
 		case "echo", "save", "save-summary", "syslog":
 		case "mail", "mail-summary", "custom":
 			return nil, fmt.Errorf("phase elog: requested sink %q is unsupported", sink)
@@ -61,7 +61,7 @@ func DeliverElog(events []Event, options ElogOptions) ([]string, error) {
 	content := text.String()
 	var paths []string
 	for _, sinkSpec := range options.Sinks {
-		sink := strings.SplitN(sinkSpec, ":", 2)[0]
+		sink := normalizeElogSink(sinkSpec)
 		switch sink {
 		case "echo":
 			if options.Output == nil {
@@ -137,7 +137,7 @@ func DeliverElog(events []Event, options ElogOptions) ([]string, error) {
 
 func ValidateElogSinks(sinks []string) error {
 	for _, sink := range sinks {
-		switch strings.SplitN(sink, ":", 2)[0] {
+		switch normalizeElogSink(sink) {
 		case "echo", "save", "save-summary", "syslog":
 		case "mail", "mail-summary", "custom":
 			return fmt.Errorf("phase elog: requested sink %q is unsupported", sink)
@@ -146,4 +146,9 @@ func ValidateElogSinks(sinks []string) error {
 		}
 	}
 	return nil
+}
+
+func normalizeElogSink(spec string) string {
+	name := strings.SplitN(spec, ":", 2)[0]
+	return strings.ReplaceAll(name, "_", "-")
 }

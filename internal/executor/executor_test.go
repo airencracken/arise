@@ -30,6 +30,41 @@ func action(t *testing.T, cpv string) resolve.PkgAction {
 	return resolve.PkgAction{Atom: a, Action: "install", Repository: "test", RepositoryPath: "/repo", MergeType: "source", Domain: resolve.DomainROOT}
 }
 
+func TestTmpdirRequiredBytesMatchesEmergeDecay(t *testing.T) {
+	const gib = uint64(1 << 30)
+	if got, want := tmpdirRequiredBytes(18, 2), 18*gib+9*gib+6*gib; got != want {
+		t.Fatalf("required=%d want=%d", got, want)
+	}
+}
+
+func TestAdmitTmpdirJobReducesParallelism(t *testing.T) {
+	var waited bool
+	cfg := Config{
+		Rebuild:             rebuild.RebuildConfig{WorkDirBase: "/work"},
+		TmpdirRequireFreeGB: 18,
+		FreeSpace:           func(string) (uint64, error) { return 20 << 30, nil },
+		OnSpaceWait:         func(string, uint64, uint64) { waited = true },
+	}
+	admitted, err := admitTmpdirJob(cfg, 1)
+	if err != nil || admitted || !waited {
+		t.Fatalf("admitted=%v waited=%v err=%v", admitted, waited, err)
+	}
+	admitted, err = admitTmpdirJob(cfg, 0)
+	if err != nil || !admitted {
+		t.Fatalf("serial forward progress admitted=%v err=%v", admitted, err)
+	}
+}
+
+func TestAdmitTmpdirJobRejectsFullFilesystem(t *testing.T) {
+	cfg := Config{
+		Rebuild:   rebuild.RebuildConfig{WorkDirBase: "/work"},
+		FreeSpace: func(string) (uint64, error) { return 0, nil },
+	}
+	if admitted, err := admitTmpdirJob(cfg, 0); admitted || err == nil || !strings.Contains(err.Error(), "no free space") {
+		t.Fatalf("admitted=%v err=%v", admitted, err)
+	}
+}
+
 func TestExecuteMarksPostCommitLifecycleFailureComplete(t *testing.T) {
 	item := action(t, "cat/pkg-1")
 	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{item}}
@@ -44,12 +79,49 @@ func TestExecuteMarksPostCommitLifecycleFailureComplete(t *testing.T) {
 			return &merge.PostCommitError{Err: fmt.Errorf("postinst failed")}
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "postinst failed") {
-		t.Fatalf("error=%v", err)
+	if err != nil {
+		t.Fatalf("committed lifecycle failure stopped execution: %v", err)
 	}
 	remaining, loadErr := resolve.LoadResume(resume)
 	if loadErr != nil || len(remaining) != 0 {
 		t.Fatalf("remaining=%v err=%v", remaining, loadErr)
+	}
+}
+
+func TestExecuteConcurrentContinuesAfterPostCommitLifecycleFailure(t *testing.T) {
+	first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{first, second}}
+	root := filepath.Join(t.TempDir(), "root")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var ran []string
+	err := Execute(context.Background(), result, Config{
+		Jobs: 2, Rebuild: rebuild.RebuildConfig{RootDir: root},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(_ context.Context, label string, cfg *rebuild.RebuildConfig) error {
+			mu.Lock()
+			ran = append(ran, label)
+			mu.Unlock()
+			if cfg.OnTransactionCommit != nil {
+				if err := cfg.OnTransactionCommit(nil); err != nil {
+					return err
+				}
+			}
+			if strings.Contains(label, "first") {
+				return &merge.PostCommitError{Err: fmt.Errorf("postinst failed")}
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("committed lifecycle failure stopped parallel execution: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ran) != 2 {
+		t.Fatalf("ran=%v, want both package jobs", ran)
 	}
 }
 
@@ -93,11 +165,15 @@ func TestExecuteSeriallyRunsVerifiedDisposablePlan(t *testing.T) {
 		OnActionStart: func(index, total int, action resolve.PkgAction) {
 			events = append(events, fmt.Sprintf("start:%d/%d:%s", index, total, actionLabel(action)))
 		},
+		OnActionInstall: func(index, total int, action resolve.PkgAction) {
+			events = append(events, fmt.Sprintf("install:%d/%d:%s", index, total, actionLabel(action)))
+		},
 		OnActionComplete: func(index, total int, action resolve.PkgAction) {
 			events = append(events, fmt.Sprintf("complete:%d/%d:%s", index, total, actionLabel(action)))
 		},
-		Runner: func(_ context.Context, label string, _ *rebuild.RebuildConfig) error {
+		Runner: func(_ context.Context, label string, cfg *rebuild.RebuildConfig) error {
 			ran = append(ran, label)
+			cfg.OnPhaseStart("src_install")
 			return nil
 		},
 	})
@@ -107,7 +183,7 @@ func TestExecuteSeriallyRunsVerifiedDisposablePlan(t *testing.T) {
 	if !reflect.DeepEqual(ran, []string{"cat/first-1", "cat/second-1"}) {
 		t.Fatalf("run order=%v", ran)
 	}
-	wantEvents := []string{"start:1/2:cat/first-1", "complete:1/2:cat/first-1", "start:2/2:cat/second-1", "complete:2/2:cat/second-1"}
+	wantEvents := []string{"start:1/2:cat/first-1", "install:1/2:cat/first-1", "complete:1/2:cat/first-1", "start:2/2:cat/second-1", "install:2/2:cat/second-1", "complete:2/2:cat/second-1"}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events=%v want=%v", events, wantEvents)
 	}
@@ -369,6 +445,40 @@ func TestExecuteConcurrentFailureCancelsPeersAndDoesNotReleaseDependent(t *testi
 	remaining, loadErr := resolve.LoadResume(resume)
 	if loadErr != nil || len(remaining) != 3 {
 		t.Fatalf("remaining=%v err=%v", remaining, loadErr)
+	}
+}
+
+func TestExecuteConcurrentSiblingFailureDoesNotCancelPostCommitContext(t *testing.T) {
+	failing, committing := action(t, "cat/failing-1"), action(t, "cat/committing-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{failing, committing}}
+	committingStarted := make(chan struct{})
+	peerCanceled := make(chan struct{})
+	err := Execute(context.Background(), result, Config{
+		Jobs: 2, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(ctx context.Context, label string, cfg *rebuild.RebuildConfig) error {
+			if label == "cat/failing-1" {
+				<-committingStarted
+				return fmt.Errorf("injected sibling failure")
+			}
+			close(committingStarted)
+			<-ctx.Done()
+			select {
+			case <-cfg.PostCommitContext.Done():
+				return fmt.Errorf("post-commit context canceled with sibling")
+			default:
+				close(peerCanceled)
+				return ctx.Err()
+			}
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "injected sibling failure") {
+		t.Fatalf("failure = %v", err)
+	}
+	select {
+	case <-peerCanceled:
+	default:
+		t.Fatal("peer did not observe build-context cancellation")
 	}
 }
 

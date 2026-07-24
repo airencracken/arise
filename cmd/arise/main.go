@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -21,6 +22,7 @@ import (
 
 // version is replaced by release builds with -ldflags "-X main.version=...".
 var version = "devel"
+var commandContext = context.Background()
 
 func commandEnv(name, fallback string) string {
 	if value, ok := os.LookupEnv(name); ok {
@@ -67,50 +69,51 @@ var (
 	logLevel = flag.String("log-level", "info", "log level: debug, info, warn, error")
 
 	// Package resolution flags
-	updateMode         = flag.Bool("update", false, "-u, update packages to the best available version")
-	oneshot            = flag.Bool("oneshot", false, "-1, install without adding to world set")
-	nodeps             = flag.Bool("nodeps", false, "-O, skip dependency resolution")
-	onlydeps           = flag.Bool("onlydeps", false, "-o, only install dependencies")
-	onlydepsWithRdeps  = flag.String("onlydeps-with-rdeps", "", "--onlydeps-with-rdeps=y|n")
-	onlydepsWithIDeps  = flag.String("onlydeps-with-ideps", "", "--onlydeps-with-ideps=y|n")
-	rootDeps           = flag.String("root-deps", "", "--root-deps=True|rdeps")
-	emptytree          = flag.Bool("emptytree", false, "-e, rebuild entire tree as if empty")
-	reinstall          = flag.Bool("reinstall", false, "force reinstall of already-installed packages")
-	changedUse         = flag.Bool("changed-use", false, "reinstall when USE flags changed")
-	changedDeps        = flag.Bool("changed-deps", false, "reinstall when DEPENDs changed")
-	dynamicDeps        = flag.Bool("dynamic-deps", true, "use current ebuild dependencies for installed packages")
-	newuse             = flag.Bool("newuse", false, "-N, rebuild when USE flags changed")
-	keepGoing          = flag.Bool("keep-going", false, "continue on errors")
-	deep               = flag.Bool("deep", false, "-D, consider full dependency tree")
-	completeGraph      = flag.Bool("complete-graph", false, "rebuild reverse deps when packages change")
-	backtrackVal       = flag.Int("backtrack", 20, "--backtrack=INT, max backtrack levels")
-	resolverTimeout    = flag.Duration("resolver-timeout", 5*time.Minute, "wall-clock resolver limit (0 disables)")
-	jobsVal            = flag.Int("jobs", 0, "-j, parallel jobs")
-	fetchJobs          = flag.Int("fetch-jobs", 4, "number of concurrent source fetches (1 disables parallel fetch)")
-	loadAverage        = flag.Float64("load-average", 0, "--load-average=LOAD")
-	pretend            = flag.Bool("pretend", false, "-p, dry run")
-	ask                = flag.Bool("ask", false, "-a, prompt before proceeding")
-	quiet              = flag.Bool("quiet", false, "-q, minimal output")
-	verbose            = flag.Bool("verbose", false, "-v, verbose output")
-	jsonOutput         = flag.Bool("json", false, "emit a versioned JSON resolution plan")
-	tree               = flag.Bool("tree", false, "-t, display dependency tree")
-	resume             = flag.Bool("resume", false, "--resume, resume last operation")
-	skipFirst          = flag.Bool("skipfirst", false, "--skipfirst, skip first package in resume")
-	unorderedDisp      = flag.Bool("unordered-display", false, "--unordered-display, don't sort results")
-	autoUnmaskW        = flag.Bool("autounmask-write", false, "--autounmask-write, write package.unmask entries")
-	withBdeps          = flag.String("with-bdeps", "auto", "--with-bdeps=y|n|auto")
-	buildPkg           = flag.Bool("buildpkg", false, "-b, build binary packages")
-	buildPkgOnly       = flag.Bool("buildpkgonly", false, "-B, only build binary packages")
-	usePkg             = flag.Bool("usepkg", false, "-k, use binary packages")
-	usePkgOnly         = flag.Bool("usepkgonly", false, "-K, only use binary packages")
-	fetchOnly          = flag.Bool("fetchonly", false, "-f, only fetch sources")
-	noreplace          = flag.Bool("noreplace", false, "--noreplace, skip packages with exact same version installed")
-	colors             = flag.String("color", "y", "--color=y|n, enable or disable color output")
-	deselectArg        = flag.String("deselect", "", "--deselect, remove atom from world set")
-	binpkgRespectUse   = flag.Bool("binpkg-respect-use", false, "--binpkg-respect-use, respect USE flags when searching binary packages")
-	ignoreBuiltSlotOps = flag.String("ignore-built-slot-operator-deps", "n", "--ignore-built-slot-operator-deps=y|n")
-	getbinpkg          = flag.Bool("getbinpkg", false, "-g, fetch binary packages from remote binhost")
-	getbinpkgOnly      = flag.Bool("getbinpkgonly", false, "-G, only use binary packages from remote binhost")
+	updateMode              = flag.Bool("update", false, "-u, update packages to the best available version")
+	oneshot                 = flag.Bool("oneshot", false, "-1, install without adding to world set")
+	nodeps                  = flag.Bool("nodeps", false, "-O, skip dependency resolution")
+	onlydeps                = flag.Bool("onlydeps", false, "-o, only install dependencies")
+	onlydepsWithRdeps       = flag.String("onlydeps-with-rdeps", "", "--onlydeps-with-rdeps=y|n")
+	onlydepsWithIDeps       = flag.String("onlydeps-with-ideps", "", "--onlydeps-with-ideps=y|n")
+	rootDeps                = flag.String("root-deps", "", "--root-deps=True|rdeps")
+	emptytree               = flag.Bool("emptytree", false, "-e, rebuild entire tree as if empty")
+	reinstall               = flag.Bool("reinstall", false, "force reinstall of already-installed packages")
+	changedUse              = flag.Bool("changed-use", false, "reinstall when USE flags changed")
+	changedDeps             = flag.Bool("changed-deps", false, "reinstall when DEPENDs changed")
+	dynamicDeps             = flag.Bool("dynamic-deps", true, "use current ebuild dependencies for installed packages")
+	newuse                  = flag.Bool("newuse", false, "-N, rebuild when USE flags changed")
+	keepGoing               = flag.Bool("keep-going", false, "continue on errors")
+	deep                    = flag.Bool("deep", false, "-D, consider full dependency tree")
+	completeGraph           = flag.Bool("complete-graph", false, "rebuild reverse deps when packages change")
+	backtrackVal            = flag.Int("backtrack", 20, "--backtrack=INT, max backtrack levels")
+	resolverTimeout         = flag.Duration("resolver-timeout", 5*time.Minute, "wall-clock resolver limit (0 disables)")
+	jobsVal                 = flag.Int("jobs", 0, "-j, parallel jobs")
+	fetchJobs               = flag.Int("fetch-jobs", 8, "number of concurrent source fetch and verification jobs (1 disables parallel work)")
+	jobsTmpdirRequireFreeGB = flag.Int("jobs-tmpdir-require-free-gb", 18, "remaining PORTAGE_TMPDIR capacity in GiB required before starting parallel jobs (0 disables)")
+	loadAverage             = flag.Float64("load-average", 0, "--load-average=LOAD")
+	pretend                 = flag.Bool("pretend", false, "-p, dry run")
+	ask                     = flag.Bool("ask", false, "-a, prompt before proceeding")
+	quiet                   = flag.Bool("quiet", false, "-q, minimal output")
+	verbose                 = flag.Bool("verbose", false, "-v, verbose output")
+	jsonOutput              = flag.Bool("json", false, "emit a versioned JSON resolution plan")
+	tree                    = flag.Bool("tree", false, "-t, display dependency tree")
+	resume                  = flag.Bool("resume", false, "--resume, resume last operation")
+	skipFirst               = flag.Bool("skipfirst", false, "--skipfirst, skip first package in resume")
+	unorderedDisp           = flag.Bool("unordered-display", false, "--unordered-display, don't sort results")
+	autoUnmaskW             = flag.Bool("autounmask-write", false, "--autounmask-write, write package.unmask entries")
+	withBdeps               = flag.String("with-bdeps", "auto", "--with-bdeps=y|n|auto")
+	buildPkg                = flag.Bool("buildpkg", false, "-b, build binary packages")
+	buildPkgOnly            = flag.Bool("buildpkgonly", false, "-B, only build binary packages")
+	usePkg                  = flag.Bool("usepkg", false, "-k, use binary packages")
+	usePkgOnly              = flag.Bool("usepkgonly", false, "-K, only use binary packages")
+	fetchOnly               = flag.Bool("fetchonly", false, "-f, only fetch sources")
+	noreplace               = flag.Bool("noreplace", false, "--noreplace, skip packages with exact same version installed")
+	colors                  = flag.String("color", "y", "--color=y|n, enable or disable color output")
+	deselectArg             = flag.String("deselect", "", "--deselect, remove atom from world set")
+	binpkgRespectUse        = flag.Bool("binpkg-respect-use", false, "--binpkg-respect-use, respect USE flags when searching binary packages")
+	ignoreBuiltSlotOps      = flag.String("ignore-built-slot-operator-deps", "n", "--ignore-built-slot-operator-deps=y|n")
+	getbinpkg               = flag.Bool("getbinpkg", false, "-g, fetch binary packages from remote binhost")
+	getbinpkgOnly           = flag.Bool("getbinpkgonly", false, "-G, only use binary packages from remote binhost")
 
 	searchNameOnly  = flag.Bool("name-only", false, "--name-only, search only package/category names")
 	searchDesc      = flag.Bool("desc", false, "--desc, search descriptions")
@@ -185,11 +188,19 @@ func init() {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "__phase-query" {
+		os.Exit(runPhaseQuery(os.Args[2:]))
+	}
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	commandContext = ctx
+	defer stopSignals()
 	stopRuntimeProfiles := startRuntimeProfilesFromEnvironment()
 	finalizeRuntimeProfiles = stopRuntimeProfiles
 	defer stopRuntimeProfiles()
 	os.Args = normalizeEmergeArgs(os.Args)
 	flag.Parse()
+	stopTrapHandler := startDiagnosticTrapHandler()
+	defer stopTrapHandler()
 	ingest.WriterVersion = version
 
 	if *showVersion {
@@ -335,12 +346,9 @@ func startRuntimeProfilesFromEnvironment() func() {
 	if cpuProfile == nil && goTrace == nil && heapPath == "" && allocsPath == "" {
 		return func() {}
 	}
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
-			signal.Stop(signals)
 			if goTrace != nil {
 				runtimeTrace.Stop()
 				if err := goTrace.Close(); err != nil {
@@ -363,14 +371,6 @@ func startRuntimeProfilesFromEnvironment() func() {
 			}
 		})
 	}
-	go func() {
-		received := <-signals
-		stop()
-		if received == os.Interrupt {
-			os.Exit(130)
-		}
-		os.Exit(143)
-	}()
 	return stop
 }
 

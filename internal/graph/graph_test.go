@@ -758,7 +758,7 @@ func writeInstalledFixture(t *testing.T, root, category, pf, slot string) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	for name, value := range map[string]string{"SLOT": slot, "repository": "gentoo", "EAPI": "8"} {
+	for name, value := range map[string]string{"SLOT": slot, "repository": "gentoo", "EAPI": "8", "CONTENTS": ""} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(value+"\n"), 0644); err != nil {
 			t.Fatal(err)
 		}

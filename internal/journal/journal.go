@@ -16,7 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const Version = 3
+const Version = 5
 
 const entriesLogName = "entries.jsonl"
 
@@ -33,6 +33,9 @@ type Entry struct {
 	Backup string      `json:"backup,omitempty"`
 	UID    uint32      `json:"uid,omitempty"`
 	GID    uint32      `json:"gid,omitempty"`
+	Dev    uint64      `json:"dev,omitempty"`
+	Ino    uint64      `json:"ino,omitempty"`
+	Nlink  uint64      `json:"nlink,omitempty"`
 	ATime  int64       `json:"atime_ns,omitempty"`
 	MTime  int64       `json:"mtime_ns,omitempty"`
 	Xattrs []Xattr     `json:"xattrs,omitempty"`
@@ -188,6 +191,8 @@ func Open(dir string) (*Journal, error) {
 
 func (j *Journal) Dir() string    { return j.dir }
 func (j *Journal) Status() string { return j.state.Status }
+func (j *Journal) Root() string   { return j.state.Root }
+func (j *Journal) LiveRoot() bool { return j.state.LiveRoot }
 
 // Capture durably records a path's preimage before its first mutation.
 func (j *Journal) Capture(path string) error {
@@ -200,48 +205,20 @@ func (j *Journal) Capture(path string) error {
 	if err != nil {
 		return err
 	}
-	if j.captured[relative] {
+	if j.captured[relative] || j.coveredByAbsentTree(relative) {
 		return nil
 	}
-	entry := Entry{Path: relative, Kind: "absent"}
-	info, err := os.Lstat(resolved)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("journal: inspect %s: %w", resolved, err)
+	entry, backupCreated, err := j.prepareEntry(resolved, relative, len(j.state.Entries))
+	if err != nil {
+		return err
 	}
-	if err == nil {
-		entry.Mode = info.Mode()
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-			entry.UID, entry.GID = stat.Uid, stat.Gid
-			entry.ATime, entry.MTime = stat.Atim.Sec*1e9+stat.Atim.Nsec, stat.Mtim.Sec*1e9+stat.Mtim.Nsec
-		}
-		entry.Xattrs, err = readXattrs(resolved)
-		if err != nil {
-			return fmt.Errorf("journal: capture xattrs %s: %w", resolved, err)
-		}
-		switch {
-		case info.Mode().IsRegular():
-			entry.Kind = "file"
-			entry.Backup = fmt.Sprintf("backups/%08d", len(j.state.Entries))
-			if err := copyFile(resolved, filepath.Join(j.dir, entry.Backup), info.Mode()); err != nil {
-				return fmt.Errorf("journal: back up %s: %w", resolved, err)
-			}
-			if err := syncDirectory(filepath.Join(j.dir, "backups")); err != nil {
-				return fmt.Errorf("journal: sync backup for %s: %w", resolved, err)
-			}
-		case info.IsDir():
-			entry.Kind = "directory"
-		case info.Mode()&os.ModeSymlink != 0:
-			entry.Kind = "symlink"
-			entry.Link, err = os.Readlink(resolved)
-			if err != nil {
-				return fmt.Errorf("journal: read link %s: %w", resolved, err)
-			}
-		default:
-			return fmt.Errorf("journal: unsupported preimage type at %s", resolved)
+	if backupCreated {
+		if err := syncFilesystem(j.dir); err != nil {
+			return fmt.Errorf("journal: sync backup for %s: %w", resolved, err)
 		}
 	}
 	j.state.Entries = append(j.state.Entries, entry)
-	if err := j.appendEntry(entry); err != nil {
+	if err := j.appendEntries([]Entry{entry}); err != nil {
 		j.state.Entries = j.state.Entries[:len(j.state.Entries)-1]
 		return err
 	}
@@ -249,20 +226,169 @@ func (j *Journal) Capture(path string) error {
 	return nil
 }
 
-// appendEntry publishes one durable capture record without rewriting the
-// complete transaction state. The caller has already synced any regular-file
-// backup, and no filesystem mutation may occur until this record is synced.
-func (j *Journal) appendEntry(entry Entry) error {
-	data, err := json.Marshal(entry)
+// CaptureBatch publishes a group of preimages with one capture-log durability
+// barrier. Callers must not mutate any path in the batch until this method
+// returns successfully. Regular-file backup contents are synced individually;
+// their directory entries and the write-ahead records are each grouped.
+func (j *Journal) CaptureBatch(paths []string) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.state.Status != "active" {
+		return fmt.Errorf("journal: capture batch on %s operation", j.state.Status)
+	}
+	start := len(j.state.Entries)
+	var entries []Entry
+	var relatives []string
+	backupCreated := false
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		resolved, relative, err := j.confined(path)
+		if err != nil {
+			return err
+		}
+		if j.captured[relative] || j.coveredByAbsentTree(relative) || seen[relative] {
+			continue
+		}
+		entry, backedUp, err := j.prepareEntry(resolved, relative, start+len(entries))
+		if err != nil {
+			return err
+		}
+		entries = append(entries, entry)
+		relatives = append(relatives, relative)
+		seen[relative] = true
+		backupCreated = backupCreated || backedUp
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	if backupCreated {
+		if err := syncFilesystem(j.dir); err != nil {
+			return fmt.Errorf("journal: sync batch backups: %w", err)
+		}
+	}
+	j.state.Entries = append(j.state.Entries, entries...)
+	if err := j.appendEntries(entries); err != nil {
+		j.state.Entries = j.state.Entries[:start]
+		return err
+	}
+	for _, relative := range relatives {
+		j.captured[relative] = true
+	}
+	return nil
+}
+
+func (j *Journal) coveredByAbsentTree(relative string) bool {
+	relative = filepath.Clean(relative)
+	for _, entry := range j.state.Entries {
+		if entry.Kind != "absent-tree" || entry.Path == relative {
+			continue
+		}
+		inside, err := filepath.Rel(entry.Path, relative)
+		if err == nil && inside != ".." && !strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (j *Journal) prepareEntry(resolved, relative string, index int) (Entry, bool, error) {
+	entry := Entry{Path: relative, Kind: "absent"}
+	info, err := os.Lstat(resolved)
+	if err != nil && !os.IsNotExist(err) {
+		return Entry{}, false, fmt.Errorf("journal: inspect %s: %w", resolved, err)
+	}
+	backupCreated := false
+	if err == nil {
+		entry.Mode = info.Mode()
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			entry.UID, entry.GID = stat.Uid, stat.Gid
+			entry.Dev, entry.Ino, entry.Nlink = uint64(stat.Dev), stat.Ino, uint64(stat.Nlink)
+			entry.ATime, entry.MTime = stat.Atim.Sec*1e9+stat.Atim.Nsec, stat.Mtim.Sec*1e9+stat.Mtim.Nsec
+		}
+		entry.Xattrs, err = readXattrs(resolved)
+		if err != nil {
+			return Entry{}, false, fmt.Errorf("journal: capture xattrs %s: %w", resolved, err)
+		}
+		switch {
+		case info.Mode().IsRegular():
+			entry.Kind = "file"
+			entry.Backup = fmt.Sprintf("backups/%08d", index)
+			if err := copyFile(resolved, filepath.Join(j.dir, entry.Backup), info.Mode()); err != nil {
+				return Entry{}, false, fmt.Errorf("journal: back up %s: %w", resolved, err)
+			}
+			backupCreated = true
+		case info.IsDir():
+			entry.Kind = "directory"
+		case info.Mode()&os.ModeSymlink != 0:
+			entry.Kind = "symlink"
+			entry.Link, err = os.Readlink(resolved)
+			if err != nil {
+				return Entry{}, false, fmt.Errorf("journal: read link %s: %w", resolved, err)
+			}
+		default:
+			return Entry{}, false, fmt.Errorf("journal: unsupported preimage type at %s", resolved)
+		}
+	}
+	return entry, backupCreated, nil
+}
+
+// CaptureAbsentTree durably records that path does not exist before a
+// transaction creates an entire subtree there. Descendants must be created
+// only by the same serialized transaction. Rollback can then remove the tree
+// from this single write-ahead record instead of recording every absent child.
+func (j *Journal) CaptureAbsentTree(path string) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.state.Status != "active" {
+		return fmt.Errorf("journal: capture absent tree on %s operation", j.state.Status)
+	}
+	resolved, relative, err := j.confined(path)
 	if err != nil {
 		return err
 	}
+	if j.captured[relative] {
+		return nil
+	}
+	if _, err := os.Lstat(resolved); err == nil {
+		return fmt.Errorf("journal: absent tree root exists: %s", resolved)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("journal: inspect absent tree root %s: %w", resolved, err)
+	}
+	entry := Entry{Path: relative, Kind: "absent-tree"}
+	j.state.Entries = append(j.state.Entries, entry)
+	if err := j.appendEntries([]Entry{entry}); err != nil {
+		j.state.Entries = j.state.Entries[:len(j.state.Entries)-1]
+		return err
+	}
+	j.captured[relative] = true
+	return nil
+}
+
+// appendEntries publishes durable capture records without rewriting the
+// complete transaction state. The caller has already synced regular-file
+// backups, and no filesystem mutation may occur until this batch is synced.
+func (j *Journal) appendEntries(entries []Entry) error {
 	path := filepath.Join(j.dir, entriesLogName)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("journal: open capture log: %w", err)
 	}
-	if _, err = file.Write(append(data, '\n')); err == nil {
+	writer := bufio.NewWriterSize(file, 256*1024)
+	for _, entry := range entries {
+		data, marshalErr := json.Marshal(entry)
+		if marshalErr != nil {
+			err = marshalErr
+			break
+		}
+		if _, writeErr := writer.Write(append(data, '\n')); writeErr != nil {
+			err = writeErr
+			break
+		}
+	}
+	if err == nil {
+		err = writer.Flush()
+	}
+	if err == nil {
 		err = file.Sync()
 	}
 	if closeErr := file.Close(); err == nil {
@@ -545,10 +671,37 @@ func syncDirectory(path string) error {
 	return closeErr
 }
 
+func syncFilesystem(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	err = unix.Syncfs(int(file.Fd()))
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
 func restore(journalDir, target string, entry Entry) error {
+	if entry.Kind == "absent-tree" {
+		// The transaction lock prevents another package merge from adding an
+		// unrelated path below this newly-created root before commit.
+		return os.RemoveAll(target)
+	}
 	info, err := os.Lstat(target)
+	restoreFileInPlace := false
+	if err == nil && entry.Kind == "file" && info.Mode().IsRegular() && entry.Dev != 0 && entry.Ino != 0 {
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			restoreFileInPlace = uint64(stat.Dev) == entry.Dev && stat.Ino == entry.Ino
+		}
+	}
 	if err == nil {
-		if info.IsDir() {
+		if restoreFileInPlace {
+			// Preserve the original inode so every pre-existing hard-link alias sees
+			// the restored bytes and retains its topology.
+		} else if info.IsDir() {
 			if err := os.Remove(target); err != nil && entry.Kind != "directory" {
 				return err
 			}
@@ -668,13 +821,9 @@ func copyFile(source, destination string, mode os.FileMode) error {
 		return err
 	}
 	_, copyErr := io.Copy(out, in)
-	syncErr := out.Sync()
 	closeErr := out.Close()
 	if copyErr != nil {
 		return copyErr
-	}
-	if syncErr != nil {
-		return syncErr
 	}
 	return closeErr
 }

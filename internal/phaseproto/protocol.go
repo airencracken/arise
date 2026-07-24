@@ -3,16 +3,20 @@
 package phaseproto
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -37,6 +41,7 @@ type WorkerOptions struct {
 	DurableLog  *PackageLog
 	FinalizeLog bool
 	CompressLog bool
+	OnEvent     func(Event)
 }
 
 // NamespaceOptions mirrors the independent namespace controls used by
@@ -59,33 +64,40 @@ var safeToken = regexp.MustCompile(`^[A-Za-z0-9_.:+-]+$`)
 var safePackageIdentity = regexp.MustCompile(`^[A-Za-z0-9_.:+/-]+$`)
 
 type Request struct {
-	Protocol      int                    `json:"protocol"`
-	ID            string                 `json:"id"`
-	Command       string                 `json:"command"`
-	Phase         string                 `json:"phase"`
-	Phases        []string               `json:"phases,omitempty"`
-	EAPI          string                 `json:"eapi"`
-	Ebuild        string                 `json:"ebuild"`
-	Environment   string                 `json:"environment,omitempty"` // decompressed installed VDB environment
-	Env           map[string]string      `json:"env"`
-	EclassDirs    []string               `json:"eclass_dirs,omitempty"`
-	UserPatchDirs []string               `json:"user_patch_dirs,omitempty"`
-	WorkDir       string                 `json:"work_dir,omitempty"`
-	BuildDir      string                 `json:"build_dir,omitempty"`
-	ConfigRoot    string                 `json:"config_root,omitempty"`
-	SourceDir     string                 `json:"source_dir,omitempty"`
-	ImageDir      string                 `json:"image_dir,omitempty"`
-	RootDir       string                 `json:"root_dir,omitempty"`
-	SysrootDir    string                 `json:"sysroot_dir,omitempty"`
-	BrootDir      string                 `json:"broot_dir,omitempty"`
-	TempDir       string                 `json:"temp_dir,omitempty"`
-	HomeDir       string                 `json:"home_dir,omitempty"`
-	LogFile       string                 `json:"log_file,omitempty"`
-	Package       PackageIdentity        `json:"package,omitempty"`
-	Policy        ExecutionPolicy        `json:"policy,omitempty"`
-	Distfiles     *distfiles.VerifiedSet `json:"-"`
-	HasVersion    map[string]bool        `json:"-"`
-	EmitMetadata  bool                   `json:"emit_metadata,omitempty"`
+	Protocol           int                    `json:"protocol"`
+	ID                 string                 `json:"id"`
+	Command            string                 `json:"command"`
+	Phase              string                 `json:"phase"`
+	Phases             []string               `json:"phases,omitempty"`
+	EAPI               string                 `json:"eapi"`
+	Ebuild             string                 `json:"ebuild"`
+	Environment        string                 `json:"environment,omitempty"`         // decompressed installed VDB environment
+	EnvironmentOverlay string                 `json:"environment_overlay,omitempty"` // saved state from a preceding phase
+	SaveEnvironment    string                 `json:"save_environment,omitempty"`    // atomic output for the next phase
+	Env                map[string]string      `json:"env"`
+	EclassDirs         []string               `json:"eclass_dirs,omitempty"`
+	UserPatchDirs      []string               `json:"user_patch_dirs,omitempty"`
+	InstallQAChecks    []string               `json:"install_qa_checks,omitempty"`
+	WorkDir            string                 `json:"work_dir,omitempty"`
+	BuildDir           string                 `json:"build_dir,omitempty"`
+	ConfigRoot         string                 `json:"config_root,omitempty"`
+	SourceDir          string                 `json:"source_dir,omitempty"`
+	ImageDir           string                 `json:"image_dir,omitempty"`
+	RootDir            string                 `json:"root_dir,omitempty"`
+	SysrootDir         string                 `json:"sysroot_dir,omitempty"`
+	BrootDir           string                 `json:"broot_dir,omitempty"`
+	TempDir            string                 `json:"temp_dir,omitempty"`
+	HomeDir            string                 `json:"home_dir,omitempty"`
+	LogFile            string                 `json:"log_file,omitempty"`
+	Package            PackageIdentity        `json:"package,omitempty"`
+	Policy             ExecutionPolicy        `json:"policy,omitempty"`
+	Distfiles          *distfiles.VerifiedSet `json:"-"`
+	HasVersion         map[string]bool        `json:"-"`
+	BestVersion        map[string]string      `json:"-"` // domain + tab + atom -> installed CPV
+	QueryHelper        string                 `json:"-"` // constrained Arise subprocess, never an ebuild-selected command
+	QueryRootVDB       string                 `json:"-"`
+	QueryBrootVDB      string                 `json:"-"`
+	EmitMetadata       bool                   `json:"emit_metadata,omitempty"`
 }
 
 // PackageIdentity contains the PMS package variables owned by the execution
@@ -143,12 +155,23 @@ func (r Request) Validate() error {
 	if r.Environment != "" && !filepath.IsAbs(r.Environment) {
 		return fmt.Errorf("phase protocol: installed environment path must be absolute")
 	}
+	if r.EnvironmentOverlay != "" && !filepath.IsAbs(r.EnvironmentOverlay) {
+		return fmt.Errorf("phase protocol: environment overlay path must be absolute")
+	}
+	if r.SaveEnvironment != "" && !filepath.IsAbs(r.SaveEnvironment) {
+		return fmt.Errorf("phase protocol: saved environment path must be absolute")
+	}
 	if r.EAPI != "7" && r.EAPI != "8" && r.EAPI != "9" {
 		return fmt.Errorf("phase protocol: unsupported EAPI %q (supported: 7, 8, 9)", r.EAPI)
 	}
 	for _, directory := range r.EclassDirs {
 		if !filepath.IsAbs(directory) {
 			return fmt.Errorf("phase protocol: eclass directory must be absolute")
+		}
+	}
+	for _, check := range r.InstallQAChecks {
+		if !filepath.IsAbs(check) {
+			return fmt.Errorf("phase protocol: install QA check path must be absolute")
 		}
 	}
 	for label, directory := range map[string]string{
@@ -179,6 +202,17 @@ func (r Request) Validate() error {
 	}
 	if r.LogFile != "" && !filepath.IsAbs(r.LogFile) {
 		return fmt.Errorf("phase protocol: PORTAGE_LOG_FILE must be absolute")
+	}
+	for label, path := range map[string]string{
+		"query helper": r.QueryHelper, "runtime ROOT VDB": r.QueryRootVDB,
+		"runtime BROOT VDB": r.QueryBrootVDB,
+	} {
+		if path != "" && !filepath.IsAbs(path) {
+			return fmt.Errorf("phase protocol: %s path must be absolute", label)
+		}
+	}
+	if r.QueryHelper != "" && (r.QueryRootVDB == "" || r.QueryBrootVDB == "") {
+		return fmt.Errorf("phase protocol: runtime query helper requires both VDB paths")
 	}
 	if len(r.UserPatchDirs) != 0 && r.WorkDir == "" {
 		return fmt.Errorf("phase protocol: user patches require a work directory")
@@ -215,10 +249,12 @@ func RunBashWorkerWithOptions(ctx context.Context, request Request, options Work
 		return nil, err
 	}
 	request = prepared
-	if request.Policy.Configured {
-		if request.Policy.UserPriv {
-			return nil, fmt.Errorf("phase policy: userpriv is enabled but credential isolation is unsupported by this worker")
+	if request.Policy.DropPrivileges {
+		if err := prepareUserprivWorkspace(request); err != nil {
+			return nil, fmt.Errorf("phase isolation: prepare userpriv workspace: %w", err)
 		}
+	}
+	if request.Policy.Configured {
 		options.Namespaces.Network = request.Policy.NetworkSandbox
 		options.Namespaces.IPC = request.Policy.IPCSandbox
 		options.Namespaces.PID = request.Policy.PIDSandbox
@@ -235,6 +271,15 @@ func RunBashWorkerWithOptions(ctx context.Context, request Request, options Work
 			}
 			executable = sandbox
 			arguments = append([]string{"/bin/bash"}, arguments...)
+			processName := "[" + request.Package.Category + "/" + request.Package.PF + "] sandbox"
+			executable, arguments = namedExecutable(processName, executable, arguments)
+		}
+		if request.Policy.DropPrivileges {
+			runuser, lookupErr := exec.LookPath("runuser")
+			if lookupErr != nil {
+				return nil, fmt.Errorf("phase isolation: userpriv requires runuser: %w", lookupErr)
+			}
+			executable, arguments = credentialCommand(runuser, "portage", executable, arguments)
 		}
 		requested := namespaceSpecs(options.Namespaces)
 		if namespacesRequested(requested) {
@@ -250,23 +295,98 @@ func RunBashWorkerWithOptions(ctx context.Context, request Request, options Work
 					warnNamespace(options.Diagnostics, warning)
 				}
 				if len(enabled) != 0 {
-					arguments = append(append([]string{unshare}, enabled...), append([]string{"--"}, arguments...)...)
+					// Namespace isolation is the outer launcher. Prefixing unshare to
+					// arguments only happened to work while executable was sandbox
+					// (sandbox then executed unshare). For Portage's intentionally
+					// unsandboxed lifecycle phases it produced `bash /usr/bin/unshare`,
+					// causing Bash to parse the ELF binary as a script. Preserve the
+					// selected inner executable explicitly in both cases.
+					executable, arguments = namespaceCommand(unshare, enabled, executable, arguments)
 				}
 			}
 		}
 		command := exec.CommandContext(ctx, executable, arguments...)
-		events, runErr := runWorkerCommand(command, request)
+		events, runErr := runWorkerCommandWithEvents(command, request, options.OnEvent)
 		return persistWorkerEvents(request, events, runErr, options)
 	case IsolationBubblewrap:
 		command, isolatedRequest, err := isolatedBashCommand(ctx, request, true)
 		if err != nil {
 			return nil, err
 		}
-		events, runErr := runWorkerCommand(command, isolatedRequest)
+		events, runErr := runWorkerCommandWithEvents(command, isolatedRequest, options.OnEvent)
 		return persistWorkerEvents(request, events, runErr, options)
 	default:
 		return nil, fmt.Errorf("phase isolation: unknown mode %q", options.Isolation)
 	}
+}
+
+func namespaceCommand(unshare string, enabled []string, executable string, arguments []string) (string, []string) {
+	wrapped := append(append([]string{}, enabled...), "--", executable)
+	wrapped = append(wrapped, arguments...)
+	return unshare, wrapped
+}
+
+// Portage gives sandbox workers an argv[0] such as
+// "[category/package-version] sandbox". Besides making process listings useful,
+// this is the long-standing interface used by genlop -c to discover active
+// merges. The tiny exec wrapper survives runuser and namespace launchers while
+// replacing itself immediately with the real sandbox process.
+func namedExecutable(name, executable string, arguments []string) (string, []string) {
+	// Do not place the literal Portage title in an outer launcher's argv.
+	// genlop discovers active merges by matching " sandbox " plus the bracketed
+	// package title in `ps` output.  Namespace launchers retain their complete
+	// child argv and would therefore look like a second active sandbox.  Encode
+	// the title until the innermost exec reconstructs argv[0].
+	encodedName := strings.ReplaceAll(name, " ", `\x20`)
+	wrapped := []string{"-c", `printf -v process_name '%b' "$1"; exec -a "$process_name" "$2" "${@:3}"`, "arise-exec-a", encodedName, executable}
+	wrapped = append(wrapped, arguments...)
+	return "/bin/bash", wrapped
+}
+
+// credentialCommand deliberately remains inside namespaceCommand. Namespace
+// creation requires root, while only the ebuild phase itself runs as portage.
+func credentialCommand(runuser, user, executable string, arguments []string) (string, []string) {
+	wrapped := []string{"-u", user, "--", executable}
+	wrapped = append(wrapped, arguments...)
+	return runuser, wrapped
+}
+
+func prepareUserprivWorkspace(request Request) error {
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("userpriv requires Arise to run as root")
+	}
+	account, err := user.Lookup("portage")
+	if err != nil {
+		return fmt.Errorf("look up portage account: %w", err)
+	}
+	uid, err := strconv.Atoi(account.Uid)
+	if err != nil {
+		return fmt.Errorf("parse portage uid %q: %w", account.Uid, err)
+	}
+	gid, err := strconv.Atoi(account.Gid)
+	if err != nil {
+		return fmt.Errorf("parse portage gid %q: %w", account.Gid, err)
+	}
+	if request.WorkDir == "" {
+		return fmt.Errorf("userpriv requires a work directory")
+	}
+	if err := filepath.WalkDir(request.WorkDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := os.Lchown(path, uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", path, err)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if request.LogFile != "" {
+		if err := os.Chown(request.LogFile, uid, gid); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("chown package log %s: %w", request.LogFile, err)
+		}
+	}
+	return nil
 }
 
 func persistWorkerEvents(request Request, events []Event, runErr error, options WorkerOptions) ([]Event, error) {
@@ -294,6 +414,9 @@ func persistWorkerEvents(request Request, events []Event, runErr error, options 
 		if err := options.DurableLog.WriteRecord(sequence, request.ID, request.Phase, "terminal-error", "stderr", runErr.Error()); err != nil {
 			return events, fmt.Errorf("%v; %w (durable log: %s)", runErr, err, options.DurableLog.Path())
 		}
+	}
+	if err := options.DurableLog.Sync(); err != nil {
+		return events, fmt.Errorf("%v (durable log: %s)", err, options.DurableLog.Path())
 	}
 	if options.FinalizeLog {
 		if err := options.DurableLog.Finalize(options.CompressLog); err != nil {
@@ -377,12 +500,25 @@ func isolatedBashCommand(ctx context.Context, request Request, isolateNetwork bo
 		"--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
 		"--ro-bind", "/sbin", "/sbin", "--ro-bind", "/lib", "/lib",
 		"--ro-bind", "/lib64", "/lib64", "--tmpfs", "/tmp", "--proc", "/proc", "--dev", "/dev",
-		"--dir", "/run", "--dir", "/run/arise", "--ro-bind", request.Ebuild, "/run/arise/ebuild",
+		"--dir", "/etc", "--dir", "/run", "--dir", "/run/arise", "--ro-bind", request.Ebuild, "/run/arise/ebuild",
 		"--", "bash", "--noprofile", "--norc", "-c", bashWorker,
 	}
 	bind := func(mode, source, target string) {
 		insert := len(args) - 6
 		args = append(args[:insert], append([]string{mode, source, target}, args[insert:]...)...)
+	}
+	filesDir := filepath.Join(filepath.Dir(request.Ebuild), "files")
+	if info, statErr := os.Stat(filesDir); statErr == nil && info.IsDir() {
+		bind("--ro-bind", filesDir, "/run/arise/files")
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, request, fmt.Errorf("phase isolation: inspect FILESDIR: %w", statErr)
+	}
+	for _, linkerConfig := range []string{"/etc/ld.so.conf", "/etc/ld.so.conf.d"} {
+		if _, statErr := os.Stat(linkerConfig); statErr == nil {
+			bind("--ro-bind", linkerConfig, linkerConfig)
+		} else if !os.IsNotExist(statErr) {
+			return nil, request, fmt.Errorf("phase isolation: inspect linker configuration %s: %w", linkerConfig, statErr)
+		}
 	}
 	if request.Environment != "" {
 		bind("--ro-bind", request.Environment, "/run/arise/environment")
@@ -409,7 +545,15 @@ func isolatedBashCommand(ctx context.Context, request Request, isolateNetwork bo
 		args = append(args[:insert], append([]string{"--ro-bind", directory, target}, args[insert:]...)...)
 		request.UserPatchDirs[index] = target
 	}
+	request.InstallQAChecks = append([]string(nil), request.InstallQAChecks...)
+	for index, check := range request.InstallQAChecks {
+		target := fmt.Sprintf("/run/arise/install-qa/%d", index)
+		insert := len(args) - 6
+		args = append(args[:insert], append([]string{"--ro-bind", check, target}, args[insert:]...)...)
+		request.InstallQAChecks[index] = target
+	}
 	originalWorkDir := request.WorkDir
+	originalSourceDir := request.SourceDir
 	if request.WorkDir != "" {
 		insert := len(args) - 6
 		args = append(args[:insert], append([]string{"--bind", request.WorkDir, "/run/arise/work"}, args[insert:]...)...)
@@ -425,7 +569,16 @@ func isolatedBashCommand(ctx context.Context, request Request, isolateNetwork bo
 		bind("--ro-bind", request.ConfigRoot, "/run/arise/config")
 		request.ConfigRoot = "/run/arise/config"
 	}
-	if request.SourceDir != "" {
+	if originalSourceDir != "" && originalWorkDir != "" {
+		relative, relativeErr := filepath.Rel(originalWorkDir, originalSourceDir)
+		if relativeErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			request.SourceDir = filepath.Join(request.WorkDir, relative)
+		} else {
+			insert := len(args) - 6
+			args = append(args[:insert], append([]string{"--bind", originalSourceDir, "/run/arise/source"}, args[insert:]...)...)
+			request.SourceDir = "/run/arise/source"
+		}
+	} else if request.SourceDir != "" {
 		insert := len(args) - 6
 		args = append(args[:insert], append([]string{"--bind", request.SourceDir, "/run/arise/source"}, args[insert:]...)...)
 		request.SourceDir = "/run/arise/source"
@@ -466,17 +619,31 @@ func isolatedBashCommand(ctx context.Context, request Request, isolateNetwork bo
 }
 
 func runWorkerCommand(command *exec.Cmd, request Request) ([]Event, error) {
-	return runWorkerCommandWithCancelGrace(command, request, 2*time.Second)
+	return runWorkerCommandWithEvents(command, request, nil)
+}
+
+func runWorkerCommandWithEvents(command *exec.Cmd, request Request, onEvent func(Event)) ([]Event, error) {
+	return runWorkerCommandWithOptions(command, request, 2*time.Second, onEvent)
 }
 
 func runWorkerCommandWithCancelGrace(command *exec.Cmd, request Request, cancelGrace time.Duration) ([]Event, error) {
+	return runWorkerCommandWithOptions(command, request, cancelGrace, nil)
+}
+
+func runWorkerCommandWithOptions(command *exec.Cmd, request Request, cancelGrace time.Duration, onEvent func(Event)) ([]Event, error) {
 	cancelled := configureProcessGroupCancellation(command, cancelGrace)
 	command.Env = []string{
-		"PATH=/usr/bin:/bin", "LC_ALL=C", "ARISE_ID=" + request.ID,
+		"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "ARISE_ID=" + request.ID,
 		"ARISE_COMMAND=" + request.Command, "ARISE_PHASE=" + request.Phase, "ARISE_EAPI=" + request.EAPI, "ARISE_EBUILD=" + request.Ebuild,
 	}
 	if request.Environment != "" {
 		command.Env = append(command.Env, "ARISE_ENVIRONMENT="+request.Environment)
+	}
+	if request.EnvironmentOverlay != "" {
+		command.Env = append(command.Env, "ARISE_ENVIRONMENT_OVERLAY="+request.EnvironmentOverlay)
+	}
+	if request.SaveEnvironment != "" {
+		command.Env = append(command.Env, "ARISE_SAVE_ENVIRONMENT="+request.SaveEnvironment)
 	}
 	if request.EmitMetadata {
 		command.Env = append(command.Env, "ARISE_EMIT_METADATA=1")
@@ -495,6 +662,9 @@ func runWorkerCommandWithCancelGrace(command *exec.Cmd, request Request, cancelG
 	if len(request.UserPatchDirs) != 0 {
 		command.Env = append(command.Env, "ARISE_USER_PATCH_DIRS="+strings.Join(request.UserPatchDirs, "\n"))
 	}
+	if len(request.InstallQAChecks) != 0 {
+		command.Env = append(command.Env, "ARISE_INSTALL_QA_CHECKS="+strings.Join(request.InstallQAChecks, "\n"))
+	}
 	if len(request.HasVersion) != 0 {
 		queries := make([]string, 0, len(request.HasVersion))
 		for query := range request.HasVersion {
@@ -511,6 +681,28 @@ func runWorkerCommandWithCancelGrace(command *exec.Cmd, request Request, cancelG
 			}
 		}
 		command.Env = append(command.Env, "ARISE_HAS_VERSION="+encoded.String())
+	}
+	if len(request.BestVersion) != 0 {
+		queries := make([]string, 0, len(request.BestVersion))
+		for query := range request.BestVersion {
+			queries = append(queries, query)
+		}
+		sort.Strings(queries)
+		var encoded strings.Builder
+		for _, query := range queries {
+			encoded.WriteString(query)
+			encoded.WriteByte('\t')
+			encoded.WriteString(request.BestVersion[query])
+			encoded.WriteByte('\n')
+		}
+		command.Env = append(command.Env, "ARISE_BEST_VERSION="+encoded.String())
+	}
+	if request.QueryHelper != "" {
+		command.Env = append(command.Env,
+			"ARISE_QUERY_HELPER="+request.QueryHelper,
+			"ARISE_QUERY_ROOT_VDB="+request.QueryRootVDB,
+			"ARISE_QUERY_BROOT_VDB="+request.QueryBrootVDB,
+		)
 	}
 	command.Env = append(command.Env,
 		"FILESDIR="+filepath.Join(filepath.Dir(request.Ebuild), "files"),
@@ -570,20 +762,48 @@ func runWorkerCommandWithCancelGrace(command *exec.Cmd, request Request, cancelG
 		}
 		command.Env = append(command.Env, name+"="+value)
 	}
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	runErr := command.Run()
-	decoder := NewDecoder(&stdout, request.ID)
+	var stderr bytes.Buffer
+	stdout, pipeErr := command.StdoutPipe()
+	if pipeErr != nil {
+		return nil, fmt.Errorf("phase worker stdout pipe: %w", pipeErr)
+	}
+	command.Stderr = &stderr
+	if startErr := command.Start(); startErr != nil {
+		return nil, startErr
+	}
+	decoder := &Decoder{id: request.ID}
+	reader := bufio.NewReader(stdout)
 	var events []Event
+	var decodeErr error
 	for {
-		event, err := decoder.Next()
+		line, err := reader.ReadBytes('\n')
 		if err == io.EOF {
+			if len(bytes.TrimSpace(line)) != 0 {
+				decodeErr = fmt.Errorf("truncated event without newline")
+			}
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("phase worker protocol: %w; stderr: %s", err, strings.TrimSpace(stderr.String()))
+			decodeErr = err
+			break
+		}
+		var event Event
+		if err := json.Unmarshal(line, &event); err != nil {
+			decodeErr = err
+			break
+		}
+		if err := decoder.accept(event); err != nil {
+			decodeErr = err
+			break
 		}
 		events = append(events, event)
+		if onEvent != nil {
+			onEvent(event)
+		}
+	}
+	runErr := command.Wait()
+	if decodeErr != nil {
+		return nil, fmt.Errorf("phase worker protocol: %w; stderr: %s", decodeErr, strings.TrimSpace(stderr.String()))
 	}
 	if cancelled.Load() {
 		sequence := uint64(1)
@@ -672,35 +892,45 @@ func (d *Decoder) Next() (Event, error) {
 	if err := d.decoder.Decode(&event); err != nil {
 		return Event{}, err
 	}
+	if err := d.accept(event); err != nil {
+		return Event{}, err
+	}
+	return event, nil
+}
+
+func (d *Decoder) accept(event Event) error {
+	if d.finished {
+		return fmt.Errorf("phase protocol: event after terminal result")
+	}
 	if event.Protocol != Version || event.ID != d.id {
-		return Event{}, fmt.Errorf("phase protocol: event envelope mismatch")
+		return fmt.Errorf("phase protocol: event envelope mismatch")
 	}
 	if event.Sequence != d.next {
-		return Event{}, fmt.Errorf("phase protocol: event sequence %d, want %d", event.Sequence, d.next)
+		return fmt.Errorf("phase protocol: event sequence %d, want %d", event.Sequence, d.next)
 	}
 	d.next++
 	switch event.Kind {
 	case "phase", "log", "qa":
 		if event.ExitCode != nil {
-			return Event{}, fmt.Errorf("phase protocol: non-result event has exit status")
+			return fmt.Errorf("phase protocol: non-result event has exit status")
 		}
 	case "metadata":
 		if event.ExitCode != nil || !safeToken.MatchString(event.Class) {
-			return Event{}, fmt.Errorf("phase protocol: invalid metadata event")
+			return fmt.Errorf("phase protocol: invalid metadata event")
 		}
 	case "elog":
 		if event.ExitCode != nil || !map[string]bool{"INFO": true, "LOG": true, "WARN": true, "ERROR": true, "QA": true}[event.Class] {
-			return Event{}, fmt.Errorf("phase protocol: invalid elog event")
+			return fmt.Errorf("phase protocol: invalid elog event")
 		}
 	case "result":
 		if event.ExitCode == nil {
-			return Event{}, fmt.Errorf("phase protocol: result event lacks exit status")
+			return fmt.Errorf("phase protocol: result event lacks exit status")
 		}
 		d.finished = true
 	default:
-		return Event{}, fmt.Errorf("phase protocol: unknown event kind %q", event.Kind)
+		return fmt.Errorf("phase protocol: unknown event kind %q", event.Kind)
 	}
-	return event, nil
+	return nil
 }
 
 func (d *Decoder) Finished() bool {

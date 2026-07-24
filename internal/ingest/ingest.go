@@ -73,7 +73,7 @@ func OpenReadOnlyDB(path string) (*badger.DB, error) {
 	opts := badger.DefaultOptions(path).
 		WithReadOnly(true).
 		WithValueDir(valueDir).
-		WithLoggingLevel(badger.WARNING)
+		WithLogger(nil)
 	db, err := badger.Open(opts)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: open read-only db: %w", err)

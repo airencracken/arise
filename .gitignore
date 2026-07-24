@@ -2,6 +2,7 @@
 /arise
 /arise-perf
 /arise-perf-table
+/arise.info
 
 # test coverage
 *.out

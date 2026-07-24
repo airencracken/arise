@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 
 	"github.com/airencracken/arise/internal/fetch"
 	"github.com/airencracken/arise/internal/merge"
@@ -20,6 +21,7 @@ import (
 
 type PackageRunner func(context.Context, string, *rebuild.RebuildConfig) error
 type ActionPreflight func(resolve.PkgAction, *rebuild.RebuildConfig) error
+type FreeSpace func(string) (uint64, error)
 
 type PreflightFailure struct {
 	Action resolve.PkgAction
@@ -49,14 +51,23 @@ func PreflightAll(result *resolve.ResolveResult, base rebuild.RebuildConfig) []P
 }
 
 type Config struct {
-	Rebuild          rebuild.RebuildConfig
-	ResumePath       string
-	Jobs             int
-	LoadAverage      float64
-	Runner           PackageRunner
-	Preflight        ActionPreflight
-	OnActionStart    func(index, total int, action resolve.PkgAction)
-	OnActionComplete func(index, total int, action resolve.PkgAction)
+	Rebuild     rebuild.RebuildConfig
+	ResumePath  string
+	Jobs        int
+	LoadAverage float64
+	// TmpdirRequireFreeGB mirrors emerge's --jobs-tmpdir-require-free-gb:
+	// parallel job admission is reduced when the scaled reserve is unavailable.
+	TmpdirRequireFreeGB int
+	FreeSpace           FreeSpace
+	Runner              PackageRunner
+	Preflight           ActionPreflight
+	OnActionStart       func(index, total int, action resolve.PkgAction)
+	OnActionInstall     func(index, total int, action resolve.PkgAction)
+	OnActionStage       func(index, total int, action resolve.PkgAction, stage string)
+	OnActionProgress    func(index, total int, action resolve.PkgAction, stage string, current, stageTotal int)
+	OnActionNotice      func(index, total int, action resolve.PkgAction, class, message string)
+	OnActionComplete    func(index, total int, action resolve.PkgAction)
+	OnSpaceWait         func(path string, available, required uint64)
 	// ValidateLocked reruns state authorization after acquiring the live VDB
 	// lock and immediately before the first worker starts.
 	ValidateLocked func() error
@@ -101,6 +112,12 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 	if cfg.Preflight == nil {
 		cfg.Preflight = PreflightAction
 	}
+	if cfg.TmpdirRequireFreeGB < 0 {
+		return fmt.Errorf("executor: --jobs-tmpdir-require-free-gb must not be negative")
+	}
+	if cfg.FreeSpace == nil {
+		cfg.FreeSpace = filesystemAvailableBytes
+	}
 	// Preflight every action before the first build or merge, retaining the
 	// action-specific frozen policy/query results for its eventual worker.
 	actionConfigs := make([]rebuild.RebuildConfig, len(result.Install))
@@ -140,17 +157,55 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if _, err := admitTmpdirJob(cfg, 0); err != nil {
+			return err
+		}
 		if cfg.OnActionStart != nil {
 			cfg.OnActionStart(index+1, len(result.Install), action)
 		}
 		actionCfg := actionConfigs[index]
+		actionCfg.OnStage = func(stage string) {
+			if cfg.OnActionStage != nil {
+				cfg.OnActionStage(index+1, len(result.Install), action, stage)
+			}
+		}
+		actionCfg.OnProgress = func(stage string, current, stageTotal int) {
+			if cfg.OnActionProgress != nil {
+				cfg.OnActionProgress(index+1, len(result.Install), action, stage, current, stageTotal)
+			}
+		}
+		actionCfg.OnNotice = func(class, message string) {
+			if cfg.OnActionNotice != nil {
+				cfg.OnActionNotice(index+1, len(result.Install), action, class, message)
+			}
+		}
+		installReported := false
+		phaseStart := actionCfg.OnPhaseStart
+		actionCfg.OnPhaseStart = func(phase string) {
+			if phaseStart != nil {
+				phaseStart(phase)
+			}
+			if phase == "src_install" && !installReported && cfg.OnActionInstall != nil {
+				installReported = true
+				cfg.OnActionInstall(index+1, len(result.Install), action)
+			}
+		}
 		atomText := actionLabel(action)
 		if err := cfg.Runner(ctx, atomText, &actionCfg); err != nil {
 			var postCommit *merge.PostCommitError
-			if errors.As(err, &postCommit) && cfg.ResumePath != "" {
-				if markErr := resolve.MarkResumeComplete(cfg.ResumePath, action.Atom.String()); markErr != nil {
-					return fmt.Errorf("executor: %s committed but post-commit lifecycle failed: %v; mark resume complete: %w", atomText, err, markErr)
+			if errors.As(err, &postCommit) {
+				if cfg.ResumePath != "" {
+					if markErr := resolve.MarkResumeComplete(cfg.ResumePath, action.Atom.String()); markErr != nil {
+						return fmt.Errorf("executor: %s committed but post-commit lifecycle failed: %v; mark resume complete: %w", atomText, err, markErr)
+					}
 				}
+				if cfg.OnActionNotice != nil {
+					cfg.OnActionNotice(index+1, len(result.Install), action, "WARN", "committed package has a post-commit lifecycle failure: "+err.Error())
+				}
+				if cfg.OnActionComplete != nil {
+					cfg.OnActionComplete(index+1, len(result.Install), action)
+				}
+				continue
 			}
 			return fmt.Errorf("executor: %s: %w", atomText, err)
 		}
@@ -166,14 +221,77 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 	return nil
 }
 
+func filesystemAvailableBytes(path string) (uint64, error) {
+	path = filepath.Clean(path)
+	for {
+		var stat syscall.Statfs_t
+		if err := syscall.Statfs(path, &stat); err == nil {
+			return uint64(stat.Bavail) * uint64(stat.Bsize), nil
+		} else if !errors.Is(err, syscall.ENOENT) {
+			return 0, err
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return 0, fmt.Errorf("no existing ancestor for temporary work directory %s", path)
+		}
+		path = parent
+	}
+}
+
+func tmpdirRequiredBytes(gib, running int) uint64 {
+	if gib <= 0 {
+		return 0
+	}
+	base := uint64(gib) << 30
+	required := base
+	for divisor := 2; divisor <= running+1; divisor++ {
+		required += base / uint64(divisor)
+	}
+	return required
+}
+
+// admitTmpdirJob follows emerge's decaying reserve calculation. A serial job
+// is allowed below the configured reserve for forward progress, but never when
+// the filesystem reports zero available bytes.
+func admitTmpdirJob(cfg Config, running int) (bool, error) {
+	path := cfg.Rebuild.WorkDirBase
+	if path == "" {
+		path = "/var/tmp/arise"
+	}
+	available, err := cfg.FreeSpace(path)
+	if err != nil {
+		return false, fmt.Errorf("executor: inspect temporary work filesystem for %s: %w", path, err)
+	}
+	if available == 0 {
+		return false, fmt.Errorf("executor: temporary work filesystem for %s has no free space (0 bytes available); free space before retrying", path)
+	}
+	required := tmpdirRequiredBytes(cfg.TmpdirRequireFreeGB, running)
+	if running > 0 && required > 0 && available < required {
+		if cfg.OnSpaceWait != nil {
+			cfg.OnSpaceWait(path, available, required)
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
 type concurrentResult struct {
 	index int
 	err   error
 }
 
 func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionConfigs []rebuild.RebuildConfig, cfg Config) error {
+	outerCtx := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	spaceWaitCallback := cfg.OnSpaceWait
+	spaceWarningReported := false
+	cfg.OnSpaceWait = func(path string, available, required uint64) {
+		if !spaceWarningReported && spaceWaitCallback != nil {
+			spaceWaitCallback(path, available, required)
+		}
+		spaceWarningReported = true
+	}
 	identities := make(map[string]int, len(actions))
 	for index, action := range actions {
 		identity := resolve.ActionIdentity(action)
@@ -210,15 +328,45 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 	launch := func(index int) {
 		running++
 		action := actions[index]
+		// Admission is ordered by the ready queue. Report it here rather than
+		// after each worker's load wait, which lets goroutine scheduling announce
+		// later plan indexes before earlier ones.
+		if cfg.OnActionStart != nil {
+			cfg.OnActionStart(index+1, len(actions), action)
+		}
 		go func() {
 			if err := rebuild.WaitForLoadContext(ctx, cfg.LoadAverage); err != nil {
 				results <- concurrentResult{index: index, err: err}
 				return
 			}
-			if cfg.OnActionStart != nil {
-				cfg.OnActionStart(index+1, len(actions), action)
-			}
 			actionCfg := actionConfigs[index]
+			actionCfg.PostCommitContext = outerCtx
+			actionCfg.OnStage = func(stage string) {
+				if cfg.OnActionStage != nil {
+					cfg.OnActionStage(index+1, len(actions), action, stage)
+				}
+			}
+			actionCfg.OnProgress = func(stage string, current, stageTotal int) {
+				if cfg.OnActionProgress != nil {
+					cfg.OnActionProgress(index+1, len(actions), action, stage, current, stageTotal)
+				}
+			}
+			actionCfg.OnNotice = func(class, message string) {
+				if cfg.OnActionNotice != nil {
+					cfg.OnActionNotice(index+1, len(actions), action, class, message)
+				}
+			}
+			installReported := false
+			phaseStart := actionCfg.OnPhaseStart
+			actionCfg.OnPhaseStart = func(phase string) {
+				if phaseStart != nil {
+					phaseStart(phase)
+				}
+				if phase == "src_install" && !installReported && cfg.OnActionInstall != nil {
+					installReported = true
+					cfg.OnActionInstall(index+1, len(actions), action)
+				}
+			}
 			actionCfg.CommitLock = commitLock
 			actionCfg.OnTransactionCommit = func(committedErr error) error {
 				if cfg.ResumePath != "" {
@@ -232,11 +380,30 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 				return nil
 			}
 			err := cfg.Runner(ctx, actionLabel(action), &actionCfg)
+			var postCommit *merge.PostCommitError
+			if errors.As(err, &postCommit) {
+				if cfg.OnActionNotice != nil {
+					cfg.OnActionNotice(index+1, len(actions), action, "WARN", "committed package has a post-commit lifecycle failure: "+err.Error())
+				}
+				err = nil
+			}
 			results <- concurrentResult{index: index, err: err}
 		}()
 	}
 	for completed < len(actions) {
 		for len(ready) > 0 && running < cfg.Jobs {
+			admitted, err := admitTmpdirJob(cfg, running)
+			if err != nil {
+				cancel()
+				for running > 0 {
+					<-results
+					running--
+				}
+				return err
+			}
+			if !admitted {
+				break
+			}
 			index := ready[0]
 			ready = ready[1:]
 			launch(index)
@@ -300,6 +467,7 @@ func actionRebuildConfig(base rebuild.RebuildConfig, action resolve.PkgAction) r
 	if action.Subslot != "" {
 		base.SelectedSlot += "/" + action.Subslot
 	}
+	base.SelectedIUSE = action.IUse
 	base.AllowLiveReplacement = base.AllowLiveRoot && action.Action == "reinstall"
 	base.AllowLiveUpgrade = base.AllowLiveRoot && action.Action == "update"
 	if base.AllowLiveUpgrade {

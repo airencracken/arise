@@ -53,6 +53,51 @@ func TestActiveJournalUsesAppendOnlyCaptureLog(t *testing.T) {
 	}
 }
 
+func TestRollbackInPlaceWritePreservesHardlinkTopology(t *testing.T) {
+	tmp := t.TempDir()
+	root := filepath.Join(tmp, "root")
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(first, []byte("old"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(first, second); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := Begin(filepath.Join(tmp, "journals"), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Capture(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(first, []byte("new"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	firstInfo, err := os.Stat(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := os.Stat(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(firstInfo, secondInfo) {
+		t.Fatal("rollback broke the original hard-link relationship")
+	}
+	for _, path := range []string{first, second} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != "old" {
+			t.Fatalf("%s=%q err=%v", path, got, err)
+		}
+	}
+}
+
 func TestOpenIgnoresTornFinalCaptureRecord(t *testing.T) {
 	root, base := t.TempDir(), t.TempDir()
 	operation, err := Begin(base, root)
@@ -93,6 +138,91 @@ func BenchmarkCaptureAbsent(b *testing.B) {
 		if err := operation.Capture(filepath.Join(root, "created", fmt.Sprintf("%08d", index))); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestCaptureAbsentTreeRollsBackAllCreatedDescendants(t *testing.T) {
+	root, base := t.TempDir(), t.TempDir()
+	operation, err := Begin(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(root, "usr", "src", "linux-new")
+	if err := operation.CaptureAbsentTree(tree); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(tree, "drivers", "net"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tree, "drivers", "net", "driver.c"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(tree); !os.IsNotExist(err) {
+		t.Fatalf("new subtree remains after rollback: %v", err)
+	}
+	reopened, err := Open(operation.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.state.Entries) != 1 || reopened.state.Entries[0].Kind != "absent-tree" {
+		t.Fatalf("entries = %#v", reopened.state.Entries)
+	}
+}
+
+func TestCaptureAbsentTreeRefusesExistingPath(t *testing.T) {
+	root, base := t.TempDir(), t.TempDir()
+	tree := filepath.Join(root, "existing")
+	if err := os.Mkdir(tree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := Begin(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.CaptureAbsentTree(tree); err == nil {
+		t.Fatal("CaptureAbsentTree accepted an existing path")
+	}
+}
+
+func TestCaptureBatchReopensAndRollsBackMixedPreimages(t *testing.T) {
+	root, base := t.TempDir(), t.TempDir()
+	existing := filepath.Join(root, "existing")
+	created := filepath.Join(root, "created")
+	if err := os.WriteFile(existing, []byte("before"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := Begin(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.CaptureBatch([]string{existing, created, existing}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existing, []byte("after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(created, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(operation.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(reopened.state.Entries); got != 2 {
+		t.Fatalf("batch entries=%d, want 2", got)
+	}
+	if err := reopened.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(existing)
+	if err != nil || string(data) != "before" {
+		t.Fatalf("existing preimage=%q err=%v", data, err)
+	}
+	if _, err := os.Lstat(created); !os.IsNotExist(err) {
+		t.Fatalf("created path survived rollback: %v", err)
 	}
 }
 

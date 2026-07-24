@@ -72,7 +72,15 @@ including split-usr systems, remain compatibility inputs.
 
 @table @emph
 @item Pure Go and static linking
-@code{CGO_ENABLED=0}. No runtime dependency on Python, Bash, or shared libraries.
+@code{CGO_ENABLED=0}. The Arise control plane has no runtime dependency on
+Python or shared libraries. Package execution still invokes the native Bash
+and build tools required by Gentoo ebuild semantics.
+
+@item Optional integrations
+Enhancements that introduce an additional Arise runtime dependency require a
+functional baseline fallback and an explicit Gentoo USE flag. Bubblewrap and
+filesystem snapshot providers are optional strengthening layers, not gates for
+ordinary control-plane or Portage-compatible behavior.
 
 @item Filesystem is sovereign
 The database is an acceleration layer. The filesystem (ebuild tree, VDB) is
@@ -86,9 +94,13 @@ Core logic (resolution, metadata, auditing) is pure Go.
 Remains operational even when system Python or portage libraries are broken.
 @end table
 
-General live-root install, update, removal, depclean and rebuild execution is
-not yet supported. Use pretend mode until the execution-ABI and transaction
-acceptance gates documented in @file{PUNCHLIST.md} pass.
+Experimental live-root install and update execution is available only with the
+live-mutation gate and approval of an exact verified saved plan. Source
+transactions use isolated phase workers, durable logs, operation locking,
+package journals, and resumable dependency-aware scheduling. This remains a
+development interface rather than a general Portage replacement. Removal,
+depclean, and broader maintenance mutation remain gated until their complete
+transaction and recovery contracts pass.
 
 @node Quick Start
 @chapter Quick Start
@@ -123,7 +135,7 @@ $ arise --pretend update
 
 # Audit for outdated packages
 $ arise audit python
-$ arise audit perl --fix
+$ arise audit perl
 @end example
 
 @node Invocation
@@ -161,12 +173,14 @@ Remote repository URL for sync.
 
 @table @command
 @item install [flags] @var{atoms@dots{}}
-Resolve one or more packages. General execution is gated; use
-@option{--pretend}. Manifest-verified @option{--fetchonly} is the bounded
-non-pretend exception.
+Resolve one or more packages. Live execution requires
+@option{--experimental-live-mutation} and approval of an exact verified saved
+plan. Prefer @option{--pretend} and full preflight before mutation.
+Manifest-verified @option{--fetchonly} is a bounded non-mutation operation.
 
 @item update [flags] [@var{atoms@dots{}}]
-Resolve updates, defaulting to @code{@@world}. General execution is gated.
+Resolve updates, defaulting to @code{@@world}. Live execution uses the same
+experimental saved-plan approval gate as @command{install}.
 
 @item uninstall @var{atoms@dots{}}
 Propose removal without live mutation.
@@ -179,6 +193,10 @@ Propose old-version removal without mutation.
 
 @item deselect @var{atom}
 Remove a package from @@world without uninstalling.
+
+@item select @var{atom}
+Add exactly one installed package atom to @@world using locked, state-bound
+world-file mutation.
 
 @item recover status
 List durable package journals and their state.
@@ -196,8 +214,16 @@ Roll back one active journal while holding the VDB mutation lock. Use
 Search the package database with eix-style filtering.
 See @ref{Search Filters} for all available search flags.
 
+@item installed [@var{selector}]
+List installed package atoms. Versionless output is the default; selectors and
+flags provide CPVs, repository, build-time, quiet, and NUL-delimited views.
+
 @item query @var{atom}
 Display metadata for a specific package.
+
+@item state @var{subcommand}
+Emit deterministic available or installed package state used by parity,
+snapshot, and differential workflows.
 
 @item info
 Display system information: arise version, Go runtime, portage configuration,
@@ -230,19 +256,27 @@ List installed packages matching a pattern.
 
 @table @command
 @item sync
-Synchronize the Gentoo repository via git (primary) or rsync (fallback).
+Synchronize the Gentoo repository via git (primary) or rsync (fallback), then
+atomically publish the refreshed resolver index. Success means both stages
+completed.
 
 @item index
 Rebuild the BadgerDB metadata database from the ebuild tree.
 
 @item audit @var{python|perl} [--fix]
 Audit installed packages for outdated Python or Perl site-packages paths.
+@option{--fix --pretend} lists the affected rebuild set. Non-pretend
+@option{--fix} remains gated and fails explicitly.
 
 @item preserved-rebuild [flags]
 Scan for broken shared library links and rebuild affected packages.
 
 @item revdep-rebuild [flags]
 Full reverse dependency scan for broken ELF dependencies.
+
+@item bench
+Run Arise's built-in microbenchmark report. Correctness-gated external
+comparisons use the dedicated performance harness.
 @end table
 
 @node Configuration
@@ -399,13 +433,30 @@ Wall-clock resolver deadline (default @code{5m}). @code{0} disables the
 deadline without changing the independent backtrack ceiling.
 @item --experimental-live-mutation
 Enable the development mutation path. It is not sufficient authorization by
-itself. Live root is limited to the additive single-package canary eligibility
-rules; general mutation remains disabled.
+itself; an exact verified plan must also be approved.
 @item --approve-plan-sha256 @var{digest}
 Authorize exactly the canonical verified-plan digest, including its package
 state and policy fingerprint. State drift before execution fails closed.
+@item --save-plan @var{path-or-name}
+Save the complete generated JSON plan for later inspection and approval.
+@item --approve-plan @var{path-or-name}
+Authorize execution from an exact saved plan after current state and policy are
+revalidated.
+@item --preflight-only
+Validate every planned package without fetching, building, or mutating.
+@item --plan-dir @var{path}
+Directory used for named saved plans.
 @item --journal-dir @var{path}
 Directory containing durable package transaction journals.
+@item --resume-file @var{path}
+Path containing resumable package-action state.
+@item --work-dir @var{path}
+Package build and transaction workspace.
+@item --fetch-jobs @var{N}
+Concurrent source fetch and verification jobs.
+@item --show-estimates
+Show historical per-package and serial-total merge-time estimates. Estimates
+are advisory and do not affect plan authorization or scheduling.
 @item --complete-graph
 Rebuild reverse deps.
 @item --keep-going
@@ -524,8 +575,10 @@ Dependency graph builder. Queries BadgerDB and walks the ebuild tree.
 Backtracking dependency solver. USE, keyword, license, mask awareness.
 
 @item internal/rebuild
-Experimental build pipeline: fetch -> unpack -> configure -> compile ->
-image install -> journaled disposable-root merge. Live mutation remains gated.
+Source build pipeline: verified fetch -> isolated phase execution -> image
+validation -> journaled payload/VDB transaction -> lifecycle finalization.
+Live-root mutation remains behind exact saved-plan approval and the
+experimental mutation gate.
 
 @item internal/portage
 Configuration parser. make.conf, package.use, package.accept_keywords, etc.

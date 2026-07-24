@@ -1,7 +1,6 @@
 package phaseproto
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -144,6 +143,28 @@ func TestApplyPackagePolicyCopiesRootAndScratchDirectories(t *testing.T) {
 	}
 }
 
+func TestApplyPackagePolicyAuthorizesScratchPathsOutsideTmp(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "eclass"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "sandbox-paths", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: filepath.Join(root, "pkg.ebuild"), Env: map[string]string{"SANDBOX_WRITE": "/existing"}}
+	policy := PackagePolicy{
+		Repositories: []portage.RepoEntry{{Name: "gentoo", Location: repo}}, Repository: "gentoo",
+		WorkDir: "/home/build/work", BuildDir: "/home/build/work", SourceDir: "/home/build/work/source",
+		ImageDir: "/home/build/image", TempDir: "/home/build/temp", HomeDir: "/home/build/home", LogFile: "/home/build/build.log",
+	}
+	got, err := ApplyPackagePolicy(request, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "/existing:/home/build/work:/home/build/work/source:/home/build/image:/home/build/temp:/home/build/home:/home/build/build.log"
+	if got.Env["SANDBOX_WRITE"] != want {
+		t.Fatalf("SANDBOX_WRITE=%q want=%q", got.Env["SANDBOX_WRITE"], want)
+	}
+}
+
 func TestEvaluateExecutionPolicyAppliesUseConditionalRestrictions(t *testing.T) {
 	policy, err := EvaluateExecutionPolicy("sandbox network-sandbox ipc-sandbox pid-sandbox mount-sandbox test nostrip", "minimal? ( network-sandbox test ) !minimal? ( strip )", "", map[string]bool{"minimal": true})
 	if err != nil {
@@ -167,7 +188,7 @@ func TestEvaluateExecutionPolicyRejectsUnsupportedEnabledBehavior(t *testing.T) 
 }
 
 func TestEvaluateExecutionPolicyAcceptsControlPlaneFeatures(t *testing.T) {
-	features := "assume-digests binpkg-docompress binpkg-dostrip binpkg-logs buildpkg-live compress-index config-protect-if-modified distlocks ebuild-locks merge-sync merge-wait news parallel-fetch parallel-install pkgdir-index-trusted unknown-features-warn unmerge-logs unmerge-orphans userfetch usersync"
+	features := "assume-digests binpkg-docompress binpkg-dostrip binpkg-logs binpkg-multi-instance buildpkg-live compress-index config-protect-if-modified distlocks ebuild-locks merge-sync merge-wait news parallel-fetch parallel-install pkgdir-index-trusted unknown-features-warn unmerge-logs unmerge-orphans userfetch usersync"
 	policy, err := EvaluateExecutionPolicy(features, "", "", nil)
 	if err != nil {
 		t.Fatalf("control-plane FEATURES: %v", err)
@@ -177,10 +198,21 @@ func TestEvaluateExecutionPolicyAcceptsControlPlaneFeatures(t *testing.T) {
 	}
 }
 
-func TestRunWorkerRejectsUserprivBeforeWorkerStartup(t *testing.T) {
-	request := Request{Protocol: Version, ID: "policy-userpriv", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: filepath.Join(t.TempDir(), "missing.ebuild"), Policy: ExecutionPolicy{Configured: true, UserPriv: true}}
-	_, err := RunBashWorkerWithOptions(context.Background(), request, WorkerOptions{Isolation: IsolationPortage})
-	if err == nil || !strings.Contains(err.Error(), "userpriv") {
-		t.Fatalf("worker error = %v", err)
+func TestEvaluateExecutionPolicySeparatesUserprivAndUsersandbox(t *testing.T) {
+	policy, err := EvaluateExecutionPolicy("sandbox userpriv -usersandbox", "", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.UserPriv || policy.UserSandbox {
+		t.Fatalf("policy = %+v", policy)
+	}
+}
+
+func TestCredentialCommandRunsInsideNamespaceLauncher(t *testing.T) {
+	executable, arguments := credentialCommand("/sbin/runuser", "portage", "/usr/bin/sandbox", []string{"/bin/bash", "-c", "true"})
+	executable, arguments = namespaceCommand("/usr/bin/unshare", []string{"--net"}, executable, arguments)
+	want := []string{"--net", "--", "/sbin/runuser", "-u", "portage", "--", "/usr/bin/sandbox", "/bin/bash", "-c", "true"}
+	if executable != "/usr/bin/unshare" || !reflect.DeepEqual(arguments, want) {
+		t.Fatalf("launcher = %s %q, want /usr/bin/unshare %q", executable, arguments, want)
 	}
 }

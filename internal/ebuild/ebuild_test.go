@@ -970,3 +970,68 @@ A test description ending with backslash at eof\
 		t.Errorf("DESCRIPTION: got %q", v)
 	}
 }
+
+func TestPhaseBraceExpansionAndNestedFunctionDoNotCorruptDepth(t *testing.T) {
+	content := `EAPI=8
+src_install() {
+	local destination=${D}/opt/example
+	helper() {
+		rm -f "${destination}"/{one,two,{three,four}.so}
+	}
+	mkdir -p "${destination}"/{bin,lib}
+}
+`
+	path := writeTemp(t, "test-1.0.ebuild", content)
+	eb, err := ParseEbuild(path)
+	if err != nil {
+		t.Fatalf("ParseEbuild: %v", err)
+	}
+	if _, ok := eb.RawPhases["src_install"]; !ok {
+		t.Fatal("src_install was not captured")
+	}
+}
+
+func TestCommentBackslashDoesNotContinueOntoFunctionClose(t *testing.T) {
+	content := `EAPI=8
+src_configure() {
+	econf \
+		--enable-feature
+	# --disabled-example \
+}
+`
+	path := writeTemp(t, "test-1.0.ebuild", content)
+	if _, err := ParseEbuild(path); err != nil {
+		t.Fatalf("ParseEbuild: %v", err)
+	}
+}
+
+func TestHeredocBracesDoNotCorruptFunctionDepth(t *testing.T) {
+	content := `EAPI=8
+src_test() {
+	cat <<-EOF
+		[{
+			"value": true
+		}, {
+			"value": false
+		}]
+	EOF
+}
+`
+	path := writeTemp(t, "test-1.0.ebuild", content)
+	if _, err := ParseEbuild(path); err != nil {
+		t.Fatalf("ParseEbuild: %v", err)
+	}
+}
+
+func TestQuotedHeredocTextDoesNotStartHeredoc(t *testing.T) {
+	content := `EAPI=8
+src_test() {
+	echo "./demo <<EOF" > test-script
+	echo EOF >> test-script
+}
+`
+	path := writeTemp(t, "test-1.0.ebuild", content)
+	if _, err := ParseEbuild(path); err != nil {
+		t.Fatalf("ParseEbuild: %v", err)
+	}
+}

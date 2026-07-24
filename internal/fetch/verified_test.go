@@ -21,6 +21,39 @@ import (
 	"github.com/airencracken/arise/internal/distfiles"
 )
 
+func TestAcquireManualOnlyUsesVerifiedCacheWithoutNetwork(t *testing.T) {
+	payload := []byte("manually downloaded")
+	artifact := testArtifact(payload, "https://invalid.example/source.tar")
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, artifact.Name), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("manual-only acquisition attempted network access")
+		return nil, nil
+	})}
+	set, err := (&Fetcher{Client: client}).Acquire(context.Background(), []distfiles.Artifact{artifact}, FetchConfig{DistfilesDir: directory, ManualOnly: true})
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if len(set.Artifacts) != 1 || set.Artifacts[0].Name != artifact.Name {
+		t.Fatalf("verified set = %#v", set)
+	}
+}
+
+func TestAcquireManualOnlyReturnsTypedMissingArtifactWithoutNetwork(t *testing.T) {
+	artifact := testArtifact([]byte("missing"), "https://invalid.example/source.tar")
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("manual-only acquisition attempted network access")
+		return nil, nil
+	})}
+	_, err := (&Fetcher{Client: client}).Acquire(context.Background(), []distfiles.Artifact{artifact}, FetchConfig{DistfilesDir: t.TempDir(), ManualOnly: true})
+	var required *ManualFetchRequiredError
+	if !errors.As(err, &required) || required.Artifact != artifact.Name {
+		t.Fatalf("Acquire error = %v, want ManualFetchRequiredError for %s", err, artifact.Name)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
@@ -79,8 +112,28 @@ func TestAcquireReportsDownloadVerificationAndCacheProgress(t *testing.T) {
 	if _, err := fetcher.Acquire(context.Background(), []distfiles.Artifact{artifact}, config); err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 2 || events[0].Stage != ProgressChecking || events[1].Stage != ProgressCached {
+	if len(events) != 1 || events[0].Stage != ProgressCached {
 		t.Fatalf("cached progress = %#v", events)
+	}
+}
+
+func TestAcquireInvalidatesOperationCacheWhenDistfileChanges(t *testing.T) {
+	content := []byte("immutable artifact")
+	artifact := testArtifact(content)
+	directory := t.TempDir()
+	path := filepath.Join(directory, artifact.Name)
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &Fetcher{}
+	if _, err := fetcher.Acquire(context.Background(), []distfiles.Artifact{artifact}, FetchConfig{DistfilesDir: directory}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fetcher.Acquire(context.Background(), []distfiles.Artifact{artifact}, FetchConfig{DistfilesDir: directory}); err == nil {
+		t.Fatal("changed distfile reused stale verified cache entry")
 	}
 }
 
@@ -122,7 +175,7 @@ func TestAcquireFallsBackAcrossMirrorEndpointsInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"https://first.example/distfiles/source.tar", "https://second.example/distfiles/source.tar"}
+	want := []string{"https://first.example/distfiles/e9/source.tar", "https://second.example/distfiles/e9/source.tar"}
 	if strings.Join(requested, " ") != strings.Join(want, " ") {
 		t.Fatalf("requests = %#v, want %#v", requested, want)
 	}
@@ -145,7 +198,7 @@ func TestAcquireUsesGentooMirrorBeforeOrdinaryUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"http://distfiles.gentoo.org/distfiles/source.tar"}
+	want := []string{"http://distfiles.gentoo.org/distfiles/e9/source.tar"}
 	if !slices.Equal(requested, want) {
 		t.Fatalf("requests = %#v, want %#v", requested, want)
 	}
@@ -169,7 +222,7 @@ func TestAcquireFallsBackFromBadGentooMirrorToUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"https://mirror.example/distfiles/source.tar", "https://upstream.example/source.tar"}
+	want := []string{"https://mirror.example/distfiles/e9/source.tar", "https://mirror.example/distfiles/source.tar", "https://upstream.example/source.tar"}
 	if !slices.Equal(requested, want) {
 		t.Fatalf("requests = %#v, want %#v", requested, want)
 	}

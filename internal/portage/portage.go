@@ -14,6 +14,26 @@ import (
 	"github.com/airencracken/arise/internal/profile"
 )
 
+// PhaseEnvironmentABI identifies artifact-affecting package execution
+// semantics. Packages built by Arise persist this value in VDB so a later ABI
+// change cannot be hidden behind unchanged USE metadata.
+const PhaseEnvironmentABI = "4"
+
+// PhaseEnvironmentABICompatible reports whether an installed Arise artifact
+// remains valid under the current execution ABI. ABI 3 changed only
+// architecture-aware distfile selection. ABI 4 adds a read-only fallback for
+// version queries which previously failed the phase instead of committing an
+// ambiguous artifact. Successfully committed ABI-2/3 artifacts therefore do
+// not require a mass rebuild.
+func PhaseEnvironmentABICompatible(installed string) bool {
+	switch installed {
+	case PhaseEnvironmentABI, "3", "2":
+		return true
+	default:
+		return false
+	}
+}
+
 var refPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 
 type cachedPolicyAtomEntry struct {
@@ -174,7 +194,7 @@ func loadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 	}
 	merged := make(map[string]string)
 	removals := make(map[string]map[string]bool)
-	globalLayer, err := parseSelectedAssignments("/usr/share/portage/config/make.globals", map[string]bool{"FEATURES": true, "USE_ORDER": true})
+	globalLayer, err := parseSelectedAssignments("/usr/share/portage/config/make.globals", effectiveGlobalVariables)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("portage: parse make.globals: %w", err)
 	}
@@ -287,11 +307,17 @@ func loadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 	cfg.UseExpand = splitShWords(merged["USE_EXPAND"])
 	cfg.UseExpandHidden = splitShWords(merged["USE_EXPAND_HIDDEN"])
 	cfg.UseExpandImplicit = splitShWords(merged["USE_EXPAND_IMPLICIT"])
-	// USE_EXPAND_IMPLICIT controls IUSE declaration semantics; unlike
-	// USE_EXPAND it does not itself add the variable values to USE.
 	cfg.USE = appendUseExpand(cfg.USE, cfg.UseExpand, merged)
+	// USE_EXPAND_IMPLICIT declares flags implicitly for IUSE validation, but
+	// unlike USE_EXPAND it does not add the variable's values to effective USE.
 	cfg.USE = applyEffectiveGlobalUse(cfg.USE, cfg.UseForce, cfg.UseMask)
 	return cfg, nil
+}
+
+var effectiveGlobalVariables = map[string]bool{
+	"FEATURES":       true,
+	"GENTOO_MIRRORS": true,
+	"USE_ORDER":      true,
 }
 
 var commandEnvironmentVariables = map[string]bool{
@@ -316,10 +342,17 @@ func (cfg *Config) ApplyCommandEnvironment(environ []string) {
 		return
 	}
 	var assignments []configAssignment
+	useExpandOverride := false
 	for _, entry := range environ {
 		name, value, ok := strings.Cut(entry, "=")
-		if ok && commandEnvironmentVariables[name] {
+		if ok && cfg.isCommandEnvironmentVariable(name) {
 			assignments = append(assignments, configAssignment{key: name, value: value})
+			for _, group := range cfg.UseExpand {
+				if name == group {
+					useExpandOverride = true
+					break
+				}
+			}
 			if name == "USE" {
 				cfg.CommandUSE = splitShWords(value)
 			}
@@ -346,8 +379,51 @@ func (cfg *Config) ApplyCommandEnvironment(environ []string) {
 	cfg.UseExpand = splitShWords(cfg.MakeConf["USE_EXPAND"])
 	cfg.UseExpandHidden = splitShWords(cfg.MakeConf["USE_EXPAND_HIDDEN"])
 	cfg.UseExpandImplicit = splitShWords(cfg.MakeConf["USE_EXPAND_IMPLICIT"])
+	if useExpandOverride {
+		cfg.USE = removeUseExpandFlags(cfg.USE, cfg.UseExpand)
+	}
 	cfg.USE = appendUseExpand(cfg.USE, cfg.UseExpand, cfg.MakeConf)
 	cfg.USE = applyEffectiveGlobalUse(cfg.USE, cfg.UseForce, cfg.UseMask)
+}
+
+func removeUseExpandFlags(use, groups []string) []string {
+	prefixes := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if group = strings.TrimSpace(group); group != "" {
+			prefixes = append(prefixes, strings.ToLower(group)+"_")
+		}
+	}
+	result := make([]string, 0, len(use))
+	for _, flag := range use {
+		name := strings.ToLower(strings.TrimPrefix(flag, "-"))
+		remove := false
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(name, prefix) {
+				remove = true
+				break
+			}
+		}
+		if !remove {
+			result = append(result, flag)
+		}
+	}
+	return result
+}
+
+func (cfg *Config) isCommandEnvironmentVariable(name string) bool {
+	if commandEnvironmentVariables[name] {
+		return true
+	}
+	// Portage accepts active USE_EXPAND variables from the command
+	// environment. A static allowlist cannot cover profile-defined groups and
+	// previously caused LLVM_TARGETS, ABI_X86 and language target selectors to
+	// be silently ignored.
+	for _, group := range cfg.UseExpand {
+		if name == group {
+			return true
+		}
+	}
+	return false
 }
 
 // ExplicitUseOverride reports whether a layer with higher precedence than the
@@ -401,14 +477,58 @@ func (cfg *Config) UseMaskedFor(cpv, slot, repo, flag string, stable bool) bool 
 	return masked
 }
 
+// UseForcedFor reports the final profile/package force state for one flag.
+func (cfg *Config) UseForcedFor(cpv, slot, repo, flag string, stable bool) bool {
+	forced := false
+	apply := func(changes []string) {
+		for _, change := range changes {
+			if strings.TrimPrefix(change, "-") == flag {
+				forced = !strings.HasPrefix(change, "-")
+			}
+		}
+	}
+	apply(cfg.UseForce)
+	if stable {
+		apply(cfg.UseStableForce)
+	}
+	apply(packagePolicyChangesFor(cfg.PackageUseForceRules, cpv, slot, repo))
+	if stable {
+		apply(packagePolicyChangesFor(cfg.PackageUseStableForceRules, cpv, slot, repo))
+	}
+	return forced
+}
+
 var packageExecutionEnvironmentVariables = map[string]bool{
 	"USE": true, "FEATURES": true, "ACCEPT_KEYWORDS": true, "ACCEPT_LICENSE": true,
 	"ARCH": true, "CHOST": true, "CBUILD": true, "CTARGET": true,
+	"ABI": true, "DEFAULT_ABI": true, "MULTILIB_ABIS": true,
 	"CFLAGS": true, "CXXFLAGS": true, "CPPFLAGS": true, "FFLAGS": true,
-	"FCFLAGS": true, "LDFLAGS": true, "MAKEOPTS": true,
+	"FCFLAGS": true, "ADAFLAGS": true, "GDCFLAGS": true, "RUSTFLAGS": true,
+	"LDFLAGS": true, "MAKEOPTS": true, "NINJAFLAGS": true,
 	"CC": true, "CXX": true, "CPP": true, "AR": true, "AS": true,
 	"LD": true, "NM": true, "OBJCOPY": true, "OBJDUMP": true,
-	"RANLIB": true, "READELF": true, "STRIP": true,
+	"RANLIB": true, "READELF": true, "STRIP": true, "STRINGS": true,
+	"FC": true, "F77": true, "OBJC": true, "OBJCXX": true,
+	"PKG_CONFIG": true, "PKG_CONFIG_PATH": true, "PKG_CONFIG_LIBDIR": true,
+	"PKG_CONFIG_SYSROOT_DIR": true, "GCC_SPECS": true,
+}
+
+func isPackageExecutionEnvironmentVariable(name string) bool {
+	if packageExecutionEnvironmentVariables[name] {
+		return true
+	}
+	// Portage exports the active profile's per-ABI toolchain layout.  Eclasses
+	// such as multilib.eclass resolve get_abi_CHOST through these variables;
+	// dropping them can silently configure a compiler for an empty target.
+	for _, prefix := range []string{
+		"CHOST_", "CTARGET_", "CFLAGS_", "CXXFLAGS_", "CPPFLAGS_", "LDFLAGS_", "LIBDIR_",
+		"BUILD_",
+	} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // PackageExecutionEnvironmentFor reduces the three execution layers in
@@ -425,12 +545,12 @@ func (cfg *Config) PackageExecutionEnvironmentFor(cpv, slot, repo string, reques
 		return result, nil
 	}
 	for name, value := range cfg.MakeConf {
-		if packageExecutionEnvironmentVariables[name] {
+		if isPackageExecutionEnvironmentVariable(name) {
 			result[name] = value
 		}
 	}
 	for name, existed := range cfg.commandEnvironmentExisted {
-		if !packageExecutionEnvironmentVariables[name] {
+		if !isPackageExecutionEnvironmentVariable(name) {
 			continue
 		}
 		if existed {
@@ -446,14 +566,41 @@ func (cfg *Config) PackageExecutionEnvironmentFor(cpv, slot, repo string, reques
 	mergeEnvironmentMap(result, packageEnvironment)
 	var command []configAssignment
 	for _, assignment := range cfg.commandEnvironment {
-		if packageExecutionEnvironmentVariables[assignment.key] {
+		if isPackageExecutionEnvironmentVariable(assignment.key) {
 			command = append(command, assignment)
 		}
 	}
 	mergeConfigAssignments(result, command)
 	mergeEnvironmentMap(result, request)
 	ResolveMakeConfRefs(result)
+	materializeUseExpandEnvironment(result, cfg.UseExpand)
 	return result, nil
+}
+
+// materializeUseExpandEnvironment mirrors Portage's package execution
+// environment: the final package-local USE state is projected back into each
+// USE_EXPAND variable.  Ebuilds commonly consume the variable rather than its
+// individual flags (for example llvm-core/llvm passes ${LLVM_TARGETS} to
+// CMake), so exporting USE alone is insufficient.
+func materializeUseExpandEnvironment(environment map[string]string, groups []string) {
+	use := strings.Fields(environment["USE"])
+	for _, group := range groups {
+		group = strings.TrimSpace(group)
+		if group == "" {
+			continue
+		}
+		prefix := strings.ToLower(group) + "_"
+		var values []string
+		for _, flag := range use {
+			if strings.HasPrefix(flag, "-") || !strings.HasPrefix(strings.ToLower(flag), prefix) {
+				continue
+			}
+			if value := flag[len(prefix):]; value != "" {
+				values = append(values, value)
+			}
+		}
+		environment[group] = strings.Join(values, " ")
+	}
 }
 
 func mergeEnvironmentMap(target, layer map[string]string) {

@@ -230,6 +230,21 @@ func validatePlanAuthorization(experimental bool, approved, actual string) error
 	return nil
 }
 
+func requestedPlanAuthorizationError(experimental bool, legacyDigest, reference, directory string, targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult, stateSHA256 string) error {
+	approvedDigest, err := approvedPlanDigest(legacyDigest, reference, directory)
+	if err != nil {
+		return err
+	}
+	actualDigest := canonicalPlanSHA256(targets, cfg, result, stateSHA256)
+	if err := validatePlanAuthorization(experimental, approvedDigest, actualDigest); err != nil {
+		if detail := describeApprovedPlanDifference(reference, directory, cfg); detail != "" {
+			return fmt.Errorf("%w; %s", err, detail)
+		}
+		return err
+	}
+	return nil
+}
+
 func approvedPlanDigest(legacyDigest, reference, directory string) (string, error) {
 	legacyDigest, reference = strings.TrimSpace(legacyDigest), strings.TrimSpace(reference)
 	if legacyDigest != "" && reference != "" {

@@ -42,7 +42,7 @@ type PackagePolicy struct {
 type ExecutionPolicy struct {
 	Configured                                                    bool
 	Sandbox, NetworkSandbox, IPCSandbox, PIDSandbox, MountSandbox bool
-	UserPriv, Tests, Fetch, Strip                                 bool
+	UserPriv, UserSandbox, DropPrivileges, Tests, Fetch, Strip    bool
 	Interactive                                                   bool
 	Features, Restrict, Properties                                []string
 }
@@ -117,14 +117,17 @@ func EvaluateExecutionPolicy(featureText, restrictText, propertyText string, use
 			policy.PIDSandbox = enabled
 		case "mount-sandbox":
 			policy.MountSandbox = enabled
-		case "userpriv", "usersandbox":
+		case "userpriv":
 			policy.UserPriv = enabled
+		case "usersandbox":
+			policy.UserSandbox = enabled
 		case "test":
 			policy.Tests = enabled
 		case "nostrip":
 			policy.Strip = !enabled
 		case "split-log", "compress-build-logs", "fail-clean", "buildpkg", "collision-protect", "protect-owned", "preserve-libs", "xattr",
-			"assume-digests", "binpkg-docompress", "binpkg-dostrip", "binpkg-logs", "buildpkg-live", "compress-index",
+			"fixlafiles", "multilib-strict", "qa-unresolved-soname-deps", "strict", "strict-keepdir",
+			"assume-digests", "binpkg-docompress", "binpkg-dostrip", "binpkg-logs", "binpkg-multi-instance", "buildpkg-live", "compress-index",
 			"config-protect-if-modified", "distlocks", "ebuild-locks", "merge-sync", "merge-wait", "news", "parallel-fetch",
 			"parallel-install", "pkgdir-index-trusted", "unknown-features-warn", "unmerge-logs", "unmerge-orphans", "userfetch", "usersync":
 		default:
@@ -150,6 +153,7 @@ func EvaluateExecutionPolicy(featureText, restrictText, propertyText string, use
 			policy.NetworkSandbox = false
 		case "userpriv":
 			policy.UserPriv = false
+			policy.DropPrivileges = false
 		case "test":
 			policy.Tests = false
 		case "fetch":
@@ -300,6 +304,36 @@ func ApplyPackagePolicy(request Request, policy PackagePolicy) (Request, error) 
 		request.Env, envErr = mergePackageEnvironment(packageEnvironment, nil)
 		if envErr != nil {
 			return request, envErr
+		}
+	}
+	// Portage always authorizes its package-owned scratch paths in sandbox,
+	// independent of PORTAGE_TMPDIR. Relying on sandbox.conf's global /tmp
+	// allowance breaks valid build roots on /var/tmp, /home or dedicated build
+	// filesystems.
+	writePaths := []string{policy.WorkDir, policy.BuildDir, policy.SourceDir, policy.ImageDir, policy.TempDir, policy.HomeDir}
+	if policy.LogFile != "" {
+		writePaths = append(writePaths, policy.LogFile)
+	}
+	if len(writePaths) != 0 {
+		if request.Env == nil {
+			request.Env = make(map[string]string)
+		}
+		seen := make(map[string]bool)
+		var allowed []string
+		for _, path := range strings.Split(request.Env["SANDBOX_WRITE"], ":") {
+			if path = strings.TrimSpace(path); path != "" && !seen[path] {
+				seen[path] = true
+				allowed = append(allowed, path)
+			}
+		}
+		for _, path := range writePaths {
+			if path = strings.TrimSpace(path); path != "" && !seen[path] {
+				seen[path] = true
+				allowed = append(allowed, path)
+			}
+		}
+		if len(allowed) != 0 {
+			request.Env["SANDBOX_WRITE"] = strings.Join(allowed, ":")
 		}
 	}
 	featuresText := policy.Features

@@ -2042,6 +2042,12 @@ func TestLoadEffectiveConfigMergesActiveProfileAndUserConfig(t *testing.T) {
 	}
 }
 
+func TestEffectiveGlobalsIncludeGentooMirrors(t *testing.T) {
+	if !effectiveGlobalVariables["GENTOO_MIRRORS"] {
+		t.Fatal("effective configuration drops the make.globals Gentoo mirror fallback")
+	}
+}
+
 func TestApplyCommandEnvironmentIsAllowlistedAndOrdered(t *testing.T) {
 	cfg := &Config{
 		MakeConf:      map[string]string{"USE": "base old", "FEATURES": "sandbox test", "ACCEPT_LICENSE": "@FREE"},
@@ -2088,6 +2094,8 @@ func TestPackageExecutionEnvironmentLayerPrecedence(t *testing.T) {
 		ConfigRoot: root,
 		MakeConf: map[string]string{
 			"USE": "base old", "FEATURES": "sandbox test", "CFLAGS": "-O2", "MAKEOPTS": "-j2",
+			"ABI": "amd64", "DEFAULT_ABI": "amd64", "MULTILIB_ABIS": "amd64 x86",
+			"CHOST_amd64": "x86_64-pc-linux-gnu", "CFLAGS_amd64": "-m64",
 		},
 		PackageEnvRules: []PackageUseRule{{Atom: "dev-lang/python", Flags: []string{"package.conf"}}},
 		LicenseGroups:   map[string][]string{},
@@ -2102,9 +2110,99 @@ func TestPackageExecutionEnvironmentLayerPrecedence(t *testing.T) {
 	want := map[string]string{
 		"USE": "-base -old package command", "FEATURES": "sandbox -test package-feature command-feature",
 		"CFLAGS": "-O0", "MAKEOPTS": "-j8", "PACKAGE_ONLY": "yes", "REQUEST_ONLY": "yes",
+		"ABI": "amd64", "DEFAULT_ABI": "amd64", "MULTILIB_ABIS": "amd64 x86",
+		"CHOST_amd64": "x86_64-pc-linux-gnu", "CFLAGS_amd64": "-m64",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("execution environment = %#v, want %#v", got, want)
+	}
+}
+
+func TestPackageExecutionEnvironmentMaterializesUseExpandVariables(t *testing.T) {
+	cfg := &Config{
+		MakeConf: map[string]string{
+			"USE":        "llvm_targets_AArch64 llvm_targets_X86 -llvm_targets_ARM abi_x86_64",
+			"USE_EXPAND": "LLVM_TARGETS ABI_X86",
+		},
+		UseExpand:     []string{"LLVM_TARGETS", "ABI_X86"},
+		LicenseGroups: map[string][]string{},
+	}
+
+	got, err := cfg.PackageExecutionEnvironmentFor(
+		"llvm-core/llvm-22.1.8",
+		"22/22.1",
+		"gentoo",
+		map[string]string{
+			"USE": "llvm_targets_AArch64 llvm_targets_X86 -llvm_targets_ARM abi_x86_64",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["LLVM_TARGETS"] != "AArch64 X86" {
+		t.Fatalf("LLVM_TARGETS = %q, want %q", got["LLVM_TARGETS"], "AArch64 X86")
+	}
+	if got["ABI_X86"] != "64" {
+		t.Fatalf("ABI_X86 = %q, want %q", got["ABI_X86"], "64")
+	}
+}
+
+func TestCommandEnvironmentAcceptsActiveUseExpandVariables(t *testing.T) {
+	cfg := &Config{
+		MakeConf: map[string]string{
+			"USE":          "llvm_targets_AArch64 abi_x86_32",
+			"USE_EXPAND":   "LLVM_TARGETS ABI_X86",
+			"LLVM_TARGETS": "AArch64",
+			"ABI_X86":      "32",
+		},
+		UseExpand: []string{"LLVM_TARGETS", "ABI_X86"},
+		USE:       []string{"llvm_targets_AArch64", "abi_x86_32"},
+	}
+
+	cfg.ApplyCommandEnvironment([]string{"LLVM_TARGETS=X86", "ABI_X86=64", "UNRELATED=value"})
+	if cfg.MakeConf["LLVM_TARGETS"] != "X86" || cfg.MakeConf["ABI_X86"] != "64" {
+		t.Fatalf("USE_EXPAND command overrides were dropped: %#v", cfg.MakeConf)
+	}
+	if _, ok := cfg.MakeConf["UNRELATED"]; ok {
+		t.Fatal("unrelated command environment variable was accepted")
+	}
+	use := strings.Join(cfg.USE, " ")
+	for _, want := range []string{"llvm_targets_X86", "abi_x86_64"} {
+		if !strings.Contains(" "+use+" ", " "+want+" ") {
+			t.Fatalf("effective USE does not contain %s: %q", want, use)
+		}
+	}
+	for _, stale := range []string{"llvm_targets_AArch64", "abi_x86_32"} {
+		if strings.Contains(" "+use+" ", " "+stale+" ") {
+			t.Fatalf("effective USE retained overridden %s: %q", stale, use)
+		}
+	}
+}
+
+func TestPackageExecutionEnvironmentIncludesBuildToolchainVariables(t *testing.T) {
+	cfg := &Config{MakeConf: map[string]string{
+		"BUILD_CC":        "build-gcc",
+		"BUILD_CXX":       "build-g++",
+		"BUILD_CFLAGS":    "-O1",
+		"PKG_CONFIG":      "pkgconf",
+		"RUSTFLAGS":       "-C target-cpu=native",
+		"UNRELATED_VALUE": "drop-me",
+	}}
+
+	got, err := cfg.PackageExecutionEnvironmentFor("cat/pkg-1", "0", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"BUILD_CC": "build-gcc", "BUILD_CXX": "build-g++", "BUILD_CFLAGS": "-O1",
+		"PKG_CONFIG": "pkgconf", "RUSTFLAGS": "-C target-cpu=native",
+	} {
+		if got[name] != want {
+			t.Fatalf("%s = %q, want %q", name, got[name], want)
+		}
+	}
+	if _, ok := got["UNRELATED_VALUE"]; ok {
+		t.Fatal("unrelated make.conf value leaked into package environment")
 	}
 }
 
@@ -2165,5 +2263,17 @@ func TestLoadEffectiveConfigStacksRepositoryProfileAndUserMasks(t *testing.T) {
 	}
 	if status := cfg.PackageMaskStatus("cat/pkg-2", "0", "gentoo"); status.Masked {
 		t.Fatalf("user unmask did not override profile mask: %+v", status)
+	}
+}
+
+func TestAppendUseExpandIncludesImplicitPlatformGroups(t *testing.T) {
+	values := map[string]string{
+		"KERNEL": "linux",
+		"ELIBC":  "glibc",
+	}
+	got := appendUseExpand(nil, []string{"KERNEL", "ELIBC"}, values)
+	want := []string{"kernel_linux", "elibc_glibc"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("implicit USE_EXPAND flags = %v, want %v", got, want)
 	}
 }

@@ -71,6 +71,7 @@ type ResolveConfig struct {
 	PortageConfig               *portage.Config
 	WorldSet                    *WorldSet
 	SystemSet                   *WorldSet
+	PackageSetExpander          func(string) ([]string, error)
 	// InstalledByDomain supplies immutable installed-state views for cross-root
 	// verification. Missing domains retain the historical single-graph view.
 	// Planned actions are overlaid from the transaction graph in every domain;
@@ -188,24 +189,36 @@ type ResolveMetrics struct {
 
 // PkgAction describes a single package action (install, update, uninstall, etc.)
 type PkgAction struct {
-	Atom           *atom.Atom // the package
-	Action         string     // "install", "update", "reinstall", "uninstall"
-	Reason         string     // why (e.g. "dependency of @world", "blocked by ...")
-	Slot           string     // the slot of the package to install
-	Subslot        string     // the subslot
-	Repository     string     // selected repository
-	RepositoryPath string
-	SrcURI         string
-	Restrict       string
-	UseFlags       map[string]bool
-	MergeType      string // source or binary
-	BinaryPath     string
-	Unsorted       bool             // if true, exclude from topological sort
-	Domain         DependencyDomain // filesystem domain receiving/removing this package
+	Atom                *atom.Atom // the package
+	Action              string     // "install", "update", "reinstall", "uninstall"
+	Reason              string     // why (e.g. "dependency of @world", "blocked by ...")
+	Slot                string     // the slot of the package to install
+	Subslot             string     // the subslot
+	Repository          string     // selected repository
+	RepositoryPath      string
+	SrcURI              string
+	Restrict            string
+	IUse                string // resolver-selected repository IUSE domain for VDB serialization
+	UseFlags            map[string]bool
+	InstalledVersion    string
+	InstalledSlot       string
+	InstalledSubslot    string
+	InstalledRepository string
+	InstalledUseFlags   map[string]bool
+	InstalledIUseFlags  map[string]bool
+	UseExpand           []string
+	UseExpandHidden     []string
+	ForcedUseFlags      map[string]bool
+	MaskedUseFlags      map[string]bool
+	MergeType           string // source or binary
+	BinaryPath          string
+	Unsorted            bool             // if true, exclude from topological sort
+	Domain              DependencyDomain // filesystem domain receiving/removing this package
 	// Prerequisites are exact planned-action identities that must commit before
 	// this action may run. Edges within an unavoidable dependency cycle are
 	// omitted so a scheduler can treat the SCC as an ordered serial component.
-	Prerequisites []string
+	Prerequisites  []string
+	RebuildAfterCP string // provider update that must commit before this rebuild
 }
 
 // ActionIdentity is stable across process boundaries and distinguishes slots,
@@ -254,6 +267,7 @@ type VersionInfo struct {
 	InstalledPdepend        string
 	DependencyMetadataKnown bool // empty dependency strings are authoritative, not a package-edge fallback
 	InstalledEAPI           string
+	InstalledPhaseEnvABI    string
 	Keywords                string // ebuild keywords (e.g. "amd64 ~x86")
 	RequiredUse             string // REQUIRED_USE constraint
 	License                 string // LICENSE value
@@ -1008,6 +1022,7 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 					Action: action,
 					Reason: reason,
 					Slot:   vi.Slot, Subslot: vi.Subslot, Repository: vi.Repository,
+					IUse:      vi.IUse,
 					MergeType: mergeType, BinaryPath: binaryPath,
 				})
 			}
@@ -1328,6 +1343,16 @@ func (r *resolver) consumeBacktrack(kind, key, from, to string) error {
 	decisionKey := backtrackDecisionKey(kind, key, from, to)
 	if r.chargedDecisions[decisionKey] {
 		return nil
+	}
+	// A complete-graph verification pass can rediscover the same repair before
+	// the current resolve attempt returns its ledger to ResolveContext.  Do not
+	// charge that identical decision once per verifier pass.  Consult the local
+	// history rather than mutating chargedDecisions here: local history is
+	// transaction-aware and is truncated when speculative work rolls back.
+	for _, decision := range r.decisionHistory {
+		if backtrackDecisionKey(decision.Kind, decision.Key, decision.From, decision.To) == decisionKey {
+			return nil
+		}
 	}
 	if r.backtrackRemaining <= 0 {
 		return fmt.Errorf("backtrack limit exhausted while revising %s from %s to %s", key, from, to)
@@ -1765,6 +1790,28 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 			}
 			continue
 		}
+		if strings.HasPrefix(target, "@") {
+			if r.config.PackageSetExpander == nil {
+				return nil, fmt.Errorf("resolve: package set %q is not available", target)
+			}
+			entries, err := r.config.PackageSetExpander(target)
+			if err != nil {
+				return nil, fmt.Errorf("resolve: expand package set %q: %w", target, err)
+			}
+			if target == "@preserved-rebuild" {
+				r.config.Reinstall = true
+				r.config.Oneshot = true
+			}
+			for _, entry := range entries {
+				a, err := atom.ParsePackageAtom(entry)
+				if err != nil {
+					return nil, fmt.Errorf("resolve: could not parse %s entry %q: %w", target, entry, err)
+				}
+				atoms = append(atoms, a)
+				r.explicitTargets[a.CP()] = true
+			}
+			continue
+		}
 
 		// parse atom
 		a, err := atom.ParsePackageAtom(target)
@@ -1900,6 +1947,42 @@ func (r *resolver) refreshPlannedParentNewUseDependencies() error {
 		node := r.graph.Packages[action.Atom.CP()]
 		if node == nil {
 			continue
+		}
+		if r.portageConfig != nil {
+			action.UseExpand = append([]string(nil), r.portageConfig.UseExpand...)
+			action.UseExpandHidden = append([]string(nil), r.portageConfig.UseExpandHidden...)
+			action.ForcedUseFlags = make(map[string]bool)
+			action.MaskedUseFlags = make(map[string]bool)
+			cpv := action.Atom.CP()
+			if action.Atom.Version != nil {
+				cpv += "-" + action.Atom.Version.Raw
+			}
+			stable := false
+			arch := r.portageConfig.MakeConf["ARCH"]
+			if arch == "" {
+				arch = gentooRuntimeArch(runtime.GOARCH)
+			}
+			for _, candidate := range node.Versions {
+				if candidate == nil || candidate.Version == nil || action.Atom.Version == nil || candidate.Version.Raw != action.Atom.Version.Raw || candidate.Slot != action.Slot || (action.Repository != "" && candidate.Repository != action.Repository) {
+					continue
+				}
+				for _, keyword := range strings.Fields(candidate.Keywords) {
+					stable = stable || keyword == arch
+				}
+				break
+			}
+			for _, raw := range strings.Fields(action.IUse) {
+				flag := strings.TrimLeft(raw, "+-")
+				if flag == "" {
+					continue
+				}
+				if r.portageConfig.UseForcedFor(cpv, action.Slot, action.Repository, flag, stable) {
+					action.ForcedUseFlags[flag] = true
+				}
+				if r.portageConfig.UseMaskedFor(cpv, action.Slot, action.Repository, flag, stable) {
+					action.MaskedUseFlags[flag] = true
+				}
+			}
 		}
 		parent := r.findMatchingVersion(node, action.Atom)
 		if parent == nil {
@@ -2152,14 +2235,27 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 
 	// check if already installed and satisfies constraints
 	installed := node.GetInstalledVersionForSlot(vi.Slot)
+	environmentABIChanged := installed != nil &&
+		installed.InstalledPhaseEnvABI != "" &&
+		!portage.PhaseEnvironmentABICompatible(installed.InstalledPhaseEnvABI)
+	installedConstraint := target
+	// Internal dependency planning pins the chosen repository candidate to an
+	// exact CPV while retaining the original, unpinned atom in pendingConstraint.
+	// The pin selects a version; it must not erase USE/slot requirements when we
+	// decide whether the installed instance can satisfy the dependency. This is
+	// especially important when repository and VDB state share one VersionInfo.
+	if r.pendingConstraint != nil && r.pendingConstraint.CP() == cp {
+		installedConstraint = r.pendingConstraint
+	}
 	// Portage upgrades an explicitly named package even without --update.
 	// --update controls set members and traversal into dependencies; it is not
 	// required for `emerge category/package` to select a newer visible CPV.
 	allowUpdate := (r.config.Update || (depth == 0 && r.explicitTargets[cp])) && (depth == 0 || r.config.Deep)
+	forceReinstall := r.config.Reinstall && depth == 0 && r.explicitTargets[cp]
 
 	// check package.provided — treat as already installed
 	if r.isPackageProvided(target) {
-		if !r.config.Update && !r.config.Reinstall {
+		if !r.config.Update && !forceReinstall {
 			if installed != nil && !r.config.NoDeps && r.config.Deep {
 				return r.processDeps(node, installed, target.String(), depth+1, DomainROOT)
 			}
@@ -2168,7 +2264,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	}
 
 	if installed != nil {
-		if versionAtomMatches(node.Atom, target, installed, installedFlags(installed)) {
+		if versionAtomMatches(node.Atom, installedConstraint, installed, installedFlags(installed)) {
 			// --noreplace: skip if exact same version already installed
 			if r.config.NoReplace && vi != nil && installed.Version != nil && vi.Version != nil &&
 				vi.Version.Raw == installed.Version.Raw {
@@ -2192,8 +2288,37 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			if r.config.ChangedDeps && depsChanged(installed, vi) {
 				needInstall = true
 			}
+			if environmentABIChanged {
+				needInstall = true
+			}
 
-			if !needInstall && !r.config.Reinstall {
+			if !needInstall && !forceReinstall {
+				// A looser dependency may already have scheduled a newer candidate
+				// in this slot. If a later intersected constraint is satisfied by the
+				// installed version, retaining it must also cancel that incompatible
+				// replacement; otherwise the verifier sees the stale update rather
+				// than the state chosen here.
+				actionDomain := r.pendingDomain
+				if actionDomain == "" {
+					actionDomain = DomainROOT
+				}
+				keepOwner := dependencyVersionKey(cp, installed.Version, installed.Slot, installed.Repository)
+				r.retractSupersededParent(cp, keepOwner)
+				for key, planned := range r.toInstall {
+					if planned == nil || planned.Atom == nil || planned.Atom.CP() != cp || planned.Slot != installed.Slot || normalizedActionDomain(planned.Domain) != actionDomain {
+						continue
+					}
+					if r.rootActionKeys[key] {
+						continue
+					}
+					if planned.Atom.Version == nil {
+						continue
+					}
+					candidate := node.GetVersionFromRepository(planned.Atom.Version.Raw, planned.Repository)
+					if candidate == nil || !versionAtomMatches(node.Atom, installedConstraint, candidate, r.candidateUseFlags(node, candidate)) {
+						r.deleteInstall(key)
+					}
+				}
 				// satisfied as-is; process deps if deep
 				if r.config.Deep {
 					return r.processDeps(node, installed, target.String(), depth+1, DomainROOT)
@@ -2218,6 +2343,8 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			}
 		} else if r.config.ChangedDeps && depsChanged(installed, vi) {
 			action = "reinstall"
+		} else if environmentABIChanged {
+			action = "reinstall"
 		} else if vi.Version != nil && installed.Version != nil && vi.Version.Compare(installed.Version) > 0 {
 			action = "update"
 		}
@@ -2236,7 +2363,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	// as though it were a repository ebuild. Other update modes retain their
 	// existing installed-state semantics here; their selected replacements are
 	// normally repository candidates.
-	if r.config.Reinstall && depth == 0 && r.explicitTargets[cp] && mergeType == "source" && !vi.Available {
+	if forceReinstall && mergeType == "source" && !vi.Available {
 		rebuildErr := fmt.Errorf("no source ebuild is available for %s", bestVersionAtom(node.Atom, vi))
 		r.conflicts = append(r.conflicts, rebuildErr.Error())
 		if !r.config.KeepGoing {
@@ -2270,6 +2397,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			RepositoryPath: vi.RepositoryPath,
 			SrcURI:         vi.SrcURI,
 			Restrict:       vi.Restrict,
+			IUse:           vi.IUse,
 			UseFlags:       r.candidateUseFlags(node, vi),
 			MergeType:      mergeType,
 			BinaryPath:     binaryPath,
@@ -3473,6 +3601,34 @@ func (r *resolver) processCompleteGraph() {
 	// whose subslot operators trigger a rebuild
 
 	ignoreSlotOps := r.config.IgnoreBuiltSlotOperatorDeps == "y"
+	if !ignoreSlotOps {
+		// A provider may have been committed by an earlier transaction while a
+		// consumer rebuild was interrupted or deferred.  In that state there is
+		// no provider action for the loop below to inspect, but the installed
+		// consumer metadata still records the old := binding explicitly as
+		// slot/subslot=.  Portage reports these as rR actions on the next plan.
+		// Reconcile those stale bindings on every complete-graph pass.
+		for _, dependent := range r.staleInstalledSlotOperatorDependents() {
+			installed := dependent.GetInstalledVersion()
+			if installed == nil || r.packageScheduled(dependent) {
+				continue
+			}
+			constraint := *dependent.Atom
+			constraint.Slot = installed.Slot
+			candidate := r.findMatchingVersion(dependent, &constraint)
+			if candidate == nil || !candidate.Available {
+				continue
+			}
+			depAtom := bestVersionAtom(dependent.Atom, candidate)
+			r.setInstall(versionActionKey(dependent.Atom.CP(), candidate), &PkgAction{
+				Atom: depAtom, Action: "reinstall", Reason: "slot operator rebuild (stale installed subslot binding)",
+				Slot: candidate.Slot, Subslot: candidate.Subslot, Repository: candidate.Repository,
+				RepositoryPath: candidate.RepositoryPath, SrcURI: candidate.SrcURI, Restrict: candidate.Restrict,
+				IUse:     candidate.IUse,
+				UseFlags: r.candidateUseFlags(dependent, candidate),
+			})
+		}
+	}
 
 	processed := make(map[string]bool)
 
@@ -3522,10 +3678,6 @@ func (r *resolver) processCompleteGraph() {
 					continue
 				}
 				installedDependent := dependent.GetInstalledVersion()
-				if r.setScoped && !r.selectedCPs[dependent.Atom.CP()] &&
-					!r.seenDeps[dependencyVersionKey(dependent.Atom.CP(), installedDependent.Version, installedDependent.Slot, installedDependent.Repository)] {
-					continue
-				}
 				cpv := dependent.Atom.CP()
 				if r.packageScheduled(dependent) {
 					continue // already being rebuilt
@@ -3546,7 +3698,9 @@ func (r *resolver) processCompleteGraph() {
 					Atom: depAtom, Action: "reinstall", Reason: reason,
 					Slot: dVI.Slot, Subslot: dVI.Subslot, Repository: dVI.Repository,
 					RepositoryPath: dVI.RepositoryPath, SrcURI: dVI.SrcURI, Restrict: dVI.Restrict,
-					UseFlags: r.candidateUseFlags(dependent, dVI),
+					IUse:           dVI.IUse,
+					UseFlags:       r.candidateUseFlags(dependent, dVI),
+					RebuildAfterCP: cp,
 				})
 				found = true
 			}
@@ -3555,6 +3709,83 @@ func (r *resolver) processCompleteGraph() {
 			break
 		}
 	}
+}
+
+// staleInstalledSlotOperatorDependents finds installed consumers whose VDB
+// dependency metadata contains a built := atom naming a subslot that no
+// installed provider currently has. Repository metadata normally contains an
+// unexpanded := atom; the explicit subslot is the durable ABI binding written
+// to VDB at merge time.
+func (r *resolver) staleInstalledSlotOperatorDependents() []*PkgNode {
+	var result []*PkgNode
+	for _, dependent := range r.graph.Packages {
+		if dependent == nil || !dependent.Installed {
+			continue
+		}
+		installed := dependent.GetInstalledVersion()
+		if installed == nil {
+			continue
+		}
+		if r.setScoped && !r.selectedCPs[dependent.Atom.CP()] &&
+			!r.seenDeps[dependencyVersionKey(dependent.Atom.CP(), installed.Version, installed.Slot, installed.Repository)] {
+			continue
+		}
+		edges, err := r.dependenciesForInstalledVersion(dependent, installed)
+		if err != nil {
+			continue
+		}
+		flags := installedFlags(installed)
+		stale := false
+		for _, edge := range edges {
+			if edge.UseCond != "" && !conditionsEnabled(flags, edge.UseCond) {
+				continue
+			}
+			atoms := []*atom.Atom{edge.DepAtom}
+			for _, group := range edgeAnyOfGroups(edge) {
+				for _, member := range group {
+					if member.UseCond == "" || conditionsEnabled(flags, member.UseCond) {
+						atoms = append(atoms, member.Atom)
+					}
+				}
+			}
+			for _, dep := range atoms {
+				if dep == nil || dep.SlotOp != atom.SlotOpEq || dep.Subslot == "" {
+					continue
+				}
+				provider := r.graph.Packages[dep.CP()]
+				if provider == nil {
+					continue
+				}
+				for _, version := range provider.Versions {
+					if version == nil || !version.Installed {
+						continue
+					}
+					if dep.Slot != "" && version.Slot != dep.Slot {
+						continue
+					}
+					effectiveSubslot := version.Subslot
+					if effectiveSubslot == "" {
+						effectiveSubslot = version.Slot
+					}
+					if effectiveSubslot != dep.Subslot {
+						stale = true
+					}
+					break
+				}
+				if stale {
+					break
+				}
+			}
+			if stale {
+				break
+			}
+		}
+		if stale {
+			result = append(result, dependent)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Atom.CP() < result[j].Atom.CP() })
+	return result
 }
 
 // installedSlotOperatorDependents derives reverse := edges from the installed
@@ -3573,7 +3804,7 @@ func (r *resolver) installedSlotOperatorDependents(providerCP string) []*PkgNode
 			if installed == nil || !installed.Installed {
 				continue
 			}
-			edges, err := r.dependenciesForVersion(dependent, installed)
+			edges, err := r.dependenciesForInstalledVersion(dependent, installed)
 			if err != nil {
 				continue
 			}
@@ -3591,7 +3822,7 @@ func (r *resolver) installedSlotOperatorDependents(providerCP string) []*PkgNode
 					}
 				}
 				for _, dep := range atoms {
-					if dep != nil && dep.CP() == providerCP && dep.SlotOp == atom.SlotOpEq {
+					if dep != nil && dep.CP() == providerCP && dep.SlotOp == atom.SlotOpEq && dep.Subslot != "" {
 						matched = true
 						break
 					}
@@ -3612,6 +3843,18 @@ func (r *resolver) installedSlotOperatorDependents(providerCP string) []*PkgNode
 	return result
 }
 
+// dependenciesForInstalledVersion always selects the dependency strings saved
+// in VDB. Dynamic-deps is appropriate for ordinary dependency traversal, but
+// built slot-operator bindings exist only in the installed metadata.
+func (r *resolver) dependenciesForInstalledVersion(node *PkgNode, installed *VersionInfo) ([]*DepEdge, error) {
+	if installed == nil {
+		return nil, nil
+	}
+	vdbVersion := *installed
+	vdbVersion.Available = false
+	return r.dependenciesForVersion(node, &vdbVersion)
+}
+
 func (r *resolver) verifyPlannedState() {
 	// Conflicts produced by the primary solve are authoritative. During a
 	// repair pass, however, only user-policy requirements may be promoted into
@@ -3629,7 +3872,18 @@ func (r *resolver) verifyPlannedState() {
 		r.metrics.VerifierPasses++
 		r.conflicts = append(r.conflicts[:0], persistent...)
 		r.conflictDetails = r.conflictDetails[:baseDetailsLen]
-		if !r.verifyPlannedStatePass() {
+		before := r.verificationTransactionStateKey()
+		repaired, repairs := r.verifyPlannedStatePass()
+		if !repaired {
+			return
+		}
+		if r.verificationTransactionStateKey() == before {
+			message := "post-solve verification: complete-graph repair made no transaction progress"
+			if len(repairs) > 0 {
+				message += ": " + strings.Join(repairs, "; ")
+			}
+			r.conflicts = append(r.conflicts, message)
+			r.conflictDetails = append(r.conflictDetails, ConflictDetail{Kind: "post-solve-verification", Message: message})
 			return
 		}
 		r.metrics.VerifierRepairs++
@@ -3658,7 +3912,7 @@ func persistentRepairConflict(conflict string) bool {
 		strings.HasPrefix(conflict, "license ")
 }
 
-func (r *resolver) verifyPlannedStatePass() bool {
+func (r *resolver) verifyPlannedStatePass() (bool, []string) {
 	changed := make(map[string]bool)
 	removed := make(map[string]bool)
 	removedNames := make(map[string]bool)
@@ -3688,6 +3942,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 	}
 	seen := make(map[string]bool)
 	repairAdded := false
+	var repairs []string
 	addConflictKey := func(key, message string) bool {
 		if !seen[key] {
 			seen[key] = true
@@ -3709,6 +3964,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 				return
 			}
 			if added {
+				repairs = append(repairs, fmt.Sprintf("rebuild %s because %s", node.Atom.CP(), strings.TrimPrefix(message, "post-solve verification: ")))
 				repairAdded = true
 				return
 			}
@@ -3759,11 +4015,21 @@ func (r *resolver) verifyPlannedStatePass() bool {
 		if best == nil {
 			return false
 		}
+		before := r.verificationRepairStateKey()
 		selected := versionedDependencyAtom(node, dep, best)
 		if err := r.planDependency(selected, dep, "complete-graph dependency repair required by "+parentCP, 1); err != nil {
 			addConflict(fmt.Sprintf("post-solve verification: repair %s required by %s failed: %v", dep.String(), parentCP, err))
 			return false
 		}
+		if r.verificationRepairStateKey() == before {
+			// Planning can succeed without changing the transaction when another
+			// selected parent immediately constrains the dependency back to the
+			// existing candidate.  Treat that as an unresolved issue, not as a
+			// repair, or verification loops until its hard pass limit and loses the
+			// useful parent/atom diagnostic.
+			return false
+		}
+		repairs = append(repairs, fmt.Sprintf("select %s for %s required by %s", best.Version.Raw, dep.CP(), parentCP))
 		repairAdded = true
 		return true
 	}
@@ -3777,7 +4043,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 	for cp, node := range r.graph.Packages {
 		packageScan++
 		if packageScan%256 == 0 && r.checkContext() != nil {
-			return false
+			return false, repairs
 		}
 		if !changed[cp] && (node == nil || !node.Installed) {
 			continue
@@ -3787,7 +4053,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 	sort.Strings(packageCPs)
 	for _, cp := range packageCPs {
 		if r.checkContext() != nil {
-			return false
+			return false, repairs
 		}
 		node := r.graph.Packages[cp]
 		if r.setScoped && r.config.CompleteGraph && !changed[cp] && !r.selectedCPs[cp] && node != nil && node.GetBestVersion() != nil {
@@ -3802,7 +4068,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 		}
 		for _, vi := range versions {
 			if r.checkContext() != nil {
-				return false
+				return false, repairs
 			}
 			parentChanging := r.packageVersionScheduled(node, vi)
 			versionKey := dependencyVersionKey(cp, vi.Version, vi.Slot, vi.Repository)
@@ -3824,7 +4090,7 @@ func (r *resolver) verifyPlannedStatePass() bool {
 			}
 			for _, edge := range edges {
 				if r.checkContext() != nil {
-					return false
+					return false, repairs
 				}
 				// Build/install-time dependencies of retained packages need not remain
 				// installed. They are mandatory for packages in this transaction.
@@ -3890,7 +4156,64 @@ func (r *resolver) verifyPlannedStatePass() bool {
 			}
 		}
 	}
-	return repairAdded
+	return repairAdded, slices.Compact(repairs)
+}
+
+func (r *resolver) verificationTransactionStateKey() string {
+	parts := make([]string, 0, len(r.toInstall)+len(r.toUninstall))
+	for key, action := range r.toInstall {
+		identity := key
+		if action != nil && action.Atom != nil {
+			identity += "=" + action.Atom.String() + ":" + action.Slot + "::" + action.Repository
+			flags := make([]string, 0, len(action.UseFlags))
+			for flag, enabled := range action.UseFlags {
+				flags = append(flags, fmt.Sprintf("%s=%t", flag, enabled))
+			}
+			sort.Strings(flags)
+			identity += "[" + strings.Join(flags, ",") + "]"
+		}
+		parts = append(parts, "install="+identity)
+	}
+	for key, action := range r.toUninstall {
+		identity := key
+		if action != nil && action.Atom != nil {
+			identity += "=" + action.Atom.String() + ":" + action.Slot + "::" + action.Repository
+		}
+		parts = append(parts, "uninstall="+identity)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x00")
+}
+
+// verificationRepairStateKey captures the transaction and accumulated
+// constraints that a verifier repair is allowed to change. It intentionally
+// excludes diagnostics and metrics, which change on every pass without making
+// progress toward a valid plan.
+func (r *resolver) verificationRepairStateKey() string {
+	parts := make([]string, 0, len(r.toInstall)+len(r.toUninstall)+len(r.constraints))
+	for key, action := range r.toInstall {
+		identity := key
+		if action != nil && action.Atom != nil {
+			identity += "=" + action.Atom.String() + ":" + action.Slot + "::" + action.Repository
+		}
+		parts = append(parts, "install="+identity)
+	}
+	for key, action := range r.toUninstall {
+		identity := key
+		if action != nil && action.Atom != nil {
+			identity += "=" + action.Atom.String() + ":" + action.Slot + "::" + action.Repository
+		}
+		parts = append(parts, "uninstall="+identity)
+	}
+	for key, constraints := range r.constraints {
+		for _, constraint := range constraints {
+			if constraint != nil {
+				parts = append(parts, "constraint="+key+"="+constraint.String())
+			}
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x00")
 }
 
 func (r *resolver) scheduleVerificationRebuild(node *PkgNode, installed *VersionInfo, cause string) (bool, error) {
@@ -3924,6 +4247,7 @@ func (r *resolver) scheduleVerificationRebuild(node *PkgNode, installed *Version
 		Reason: "complete-graph repair: " + strings.TrimPrefix(cause, "post-solve verification: "),
 		Slot:   best.Slot, Subslot: best.Subslot, Repository: best.Repository,
 		RepositoryPath: best.RepositoryPath, SrcURI: best.SrcURI, Restrict: best.Restrict,
+		IUse:     best.IUse,
 		UseFlags: r.candidateUseFlags(node, best),
 	})
 	if err := r.processDeps(node, best, resolved.String(), 1, DomainROOT); err != nil {
@@ -4032,6 +4356,31 @@ func (r *resolver) finalAtomSatisfiedInDomain(dep *atom.Atom, removed map[string
 		return false
 	}
 	domain = r.effectiveDomain(domain)
+	// Planned candidates live in the merged repository graph even when the
+	// caller supplies a separate VDB-only InstalledByDomain graph. Verify the
+	// transaction overlay first; otherwise a valid replacement vanishes from
+	// the final state and only its incompatible installed predecessor is tested.
+	if node := r.graph.Packages[dep.CP()]; node != nil {
+		for _, vi := range node.Versions {
+			if vi != nil && r.packageVersionScheduledInDomain(node, vi, domain) &&
+				versionAtomMatches(node.Atom, dep, vi, r.candidateUseFlags(node, vi)) {
+				return true
+			}
+		}
+	}
+	for _, providerCP := range r.graph.ProvidersOf[dep.CP()] {
+		provider := r.graph.Packages[providerCP]
+		if provider == nil {
+			continue
+		}
+		providerDep := providerConstraint(dep, provider)
+		for _, vi := range provider.Versions {
+			if vi != nil && r.packageVersionScheduledInDomain(provider, vi, domain) &&
+				versionAtomMatches(provider.Atom, providerDep, vi, r.candidateUseFlags(provider, vi)) {
+				return true
+			}
+		}
+	}
 	installedGraph := r.graph
 	if configured := r.config.InstalledByDomain[domain]; configured != nil {
 		installedGraph = configured
@@ -4345,7 +4694,7 @@ func (r *resolver) sortPlannedActions(actions []PkgAction) []PkgAction {
 	}
 	componentKey := make([]int, len(components))
 	for component := range components {
-		sort.Ints(components[component])
+		components[component] = r.orderPlanCycleByBuildDependencies(actions, components[component])
 		componentKey[component] = components[component][0]
 	}
 	queue := make([]int, 0, len(components))
@@ -4372,6 +4721,66 @@ func (r *resolver) sortPlannedActions(actions []PkgAction) []PkgAction {
 	}
 	r.attachPlanPrerequisites(result)
 	return result
+}
+
+// orderPlanCycleByBuildDependencies breaks otherwise-unavoidable dependency
+// cycles without discarding the ordering needed to build their members.  A
+// runtime dependency commonly closes Python/Portage cycles, but BDEPEND and
+// DEPEND providers still have to be merged before a consumer can execute its
+// build phases.  Portage treats those build edges as the useful ordering hints
+// when selecting a cycle break.
+func (r *resolver) orderPlanCycleByBuildDependencies(actions []PkgAction, component []int) []int {
+	sort.Ints(component)
+	if len(component) < 2 {
+		return component
+	}
+	members := make(map[int]bool, len(component))
+	for _, member := range component {
+		members[member] = true
+	}
+	buildOut := r.plannedOrderGraphFiltered(actions, func(depType DepType) bool {
+		return depType == DepTypeBuild || depType == DepTypeDepend
+	})
+	inDegree := make(map[int]int, len(component))
+	for _, before := range component {
+		for _, after := range buildOut[before] {
+			if members[after] {
+				inDegree[after]++
+			}
+		}
+	}
+	remaining := make(map[int]bool, len(component))
+	for _, member := range component {
+		remaining[member] = true
+	}
+	ordered := make([]int, 0, len(component))
+	for len(remaining) != 0 {
+		chosen := -1
+		for _, member := range component {
+			if remaining[member] && inDegree[member] == 0 {
+				chosen = member
+				break
+			}
+		}
+		if chosen == -1 {
+			// A build-only cycle cannot be satisfied. Keep its break stable while
+			// continuing to honor every build edge outside that smaller cycle.
+			for _, member := range component {
+				if remaining[member] {
+					chosen = member
+					break
+				}
+			}
+		}
+		delete(remaining, chosen)
+		ordered = append(ordered, chosen)
+		for _, after := range buildOut[chosen] {
+			if remaining[after] {
+				inDegree[after]--
+			}
+		}
+	}
+	return ordered
 }
 
 func (r *resolver) attachPlanPrerequisites(actions []PkgAction) {
@@ -4419,6 +4828,10 @@ func (r *resolver) attachPlanPrerequisites(actions []PkgAction) {
 }
 
 func (r *resolver) plannedOrderGraph(actions []PkgAction) map[int][]int {
+	return r.plannedOrderGraphFiltered(actions, nil)
+}
+
+func (r *resolver) plannedOrderGraphFiltered(actions []PkgAction, includeType func(DepType) bool) map[int][]int {
 	index := make(map[string][]int, len(actions))
 	for i := range actions {
 		if actions[i].Atom != nil {
@@ -4446,6 +4859,9 @@ func (r *resolver) plannedOrderGraph(actions []PkgAction) map[int][]int {
 			continue
 		}
 		for _, edge := range edges {
+			if includeType != nil && !includeType(edge.Type) {
+				continue
+			}
 			parentFlags := edge.UseFlags
 			if parentFlags == nil {
 				parentFlags = action.UseFlags
@@ -4464,6 +4880,7 @@ func (r *resolver) plannedOrderGraph(actions []PkgAction) map[int][]int {
 				dependencies = append(dependencies, edge.DepAtom)
 			}
 			for _, dependency := range dependencies {
+				dependency = resolveUseDependencies(dependency, parentFlags)
 				for _, depIndex := range plannedDependencyIndices(actions, index, dependency, r.effectiveDomain(edge.Domain)) {
 					if edge.Type == DepTypePost {
 						add(parentIndex, depIndex)
@@ -4472,6 +4889,18 @@ func (r *resolver) plannedOrderGraph(actions []PkgAction) map[int][]int {
 					}
 				}
 			}
+		}
+	}
+	for dependentIndex := range actions {
+		if includeType != nil {
+			continue
+		}
+		providerCP := actions[dependentIndex].RebuildAfterCP
+		if providerCP == "" {
+			continue
+		}
+		for _, providerIndex := range index[providerCP] {
+			add(providerIndex, dependentIndex)
 		}
 	}
 	return out
@@ -4609,6 +5038,7 @@ func (r *resolver) validatePlanOrder(actions []PkgAction) {
 				dependencies = append(dependencies, edge.DepAtom)
 			}
 			for _, dependency := range dependencies {
+				dependency = resolveUseDependencies(dependency, parentFlags)
 				for _, depIndex := range plannedDependencyIndices(actions, positions, dependency, r.effectiveDomain(edge.Domain)) {
 					if componentOf[depIndex] == componentOf[parentIndex] {
 						continue
@@ -4932,6 +5362,14 @@ func (r *resolver) newUseChanged(node *PkgNode, installed, candidate *VersionInf
 	filtered := *candidate
 	filtered.UseFlags = cloneBoolMap(candidate.UseFlags)
 	for flag := range filtered.UseFlags {
+		// Repository md5-cache IUSE includes implicit USE_EXPAND values while
+		// installed VDB IUSE normally contains only the ebuild-declared domain.
+		// Those implicit values belong in effective USE, not in --newuse's
+		// added/removed-IUSE comparison.
+		if _, existed := oldDomain[flag]; !existed && implicitUseExpandFlag(r.portageConfig, flag) {
+			delete(filtered.UseFlags, flag)
+			continue
+		}
 		if _, existed := oldDomain[flag]; !existed && r.portageConfig.UseMaskedFor(cpv, policySlot(candidate), candidate.Repository, flag, stable) {
 			delete(filtered.UseFlags, flag)
 		}
@@ -5493,6 +5931,7 @@ func (r *resolver) matchingMaskStatuses(node *PkgNode, constraint *atom.Atom) []
 func (r *resolver) buildResult() (*ResolveResult, error) {
 	r.snapshotAllocations()
 	install := mapToSlice(r.toInstall)
+	r.enrichInstalledActionContext(install)
 	if !r.config.UnsortedDisplay {
 		install = SortByDeps(install, r.graph)
 	}
@@ -5512,6 +5951,43 @@ func (r *resolver) buildResult() (*ResolveResult, error) {
 		Verification:    verification,
 		retryChoices:    append([]replayDecision(nil), r.replayChoices...),
 	}, nil
+}
+
+func (r *resolver) enrichInstalledActionContext(actions []PkgAction) {
+	if r == nil || r.graph == nil {
+		return
+	}
+	for index := range actions {
+		action := &actions[index]
+		if action.Atom == nil {
+			continue
+		}
+		node := r.graph.Packages[action.Atom.CP()]
+		if node == nil {
+			continue
+		}
+		var selected *VersionInfo
+		for _, candidate := range node.Versions {
+			if candidate == nil || !candidate.Installed || candidate.Version == nil {
+				continue
+			}
+			if action.Slot != "" && candidate.Slot != action.Slot {
+				continue
+			}
+			if selected == nil || candidate.Version.Compare(selected.Version) > 0 {
+				selected = candidate
+			}
+		}
+		if selected == nil {
+			continue
+		}
+		action.InstalledVersion = selected.Version.Raw
+		action.InstalledSlot = selected.Slot
+		action.InstalledSubslot = selected.Subslot
+		action.InstalledRepository = selected.Repository
+		action.InstalledUseFlags = cloneBoolMap(selected.InstalledUseFlags)
+		action.InstalledIUseFlags = cloneBoolMap(selected.InstalledIUseFlags)
+	}
 }
 
 func mapToSlice(m map[string]*PkgAction) []PkgAction {

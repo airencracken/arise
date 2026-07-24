@@ -6,7 +6,7 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install update uninstall query search installed info audit dispatch-conf quickpkg depclean prune env-update ldconfig config news deselect preserved-rebuild revdep-rebuild equery bench"
+    local commands="sync index install update uninstall select deselect recover query state search installed info audit dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild equery bench"
 
     local audit_sub="python perl"
     local news_sub="list read display"
@@ -24,7 +24,7 @@ _arise() {
     local cmd="${words[1]}"
 
     case "$cmd" in
-        install|uninstall|update|query|config|deselect|quickpkg)
+        install|uninstall|update|query|config|select|deselect|quickpkg)
             if [[ $cur == -* ]]; then
                 _arise_flags
             else
@@ -62,7 +62,7 @@ _arise() {
         installed)
             COMPREPLY=($(compgen -W "all repo no-repo buildtime no-buildtime --versions --cpv --null -0 -= -q -a" -- "$cur"))
             ;;
-        sync|index|info|dispatch-conf|depclean|prune|env-update|ldconfig|preserved-rebuild|revdep-rebuild|bench)
+        sync|index|state|info|dispatch-conf|depclean|prune|env-update|ldconfig|preserved-rebuild|revdep-rebuild|bench)
             _arise_flags
             ;;
         recover)
@@ -85,7 +85,9 @@ _arise_flags() {
         --ignore-built-slot-operator-deps --jobs --keep-going --load-average
         --name-only --newuse --nodeps --noreplace --oneshot --onlydeps --pretend
         --quiet --regex --reinstall --repo --repo-url --resolver-timeout --resume
-        --experimental-live-mutation --approve-plan-sha256 --journal-dir
+        --experimental-live-mutation --approve-plan --approve-plan-sha256
+        --save-plan --preflight-only --plan-dir --journal-dir --resume-file
+        --work-dir --jobs-tmpdir-require-free-gb --fetch-jobs --show-estimates
         --search-and --search-brief --search-care --search-category
         --search-count-only --search-depends-on --search-dump --search-duplicates
         --search-format --search-has-use --search-has-version --search-installed

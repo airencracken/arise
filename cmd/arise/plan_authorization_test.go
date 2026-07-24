@@ -89,6 +89,34 @@ func TestValidatePlanAuthorizationRequiresBothControlsAndExactDigest(t *testing.
 	}
 }
 
+func TestRequestedPlanAuthorizationRejectsStaleSavedPlanDuringPreflight(t *testing.T) {
+	directory := t.TempDir()
+	document := []byte(`{"complete":true,"operation":"install","plan_sha256":"` + strings.Repeat("a", 64) + `","resolution":{"verified":true,"verification":"verified"}}`)
+	if _, err := savePlanDocument("stale", directory, document); err != nil {
+		t.Fatal(err)
+	}
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified}
+	err := requestedPlanAuthorizationError(true, "", "stale", directory, []string{"@world"}, resolve.DefaultResolveConfig(), result, strings.Repeat("b", 64))
+	if err == nil || !strings.Contains(err.Error(), "does not match current verified plan") {
+		t.Fatalf("stale preflight authorization error = %v", err)
+	}
+}
+
+func TestRequestedPlanAuthorizationAcceptsMatchingReadOnlyAudit(t *testing.T) {
+	directory := t.TempDir()
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified}
+	cfg := resolve.DefaultResolveConfig()
+	state := strings.Repeat("b", 64)
+	digest := canonicalPlanSHA256([]string{"@world"}, cfg, result, state)
+	document := []byte(`{"complete":true,"operation":"update","plan_sha256":"` + digest + `","resolution":{"verified":true,"verification":"verified"}}`)
+	if _, err := savePlanDocument("matching", directory, document); err != nil {
+		t.Fatal(err)
+	}
+	if err := requestedPlanAuthorizationError(true, "", "matching", directory, []string{"@world"}, cfg, result, state); err != nil {
+		t.Fatalf("matching read-only approval rejected: %v", err)
+	}
+}
+
 func TestSavedPlanNameAndPathResolveToDigest(t *testing.T) {
 	directory := t.TempDir()
 	digest := strings.Repeat("a", 64)

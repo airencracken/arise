@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +32,7 @@ type MergeConfig struct {
 	Package                  string
 	Version                  string
 	JournalDir               string            // non-empty enables durable rollback journaling
+	Journal                  *journal.Journal  // optional active journal begun by the wider rebuild transaction
 	AllowLiveRoot            bool              // requires the explicit live-root journal entry point
 	AllowLiveReplacement     bool              // exact same-version, lifecycle-free canary only
 	VDBLockHeld              bool              // caller owns the operation-wide VDB lock
@@ -39,11 +41,15 @@ type MergeConfig struct {
 	BeforeReplacementRemoval func() error
 	AfterReplacementRemoval  func() error
 	BeforeCommit             func() error
+	AfterPreimageBatch       func() error // recovery-boundary test/instrumentation hook
+	AfterPayloadSync         func() error // recovery-boundary test/instrumentation hook
 	AfterCommit              func() error // Portage-compatible lifecycle; failure never rolls back the committed package
 	ConfigProtect            []string
 	ConfigProtectMask        []string
 	PreserveLibs             bool
 	Environment              []byte // normalized package environment snapshot
+	OnStage                  func(stage string)
+	OnProgress               func(stage string, current, total int)
 }
 
 // PostCommitError reports lifecycle work that failed after payload and VDB
@@ -84,6 +90,9 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 			return fmt.Errorf("merge: recover interrupted journal: %w", err)
 		}
 	}
+	if cfg.OnStage != nil {
+		cfg.OnStage("validate")
+	}
 	if filepath.Clean(cfg.RootDir) == string(filepath.Separator) && cfg.AllowLiveRoot {
 		if _, err := os.Lstat(cfg.vdbPath()); err == nil && !cfg.AllowLiveReplacement {
 			return fmt.Errorf("merge: live new-install canary refuses existing VDB entry %s", cfg.vdbPath())
@@ -97,7 +106,7 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 			if replacedVDB == "" {
 				replacedVDB = cfg.vdbPath()
 			}
-			if err := validateLiveReplacementTargets(destDir, cfg.RootDir, replacedVDB); err != nil {
+			if err := validateLiveReplacementTargetsWithConfig(destDir, cfg.RootDir, replacedVDB, cfg.ConfigProtect, cfg.ConfigProtectMask); err != nil {
 				return err
 			}
 		} else if err := validateLiveNewInstallTargets(destDir, cfg.RootDir); err != nil {
@@ -111,9 +120,15 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 	if len(collisions) != 0 {
 		return fmt.Errorf("merge: ownership preflight failed: %s", strings.Join(collisions, "; "))
 	}
-	if cfg.JournalDir == "" {
+	if cfg.OnStage != nil {
+		cfg.OnStage("merge")
+	}
+	if cfg.JournalDir == "" && cfg.Journal == nil {
 		if err := merge(ctx, destDir, cfg, nil); err != nil {
 			return err
+		}
+		if cfg.OnStage != nil {
+			cfg.OnStage("finalize")
 		}
 		if cfg.AfterCommit != nil {
 			if err := cfg.AfterCommit(); err != nil {
@@ -122,14 +137,26 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 		}
 		return nil
 	}
-	var j *journal.Journal
-	if filepath.Clean(cfg.RootDir) == string(filepath.Separator) && cfg.AllowLiveRoot {
-		j, err = journal.BeginLiveRoot(cfg.JournalDir)
+	j := cfg.Journal
+	if j == nil {
+		if filepath.Clean(cfg.RootDir) == string(filepath.Separator) && cfg.AllowLiveRoot {
+			j, err = journal.BeginLiveRoot(cfg.JournalDir)
+		} else {
+			j, err = journal.Begin(cfg.JournalDir, cfg.RootDir)
+		}
+		if err != nil {
+			return fmt.Errorf("merge: begin journal: %w", err)
+		}
 	} else {
-		j, err = journal.Begin(cfg.JournalDir, cfg.RootDir)
-	}
-	if err != nil {
-		return fmt.Errorf("merge: begin journal: %w", err)
+		root, rootErr := filepath.Abs(cfg.RootDir)
+		if rootErr != nil {
+			return fmt.Errorf("merge: validate supplied journal root: %w", rootErr)
+		}
+		root = filepath.Clean(root)
+		wantLive := root == string(filepath.Separator) && cfg.AllowLiveRoot
+		if j.Status() != "active" || filepath.Clean(j.Root()) != root || j.LiveRoot() != wantLive {
+			return fmt.Errorf("merge: supplied journal does not match active target root")
+		}
 	}
 	if err := merge(ctx, destDir, cfg, j); err != nil {
 		if rollbackErr := j.Rollback(); rollbackErr != nil {
@@ -137,11 +164,17 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 		}
 		return fmt.Errorf("%w (rolled back via %s)", err, j.Dir())
 	}
+	if cfg.OnStage != nil {
+		cfg.OnStage("commit")
+	}
 	if err := j.Commit(); err != nil {
 		if rollbackErr := j.Rollback(); rollbackErr != nil {
 			return fmt.Errorf("merge: commit journal %s: %v; rollback: %w", j.Dir(), err, rollbackErr)
 		}
 		return fmt.Errorf("merge: commit journal %s: %w", j.Dir(), err)
+	}
+	if cfg.OnStage != nil {
+		cfg.OnStage("finalize")
 	}
 	if cfg.AfterCommit != nil {
 		if err := cfg.AfterCommit(); err != nil {
@@ -152,6 +185,10 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 }
 
 func validateLiveReplacementTargets(destDir, rootDir, vdbPath string) error {
+	return validateLiveReplacementTargetsWithConfig(destDir, rootDir, vdbPath, nil, nil)
+}
+
+func validateLiveReplacementTargetsWithConfig(destDir, rootDir, vdbPath string, configProtect, configProtectMask []string) error {
 	data, err := os.ReadFile(filepath.Join(vdbPath, "CONTENTS"))
 	if err != nil {
 		return fmt.Errorf("merge: read live replacement ownership: %w", err)
@@ -162,7 +199,11 @@ func validateLiveReplacementTargets(destDir, rootDir, vdbPath string) error {
 	}
 	owned := make(map[string]bool, len(entries))
 	for _, entry := range entries {
-		owned[filepath.Clean(entry.Path)] = true
+		lexical := filepath.Clean(entry.Path)
+		owned[lexical] = true
+		if canonical, err := canonicalLiveOwnershipPath(rootDir, lexical); err == nil {
+			owned[canonical] = true
+		}
 	}
 	return filepath.WalkDir(destDir, func(source string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -184,11 +225,66 @@ func validateLiveReplacementTargets(destDir, rootDir, vdbPath string) error {
 			return nil
 		}
 		canonical := string(filepath.Separator) + filepath.ToSlash(relative)
+		if resolved, err := canonicalLiveOwnershipPath(rootDir, canonical); err == nil {
+			canonical = resolved
+		}
 		if !owned[filepath.Clean(canonical)] {
+			if protectedPath(relative, configProtect, configProtectMask) && ownsPendingConfigUpdate(owned, canonical) {
+				return nil
+			}
+			if generatedInfoDirectoryIndex(destDir, relative, entry, info) {
+				return nil
+			}
 			return fmt.Errorf("merge: live replacement target is not owned by replaced package: %s", target)
 		}
 		return nil
 	})
+}
+
+func canonicalLiveOwnershipPath(rootDir, recorded string) (string, error) {
+	_, target, err := replacementPath(rootDir, recorded)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(contentsPathForRoot(rootDir, resolved)), nil
+}
+
+func ownsPendingConfigUpdate(owned map[string]bool, canonical string) bool {
+	directory, base := filepath.Dir(filepath.Clean(canonical)), filepath.Base(canonical)
+	prefix := filepath.Join(directory, "._cfg")
+	suffix := "_" + base
+	for path := range owned {
+		cleaned := filepath.Clean(path)
+		if filepath.Dir(cleaned) != directory {
+			continue
+		}
+		name := filepath.Base(cleaned)
+		if !strings.HasPrefix(cleaned, prefix) || !strings.HasSuffix(name, suffix) {
+			continue
+		}
+		counter := strings.TrimSuffix(strings.TrimPrefix(name, "._cfg"), suffix)
+		if len(counter) == 4 && counter[0] >= '0' && counter[0] <= '9' && counter[1] >= '0' && counter[1] <= '9' && counter[2] >= '0' && counter[2] <= '9' && counter[3] >= '0' && counter[3] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func generatedInfoDirectoryIndex(destDir, relative string, staged os.DirEntry, installed os.FileInfo) bool {
+	name := filepath.Base(relative)
+	if (name != "dir" && name != "dir.gz" && name != "dir.bz2" && name != "dir.xz" && name != "dir.zst") || filepath.Base(filepath.Dir(relative)) != "info" {
+		return false
+	}
+	stagedInfo, err := staged.Info()
+	if err != nil || !stagedInfo.Mode().IsRegular() || !installed.Mode().IsRegular() {
+		return false
+	}
+	marker, err := os.Lstat(filepath.Join(destDir, filepath.Dir(relative), ".keepinfodir"))
+	return err == nil && marker.Mode().IsRegular()
 }
 
 // validateLiveNewInstallTargets limits the first live lane to additive package
@@ -222,15 +318,21 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 	mergeTime := time.Now().Unix()
 	vdbDir := cfg.vdbPath()
 	if operation != nil {
+		vdbExisted := false
 		if _, err := os.Lstat(vdbDir); err == nil {
+			vdbExisted = true
 			if err := operation.RemoveTree(vdbDir); err != nil {
 				return fmt.Errorf("merge: journal existing package database directory: %w", err)
 			}
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("merge: inspect package database directory %s: %w", vdbDir, err)
 		}
-		if err := operation.Capture(vdbDir); err != nil {
-			return fmt.Errorf("merge: journal package database directory: %w", err)
+		if vdbExisted {
+			if err := operation.Capture(vdbDir); err != nil {
+				return fmt.Errorf("merge: journal package database directory: %w", err)
+			}
+		} else if err := operation.CaptureAbsentTree(vdbDir); err != nil {
+			return fmt.Errorf("merge: journal new package database subtree: %w", err)
 		}
 	}
 	if err := os.MkdirAll(vdbDir, 0755); err != nil {
@@ -248,6 +350,87 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 		info os.FileInfo
 	}
 	var createdDirectories []createdDirectory
+	var absentSubtreeRoots []string
+	totalPaths := 0
+	insideAbsentSubtree := func(path string) bool {
+		path = filepath.Clean(path)
+		for _, root := range absentSubtreeRoots {
+			relative, err := filepath.Rel(root, path)
+			if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	if operation != nil {
+		var capturePaths []string
+		if err := filepath.WalkDir(destDir, func(srcPath string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			rel, err := filepath.Rel(destDir, srcPath)
+			if err != nil || rel == "." {
+				return err
+			}
+			totalPaths++
+			targetPath := filepath.Join(cfg.RootDir, rel)
+			if insideAbsentSubtree(targetPath) {
+				return nil
+			}
+			info, statErr := os.Lstat(targetPath)
+			if d.IsDir() && os.IsNotExist(statErr) {
+				if err := operation.CaptureAbsentTree(targetPath); err != nil {
+					return fmt.Errorf("merge: journal new subtree %s: %w", targetPath, err)
+				}
+				absentSubtreeRoots = append(absentSubtreeRoots, filepath.Clean(targetPath))
+				return nil
+			}
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					capturePaths = append(capturePaths, targetPath)
+					return nil
+				}
+				// A non-directory target may be replaced by an earlier directory
+				// entry in the mutation pass. Its parent preimage is already in
+				// the batch; descendants retain conservative inline capture.
+				if errors.Is(statErr, syscall.ENOTDIR) {
+					return nil
+				}
+				return fmt.Errorf("merge: inspect preimage %s: %w", targetPath, statErr)
+			}
+			if d.Type().IsRegular() && protectedPath(rel, cfg.ConfigProtect, cfg.ConfigProtectMask) && info != nil && info.Mode().IsRegular() {
+				same, compareErr := sameRegularFile(srcPath, targetPath)
+				if compareErr != nil {
+					return compareErr
+				}
+				if !same {
+					targetPath, err = nextProtectedPath(targetPath)
+					if err != nil {
+						return err
+					}
+				}
+			}
+			capturePaths = append(capturePaths, targetPath)
+			return nil
+		}); err != nil {
+			return err
+		}
+		if err := operation.CaptureBatch(capturePaths); err != nil {
+			return fmt.Errorf("merge: publish preimage batch: %w", err)
+		}
+		if cfg.AfterPreimageBatch != nil {
+			if err := cfg.AfterPreimageBatch(); err != nil {
+				return fmt.Errorf("merge: after preimage batch: %w", err)
+			}
+		}
+	}
+	processedPaths := 0
+	lastProgress := time.Time{}
 
 	err := filepath.WalkDir(destDir, func(srcPath string, d os.DirEntry, walkErr error) error {
 		select {
@@ -267,6 +450,13 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 		if rel == "." {
 			return nil
 		}
+		defer func() {
+			processedPaths++
+			if cfg.OnProgress != nil && (processedPaths == totalPaths || lastProgress.IsZero() || time.Since(lastProgress) >= time.Second) {
+				cfg.OnProgress("merge", processedPaths, totalPaths)
+				lastProgress = time.Now()
+			}
+		}()
 
 		targetPath := filepath.Join(cfg.RootDir, rel)
 		info, err := d.Info()
@@ -286,8 +476,13 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 					return fmt.Errorf("merge: replace non-directory target %s: %w", targetPath, err)
 				}
 				created = true
-			} else if operation != nil {
-				if err := operation.Capture(targetPath); err != nil {
+			} else if operation != nil && !insideAbsentSubtree(targetPath) {
+				if created {
+					if err := operation.CaptureAbsentTree(targetPath); err != nil {
+						return fmt.Errorf("merge: journal new subtree %s: %w", targetPath, err)
+					}
+					absentSubtreeRoots = append(absentSubtreeRoots, filepath.Clean(targetPath))
+				} else if err := operation.Capture(targetPath); err != nil {
 					return fmt.Errorf("merge: journal target %s: %w", targetPath, err)
 				}
 			}
@@ -301,7 +496,11 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 			return nil
 
 		case d.Type()&os.ModeSymlink != 0:
-			if err := prepareNonDirectoryTarget(operation, targetPath); err != nil {
+			targetOperation := operation
+			if insideAbsentSubtree(targetPath) {
+				targetOperation = nil
+			}
+			if err := prepareNonDirectoryTarget(targetOperation, targetPath); err != nil {
 				return fmt.Errorf("merge: prepare symlink target %s: %w", targetPath, err)
 			}
 			linkTarget, err := os.Readlink(srcPath)
@@ -339,7 +538,7 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 
 		default:
 			if protectedPath(rel, cfg.ConfigProtect, cfg.ConfigProtectMask) {
-				if _, statErr := os.Lstat(targetPath); statErr == nil {
+				if targetInfo, statErr := os.Lstat(targetPath); statErr == nil && targetInfo.Mode().IsRegular() {
 					same, compareErr := sameRegularFile(srcPath, targetPath)
 					if compareErr != nil {
 						return compareErr
@@ -350,11 +549,15 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 							return err
 						}
 					}
-				} else if !os.IsNotExist(statErr) {
+				} else if statErr != nil && !os.IsNotExist(statErr) {
 					return statErr
 				}
 			}
-			if err := prepareNonDirectoryTarget(operation, targetPath); err != nil {
+			targetOperation := operation
+			if insideAbsentSubtree(targetPath) {
+				targetOperation = nil
+			}
+			if err := prepareNonDirectoryTarget(targetOperation, targetPath); err != nil {
 				return fmt.Errorf("merge: prepare regular-file target %s: %w", targetPath, err)
 			}
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
@@ -415,7 +618,11 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 			return fmt.Errorf("merge: journal package file list: %w", err)
 		}
 	}
-	if err := os.WriteFile(contentsPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	contents := []byte(nil)
+	if len(lines) != 0 {
+		contents = []byte(strings.Join(lines, "\n") + "\n")
+	}
+	if err := os.WriteFile(contentsPath, contents, 0644); err != nil {
 		return fmt.Errorf("merge: could not write package file list: %w", err)
 	}
 
@@ -535,7 +742,52 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 			return fmt.Errorf("merge: pre-commit lifecycle: %w", err)
 		}
 	}
+	if operation != nil {
+		if cfg.OnStage != nil {
+			cfg.OnStage("sync")
+		}
+		if err := syncFilesystems(cfg.RootDir, cfg.VdbDir); err != nil {
+			return fmt.Errorf("merge: sync transaction payload: %w", err)
+		}
+		if cfg.AfterPayloadSync != nil {
+			if err := cfg.AfterPayloadSync(); err != nil {
+				return fmt.Errorf("merge: after payload sync: %w", err)
+			}
+		}
+	}
 
+	return nil
+}
+
+func syncFilesystems(paths ...string) error {
+	seen := make(map[uint64]bool)
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("stat %s has no device identity", path)
+		}
+		device := uint64(stat.Dev)
+		if seen[device] {
+			continue
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		syncErr := unix.Syncfs(int(file.Fd()))
+		closeErr := file.Close()
+		if syncErr != nil {
+			return syncErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		seen[device] = true
+	}
 	return nil
 }
 
@@ -685,7 +937,11 @@ func removeObsoleteReplacementPayload(operation *journal.Journal, destDir, newVD
 	}
 	retained := make(map[string]bool, len(newPaths))
 	for _, path := range newPaths {
-		retained[filepath.Clean(path)] = true
+		canonical := filepath.Clean(path)
+		if resolved, resolveErr := canonicalLiveOwnershipPath(cfg.RootDir, canonical); resolveErr == nil {
+			canonical = resolved
+		}
+		retained[canonical] = true
 	}
 	otherOwners, err := ownershipExcluding(cfg.VdbDir, oldVDB, newVDB)
 	if err != nil {
@@ -693,7 +949,7 @@ func removeObsoleteReplacementPayload(operation *journal.Journal, destDir, newVD
 	}
 	preservedPaths := make(map[string]bool)
 	if cfg.PreserveLibs {
-		preservedPaths, err = requiredPreservedPaths(cfg.VdbDir, oldVDB, newVDB, entries)
+		preservedPaths, err = requiredPreservedPaths(cfg.RootDir, cfg.VdbDir, oldVDB, newVDB, entries)
 		if err != nil {
 			return fmt.Errorf("merge: select preserved libraries: %w", err)
 		}
@@ -705,6 +961,9 @@ func removeObsoleteReplacementPayload(operation *journal.Journal, destDir, newVD
 		canonical, target, err := replacementPath(cfg.RootDir, entry.Path)
 		if err != nil {
 			return err
+		}
+		if resolved, resolveErr := canonicalLiveOwnershipPath(cfg.RootDir, canonical); resolveErr == nil {
+			canonical = resolved
 		}
 		if retained[canonical] || otherOwners[canonical] || preservedPaths[canonical] {
 			continue
@@ -737,10 +996,24 @@ func removeObsoleteReplacementPayload(operation *journal.Journal, destDir, newVD
 	return nil
 }
 
-func requiredPreservedPaths(vdbRoot, oldVDB, newVDB string, entries []contentsEntry) (map[string]bool, error) {
+func requiredPreservedPaths(root, vdbRoot, oldVDB, newVDB string, entries []contentsEntry) (map[string]bool, error) {
 	oldProvided, err := neededProviders(filepath.Join(oldVDB, "NEEDED.ELF.2"))
 	if err != nil {
 		return nil, err
+	}
+	// Installed linkage metadata can be missing or stale (notably for packages
+	// merged by older package managers). Inspect the actual obsolete ELF
+	// objects before deleting them so preserve-libs never depends solely on
+	// provider metadata being complete.
+	for _, entry := range entries {
+		if entry.Type != "obj" {
+			continue
+		}
+		canonical := filepath.Clean(entry.Path)
+		fullPath := filepath.Join(root, strings.TrimPrefix(canonical, string(filepath.Separator)))
+		if soname := elfSONAME(fullPath); soname != "" {
+			oldProvided[soname] = canonical
+		}
 	}
 	newProvided, err := neededProviders(filepath.Join(newVDB, "NEEDED.ELF.2"))
 	if err != nil {
@@ -782,12 +1055,15 @@ func requiredPreservedPaths(vdbRoot, oldVDB, newVDB string, entries []contentsEn
 		}
 		providerPath = filepath.Clean(providerPath)
 		preserved[providerPath] = true
-		providerDir, providerBase := filepath.Dir(providerPath), filepath.Base(providerPath)
+		providerDir := filepath.Dir(providerPath)
 		for _, entry := range entries {
 			candidate := filepath.Clean(entry.Path)
 			if entry.Type == "sym" && filepath.Dir(candidate) == providerDir {
 				base := filepath.Base(candidate)
-				if base == soname || strings.HasPrefix(providerBase, base) || strings.HasPrefix(base, soname) {
+				// Preserve the runtime SONAME link, never the unversioned
+				// development link. The latter must continue to select the new
+				// provider ABI after the upgrade.
+				if base == soname {
 					preserved[candidate] = true
 				}
 			}
@@ -846,6 +1122,54 @@ func updatePreservedRegistry(operation *journal.Journal, cfg MergeConfig, ownerV
 	pathsJSON, _ := json.Marshal(registered)
 	key := cfg.Category + "/" + cfg.Package + ":" + strings.SplitN(strings.TrimSpace(string(slotData)), "/", 2)[0]
 	records[key] = []json.RawMessage{ownerJSON, counterJSON, pathsJSON}
+	// Portage transfers ownership of preserved objects to the new provider's
+	// VDB entry. Without these CONTENTS records, later collision checks and the
+	// final preserved-library prune cannot safely distinguish them from
+	// unowned filesystem debris.
+	contentsPath := filepath.Join(ownerVDB, "CONTENTS")
+	contentsData, err := os.ReadFile(contentsPath)
+	if err != nil {
+		return err
+	}
+	owned := make(map[string]bool)
+	for _, entry := range strings.Split(string(contentsData), "\n") {
+		fields := strings.Fields(entry)
+		if len(fields) >= 2 {
+			owned[filepath.Clean(fields[1])] = true
+		}
+	}
+	lines := strings.Split(strings.TrimSuffix(string(contentsData), "\n"), "\n")
+	for _, registeredPath := range registered {
+		canonical := filepath.Clean(registeredPath)
+		if owned[canonical] {
+			continue
+		}
+		fullPath := filepath.Join(cfg.RootDir, strings.TrimPrefix(canonical, string(filepath.Separator)))
+		info, statErr := os.Lstat(fullPath)
+		if statErr != nil {
+			return statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			target, readErr := os.Readlink(fullPath)
+			if readErr != nil {
+				return readErr
+			}
+			sum, _ := md5Bytes([]byte(target))
+			lines = append(lines, formatContentsSym(canonical, target, sum, info.ModTime().Unix()))
+		} else if info.Mode().IsRegular() {
+			sum, hashErr := md5File(fullPath)
+			if hashErr != nil {
+				return hashErr
+			}
+			lines = append(lines, formatContentsObj(canonical, sum, info.ModTime().Unix()))
+		}
+	}
+	if err := operation.Capture(contentsPath); err != nil {
+		return err
+	}
+	if err := os.WriteFile(contentsPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(records, "", "\t")
 	if err != nil {
 		return err
@@ -906,9 +1230,42 @@ func prunePreservedRegistry(operation *journal.Journal, cfg MergeConfig) error {
 		if err := json.Unmarshal(record[0], &recordedOwner); err != nil || json.Unmarshal(record[2], &paths) != nil {
 			continue
 		}
-		required := false
+		registeredRegular := make(map[string]bool)
 		for _, registered := range paths {
-			fullPath := filepath.Join(cfg.RootDir, strings.TrimPrefix(registered, string(filepath.Separator)))
+			canonical := filepath.Clean(registered)
+			fullPath := filepath.Join(cfg.RootDir, strings.TrimPrefix(canonical, string(filepath.Separator)))
+			if info, statErr := os.Lstat(fullPath); statErr == nil && info.Mode().IsRegular() {
+				registeredRegular[canonical] = true
+			}
+		}
+		required := false
+		// Registry records can contain symlinks that were part of the old ABI
+		// chain.  A later provider merge may retarget an unversioned link to the
+		// new ABI without rewriting the old registry record.  Following that
+		// link here would make a needed current SONAME keep an unrelated old
+		// preserved object forever. Only regular preserved ELF objects and links
+		// that still point to those objects decide whether the record is needed.
+		for _, registered := range paths {
+			canonical := filepath.Clean(registered)
+			fullPath := filepath.Join(cfg.RootDir, strings.TrimPrefix(canonical, string(filepath.Separator)))
+			info, statErr := os.Lstat(fullPath)
+			if statErr != nil {
+				continue
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				target, readErr := os.Readlink(fullPath)
+				if readErr != nil {
+					continue
+				}
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(filepath.Dir(canonical), target)
+				}
+				if !registeredRegular[filepath.Clean(target)] {
+					continue
+				}
+			} else if !info.Mode().IsRegular() {
+				continue
+			}
 			soname := filepath.Base(registered)
 			if inspected := elfSONAME(fullPath); inspected != "" {
 				soname = inspected
@@ -926,6 +1283,19 @@ func prunePreservedRegistry(operation *journal.Journal, cfg MergeConfig) error {
 		if err != nil {
 			return err
 		}
+		removableRegular := make(map[string]bool)
+		for _, registered := range paths {
+			canonical := filepath.Clean(registered)
+			if otherOwners[canonical] {
+				continue
+			}
+			fullPath := filepath.Join(cfg.RootDir, strings.TrimPrefix(canonical, string(filepath.Separator)))
+			if info, statErr := os.Lstat(fullPath); statErr == nil && info.Mode().IsRegular() {
+				removableRegular[canonical] = true
+			} else if statErr != nil && !os.IsNotExist(statErr) {
+				return statErr
+			}
+		}
 		removed := make(map[string]bool)
 		for _, registered := range paths {
 			canonical := filepath.Clean(registered)
@@ -937,6 +1307,26 @@ func prunePreservedRegistry(operation *journal.Journal, cfg MergeConfig) error {
 				continue
 			} else if err != nil {
 				return err
+			}
+			info, err := os.Lstat(fullPath)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				target, err := os.Readlink(fullPath)
+				if err != nil {
+					return err
+				}
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(filepath.Dir(canonical), target)
+				}
+				if !removableRegular[filepath.Clean(target)] {
+					// This link now selects the current ABI and is no longer a
+					// preserved object, despite its stale registry membership.
+					continue
+				}
+			} else if !info.Mode().IsRegular() {
+				continue
 			}
 			if err := operation.Capture(fullPath); err != nil {
 				return err
@@ -1211,22 +1601,44 @@ func parseContents(text string) ([]contentsEntry, error) {
 		if line == "" {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		typeEnd := strings.IndexByte(line, ' ')
+		if typeEnd < 1 {
 			continue
 		}
-		e := contentsEntry{Type: fields[0], Path: fields[1]}
+		e := contentsEntry{Type: line[:typeEnd]}
+		body := strings.TrimSpace(line[typeEnd+1:])
 		switch e.Type {
 		case "obj":
-			if len(fields) >= 4 {
-				e.MD5 = fields[2]
-				e.Mtime, _ = strconv.ParseInt(fields[3], 10, 64)
+			mtimeAt := strings.LastIndexByte(body, ' ')
+			if mtimeAt < 1 {
+				continue
 			}
+			e.Mtime, _ = strconv.ParseInt(strings.TrimSpace(body[mtimeAt+1:]), 10, 64)
+			pathAndMD5 := strings.TrimSpace(body[:mtimeAt])
+			md5At := strings.LastIndexByte(pathAndMD5, ' ')
+			if md5At < 1 {
+				continue
+			}
+			e.Path = strings.TrimSpace(pathAndMD5[:md5At])
+			e.MD5 = strings.TrimSpace(pathAndMD5[md5At+1:])
 		case "sym":
-			if len(fields) >= 4 {
-				e.MD5 = fields[2]
-				e.Mtime, _ = strconv.ParseInt(fields[3], 10, 64)
+			arrow := strings.Index(body, " -> ")
+			if arrow < 1 {
+				continue
 			}
+			e.Path = strings.TrimSpace(body[:arrow])
+			tail := strings.TrimSpace(body[arrow+4:])
+			mtimeAt := strings.LastIndexByte(tail, ' ')
+			if mtimeAt >= 0 {
+				e.Mtime, _ = strconv.ParseInt(strings.TrimSpace(tail[mtimeAt+1:]), 10, 64)
+			}
+		case "dir", "fif", "dev":
+			e.Path = body
+		default:
+			continue
+		}
+		if e.Path == "" {
+			continue
 		}
 		entries = append(entries, e)
 	}
@@ -1265,10 +1677,6 @@ func copyFile(src, dst string, mode os.FileMode, modTime time.Time, stat *syscal
 		out.Close()
 		return "", err
 	}
-	if err := out.Sync(); err != nil {
-		out.Close()
-		return "", err
-	}
 	if err := out.Close(); err != nil {
 		return "", err
 	}
@@ -1294,6 +1702,19 @@ func copyFile(src, dst string, mode os.FileMode, modTime time.Time, stat *syscal
 func md5Bytes(data []byte) (string, error) {
 	h := md5.New()
 	if _, err := h.Write(data); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func md5File(path string) (string, error) {
+	input, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer input.Close()
+	h := md5.New()
+	if _, err := io.Copy(h, input); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil

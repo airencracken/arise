@@ -269,5 +269,17 @@ func unquoteSh(s string) string {
 }
 
 func RunLdConfig(rootDir string) error {
-	return fmt.Errorf("ldconfig: not yet implemented; run /sbin/ldconfig manually or via system package")
+	rootDir = filepath.Clean(rootDir)
+	if !filepath.IsAbs(rootDir) {
+		return fmt.Errorf("ldconfig: ROOT must be absolute: %s", rootDir)
+	}
+	executable := filepath.Join(rootDir, "sbin", "ldconfig")
+	info, err := os.Stat(executable)
+	if err != nil {
+		return fmt.Errorf("ldconfig: inspect %s: %w", executable, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("ldconfig: unusable executable %s", executable)
+	}
+	return runLdconfig(rootDir, executable)
 }

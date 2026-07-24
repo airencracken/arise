@@ -466,7 +466,7 @@ func TestDeselect_Roundtrip(t *testing.T) {
 }
 
 func TestExpandSet_UnknownSet(t *testing.T) {
-	_, err := ExpandSet("@unknown-set", "/var/db/pkg")
+	_, err := ExpandSet("@unknown-set", "/", "/var/db/pkg")
 	if err == nil {
 		t.Error("expected error for unknown set")
 	}
@@ -475,7 +475,7 @@ func TestExpandSet_UnknownSet(t *testing.T) {
 func TestExpandSet_KnownSets(t *testing.T) {
 	sets := []string{"@module-rebuild", "@live-rebuild", "@x11-module-rebuild"}
 	for _, s := range sets {
-		_, err := ExpandSet(s, "/var/db/pkg")
+		_, err := ExpandSet(s, "/", "/var/db/pkg")
 		if err != nil {
 			t.Logf("ExpandSet(%s) error (may be expected in test env): %v", s, err)
 		}

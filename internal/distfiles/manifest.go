@@ -6,11 +6,13 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -201,47 +203,45 @@ func Verify(path string, artifact Artifact) error {
 	if info.Size() != artifact.Size {
 		return fmt.Errorf("distfile %s: size %d, want %d", artifact.Name, info.Size(), artifact.Size)
 	}
-	verified := 0
-	for algorithm, expected := range artifact.Digests {
-		var actual string
+	algorithms := make([]string, 0, len(artifact.Digests))
+	for algorithm := range artifact.Digests {
+		algorithms = append(algorithms, algorithm)
+	}
+	sort.Strings(algorithms)
+	type verifier struct {
+		algorithm string
+		expected  string
+		hash      hash.Hash
+	}
+	verifiers := make([]verifier, 0, len(algorithms))
+	for _, algorithm := range algorithms {
+		var digest hash.Hash
 		switch algorithm {
 		case "BLAKE2B":
-			hash, _ := blake2b.New512(nil)
-			if _, err := file.Seek(0, io.SeekStart); err != nil {
-				return err
-			}
-			if _, err := io.Copy(hash, file); err != nil {
-				return err
-			}
-			actual = hex.EncodeToString(hash.Sum(nil))
+			digest, _ = blake2b.New512(nil)
 		case "SHA256":
-			hash := sha256.New()
-			if _, err := file.Seek(0, io.SeekStart); err != nil {
-				return err
-			}
-			if _, err := io.Copy(hash, file); err != nil {
-				return err
-			}
-			actual = hex.EncodeToString(hash.Sum(nil))
+			digest = sha256.New()
 		case "SHA512":
-			hash := sha512.New()
-			if _, err := file.Seek(0, io.SeekStart); err != nil {
-				return err
-			}
-			if _, err := io.Copy(hash, file); err != nil {
-				return err
-			}
-			actual = hex.EncodeToString(hash.Sum(nil))
+			digest = sha512.New()
 		default:
 			continue
 		}
-		verified++
-		if actual != expected {
-			return fmt.Errorf("distfile %s: %s digest mismatch", artifact.Name, algorithm)
-		}
+		verifiers = append(verifiers, verifier{algorithm: algorithm, expected: artifact.Digests[algorithm], hash: digest})
 	}
-	if verified == 0 {
+	if len(verifiers) == 0 {
 		return fmt.Errorf("distfile %s: Manifest has no supported digest", artifact.Name)
+	}
+	writers := make([]io.Writer, 0, len(verifiers))
+	for i := range verifiers {
+		writers = append(writers, verifiers[i].hash)
+	}
+	if _, err := io.Copy(io.MultiWriter(writers...), file); err != nil {
+		return err
+	}
+	for _, verifier := range verifiers {
+		if hex.EncodeToString(verifier.hash.Sum(nil)) != verifier.expected {
+			return fmt.Errorf("distfile %s: %s digest mismatch", artifact.Name, verifier.algorithm)
+		}
 	}
 	return nil
 }

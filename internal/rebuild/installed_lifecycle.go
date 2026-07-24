@@ -71,10 +71,10 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 	}
 	request := phaseproto.Request{Protocol: phaseproto.Version, ID: "installed-lifecycle", Command: "run_phase", Phase: "pkg_prerm", EAPI: eb.EAPI, Ebuild: storedEbuilds[0], Environment: environment,
 		Env: map[string]string{"USE": strings.TrimSpace(readInstalledValue(vdbPath, "USE"))}, WorkDir: filepath.Join(workDir, "work"), BuildDir: filepath.Join(workDir, "work"),
-		RootDir: cfg.RootDir, SysrootDir: cfg.SysrootDir, BrootDir: cfg.BrootDir, TempDir: filepath.Join(workDir, "temp"), HomeDir: filepath.Join(workDir, "home")}
+		RootDir: cfg.RootDir, SysrootDir: cfg.SysrootDir, BrootDir: phaseBroot(cfg.BrootDir), TempDir: filepath.Join(workDir, "temp"), HomeDir: filepath.Join(workDir, "home")}
 	request, err = phaseproto.ApplyPackagePolicy(request, phaseproto.PackagePolicy{Configuration: cfg.PortageConfig, Repositories: repositories, Repository: repository,
 		ConfigRoot: cfg.ConfigRoot, CPV: category + "/" + pf, Category: category, PN: a.Package, P: pf, PR: "r0", Slot: slot,
-		WorkDir: request.WorkDir, BuildDir: request.BuildDir, RootDir: cfg.RootDir, SysrootDir: cfg.SysrootDir, BrootDir: cfg.BrootDir, TempDir: request.TempDir, HomeDir: request.HomeDir})
+		WorkDir: request.WorkDir, BuildDir: request.BuildDir, RootDir: cfg.RootDir, SysrootDir: cfg.SysrootDir, BrootDir: phaseBroot(cfg.BrootDir), TempDir: request.TempDir, HomeDir: request.HomeDir})
 	if err != nil {
 		return fail(fmt.Errorf("installed lifecycle: policy: %w", err))
 	}
@@ -82,6 +82,7 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 	if err != nil {
 		return fail(fmt.Errorf("installed lifecycle: has_version queries: %w", err))
 	}
+	request.BestVersion = preflightBestVersions(cfg.VdbDir, cfg.VdbDir)
 	log, err := phaseproto.NewPackageLog(phaseproto.PackageLogOptions{Root: cfg.PhaseLogDir, TempDir: request.TempDir, Category: category, PF: pf, Split: cfg.SplitLogs})
 	if err != nil {
 		return fail(fmt.Errorf("installed lifecycle: log: %w", err))
@@ -94,8 +95,9 @@ func (l *InstalledLifecycle) Run(ctx context.Context, phase string) error {
 	request := l.request
 	request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(request.Package.Category + "-" + request.Package.PF + "-" + phase)
 	request.Phase = phase
+	request = applyPortageLifecyclePolicy(request, phase)
 	l.cfg.firePhaseStart(phase)
-	events, err := phaseproto.RunBashWorkerWithOptions(ctx, request, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage, DurableLog: l.log})
+	events, err := runPhaseWorker(ctx, request, l.cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage, DurableLog: l.log})
 	l.cfg.firePhaseEnd(phase, err)
 	if err != nil {
 		var details []string

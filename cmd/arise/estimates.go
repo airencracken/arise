@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -27,6 +29,11 @@ func loadMergeEstimates(path string) mergeEstimates {
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		line := s.Text()
+		// Historical emerge.log files can contain sparse/corrupt NUL padding
+		// before an otherwise intact record. Do not let that poison timing
+		// history for every later package; recover the timestamped suffix while
+		// leaving the source log untouched for explicit, backed-up repair.
+		line = strings.TrimLeft(line, "\x00")
 		colon := strings.IndexByte(line, ':')
 		if colon < 1 {
 			continue
@@ -101,9 +108,24 @@ type portageMergeLog struct {
 }
 
 func openPortageMergeLog(path string) (*portageMergeLog, error) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o664)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o664)
 	if err != nil {
 		return nil, err
+	}
+	buffer := make([]byte, 64*1024)
+	for {
+		count, readErr := f.Read(buffer)
+		if bytes.IndexByte(buffer[:count], 0) >= 0 {
+			_ = f.Close()
+			return nil, fmt.Errorf("timing log %s contains NUL bytes; repair it before live execution", path)
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("validate timing log %s: %w", path, readErr)
+		}
 	}
 	return &portageMergeLog{file: f}, nil
 }

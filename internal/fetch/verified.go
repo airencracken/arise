@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/airencracken/arise/internal/distfiles"
 )
@@ -20,6 +21,26 @@ type acquireCall struct {
 	err  error
 }
 
+type verifiedFile struct {
+	size    int64
+	modTime int64
+	inode   uint64
+	device  uint64
+}
+
+// ManualFetchRequiredError reports a Manifest artifact which is unavailable
+// while RESTRICT=fetch forbids automatic acquisition.
+type ManualFetchRequiredError struct {
+	Artifact string
+	Cause    error
+}
+
+func (e *ManualFetchRequiredError) Error() string {
+	return fmt.Sprintf("fetch: %s requires manual acquisition: %v", e.Artifact, e.Cause)
+}
+
+func (e *ManualFetchRequiredError) Unwrap() error { return e.Cause }
+
 // Fetcher owns process-wide acquisition coordination. Callers sharing a
 // Fetcher never download the same Manifest identity concurrently.
 type Fetcher struct {
@@ -27,6 +48,7 @@ type Fetcher struct {
 
 	mu       sync.Mutex
 	inflight map[string]*acquireCall
+	verified map[string]verifiedFile
 }
 
 // AcquireManifest is the shared preparation entry point for fetch-only and
@@ -70,6 +92,15 @@ func (f *Fetcher) Acquire(ctx context.Context, artifacts []distfiles.Artifact, c
 func (f *Fetcher) acquireOne(ctx context.Context, directory string, artifact distfiles.Artifact, cfg FetchConfig) error {
 	key := artifactKey(directory, artifact)
 	f.mu.Lock()
+	if stamp, ok := f.verified[key]; ok {
+		f.mu.Unlock()
+		if current, err := verifiedFileStamp(filepath.Join(directory, artifact.Name)); err == nil && current == stamp {
+			reportProgress(cfg, Progress{Stage: ProgressCached, Artifact: artifact.Name, Downloaded: artifact.Size, Total: artifact.Size})
+			return nil
+		}
+		f.mu.Lock()
+		delete(f.verified, key)
+	}
 	if f.inflight == nil {
 		f.inflight = make(map[string]*acquireCall)
 	}
@@ -88,10 +119,30 @@ func (f *Fetcher) acquireOne(ctx context.Context, directory string, artifact dis
 
 	call.err = f.acquireLeader(ctx, directory, artifact, cfg)
 	f.mu.Lock()
+	if call.err == nil {
+		if stamp, stampErr := verifiedFileStamp(filepath.Join(directory, artifact.Name)); stampErr == nil {
+			if f.verified == nil {
+				f.verified = make(map[string]verifiedFile)
+			}
+			f.verified[key] = stamp
+		}
+	}
 	delete(f.inflight, key)
 	close(call.done)
 	f.mu.Unlock()
 	return call.err
+}
+
+func verifiedFileStamp(path string) (verifiedFile, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return verifiedFile{}, err
+	}
+	stamp := verifiedFile{size: info.Size(), modTime: info.ModTime().UnixNano()}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		stamp.inode, stamp.device = stat.Ino, uint64(stat.Dev)
+	}
+	return stamp, nil
 }
 
 func artifactKey(directory string, artifact distfiles.Artifact) string {
@@ -121,9 +172,13 @@ func (f *Fetcher) acquireLeader(ctx context.Context, directory string, artifact 
 	defer unlock()
 	destination := filepath.Join(directory, artifact.Name)
 	reportProgress(cfg, Progress{Stage: ProgressChecking, Artifact: artifact.Name, Total: artifact.Size})
-	if err := distfiles.Verify(destination, artifact); err == nil {
+	verifyErr := distfiles.Verify(destination, artifact)
+	if verifyErr == nil {
 		reportProgress(cfg, Progress{Stage: ProgressCached, Artifact: artifact.Name, Downloaded: artifact.Size, Total: artifact.Size})
 		return nil
+	}
+	if cfg.ManualOnly {
+		return &ManualFetchRequiredError{Artifact: artifact.Name, Cause: verifyErr}
 	}
 	if len(artifact.Sources) == 0 {
 		return fmt.Errorf("fetch: %s is not verified and has no source URI", artifact.Name)

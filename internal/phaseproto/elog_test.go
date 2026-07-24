@@ -57,3 +57,15 @@ func TestDeliverElogFailsClosedOnSavePermissions(t *testing.T) {
 		t.Fatal("elog save boundary failure was ignored")
 	}
 }
+
+func TestDeliverElogAcceptsPortageSaveSummarySpelling(t *testing.T) {
+	root := t.TempDir()
+	_, err := DeliverElog([]Event{{Kind: "elog", Class: "LOG", Message: "read me later"}}, ElogOptions{LogDir: root, Category: "cat", PF: "pkg-1", Sinks: []string{"save_summary:log,warn,error,qa"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "elog", "summary.log"))
+	if err != nil || !strings.Contains(string(data), "read me later") {
+		t.Fatalf("Portage save_summary output=%q error=%v", data, err)
+	}
+}
