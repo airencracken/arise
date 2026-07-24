@@ -132,6 +132,14 @@ than a full rebuild, but the profile decides. Require:
 Stop after one accepted optimization. Put further findings into the punch list
 rather than extending this cycle.
 
+An incremental installed-linkage index in Badger is a deferred candidate, not
+an assumed deliverable. A 2026-07-24 warm comparison found Arise already faster
+than Portage for both an empty preserved-rebuild plan (1.477 versus 6.133
+seconds) and an exact CMake reinstall plan (1.535 versus 3.250 seconds). Admit
+the index only if repeated non-empty profiles make linkage discovery a leading
+cost. Cache durable per-CPV ELF facts and publish them atomically; never cache
+the transient `@preserved-rebuild` result.
+
 ### C2 exit
 
 The repository contains a reproducible baseline, truthful phase timing, and one

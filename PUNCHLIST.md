@@ -875,7 +875,14 @@ validity and promotion criteria, in
   native `DT_NEEDED`/loader-directory scanner. Live preserved discovery now
   reads Portage's JSON preserved-libraries registry instead of classifying all
   versioned SONAMEs as preserved; owners are not incorrectly rebuilt merely for
-  supplying an old object. CPU profiles finalize on SIGINT/SIGTERM so bounded
+  supplying an old object. A later warm empty-set comparison measured Arise at
+  1.477 seconds versus Portage at 6.133 seconds; an exact CMake reinstall plan
+  measured 1.535 seconds versus 3.250 seconds. Defer a separate incremental
+  Badger linkage index until repeated non-empty profiles show that native ELF
+  discovery is again a leading cost. If admitted, cache per-CPV owned ELF,
+  ABI/SONAME, `DT_NEEDED`, and RUNPATH facts—not the transient rebuild answer—
+  with VDB-bound invalidation and atomic generation publication. CPU profiles
+  finalize on SIGINT/SIGTERM so bounded
   pathological captures remain usable. Empty-tree no longer performs the
   installed-parent refresh or verifier mutation loop; its remaining closure
   differences are emitted within a one-backtrack diagnostic run instead of
