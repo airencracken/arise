@@ -2867,7 +2867,7 @@ func TestExpandTargetsPreservedRebuildUsesSetSemantics(t *testing.T) {
 	var expanded string
 	cfg.PackageSetExpander = func(name string) ([]string, error) {
 		expanded = name
-		return []string{"=dev-libs/example-1"}, nil
+		return []string{"dev-build/cmake-4.3.4"}, nil
 	}
 	r := &resolver{
 		graph:              g,
@@ -2884,14 +2884,24 @@ func TestExpandTargetsPreservedRebuildUsesSetSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expand preserved-rebuild: %v", err)
 	}
-	if expanded != "@preserved-rebuild" || len(atoms) != 1 || atoms[0].String() != "=dev-libs/example-1" {
+	if expanded != "@preserved-rebuild" || len(atoms) != 1 || atoms[0].String() != "=dev-build/cmake-4.3.4" {
 		t.Fatalf("expansion=%q atoms=%v", expanded, atoms)
 	}
 	if !r.config.Reinstall || !r.config.Oneshot {
 		t.Fatalf("preserved-rebuild flags: reinstall=%v oneshot=%v", r.config.Reinstall, r.config.Oneshot)
 	}
-	if !r.explicitTargets["dev-libs/example"] {
+	if !r.explicitTargets["dev-build/cmake"] {
 		t.Fatal("expanded package was not marked as an explicit rebuild target")
+	}
+}
+
+func TestParseGeneratedSetAtomRetainsExplicitConstraint(t *testing.T) {
+	a, err := parseGeneratedSetAtom(">=dev-build/cmake-4.3")
+	if err != nil {
+		t.Fatalf("parse generated set atom: %v", err)
+	}
+	if got := a.String(); got != ">=dev-build/cmake-4.3" {
+		t.Fatalf("atom=%q", got)
 	}
 }
 

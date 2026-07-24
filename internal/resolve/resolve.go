@@ -1803,7 +1803,7 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 				r.config.Oneshot = true
 			}
 			for _, entry := range entries {
-				a, err := atom.ParsePackageAtom(entry)
+				a, err := parseGeneratedSetAtom(entry)
 				if err != nil {
 					return nil, fmt.Errorf("resolve: could not parse %s entry %q: %w", target, entry, err)
 				}
@@ -1854,6 +1854,23 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 	}
 
 	return atoms, nil
+}
+
+// parseGeneratedSetAtom accepts ordinary package atoms and the bare installed
+// CPVs returned by generated rebuild sets. A bare CPV is an installed package
+// identity, so its set meaning is an exact-version constraint rather than the
+// invalid versionless-operator syntax rejected for user-supplied atoms.
+func parseGeneratedSetAtom(entry string) (*atom.Atom, error) {
+	a, err := atom.ParsePackageAtom(entry)
+	if err == nil {
+		return a, nil
+	}
+	identity, identityErr := atom.Parse(entry)
+	if identityErr != nil || identity.Version == nil || identity.Op != atom.OpNone {
+		return nil, err
+	}
+	identity.Op = atom.OpEq
+	return identity, nil
 }
 
 func (r *resolver) findPackagesByName(name string) []string {
