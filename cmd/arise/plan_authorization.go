@@ -207,16 +207,10 @@ func hashStatePath(dst io.Writer, label, path string) error {
 	return nil
 }
 
-func validatePlanAuthorization(experimental bool, approved, actual string) error {
+func validatePlanAuthorization(approved, actual string) error {
 	approved = strings.ToLower(strings.TrimSpace(approved))
-	if !experimental && approved == "" {
-		return nil
-	}
-	if !experimental {
-		return fmt.Errorf("--approve-plan-sha256 requires --experimental-live-mutation")
-	}
 	if approved == "" {
-		return fmt.Errorf("--experimental-live-mutation requires --approve-plan-sha256")
+		return fmt.Errorf("execution requires --approve-plan or --approve-plan-sha256")
 	}
 	if len(approved) != sha256.Size*2 {
 		return fmt.Errorf("approved plan SHA-256 must contain 64 hexadecimal characters")
@@ -230,13 +224,13 @@ func validatePlanAuthorization(experimental bool, approved, actual string) error
 	return nil
 }
 
-func requestedPlanAuthorizationError(experimental bool, legacyDigest, reference, directory string, targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult, stateSHA256 string) error {
+func requestedPlanAuthorizationError(legacyDigest, reference, directory string, targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult, stateSHA256 string) error {
 	approvedDigest, err := approvedPlanDigest(legacyDigest, reference, directory)
 	if err != nil {
 		return err
 	}
 	actualDigest := canonicalPlanSHA256(targets, cfg, result, stateSHA256)
-	if err := validatePlanAuthorization(experimental, approvedDigest, actualDigest); err != nil {
+	if err := validatePlanAuthorization(approvedDigest, actualDigest); err != nil {
 		if detail := describeApprovedPlanDifference(reference, directory, cfg); detail != "" {
 			return fmt.Errorf("%w; %s", err, detail)
 		}

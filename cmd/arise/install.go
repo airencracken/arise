@@ -39,18 +39,51 @@ func runInstall(args []string, dbPath, repoDir string) {
 	runResolveAndRebuild(args, dbPath, repoDir, *updateMode, false)
 }
 
-// liveMutationNeedsWorldJournal reports whether a successful invocation would
-// need to add its targets to the world file. Updating the canonical @world set
-// preserves membership; explicit package targets still require the not-yet-
-// journaled world update unless the caller selected --oneshot.
-func liveMutationNeedsWorldJournal(targets []string, cfg resolve.ResolveConfig) bool {
+func installWorldSelections(targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult) []string {
 	if cfg.Oneshot {
-		return false
+		return nil
 	}
-	if len(targets) == 1 && strings.HasPrefix(targets[0], "@") {
-		return false
+	selected := make(map[string]bool)
+	hasNameOnlyTarget := false
+	for _, target := range targets {
+		target = strings.TrimSpace(target)
+		if target == "" || strings.HasPrefix(target, "@") {
+			continue
+		}
+		a, err := atom.ParsePackageAtom(target)
+		if err == nil {
+			selected[a.CP()] = true
+			continue
+		}
+		if !strings.Contains(target, "/") {
+			hasNameOnlyTarget = true
+		}
 	}
-	return len(targets) != 1 || targets[0] != "@world"
+	if hasNameOnlyTarget && result != nil {
+		for _, action := range result.Install {
+			if action.Atom != nil && action.Reason == "explicit target" {
+				selected[action.Atom.CP()] = true
+			}
+		}
+	}
+	selections := make([]string, 0, len(selected))
+	for selection := range selected {
+		selections = append(selections, selection)
+	}
+	sort.Strings(selections)
+	return selections
+}
+
+func updateInstallWorld(path string, selections []string) error {
+	if len(selections) == 0 {
+		return nil
+	}
+	return world.Update(path, func(set *world.WorldSet) error {
+		for _, selection := range selections {
+			world.Add(set, selection)
+		}
+		return nil
+	})
 }
 
 func colorActionAtom(action resolve.PkgAction) string {
@@ -391,7 +424,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	resolutionDuration := time.Since(resolutionStarted)
 	stateSHA256 := ""
 	stateFingerprintStarted := time.Now()
-	if result.Verified && (jsonMode || *savePlan != "" || *experimentalLiveMutation || *approvePlanSHA256 != "" || *approvePlan != "") {
+	if result.Verified && (jsonMode || *savePlan != "" || *approvePlanSHA256 != "" || *approvePlan != "" || (!cfg.Pretend && !*preflightOnly)) {
 		stateSHA256, err = mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "arise: fingerprint mutation state: %v\n", err)
@@ -595,6 +628,13 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	}
 
 	if len(result.Install) == 0 && len(result.Uninstall) == 0 {
+		selections := installWorldSelections(targets, cfg, result)
+		if !cfg.Pretend && !*preflightOnly {
+			if err := updateInstallWorld(*worldFile, selections); err != nil {
+				fmt.Fprintf(os.Stderr, "arise: update world selection: %v\n", err)
+				os.Exit(1)
+			}
+		}
 		if !cfg.Quiet {
 			fmt.Println("\nNothing to do.")
 		}
@@ -614,7 +654,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			// Supplying approval to read-only preflight means "audit this
 			// digest", not "enable mutation". The live-mutation pairing is
 			// enforced only on the execution path below.
-			if err := requestedPlanAuthorizationError(true, *approvePlanSHA256, *approvePlan, *planDir, targets, cfg, result, stateSHA256); err != nil {
+			if err := requestedPlanAuthorizationError(*approvePlanSHA256, *approvePlan, *planDir, targets, cfg, result, stateSHA256); err != nil {
 				fmt.Fprintf(os.Stderr, "arise: refusing preflight: %v\n", err)
 				exitAfterRuntimeProfiles(1)
 			}
@@ -655,7 +695,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	// before execution. The merge lock and journal provide the mutation-side
 	// boundary; a changed package database, policy, recipe, or eclass changes
 	// the canonical plan digest and fails closed here.
-	if *experimentalLiveMutation || *approvePlanSHA256 != "" || *approvePlan != "" {
+	if *approvePlanSHA256 != "" || *approvePlan != "" {
 		currentStateSHA256, fingerprintErr := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
 		if fingerprintErr != nil {
 			fmt.Fprintf(os.Stderr, "arise: refusing execution: refresh mutation-state fingerprint: %v\n", fingerprintErr)
@@ -667,9 +707,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 		stateSHA256 = currentStateSHA256
 	}
-	if err := requestedPlanAuthorizationError(*experimentalLiveMutation, *approvePlanSHA256, *approvePlan, *planDir, targets, cfg, result, stateSHA256); err != nil {
-		fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", err)
-		os.Exit(1)
+	if *approvePlanSHA256 != "" || *approvePlan != "" {
+		if err := requestedPlanAuthorizationError(*approvePlanSHA256, *approvePlan, *planDir, targets, cfg, result, stateSHA256); err != nil {
+			fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	if cfg.FetchOnly {
 		progress := newFetchProgress(!cfg.Quiet, os.Stdout)
@@ -683,11 +725,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 		return
 	}
-	if *experimentalLiveMutation {
-		if liveMutationNeedsWorldJournal(targets, cfg) {
-			fmt.Fprintln(os.Stderr, "arise: refusing execution: disposable executor currently requires --oneshot until world addition joins the package journal")
-			os.Exit(1)
-		}
+	{
 		// Package transactions remain dependency-ordered by the executor, while
 		// the package's build system follows explicit --jobs or configured
 		// MAKEOPTS. Serializing every compiler invocation made large canaries look
@@ -811,6 +849,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			printExecutionError(os.Stderr, executionErr)
 			os.Exit(1)
 		}
+		selections := installWorldSelections(targets, cfg, result)
+		if err := updateInstallWorld(*worldFile, selections); err != nil {
+			fmt.Fprintf(os.Stderr, "arise: packages committed but world selection failed: %v\n", err)
+			os.Exit(1)
+		}
 		if !cfg.Quiet {
 			printPostTransactionSummary(os.Stdout, rebuildCfg.RootDir, rebuildCfg.VdbDir, repoDir, rebuildCfg.PortageConfig)
 		}
@@ -820,11 +863,6 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		return
 	}
 
-	// Never report success for a plan that was not executed. Live mutation
-	// remains safety-gated until the fresh-stage3 acceptance gate retires the
-	// explicit saved-plan approval switch.
-	fmt.Fprintln(os.Stderr, unsupportedExecutionMessage(cfg))
-	os.Exit(1)
 }
 
 func targetsNeedCompleteGraph(targets []string) bool {
@@ -1239,10 +1277,6 @@ func fetchPlanAction(ctx context.Context, action resolve.PkgAction, baseConfig f
 		return fmt.Errorf("%s: %w", action.Atom, err)
 	}
 	return nil
-}
-
-func unsupportedExecutionMessage(cfg resolve.ResolveConfig) string {
-	return "arise: execution requires exact saved-plan approval; save with --pretend --save-plan NAME, then execute with --experimental-live-mutation --approve-plan NAME"
 }
 
 func sortedUseFlags(flags map[string]bool) ([]string, []string) {

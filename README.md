@@ -9,12 +9,19 @@ Bash through Arise's versioned phase protocol.
 > queries, verified planning, source rebuilds, and journaled live-root package
 > transactions are implemented. Resolver, execution, recovery, and maintenance
 > compatibility remain incomplete and Arise is not yet a general replacement
-> for Portage. Live mutation requires an explicit safety gate and approval of
-> an exact verified saved plan. See the
+> for Portage. Install, update, reinstall, uninstall, select, and deselect use
+> journaled live mutation directly; saved plans remain available for optional
+> state-bound review and deferred execution. See the
 > [Portage self-hosting milestone](docs/evidence/PORTAGE_SELF_HOSTING_MILESTONE_2026-07-24.md),
 > [documentation index](docs/README.md), and [punch list](PUNCHLIST.md).
 > The moving-target test policy is documented in
 > [the compatibility contract](COMPATIBILITY.md).
+
+> **Experimental live package manager:** Arise now executes supported package
+> transactions directly, but the project remains experimental and the overlay
+> release is testing-keyworded for `~amd64`. Keep Portage installed as the
+> reference and recovery implementation while Arise completes its compatibility
+> and fresh-stage3 acceptance gates.
 
 ## Why
 
@@ -169,14 +176,16 @@ arise --pretend revdep-rebuild
 arise dispatch-conf
 ```
 
-Live-root install, update, and uninstall execution is available only through the
-live-mutation safety gate and an exact approved saved plan. Source transactions
-use Manifest-verified artifacts, isolated phase workers, durable per-package
-logs, collision checks, package journals, operation locking, and resumable
+Live-root install, update, reinstall, and uninstall execute directly after a
+verified plan. Explicit install targets are selected into world unless
+`--oneshot` is set. `--save-plan` and `--approve-plan` provide optional
+state-bound review and deferred execution. Source transactions use
+Manifest-verified artifacts, isolated phase workers, durable per-package logs,
+collision checks, package journals, operation locking, and resumable
 dependency-aware scheduling. Package preparation may run concurrently, while
-ROOT and VDB commits remain serialized. Depclean, repair, and broader maintenance
-mutation remain gated until their complete plans and rollback boundaries join
-the same transaction model.
+ROOT and VDB commits remain serialized. Depclean, repair, and broader
+maintenance mutation remain unavailable until their complete plans and rollback
+boundaries join the same transaction model.
 
 ## Usage
 

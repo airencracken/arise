@@ -29,11 +29,15 @@ It stores package metadata in a BadgerDB key-value store and operates directly
 against the Gentoo repository tree and VDB, without depending on Python or Bash
 for core operations. Build phases that require shell scripts execute via
 \fBos/exec\fR to the appropriate build tools (make, bash, patch, etc.).
-Live-root install and update execution requires the explicit live-mutation
-safety gate and approval of an exact verified saved plan. Source
-transactions use isolated phase workers, durable logs, operation locking,
-package journals, and resumable dependency-aware scheduling. Removal, depclean,
-and broader maintenance mutation remain gated.
+Live-root install, update, reinstall, and uninstall execute directly after a
+verified plan. Explicit install targets are selected into world unless
+\fB\-\-oneshot\fR is set. Saved plans remain available for optional
+state-bound review and deferred execution. Source transactions use isolated
+phase workers, durable logs, operation locking, package journals, and resumable
+dependency-aware scheduling. Depclean and broader maintenance mutation remain
+unavailable. Live package management remains experimental and the overlay
+release is testing-keyworded for \fB~amd64\fR; keep Portage installed as the
+reference and recovery implementation.
 
 The design priorities are correctness, usefulness, performance, and
 reliability.  Repair planning is intended to derive and verify a complete
@@ -121,11 +125,10 @@ Wall-clock resolver deadline (default: \fI5m\fR). A value of \fI0\fR disables
 the wall-clock limit without changing the independent backtrack ceiling.
 .TP
 \fB\-\-experimental-live-mutation\fR
-Enable the development mutation path. This is not sufficient authorization by
-itself; an exact verified plan must also be approved.
+Deprecated compatibility flag. Mutation no longer requires this option.
 .TP
 \fB\-\-approve-plan-sha256\fR \fIDIGEST\fR
-Authorize exactly the displayed canonical verified-plan digest. The digest is
+Optionally require exactly the displayed canonical verified-plan digest. The digest is
 bound to VDB, world, configuration, selected recipes and inherited eclasses;
 state drift before execution fails closed.
 .TP
@@ -133,8 +136,8 @@ state drift before execution fails closed.
 Save the complete generated JSON plan for later inspection and approval.
 .TP
 \fB\-\-approve-plan\fR \fIPATH-OR-NAME\fR
-Authorize execution from an exact saved plan. The current package and policy
-state is revalidated before mutation.
+Optionally require execution to match an exact saved plan. The current package
+and policy state is revalidated before mutation.
 .TP
 \fB\-\-preflight-only\fR
 Validate every planned package without fetching, building, or mutating.
@@ -322,18 +325,19 @@ Dump output in eix-compatible format.
 
 .TP
 \fBinstall\fR [\fIflags\fR] \fIatoms...\fR
-Resolve one or more packages. Live execution requires the live-mutation safety
-gate and approval of an exact verified saved plan. Prefer
-\fB\-\-pretend\fR and full preflight before mutation.
+Resolve, build, install, and select one or more packages. Use
+\fB\-\-oneshot\fR to suppress world selection. \fB\-\-pretend\fR displays the
+verified plan without mutation; \fB\-\-preflight-only\fR additionally validates
+recipe and execution policy without running build tools.
 
 .TP
 \fBupdate\fR [\fIflags\fR] [\fIatoms...\fR]
-Resolve updates. If no atoms are specified, resolve @world. Live execution uses
-the same saved-plan approval gate as \fBinstall\fR.
+Resolve and execute updates. If no atoms are specified, resolve @world.
 
 .TP
 \fBuninstall\fR [\fIflags\fR] \fIatoms...\fR
-Propose removal. Live removal remains gated; use \fB\-\-pretend\fR.
+Verify and execute journaled removal. Use \fB\-\-pretend\fR for a read-only
+proposal.
 
 .TP
 \fBdepclean\fR [\fIflags\fR]

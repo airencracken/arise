@@ -94,13 +94,16 @@ Core logic (resolution, metadata, auditing) is pure Go.
 Remains operational even when system Python or portage libraries are broken.
 @end table
 
-Live-root install and update execution is available only with the
-live-mutation safety gate and approval of an exact verified saved plan. Source
-transactions use isolated phase workers, durable logs, operation locking,
-package journals, and resumable dependency-aware scheduling. Arise is not yet
-a general Portage replacement. Removal,
-depclean, and broader maintenance mutation remain gated until their complete
-transaction and recovery contracts pass.
+Live-root install, update, reinstall, and uninstall execute directly after a
+verified plan. Explicit install targets are selected into world unless
+@option{--oneshot} is set. Saved plans remain available for optional
+state-bound review and deferred execution. Source transactions use isolated
+phase workers, durable logs, operation locking, package journals, and resumable
+dependency-aware scheduling. Arise is not yet a general Portage replacement.
+Live package management remains experimental and the overlay release is
+testing-keyworded for @code{~amd64}; keep Portage installed as the reference and
+recovery implementation. Depclean and broader maintenance mutation remain
+unavailable until their complete transaction and recovery contracts pass.
 
 @node Quick Start
 @chapter Quick Start
@@ -173,17 +176,18 @@ Remote repository URL for sync.
 
 @table @command
 @item install [flags] @var{atoms@dots{}}
-Resolve one or more packages. Live execution requires
-@option{--experimental-live-mutation} and approval of an exact verified saved
-plan. Prefer @option{--pretend} and full preflight before mutation.
+Resolve, build, install, and select one or more packages. Use
+@option{--oneshot} to suppress world selection. @option{--pretend} displays the
+verified plan without mutation; @option{--preflight-only} additionally validates
+each planned recipe and execution policy without running build tools.
 Manifest-verified @option{--fetchonly} is a bounded non-mutation operation.
 
 @item update [flags] [@var{atoms@dots{}}]
-Resolve updates, defaulting to @code{@@world}. Live execution uses the same
-experimental saved-plan approval gate as @command{install}.
+Resolve and execute updates, defaulting to @code{@@world}.
 
 @item uninstall @var{atoms@dots{}}
-Propose removal without live mutation.
+Verify and execute journaled package removal. Use @option{--pretend} for a
+read-only proposal.
 
 @item depclean [flags]
 Propose orphan removal without mutation.
@@ -432,16 +436,15 @@ Maximum backtracking decisions (default 20).
 Wall-clock resolver deadline (default @code{5m}). @code{0} disables the
 deadline without changing the independent backtrack ceiling.
 @item --experimental-live-mutation
-Enable the development mutation path. It is not sufficient authorization by
-itself; an exact verified plan must also be approved.
+Deprecated compatibility flag. Mutation no longer requires this option.
 @item --approve-plan-sha256 @var{digest}
-Authorize exactly the canonical verified-plan digest, including its package
-state and policy fingerprint. State drift before execution fails closed.
+Optionally require the current plan to match this canonical verified-plan
+digest, including its package state and policy fingerprint.
 @item --save-plan @var{path-or-name}
 Save the complete generated JSON plan for later inspection and approval.
 @item --approve-plan @var{path-or-name}
-Authorize execution from an exact saved plan after current state and policy are
-revalidated.
+Optionally require execution to match an exact saved plan after current state
+and policy are revalidated.
 @item --preflight-only
 Validate every planned package without fetching, building, or mutating.
 @item --plan-dir @var{path}
@@ -577,8 +580,8 @@ Backtracking dependency solver. USE, keyword, license, mask awareness.
 @item internal/rebuild
 Source build pipeline: verified fetch -> isolated phase execution -> image
 validation -> journaled payload/VDB transaction -> lifecycle finalization.
-Live-root mutation remains behind exact saved-plan approval and the
-live-mutation safety gate.
+Saved-plan approval is optional; every mutation still uses state verification,
+operation locking, journaling, rollback, and lifecycle finalization.
 
 @item internal/portage
 Configuration parser. make.conf, package.use, package.accept_keywords, etc.

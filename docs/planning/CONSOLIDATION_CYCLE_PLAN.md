@@ -217,9 +217,10 @@ Starting from a newly instantiated, unmodified stage3:
 ### C4 exit
 
 Publish immutable G1 evidence proving that Arise maintained and rebooted a fresh
-Gentoo stage3. Only then decide whether to remove the live-mutation switches.
-The following cycle begins with G2 empty-tree planning, not as an implicit
-extension of this run.
+Gentoo stage3. Direct mutation admission was retired earlier after repeated
+whole-host install, update, removal, recovery, preserved-library, and world-file
+successes; G1 now validates that decision on a clean system. The following cycle
+begins with G2 empty-tree planning, not as an implicit extension of this run.
 
 ## Cross-cutting rules
 

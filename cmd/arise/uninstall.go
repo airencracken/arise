@@ -137,18 +137,16 @@ func runUninstall(args []string, dbPath, repoDir string) {
 		}
 		return
 	}
-	if !*experimentalLiveMutation || (strings.TrimSpace(*approvePlanSHA256) == "" && strings.TrimSpace(*approvePlan) == "") {
-		fmt.Fprintln(os.Stderr, "uninstall: refusing mutation: require --experimental-live-mutation and --approve-plan or --approve-plan-sha256")
-		os.Exit(1)
-	}
-	approvedDigest, err := approvedPlanDigest(*approvePlanSHA256, *approvePlan, *planDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "uninstall: refusing mutation: %v\n", err)
-		os.Exit(1)
-	}
-	if err := validatePlanAuthorization(true, approvedDigest, planSHA256); err != nil {
-		fmt.Fprintf(os.Stderr, "uninstall: refusing mutation: %v\n", err)
-		os.Exit(1)
+	if strings.TrimSpace(*approvePlanSHA256) != "" || strings.TrimSpace(*approvePlan) != "" {
+		approvedDigest, err := approvedPlanDigest(*approvePlanSHA256, *approvePlan, *planDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "uninstall: refusing mutation: %v\n", err)
+			os.Exit(1)
+		}
+		if err := validatePlanAuthorization(approvedDigest, planSHA256); err != nil {
+			fmt.Fprintf(os.Stderr, "uninstall: refusing mutation: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	lock, err := oplock.TryAcquireVDB(*vdbDir)
 	if err != nil {

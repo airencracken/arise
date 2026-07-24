@@ -941,24 +941,6 @@ func TestCommandEnvironmentHonorsExplicitEmptyValue(t *testing.T) {
 	}
 }
 
-func TestUnsupportedExecutionMessageExplainsSavedPlanGate(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		cfg  resolve.ResolveConfig
-		want string
-	}{
-		{name: "install", cfg: resolve.ResolveConfig{}, want: "execution requires exact saved-plan approval"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			message := unsupportedExecutionMessage(test.cfg)
-			if !strings.Contains(message, test.want) || !strings.Contains(message, "--save-plan") ||
-				!strings.Contains(message, "--experimental-live-mutation") || !strings.Contains(message, "--approve-plan") {
-				t.Fatalf("unsafe execution diagnostic = %q", message)
-			}
-		})
-	}
-}
-
 func TestUnsupportedRemovalMessageRequiresPretendAndJournal(t *testing.T) {
 	for _, command := range []string{"uninstall", "depclean", "prune"} {
 		message := unsupportedRemovalMessage(command)

@@ -70,21 +70,15 @@ func TestMutationStateSHA256DetectsPolicyAndVDBChanges(t *testing.T) {
 	}
 }
 
-func TestValidatePlanAuthorizationRequiresBothControlsAndExactDigest(t *testing.T) {
+func TestValidatePlanAuthorizationRequiresExactDigest(t *testing.T) {
 	digest := strings.Repeat("a", 64)
-	if err := validatePlanAuthorization(false, "", digest); err != nil {
-		t.Fatal(err)
-	}
-	if err := validatePlanAuthorization(true, "", digest); err == nil {
+	if err := validatePlanAuthorization("", digest); err == nil {
 		t.Fatal("missing digest accepted")
 	}
-	if err := validatePlanAuthorization(false, digest, digest); err == nil {
-		t.Fatal("digest without canary flag accepted")
-	}
-	if err := validatePlanAuthorization(true, strings.Repeat("b", 64), digest); err == nil {
+	if err := validatePlanAuthorization(strings.Repeat("b", 64), digest); err == nil {
 		t.Fatal("mismatched digest accepted")
 	}
-	if err := validatePlanAuthorization(true, digest, digest); err != nil {
+	if err := validatePlanAuthorization(digest, digest); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -96,7 +90,7 @@ func TestRequestedPlanAuthorizationRejectsStaleSavedPlanDuringPreflight(t *testi
 		t.Fatal(err)
 	}
 	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified}
-	err := requestedPlanAuthorizationError(true, "", "stale", directory, []string{"@world"}, resolve.DefaultResolveConfig(), result, strings.Repeat("b", 64))
+	err := requestedPlanAuthorizationError("", "stale", directory, []string{"@world"}, resolve.DefaultResolveConfig(), result, strings.Repeat("b", 64))
 	if err == nil || !strings.Contains(err.Error(), "does not match current verified plan") {
 		t.Fatalf("stale preflight authorization error = %v", err)
 	}
@@ -112,7 +106,7 @@ func TestRequestedPlanAuthorizationAcceptsMatchingReadOnlyAudit(t *testing.T) {
 	if _, err := savePlanDocument("matching", directory, document); err != nil {
 		t.Fatal(err)
 	}
-	if err := requestedPlanAuthorizationError(true, "", "matching", directory, []string{"@world"}, cfg, result, state); err != nil {
+	if err := requestedPlanAuthorizationError("", "matching", directory, []string{"@world"}, cfg, result, state); err != nil {
 		t.Fatalf("matching read-only approval rejected: %v", err)
 	}
 }

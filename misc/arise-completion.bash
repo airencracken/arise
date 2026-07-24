@@ -85,7 +85,7 @@ _arise_flags() {
         --ignore-built-slot-operator-deps --jobs --keep-going --load-average
         --name-only --newuse --nodeps --noreplace --oneshot --onlydeps --pretend
         --quiet --regex --reinstall --repo --repo-url --resolver-timeout --resume
-        --experimental-live-mutation --approve-plan --approve-plan-sha256
+        --approve-plan --approve-plan-sha256
         --save-plan --preflight-only --plan-dir --journal-dir --resume-file
         --work-dir --jobs-tmpdir-require-free-gb --fetch-jobs --show-estimates
         --search-and --search-brief --search-care --search-category
