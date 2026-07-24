@@ -56,7 +56,6 @@ var (
 	worldFile                = flag.String("world-file", commandRootPath("/var/lib/portage/world"), "path to world set file")
 	resumeFile               = flag.String("resume-file", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "resume"), "path to resume state file")
 	journalDir               = flag.String("journal-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "journal"), "path to durable operation journals")
-	experimentalLiveMutation = flag.Bool("experimental-live-mutation", false, "deprecated compatibility flag; exact saved-plan approval authorizes mutation")
 	approvePlanSHA256        = flag.String("approve-plan-sha256", "", "authorize exactly the canonical verified plan with this SHA-256 digest")
 	approvePlan              = flag.String("approve-plan", "", "authorize from a saved JSON plan path or name")
 	savePlan                 = flag.String("save-plan", "", "save the generated JSON plan to a path or name")

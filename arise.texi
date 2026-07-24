@@ -435,8 +435,6 @@ Maximum backtracking decisions (default 20).
 @item --resolver-timeout @var{duration}
 Wall-clock resolver deadline (default @code{5m}). @code{0} disables the
 deadline without changing the independent backtrack ceiling.
-@item --experimental-live-mutation
-Deprecated compatibility flag. Mutation no longer requires this option.
 @item --approve-plan-sha256 @var{digest}
 Optionally require the current plan to match this canonical verified-plan
 digest, including its package state and policy fingerprint.
