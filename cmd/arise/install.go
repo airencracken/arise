@@ -820,9 +820,9 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		return
 	}
 
-	// Resolution is production-capable, but package execution is not yet wired
-	// to the journaled P4/P6 transaction path. Never report success for a plan
-	// that was not executed, including fetch-only requests.
+	// Never report success for a plan that was not executed. Live mutation
+	// remains safety-gated until the fresh-stage3 acceptance gate retires the
+	// explicit saved-plan approval switch.
 	fmt.Fprintln(os.Stderr, unsupportedExecutionMessage(cfg))
 	os.Exit(1)
 }
@@ -1242,7 +1242,7 @@ func fetchPlanAction(ctx context.Context, action resolve.PkgAction, baseConfig f
 }
 
 func unsupportedExecutionMessage(cfg resolve.ResolveConfig) string {
-	return "arise: install/update execution is experimental and unavailable; rerun with --pretend (live mutation remains gated on the P4/P6 transaction engine)"
+	return "arise: execution requires exact saved-plan approval; save with --pretend --save-plan NAME, then execute with --experimental-live-mutation --approve-plan NAME"
 }
 
 func sortedUseFlags(flags map[string]bool) ([]string, []string) {
