@@ -310,7 +310,7 @@ func installedVDBForCP(vdbDir, category, packageName string) ([]string, error) {
 }
 
 func runInfo() {
-	fmt.Println("arise 0.1.1")
+	fmt.Println("arise 0.0.1")
 	fmt.Printf("Go version: %s\n", runtime.Version())
 	fmt.Printf("OS: %s\n", runtime.GOOS)
 	fmt.Printf("Arch: %s\n", runtime.GOARCH)

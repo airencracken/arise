@@ -45,8 +45,11 @@ make deps VERSION=$V
 ```
 
 > `make deps` creates `dist/arise-$V-deps.tar.xz`, a locked Go module-cache
-> archive. Attach it to the GitHub release so Portage can build without network
-> access while the source repository remains unvendored.
+> archive with normalized ordering, timestamps, ownership, and single-threaded
+> xz output. Attach it to the GitHub release so Portage can build without
+> network access while the source repository remains unvendored. Generation
+> stops if downloading the complete graph changes `go.mod` or `go.sum`; review
+> and commit that dependency metadata before rerunning it.
 
 This archive is the current offline mechanism. The roadmap replaces it with
 generated, individually versioned Go module source packages maintained in the

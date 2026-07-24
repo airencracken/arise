@@ -190,7 +190,8 @@ docs: man info
 #   5. On the Gentoo host: emerge --sync arise-overlay && emerge -av arise
 #
 
-VERSION ?= 0.1.1
+VERSION ?= 0.0.1
+SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
 release: download static test
 	@echo "Tagging arise v$(VERSION)..."
 	git tag -a "v$(VERSION)" -m "arise v$(VERSION)"
@@ -199,6 +200,7 @@ release: download static test
 	@echo "Tag pushed. Now update the overlay:"
 	@echo ""
 	@echo "  cd ../arise-overlay"
+	@echo "  cp sys-apps/arise/arise-9999.ebuild sys-apps/arise/arise-$(VERSION).ebuild"
 	@echo "  make manifest VERSION=$(VERSION)"
 	@echo "  git add sys-apps/arise/Manifest sys-apps/arise/arise-$(VERSION).ebuild"
 	@echo "  git commit -m 'release arise v$(VERSION)'"
@@ -229,12 +231,21 @@ vendor:
 
 deps:
 	@test -n "$(VERSION)" || { echo "VERSION is required"; exit 1; }
+	@test -n "$(SOURCE_DATE_EPOCH)" || { echo "SOURCE_DATE_EPOCH is required"; exit 1; }
+	sha256sum go.mod go.sum > dist/.go-module-input.sha256
 	rm -rf dist/go-mod
 	mkdir -p dist/go-mod
 	GOMODCACHE="$(CURDIR)/dist/go-mod" $(GO) mod download -modcacherw all
 	GOMODCACHE="$(CURDIR)/dist/go-mod" GOPROXY=off $(GO) mod verify
+	@sha256sum --check --status dist/.go-module-input.sha256 || { \
+		echo "go mod download changed go.mod/go.sum; review and commit those changes before archiving" >&2; \
+		exit 1; \
+	}
 	# Keep proxy artifacts only; Go extracts them into GOMODCACHE during build.
 	find dist/go-mod -mindepth 1 -maxdepth 1 ! -name cache -exec rm -rf {} +
-	tar -C dist -cJf "dist/arise-$(VERSION)-deps.tar.xz" go-mod
+	XZ_OPT='-T1 -9' tar --sort=name --mtime="@$(SOURCE_DATE_EPOCH)" \
+		--owner=0 --group=0 --numeric-owner \
+		-C dist -cJf "dist/arise-$(VERSION)-deps.tar.xz" go-mod
 	rm -rf dist/go-mod
+	rm -f dist/.go-module-input.sha256
 	@echo "Created dist/arise-$(VERSION)-deps.tar.xz"

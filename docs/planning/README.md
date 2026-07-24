@@ -9,6 +9,8 @@ to `../archive/planning/` with a dated archival note.
   history, live remaining time, and parallel transaction makespan.
 - [`COLOR_CONFIGURATION_PLAN.md`](COLOR_CONFIGURATION_PLAN.md) — semantic color
   roles, Portage compatibility, themes, and accessibility.
+- [`CONSOLIDATION_CYCLE_PLAN.md`](CONSOLIDATION_CYCLE_PLAN.md) — near-term
+  overlay, bounded performance, world maintenance, and stage3 G1 sequence.
 - [`EXECUTION_RECOVERY_PLAN.md`](EXECUTION_RECOVERY_PLAN.md) — keep-going,
   bounded retry, continuation, and re-resolution.
 - [`JOURNAL_RECOVERY_UX_PLAN.md`](JOURNAL_RECOVERY_UX_PLAN.md) — actionable

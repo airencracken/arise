@@ -64,6 +64,12 @@ Current critical path: P0B cleanup -> portable P2/P3 fixtures -> mandatory P3
 verification -> P4 protocol/environment -> P5 delivery completion -> P4 helper
 ABI -> P6 isolated-ROOT journal and recovery -> P7/P8 integration.
 
+Near-term consolidation after the current live-world verification follows
+[`docs/planning/CONSOLIDATION_CYCLE_PLAN.md`](docs/planning/CONSOLIDATION_CYCLE_PLAN.md):
+ship a useful offline-build overlay, capture a frozen performance baseline and
+accept one equivalence-gated optimization, implement world check/fix, then run
+the reproducible fresh-stage3 G1 gate.
+
 Status markers:
 
 - `[ ]` not started

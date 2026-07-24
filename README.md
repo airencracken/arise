@@ -96,6 +96,18 @@ same-snapshot workloads.
 
 ## Quick Start
 
+Gentoo users can install the latest packaged release from the maintained
+[Arise overlay](https://github.com/airencracken/arise-overlay):
+
+```sh
+eselect repository add arise-overlay git \
+  https://github.com/airencracken/arise-overlay.git
+emaint sync -r arise-overlay
+emerge --ask sys-apps/arise
+```
+
+For source development:
+
 ```sh
 # Build
 CGO_ENABLED=0 go build -ldflags="-s -w" -o arise ./cmd/arise/
