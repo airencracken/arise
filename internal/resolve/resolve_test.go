@@ -151,6 +151,9 @@ func TestResolve_SimpleInstall(t *testing.T) {
 	if a.Action != "install" && a.Action != "update" {
 		t.Errorf("expected install or update, got %s", a.Action)
 	}
+	if a.Reason != "explicit target" {
+		t.Errorf("expected explicit target reason, got %q", a.Reason)
+	}
 	if len(result.Uninstall) != 0 {
 		t.Errorf("expected 0 uninstalls, got %d", len(result.Uninstall))
 	}

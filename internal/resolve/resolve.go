@@ -2045,7 +2045,11 @@ func (r *resolver) refreshPlannedParentNewUseDependencies() error {
 
 func (r *resolver) resolveTargets(targetAtoms []*atom.Atom) error {
 	for _, target := range targetAtoms {
-		if err := r.planPackage(target, "world target", 0); err != nil {
+		reason := "world target"
+		if r.explicitTargets[target.CP()] {
+			reason = "explicit target"
+		}
+		if err := r.planPackage(target, reason, 0); err != nil {
 			return err
 		}
 	}
