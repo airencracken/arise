@@ -1919,8 +1919,12 @@ path. Passing a later gate never retroactively waives an earlier one.
 - [ ] Bring `arise sync` output to `eix-sync`-level operational usefulness:
   enumerate configured repositories and sync methods, show per-repository
   status and last/current timestamps, make cache/index refresh explicit, and
-  summarize package changes concisely by default with changed paths in verbose
-  output.
+  summarize package changes concisely by default. Group changes by repository
+  and action, collapse upgrades into `old -> new` transitions instead of
+  reporting both versions as unrelated entries, and show per-repository,
+  checkout, indexing and total elapsed times. Keep unchanged counts and the
+  compact aggregate summary in normal output; reserve changed paths and other
+  low-level churn for `--verbose`.
   The correctness floor is now mandatory in the command path: a successful
   repository checkout update is followed by atomic resolver-snapshot
   publication before `sync` reports final success.

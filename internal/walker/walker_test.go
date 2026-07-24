@@ -1044,6 +1044,70 @@ func TestWalkUncachedEbuildRootsMarksStaticMetadataIncomplete(t *testing.T) {
 	}
 }
 
+func TestWalkUncachedEbuildRootsNormalizesQuotedMultilineMetadata(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "profiles"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "profiles", "repo_name"), []byte("local\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ebuildDir := filepath.Join(repo, "sys-apps", "arise")
+	if err := os.MkdirAll(ebuildDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := `EAPI=8
+DESCRIPTION="quoted fallback package"
+SRC_URI="
+	https://example.com/${P}.tar.gz
+	https://example.com/${P}-deps.tar.xz
+"
+LICENSE="GPL-3 MIT"
+SLOT="0"
+KEYWORDS="~amd64"
+IUSE="info test"
+RDEPEND="
+	app-arch/tar
+	app-arch/xz-utils
+"
+`
+	if err := os.WriteFile(filepath.Join(ebuildDir, "arise-0.0.1.ebuild"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, errs := WalkUncachedEbuildRoots([]string{filepath.Join(repo, "metadata", "md5-cache")})
+	var records []*metadata.PackageMetadata
+	for results != nil || errs != nil {
+		select {
+		case record, ok := <-results:
+			if !ok {
+				results = nil
+			} else {
+				records = append(records, record)
+			}
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+			} else if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if len(records) != 1 {
+		t.Fatalf("got %d fallback records", len(records))
+	}
+	record := records[0]
+	if record.SLOT != "0" || record.KEYWORDS != "~amd64" || record.IUSE != "info test" {
+		t.Fatalf("quoted metadata was not normalized: %+v", record)
+	}
+	if record.RDEPEND != "app-arch/tar app-arch/xz-utils" {
+		t.Fatalf("RDEPEND = %q", record.RDEPEND)
+	}
+	if record.SRC_URI != "https://example.com/arise-0.0.1.tar.gz https://example.com/arise-0.0.1-deps.tar.xz" {
+		t.Fatalf("SRC_URI = %q", record.SRC_URI)
+	}
+}
+
 func TestWalkCacheDir_ImmutabilityDuringWalk(t *testing.T) {
 	root := t.TempDir()
 

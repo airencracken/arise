@@ -118,15 +118,16 @@ func WalkUncachedEbuildRoots(cacheRoots []string) (<-chan *metadata.PackageMetad
 					continue
 				}
 				var cache strings.Builder
-				keys := make([]string, 0, len(parsed.Variables))
-				for key := range parsed.Variables {
+				variables := parsed.Vars()
+				keys := make([]string, 0, len(variables))
+				for key := range variables {
 					keys = append(keys, key)
 				}
 				sort.Strings(keys)
 				for _, key := range keys {
 					cache.WriteString(key)
 					cache.WriteByte('=')
-					cache.WriteString(parsed.Variables[key])
+					cache.WriteString(staticCacheValue(variables[key]))
 					cache.WriteByte('\n')
 				}
 				m, err := metadata.ParseCacheEntry(category+"/"+pf, []byte(cache.String()))
@@ -147,6 +148,17 @@ func WalkUncachedEbuildRoots(cacheRoots []string) (<-chan *metadata.PackageMetad
 		}
 	}()
 	return results, errs
+}
+
+func staticCacheValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		first, last := value[0], value[len(value)-1]
+		if first == last && (first == '"' || first == '\'') {
+			value = value[1 : len(value)-1]
+		}
+	}
+	return strings.Join(strings.Fields(value), " ")
 }
 
 // MergeWalks combines two walker pairs while preserving backpressure.
