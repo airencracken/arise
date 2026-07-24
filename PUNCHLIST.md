@@ -71,7 +71,7 @@ Status markers:
 - `[x]` acceptance criteria satisfied
 - `[!]` release blocker
 
-Resolver observability is captured by `profile-p3-matrix.sh`: CPU, heap,
+Resolver observability is captured by `support/perf/profile-p3-matrix.sh`: CPU, heap,
 cumulative allocation, and Go execution traces are collected for Arise.
 Optional `perf` and `strace` paths use executable operation probes and skip
 cleanly when absent, permission-disabled, or unsupported. `--probe-only`
@@ -856,7 +856,7 @@ validity and promotion criteria, in
   It also exposed a replay-boundary bug that reported 21/20 backtracks: an
   exhausted internal zero budget was being mistaken for the public zero-value
   default of ten. Replay attempts now preserve exact zero and a regression
-  enforces the hard ceiling. `profile-p3-matrix.sh` expands the same root-only,
+  enforces the hard ceiling. `support/perf/profile-p3-matrix.sh` expands the same root-only,
   pretend-only CPU/perf/cProfile capture to independently selectable world,
   system, explicit-package, preserved-rebuild and empty-tree cases, building
   Arise once and retaining per-case commands, exits, timings and profiles.

@@ -3,6 +3,12 @@
 # Read-only reference capture for Arise parity fixtures. This script deliberately
 # avoids errexit/nounset/pipefail and checks every operation explicitly.
 
+support_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if ! source "$support_dir/lib/error-handling.sh"; then
+	printf 'capture: cannot load support error-handling library\n' >&2
+	exit 2
+fi
+
 output=${1-}
 mode=${ARISE_CAPTURE_MODE-standard}
 targets_raw=${ARISE_CAPTURE_TARGETS-"sys-apps/portage app-shells/bash net-im/signal-desktop-bin"}
@@ -81,7 +87,7 @@ run_case() {
 	return 0
 }
 
-have() { command -v "$1" >/dev/null 2>&1; }
+have() { support_have_command "$1"; }
 
 if [[ ! $case_timeout =~ ^[1-9][0-9]*$ ]]; then
 	printf 'capture: ARISE_CAPTURE_CASE_TIMEOUT must be a positive integer\n' >&2

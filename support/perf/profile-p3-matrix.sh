@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-set -u
-set -o pipefail
+
+# Do not enable global errexit, nounset, or pipefail modes. Command outcomes
+# that form part of the evidence are captured explicitly.
+
+support_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if ! source "$support_dir/lib/error-handling.sh"; then
+  printf 'error: cannot load support error-handling library\n' >&2
+  exit 2
+fi
 
 scope=all
 case_list=world,system,explicit,preserved,empty-tree
@@ -39,18 +46,15 @@ if ! $probe_only && (( EUID != 0 )); then
   echo "error: run this script as root" >&2
   exit 2
 fi
-for command in date emerge git go mktemp python3 sha256sum tar timeout uname; do
-  command -v "$command" >/dev/null 2>&1 || {
-    echo "error: required command not found: $command" >&2
-    exit 2
-  }
-done
+if ! support_require_commands date emerge git go mktemp python3 sha256sum tar timeout uname; then
+  exit 2
+fi
 [[ $ceiling =~ ^[1-9][0-9]*$ ]] || {
   echo "error: ARISE_PROFILE_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
 }
 
-repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 output_dir=$(mktemp -d /tmp/arise-p3-matrix.XXXXXX)
 binary=$output_dir/arise-profile
 emerge_path=$(command -v emerge)

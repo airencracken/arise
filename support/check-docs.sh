@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-set -u
-set -o pipefail
 
-repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# Do not enable global errexit, nounset, or pipefail modes. This checker
+# accumulates independent failures explicitly so readers can see every issue.
+
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if ! source "$repo_dir/support/lib/error-handling.sh"; then
+  printf 'error: cannot load support error-handling library\n' >&2
+  exit 2
+fi
 status=0
 
-for script in misc/arise-completion.bash internal/phaseproto/worker.sh profile-p3-matrix.sh profile-p3-world.sh; do
+for script in misc/arise-completion.bash internal/phaseproto/worker.sh support/lib/error-handling.sh support/fixtures/capture-reference-fixtures.sh support/perf/profile-p3-matrix.sh support/perf/profile-p3-world.sh; do
   if ! bash -n "$repo_dir/$script"; then
     status=1
   fi

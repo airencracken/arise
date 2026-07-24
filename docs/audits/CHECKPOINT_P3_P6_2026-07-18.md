@@ -124,7 +124,8 @@
 - P8 now explicitly tracks canary eligibility, whole-plan preflight, recovery
   command/evidence capture, serial resume semantics and empty-tree boot-critical
   protections. These are live-promotion gates, not optional release polish.
-- `probe-preserved-rebuild.sh` provides a root-only, read-only evidence capture
+- The then-current preserved-rebuild probe provided a root-only, read-only
+  evidence capture
   for the otherwise protected preserved-libraries registry and Arise's native
   ELF/VDB scan. It checks every external harness prerequisite before use; the
   product scan itself does not invoke `ldd` or `readelf`.

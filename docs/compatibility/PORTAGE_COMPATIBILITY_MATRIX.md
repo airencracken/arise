@@ -63,7 +63,8 @@ subset of the man-page inventory, not a claim of full emerge CLI parity.
 | `ARISE_HEAP_PROFILE` | live-heap profile written at termination | supported | all-command normal/interrupted profiles |
 | `ARISE_ALLOCS_PROFILE` | cumulative allocation profile written at termination | supported | all-command normal/interrupted profiles |
 
-These four diagnostic extensions are exercised by `profile-p3-matrix.sh`.
+These four diagnostic extensions are exercised by
+`support/perf/profile-p3-matrix.sh`.
 The harness probes every external profiler before invoking it: Go runtime
 profiles are always collected, `perf` is used only when its operation succeeds,
 and the additional `strace -f -c` pass is both capability-gated and opt-in.

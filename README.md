@@ -3,13 +3,13 @@
 A high-performance package-manager control plane for Gentoo Linux, written in
 Go. Core state inspection, configuration evaluation, resolution and fetching
 do not require Portage's Python runtime. Ebuild execution intentionally uses
-Bash and remains experimental.
+Bash through Arise's versioned phase protocol.
 
 > **Development status:** repository sync, indexing, search, installed-package
 > queries, verified planning, source rebuilds, and journaled live-root package
 > transactions are implemented. Resolver, execution, recovery, and maintenance
-> compatibility remain experimental and are not a general replacement for
-> Portage. Live mutation requires an explicit experimental gate and approval of
+> compatibility remain incomplete and Arise is not yet a general replacement
+> for Portage. Live mutation requires an explicit safety gate and approval of
 > an exact verified saved plan. See the
 > [Portage self-hosting milestone](docs/evidence/PORTAGE_SELF_HOSTING_MILESTONE_2026-07-24.md),
 > [documentation index](docs/README.md), and [punch list](PUNCHLIST.md).
@@ -36,7 +36,7 @@ Arise is therefore being built around these priorities:
 
 - **Recovery-oriented control plane**: one statically linked Go binary can
   inspect package state and construct verified plans when Portage's Python
-  environment is damaged. Experimental live repair crosses explicit verified
+  environment is damaged. Live repair crosses explicit verified
   plan, preflight, operation-lock, journal, and recovery gates.
 - **Performance**: BadgerDB-backed metadata queries can avoid repeated
   filesystem scans and shell invocations. Dependency resolution runs in one
@@ -158,7 +158,7 @@ arise dispatch-conf
 ```
 
 Live-root install, update, and uninstall execution is available only through the
-experimental mutation gate and an exact approved saved plan. Source transactions
+live-mutation safety gate and an exact approved saved plan. Source transactions
 use Manifest-verified artifacts, isolated phase workers, durable per-package
 logs, collision checks, package journals, operation locking, and resumable
 dependency-aware scheduling. Package preparation may run concurrently, while
@@ -254,7 +254,7 @@ Not yet claimed:
   369-action comparison with Portage and a successful whole-plan preflight.
   No resolver speedup is published yet because that result has not completed
   the repeated, correctness-gated benchmark protocol.
-- A successful experimental deep `@world` execution is not yet evidence of
+- A successful deep `@world` execution is not yet evidence of
   general Portage execution parity. Parallel scheduling, fetch policy,
   lifecycle coverage, failure recovery, and long-running mutation still need
   broader machine and package-corpus coverage.

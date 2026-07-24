@@ -94,11 +94,11 @@ Core logic (resolution, metadata, auditing) is pure Go.
 Remains operational even when system Python or portage libraries are broken.
 @end table
 
-Experimental live-root install and update execution is available only with the
-live-mutation gate and approval of an exact verified saved plan. Source
+Live-root install and update execution is available only with the
+live-mutation safety gate and approval of an exact verified saved plan. Source
 transactions use isolated phase workers, durable logs, operation locking,
-package journals, and resumable dependency-aware scheduling. This remains a
-development interface rather than a general Portage replacement. Removal,
+package journals, and resumable dependency-aware scheduling. Arise is not yet
+a general Portage replacement. Removal,
 depclean, and broader maintenance mutation remain gated until their complete
 transaction and recovery contracts pass.
 
@@ -578,7 +578,7 @@ Backtracking dependency solver. USE, keyword, license, mask awareness.
 Source build pipeline: verified fetch -> isolated phase execution -> image
 validation -> journaled payload/VDB transaction -> lifecycle finalization.
 Live-root mutation remains behind exact saved-plan approval and the
-experimental mutation gate.
+live-mutation safety gate.
 
 @item internal/portage
 Configuration parser. make.conf, package.use, package.accept_keywords, etc.

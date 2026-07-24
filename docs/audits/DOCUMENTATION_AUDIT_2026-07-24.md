@@ -28,8 +28,8 @@ The current tree should have a small, explicit documentation hierarchy:
 
 - Replaced July 18 “latest checkpoint” links with the July 24 Portage
   self-hosting milestone and the authoritative punch list.
-- Updated README, Texinfo, and man-page safety language: experimental live
-  install/update exists but requires the live-mutation gate and exact verified
+- Updated README, Texinfo, and man-page safety language: live install/update
+  exists but requires the live-mutation safety gate and exact verified
   saved-plan approval.
 - Documented saved plans, preflight-only validation, resume/work/plan paths,
   fetch concurrency, and advisory historical estimates in the manuals.
@@ -134,7 +134,7 @@ duplicated indefinitely.
 
 ## Validation performed
 
-- `check-docs.sh`
+- `support/check-docs.sh`
 - `git diff --check`
 - targeted CLI/help-to-manual comparison
 - repository-wide stale-status and inbound-link searches

@@ -18,13 +18,13 @@ eselect setters, eix cache/sync operations, or enalyze repair in this harness.
 Smoke validation:
 
 ```sh
-ARISE_CAPTURE_MODE=smoke misc/capture-reference-fixtures.sh /tmp/arise-reference-smoke
+ARISE_CAPTURE_MODE=smoke support/fixtures/capture-reference-fixtures.sh /tmp/arise-reference-smoke
 ```
 
 Standard capture:
 
 ```sh
-misc/capture-reference-fixtures.sh /tmp/arise-reference-standard
+support/fixtures/capture-reference-fixtures.sh /tmp/arise-reference-standard
 ```
 
 Standard capture can take a few minutes on a large installed set. It prints one
@@ -38,7 +38,7 @@ does not abort the remaining capture.
 Full capture adds expensive `@world` and `emerge --info` cases:
 
 ```sh
-ARISE_CAPTURE_MODE=full misc/capture-reference-fixtures.sh /tmp/arise-reference-full
+ARISE_CAPTURE_MODE=full support/fixtures/capture-reference-fixtures.sh /tmp/arise-reference-full
 ```
 
 The optional privilege-boundary lane must be invoked explicitly. It remains
@@ -46,7 +46,7 @@ read-only and uses only queries and pretend plans:
 
 ```sh
 sudo env ARISE_CAPTURE_MODE=privileged \
-  /absolute/path/to/misc/capture-reference-fixtures.sh \
+  /absolute/path/to/support/fixtures/capture-reference-fixtures.sh \
   /tmp/arise-reference-privileged
 ```
 
@@ -55,7 +55,7 @@ and repository snapshot. First accept normal sudo filtering:
 
 ```sh
 sudo env ARISE_CAPTURE_MODE=privileged \
-  /absolute/path/to/misc/capture-reference-fixtures.sh \
+  /absolute/path/to/support/fixtures/capture-reference-fixtures.sh \
   /tmp/arise-reference-sudo-filtered
 ```
 
@@ -63,15 +63,15 @@ Then enable the harness's fixed, non-sensitive command-environment probe:
 
 ```sh
 sudo env ARISE_CAPTURE_MODE=privileged ARISE_CAPTURE_ENV_PROBE=1 \
-  /absolute/path/to/misc/capture-reference-fixtures.sh \
+  /absolute/path/to/support/fixtures/capture-reference-fixtures.sh \
   /tmp/arise-reference-sudo-explicit
 ```
 
 On systems without sudo, use the equivalent `su` commands:
 
 ```sh
-su -c 'ARISE_CAPTURE_MODE=privileged /absolute/path/to/misc/capture-reference-fixtures.sh /tmp/arise-reference-su-filtered'
-su -c 'ARISE_CAPTURE_MODE=privileged ARISE_CAPTURE_ENV_PROBE=1 /absolute/path/to/misc/capture-reference-fixtures.sh /tmp/arise-reference-su-explicit'
+su -c 'ARISE_CAPTURE_MODE=privileged /absolute/path/to/support/fixtures/capture-reference-fixtures.sh /tmp/arise-reference-su-filtered'
+su -c 'ARISE_CAPTURE_MODE=privileged ARISE_CAPTURE_ENV_PROBE=1 /absolute/path/to/support/fixtures/capture-reference-fixtures.sh /tmp/arise-reference-su-explicit'
 ```
 
 The probe applies documented fixed values only after privilege transition, so

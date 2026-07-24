@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-set -u
-set -o pipefail
+
+# Do not enable global errexit, nounset, or pipefail modes. Command outcomes
+# that form part of the evidence are captured explicitly.
+
+support_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if ! source "$support_dir/lib/error-handling.sh"; then
+  printf 'error: cannot load support error-handling library\n' >&2
+  exit 2
+fi
 
 scope=${1:-all}
 if [[ $scope != all && $scope != --arise-only ]]; then
@@ -13,12 +20,9 @@ if (( EUID != 0 )); then
   exit 2
 fi
 
-for command in go timeout emerge python3; do
-  if ! command -v "$command" >/dev/null 2>&1; then
-    echo "error: required command not found: $command" >&2
-    exit 2
-  fi
-done
+if ! support_require_commands go timeout emerge python3; then
+  exit 2
+fi
 
 have_perf=false
 if command -v perf >/dev/null 2>&1; then
@@ -27,7 +31,7 @@ fi
 emerge_path=$(command -v emerge)
 portage_python=$(command -v python3)
 
-repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 output_dir=$(mktemp -d /tmp/arise-p3-profile.XXXXXX)
 binary=$output_dir/arise-profile
 

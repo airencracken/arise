@@ -29,8 +29,8 @@ It stores package metadata in a BadgerDB key-value store and operates directly
 against the Gentoo repository tree and VDB, without depending on Python or Bash
 for core operations. Build phases that require shell scripts execute via
 \fBos/exec\fR to the appropriate build tools (make, bash, patch, etc.).
-Experimental live-root install and update execution requires the explicit
-live-mutation gate and approval of an exact verified saved plan. Source
+Live-root install and update execution requires the explicit live-mutation
+safety gate and approval of an exact verified saved plan. Source
 transactions use isolated phase workers, durable logs, operation locking,
 package journals, and resumable dependency-aware scheduling. Removal, depclean,
 and broader maintenance mutation remain gated.
@@ -322,14 +322,14 @@ Dump output in eix-compatible format.
 
 .TP
 \fBinstall\fR [\fIflags\fR] \fIatoms...\fR
-Resolve one or more packages. Live execution requires the experimental
-mutation gate and approval of an exact verified saved plan. Prefer
+Resolve one or more packages. Live execution requires the live-mutation safety
+gate and approval of an exact verified saved plan. Prefer
 \fB\-\-pretend\fR and full preflight before mutation.
 
 .TP
 \fBupdate\fR [\fIflags\fR] [\fIatoms...\fR]
 Resolve updates. If no atoms are specified, resolve @world. Live execution uses
-the same experimental saved-plan approval gate as \fBinstall\fR.
+the same saved-plan approval gate as \fBinstall\fR.
 
 .TP
 \fBuninstall\fR [\fIflags\fR] \fIatoms...\fR

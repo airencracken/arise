@@ -51,7 +51,7 @@ still required.
 - no clean-world or G1 result is claimed;
 - obsolete world atoms still require `emaint --check world` repair and motivate
   the planned `arise maintain world --check/--fix` interface;
-- the experimental live-mutation switches remain until an unmodified stage3
+- the live-mutation switches remain until an unmodified stage3
   maintenance run and its post-boot verification pass;
 - host-local continuation scripts and older recovery evidence remain until the
   final transaction is independently verified.

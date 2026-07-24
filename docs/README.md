@@ -93,7 +93,7 @@ Operational and implementation guides currently remain under [`misc/`](../misc/)
 alongside their scripts and workload definitions. They can move into dedicated
 guide/reference directories once their interfaces stabilize.
 
-Run `./check-docs.sh` after documentation or CLI changes. It always checks Bash
+Run `./support/check-docs.sh` after documentation or CLI changes. It always checks Bash
 syntax and whitespace, compiles `arise.texi` when `makeinfo` exists, and lints
 `arise.1` when `mandoc` exists. Missing optional documentation tools are
 reported and skipped rather than invoked blindly.
