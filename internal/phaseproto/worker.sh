@@ -281,7 +281,14 @@ pipestatus() {
   (( verbose == 0 )) || printf '%s\n' "${statuses[*]}"
   for status in "${statuses[@]}"; do (( status == 0 )) || return "$status"; done
 }
-assert() { printf 'assert is banned in EAPI 9\n'; return 1; }
+assert() {
+  local -a statuses=("${PIPESTATUS[@]}")
+  local status
+  [[ ${EAPI-0} != 9 ]] || die "'assert' banned in EAPI ${EAPI}"
+  for status in "${statuses[@]}"; do
+    (( status == 0 )) || die "$@"
+  done
+}
 get_libdir() {
   case ${ABI-} in
     amd64|x86_64) printf 'lib64' ;;

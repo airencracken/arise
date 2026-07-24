@@ -1241,6 +1241,53 @@ src_compile() {
 	}
 }
 
+func TestEAPI8AssertChecksCompletePipeline(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+src_unpack() {
+	printf source | grep -q source
+	assert -n "successful pipeline rejected"
+}
+`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "eapi8-assert-success", Command: "run_phase", Phase: "src_unpack", EAPI: "8", Ebuild: ebuild, RootDir: directory}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("EAPI 8 assert rejected successful pipeline: %v; events=%#v", err, events)
+	}
+}
+
+func TestEAPI8AssertRejectsAnyPipelineFailure(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+src_unpack() {
+	false | true
+	assert -n "pipeline failure"
+}
+`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "eapi8-assert-failure", Command: "run_phase", Phase: "src_unpack", EAPI: "8", Ebuild: ebuild, RootDir: directory}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err == nil {
+		t.Fatalf("EAPI 8 assert accepted failed pipeline; events=%#v", events)
+	}
+	found := false
+	for _, event := range events {
+		if strings.Contains(event.Message, "pipeline failure") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("assert failure message missing: events=%#v", events)
+	}
+}
+
 func TestInstalledEnvironmentSuppliesLifecycleAndCannotReplaceTypedRoot(t *testing.T) {
 	directory := t.TempDir()
 	ebuild := filepath.Join(directory, "pkg-1.ebuild")
