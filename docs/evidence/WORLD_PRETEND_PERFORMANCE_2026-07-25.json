@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "captured_at": "2026-07-25",
+  "machine": {
+    "architecture": "x86_64"
+  },
+  "snapshot": {
+    "arise_source_commit": "b6954a27450ff94b80bf3d1adf191d6717c6869f",
+    "arise_binary_sha256": "cc868d88583ac5cdb88561ae36fde81557a03f5a58a17247666c473e30700d00",
+    "repositories": {
+      "gentoo": "12bdefe03e1a763af796e87d6fe83c71ba4000cb",
+      "guru": "8f5d8497eb0c4d571af74081d8a5be02e4d2612f",
+      "arise-overlay": "2a83db0b81d65bbb3f2831577a17311fcfe9786f",
+      "supercoolsoftware": "non-git local repository"
+    }
+  },
+  "workload": {
+    "description": "warm deep/newuse pretend update of the live world set",
+    "arise_command": "./arise --pretend --update --deep --newuse @world",
+    "emerge_command": "FEATURES=-news emerge --pretend --verbose --color=n --backtrack=20 --update --deep --newuse @world",
+    "correctness_command": "go run ./cmd/arise-plan-compare --arise ./arise --target @world --operation update --complete-graph=false --deep --newuse --backtrack=20 --json",
+    "correctness": {
+      "comparison_class": "equivalent-verified",
+      "arise_verified": true,
+      "portage_resolved": true,
+      "arise_actions": 1,
+      "emerge_actions": 1,
+      "differences": 0,
+      "action": "dev-util/codex-0.145.0::guru",
+      "use": "-debug"
+    }
+  },
+  "samples": {
+    "arise": [
+      {"wall_seconds": 2.88, "user_seconds": 4.10, "sys_seconds": 0.42, "max_rss_kib": 864324},
+      {"wall_seconds": 2.88, "user_seconds": 4.03, "sys_seconds": 0.43, "max_rss_kib": 886148},
+      {"wall_seconds": 2.92, "user_seconds": 3.83, "sys_seconds": 0.46, "max_rss_kib": 1039864}
+    ],
+    "emerge": [
+      {"wall_seconds": 17.39, "user_seconds": 17.16, "sys_seconds": 0.35, "max_rss_kib": 249512},
+      {"wall_seconds": 17.63, "user_seconds": 17.37, "sys_seconds": 0.36, "max_rss_kib": 249452},
+      {"wall_seconds": 17.48, "user_seconds": 17.22, "sys_seconds": 0.35, "max_rss_kib": 249584}
+    ]
+  },
+  "medians": {
+    "arise_wall_seconds": 2.88,
+    "emerge_wall_seconds": 17.48,
+    "wall_speedup": 6.07,
+    "arise_max_rss_kib": 886148,
+    "emerge_max_rss_kib": 249512,
+    "max_rss_ratio": 3.55
+  },
+  "notes": [
+    "All timed runs were warm and read-only.",
+    "Portage reported the host's known stale world entries and skipped docutils conflict; both resolvers still produced the same one-action plan.",
+    "FEATURES=-news prevents Portage's post-plan news update in the non-root benchmark environment."
+  ]
+}

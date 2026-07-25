@@ -236,7 +236,7 @@ choices, not to diminish mature tools with broader responsibilities. Arise's
 own benchmark gate rejects correctness-equivalent regressions and requires a
 material measured benefit before making a performance claim.
 
-Same-snapshot, correctness-gated checkpoint results through 2026-07-18:
+Same-snapshot, correctness-gated checkpoint results through 2026-07-25:
 
 | Task | Reference | Equivalent | Arise median | Reference median | Speedup |
 |---|---|---:|---:|---:|---:|
@@ -244,8 +244,21 @@ Same-snapshot, correctness-gated checkpoint results through 2026-07-18:
 | Firefox substring search | eix | yes | 11.69 ms | 33.95 ms | **2.90x** |
 | Firefox substring search | emerge | yes | 10.95 ms | 865.47 ms | **79.03x** |
 | Shallow `@system` update plan | emerge | yes (11/11 actions) | 1.43 s | 6.48 s | **4.52x** |
+| Deep/newuse `@world` pretend plan | emerge | yes (1/1 action) | 2.88 s | 17.48 s | **6.07x** |
 | Crash-safe full configured-repository index | eix-update | yes | 3.96 s | 4.26 s | **1.08x** |
 | Crash-safe no-change configured-repository index | eix-update | yes | 1.86 s | 4.26 s | **2.29x** |
+
+The `@world` row is the median of three warm runs on the live x86-64
+workstation after synchronizing all configured repositories. Both resolvers
+selected only `dev-util/codex-0.145.0::guru` with the same USE state. The exact
+commands were `./arise --pretend --update --deep --newuse @world` and
+`FEATURES=-news emerge --pretend --verbose --color=n --backtrack=20 --update
+--deep --newuse @world`; disabling Portage's news side effect kept the
+comparison read-only in the benchmark environment. Median peak RSS was 886,148
+KiB for Arise and 249,512 KiB for emerge: the measured speedup currently costs
+about 3.55x memory. Commands, samples, binary digest, repository commits and
+the correctness result are preserved in
+[`WORLD_PRETEND_PERFORMANCE_2026-07-25.json`](docs/evidence/WORLD_PRETEND_PERFORMANCE_2026-07-25.json).
 
 Damaged-state recovery is reported separately because unequal outcomes cannot
 enter the equivalence speedup table. On repository commit
