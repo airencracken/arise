@@ -248,16 +248,30 @@ Same-snapshot, correctness-gated checkpoint results through 2026-07-25:
 | Crash-safe full configured-repository index | eix-update | yes | 3.96 s | 4.26 s | **1.08x** |
 | Crash-safe no-change configured-repository index | eix-update | yes | 1.86 s | 4.26 s | **2.29x** |
 
-The `@world` row is the median of three warm runs on the live x86-64
+The `@world` row is the median of three uninstrumented warm runs on the live x86-64
 workstation after synchronizing all configured repositories. Both resolvers
 selected only `dev-util/codex-0.145.0::guru` with the same USE state. The exact
 commands were `./arise --pretend --update --deep --newuse @world` and
 `FEATURES=-news emerge --pretend --verbose --color=n --backtrack=20 --update
 --deep --newuse @world`; disabling Portage's news side effect kept the
-comparison read-only in the benchmark environment. Median peak RSS was 886,148
-KiB for Arise and 249,512 KiB for emerge: the measured speedup currently costs
-about 3.55x memory. Commands, samples, binary digest, repository commits and
-the correctness result are preserved in
+comparison read-only in the benchmark environment.
+
+Process-tree memory was measured separately by polling Linux
+`smaps_rollup` every 10 ms. The sampler includes all descendants and reports
+PSS and USS; its overhead is intentionally excluded from the headline latency
+row above.
+
+| Cache state | Instrumented median wall (Arise / emerge) | Median PSS (Arise / emerge) | Median USS (Arise / emerge) |
+|---|---:|---:|---:|
+| Warm | 5.32 s / 19.58 s | 912.02 MiB / 239.47 MiB (**3.81x**) | 912.02 MiB / 237.88 MiB (**3.83x**) |
+| Cold | 12.00 s / 20.87 s | 939.07 MiB / 239.51 MiB (**3.92x**) | 939.07 MiB / 237.90 MiB (**3.95x**) |
+
+Cold runs call `sync` and drop Linux page, dentry and inode caches before each
+individual command, and alternate command order between repetitions. The early
+result is compelling but also identifies the principal resolver optimization
+target: retain the latency win while eliminating duplicated immutable
+snapshot/graph state and reducing the roughly 0.9 GiB private allocation peak.
+Commands, samples, binary digest, repository commits and correctness result are preserved in
 [`WORLD_PRETEND_PERFORMANCE_2026-07-25.json`](docs/evidence/WORLD_PRETEND_PERFORMANCE_2026-07-25.json).
 
 Damaged-state recovery is reported separately because unequal outcomes cannot

@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "captured_at": "2026-07-25",
   "machine": {
     "architecture": "x86_64"
@@ -15,7 +15,7 @@
     }
   },
   "workload": {
-    "description": "warm deep/newuse pretend update of the live world set",
+    "description": "deep/newuse pretend update of the live world set",
     "arise_command": "./arise --pretend --update --deep --newuse @world",
     "emerge_command": "FEATURES=-news emerge --pretend --verbose --color=n --backtrack=20 --update --deep --newuse @world",
     "correctness_command": "go run ./cmd/arise-plan-compare --arise ./arise --target @world --operation update --complete-graph=false --deep --newuse --backtrack=20 --json",
@@ -30,28 +30,65 @@
       "use": "-debug"
     }
   },
-  "samples": {
+  "uninstrumented_warm": {
+    "arise_wall_seconds": [2.88, 2.88, 2.92],
+    "emerge_wall_seconds": [17.39, 17.63, 17.48],
+    "median_arise_wall_seconds": 2.88,
+    "median_emerge_wall_seconds": 17.48,
+    "wall_speedup": 6.07
+  },
+  "instrumented_warm": {
+    "sample_interval_milliseconds": 10,
     "arise": [
-      {"wall_seconds": 2.88, "user_seconds": 4.10, "sys_seconds": 0.42, "max_rss_kib": 864324},
-      {"wall_seconds": 2.88, "user_seconds": 4.03, "sys_seconds": 0.43, "max_rss_kib": 886148},
-      {"wall_seconds": 2.92, "user_seconds": 3.83, "sys_seconds": 0.46, "max_rss_kib": 1039864}
+      {"wall_seconds": 5.233123108, "peak_tree_pss_bytes": 956321792, "peak_tree_uss_bytes": 956321792},
+      {"wall_seconds": 5.555116215, "peak_tree_pss_bytes": 772907008, "peak_tree_uss_bytes": 772907008},
+      {"wall_seconds": 5.323073800, "peak_tree_pss_bytes": 983101440, "peak_tree_uss_bytes": 983101440}
     ],
     "emerge": [
-      {"wall_seconds": 17.39, "user_seconds": 17.16, "sys_seconds": 0.35, "max_rss_kib": 249512},
-      {"wall_seconds": 17.63, "user_seconds": 17.37, "sys_seconds": 0.36, "max_rss_kib": 249452},
-      {"wall_seconds": 17.48, "user_seconds": 17.22, "sys_seconds": 0.35, "max_rss_kib": 249584}
-    ]
+      {"wall_seconds": 19.581146467, "peak_tree_pss_bytes": 251205632, "peak_tree_uss_bytes": 249688064},
+      {"wall_seconds": 33.643765103, "peak_tree_pss_bytes": 247404544, "peak_tree_uss_bytes": 243126272},
+      {"wall_seconds": 18.289643057, "peak_tree_pss_bytes": 251105280, "peak_tree_uss_bytes": 249434112}
+    ],
+    "medians": {
+      "arise_wall_seconds": 5.323073800,
+      "emerge_wall_seconds": 19.581146467,
+      "arise_pss_bytes": 956321792,
+      "emerge_pss_bytes": 251105280,
+      "pss_ratio": 3.808450361,
+      "arise_uss_bytes": 956321792,
+      "emerge_uss_bytes": 249434112,
+      "uss_ratio": 3.833967278
+    }
   },
-  "medians": {
-    "arise_wall_seconds": 2.88,
-    "emerge_wall_seconds": 17.48,
-    "wall_speedup": 6.07,
-    "arise_max_rss_kib": 886148,
-    "emerge_max_rss_kib": 249512,
-    "max_rss_ratio": 3.55
+  "instrumented_cold": {
+    "sample_interval_milliseconds": 10,
+    "cache_policy": "sync and write 3 to /proc/sys/vm/drop_caches before every command; alternate command order",
+    "arise": [
+      {"wall_seconds": 12.108166272, "peak_tree_pss_bytes": 1072222208, "peak_tree_uss_bytes": 1072222208},
+      {"wall_seconds": 11.564451398, "peak_tree_pss_bytes": 824573952, "peak_tree_uss_bytes": 824573952},
+      {"wall_seconds": 12.003599535, "peak_tree_pss_bytes": 984686592, "peak_tree_uss_bytes": 984686592}
+    ],
+    "emerge": [
+      {"wall_seconds": 21.631181564, "peak_tree_pss_bytes": 250446848, "peak_tree_uss_bytes": 248729600},
+      {"wall_seconds": 20.839493256, "peak_tree_pss_bytes": 251147264, "peak_tree_uss_bytes": 249458688},
+      {"wall_seconds": 20.870323723, "peak_tree_pss_bytes": 251175936, "peak_tree_uss_bytes": 249479168}
+    ],
+    "medians": {
+      "arise_wall_seconds": 12.003599535,
+      "emerge_wall_seconds": 20.870323723,
+      "wall_speedup": 1.738672109,
+      "arise_pss_bytes": 984686592,
+      "emerge_pss_bytes": 251147264,
+      "pss_ratio": 3.920754476,
+      "arise_uss_bytes": 984686592,
+      "emerge_uss_bytes": 249458688,
+      "uss_ratio": 3.947290995
+    }
   },
   "notes": [
-    "All timed runs were warm and read-only.",
+    "All runs were read-only and every sample produced the same correctness-equivalent one-action plan.",
+    "Headline warm latency is uninstrumented; process-tree smaps_rollup polling adds measurable overhead, especially to Arise's shorter run.",
+    "PSS and USS include the command process and all discoverable descendants.",
     "Portage reported the host's known stale world entries and skipped docutils conflict; both resolvers still produced the same one-action plan.",
     "FEATURES=-news prevents Portage's post-plan news update in the non-root benchmark environment."
   ]

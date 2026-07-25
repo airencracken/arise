@@ -37,7 +37,7 @@ loss does not fail the build.
 | Resolution | Multi-target plan | emerge -p | — | immutable snapshot | workload needed |
 | Resolution | Shallow @system plan | emerge -pu @system | — | live read-only snapshot | exact 11/11 across five runs; 1.43s vs 6.48s (4.52x) |
 | Resolution | Deep @system plan | emerge -puDN @system | — | immutable snapshot | damaged-state diagnostic: verified 159-action Arise repair 2.05s median vs unresolved 143-action Portage partial 27.34s; not an equivalence speedup |
-| Resolution | Standard @world plan | emerge -puDN @world | — | immutable snapshot | measured: equivalent 1/1 action, 2.88s vs 17.48s (6.07x); Arise median RSS 3.55x higher |
+| Resolution | Standard @world plan | emerge -puDN @world | — | immutable snapshot | measured: equivalent 1/1 action; uninstrumented warm 2.88s vs 17.48s (6.07x); instrumented warm PSS 912.02 vs 239.47 MiB (3.81x); cold PSS 939.07 vs 239.51 MiB (3.92x) |
 | Resolution | Recovery @world plan | emerge -puDN --keep-going --with-bdeps=y --complete-graph --backtrack=1000 @world | — | immutable snapshot | correctness-gated workload added; current deep complete-graph diagnostic is 313 vs 317 actions |
 | Resolution | Backtracking/slot conflict | emerge -p | — | fixture snapshot | workload needed |
 | Fetch | Fetch-only, warm DISTDIR | emerge -f | — | temp ROOT/DISTDIR | verified fetch implementation/tests exist; comparison workload needed |

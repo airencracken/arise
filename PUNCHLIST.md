@@ -127,13 +127,22 @@ decision history while both consume one actual backtrack.
 - [x] Build a reproducible benchmark harness that runs Arise and Portage on the
   same immutable repository/profile/VDB snapshot.
 - [~] Record hardware, kernel, filesystem, storage, Go, Python and reference-tool versions.
-- [ ] Separate cold-cache, warm-cache and incremental-operation measurements.
-- [ ] Measure wall time, CPU time, peak RSS, bytes read/written and process count.
+- [~] Separate cold-cache, warm-cache and incremental-operation measurements.
+  The live deep/newuse world workload now has alternating warm and root-only
+  cold-cache lanes; incremental-operation coverage remains.
+- [~] Measure wall time, CPU time, process-tree peak RSS/PSS/USS, bytes
+  read/written and process count. Wall and process-tree memory sampling are
+  implemented; I/O and process-count summaries remain.
 - [x] Store machine-readable benchmark results and equivalence verdicts.
 - [~] Establish representative small, medium and full-world workloads.
 - [x] Publish a full emerge/eix comparison matrix covering current and planned tasks.
 - [x] Add statistical repetitions, median and p95 reporting.
 - [ ] Define regression budgets before optimizing each subsystem.
+- [ ] Reduce deep/newuse world-plan peak private memory without surrendering
+  correctness or the latency lead. The 2026-07-25 baseline is 912.02 MiB warm
+  and 939.07 MiB cold USS, versus emerge at 237.88 and 237.90 MiB. Profile
+  allocation ownership, then remove duplicated immutable snapshot, candidate
+  and graph state before considering persistent caches.
 - [ ] Fail performance CI on material regressions beyond the agreed noise band.
 - [ ] Keep microbenchmarks, but gate releases on end-to-end workloads.
 - [~] Track test coverage in separate deterministic-core, network/integration
