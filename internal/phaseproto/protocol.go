@@ -306,6 +306,7 @@ func RunBashWorkerWithOptions(ctx context.Context, request Request, options Work
 			}
 		}
 		command := exec.CommandContext(ctx, executable, arguments...)
+		command.Dir = workerHostDirectory(request)
 		events, runErr := runWorkerCommandWithEvents(command, request, options.OnEvent)
 		return persistWorkerEvents(request, events, runErr, options)
 	case IsolationBubblewrap:
@@ -324,6 +325,18 @@ func namespaceCommand(unshare string, enabled []string, executable string, argum
 	wrapped := append(append([]string{}, enabled...), "--", executable)
 	wrapped = append(wrapped, arguments...)
 	return unshare, wrapped
+}
+
+// workerHostDirectory prevents isolated workers from inheriting Arise's
+// invocation directory. In particular, a userpriv worker cannot traverse
+// root's home directory when Arise is invoked from there. WORKDIR is prepared
+// for the worker before launch; metadata-only requests fall back to the
+// repository directory containing the selected ebuild.
+func workerHostDirectory(request Request) string {
+	if request.WorkDir != "" {
+		return request.WorkDir
+	}
+	return filepath.Dir(request.Ebuild)
 }
 
 // Portage gives sandbox workers an argv[0] such as
@@ -614,6 +627,9 @@ func isolatedBashCommand(ctx context.Context, request Request, isolateNetwork bo
 		args = append(args[:7], append([]string{"--unshare-net"}, args[7:]...)...)
 	}
 	command := exec.CommandContext(ctx, bwrap, args...)
+	// bubblewrap must not inherit an invocation directory that is either
+	// inaccessible after isolation or absent from its filesystem view.
+	command.Dir = "/"
 	request.Ebuild = "/run/arise/ebuild"
 	return command, request, nil
 }

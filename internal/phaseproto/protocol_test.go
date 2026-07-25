@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -1967,12 +1968,88 @@ func TestPortageSandboxWorkerIsDefault(t *testing.T) {
 	}
 }
 
+func TestWorkerHostDirectoryNeverInheritsInvocationDirectory(t *testing.T) {
+	t.Run("work directory", func(t *testing.T) {
+		request := Request{
+			Ebuild:  "/var/db/repos/gentoo/app-misc/pkg/pkg-1.ebuild",
+			WorkDir: "/var/tmp/portage/app-misc/pkg-1/work",
+		}
+		if got, want := workerHostDirectory(request), request.WorkDir; got != want {
+			t.Fatalf("worker directory = %q, want %q", got, want)
+		}
+	})
+	t.Run("metadata fallback", func(t *testing.T) {
+		request := Request{Ebuild: "/var/db/repos/gentoo/app-misc/pkg/pkg-1.ebuild"}
+		if got, want := workerHostDirectory(request), filepath.Dir(request.Ebuild); got != want {
+			t.Fatalf("worker directory = %q, want %q", got, want)
+		}
+	})
+}
+
+func TestPortageWorkerStartsOutsideInaccessibleCallerDirectory(t *testing.T) {
+	if os.Getenv("ARISE_INACCESSIBLE_CWD_HELPER") == "1" {
+		work := os.Getenv("ARISE_TEST_WORKDIR")
+		ebuild := filepath.Join(work, "pkg-1.ebuild")
+		request := Request{
+			Protocol: Version, ID: "inaccessible-cwd", Command: "run_phase",
+			Phase: "src_unpack", EAPI: "8", Ebuild: ebuild, WorkDir: work,
+			Policy: ExecutionPolicy{Configured: true, Sandbox: true, DropPrivileges: true},
+		}
+		events, err := RunBashWorkerWithOptions(context.Background(), request, WorkerOptions{Isolation: IsolationPortage})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) < 2 || events[len(events)-1].Kind != "result" {
+			t.Fatalf("worker returned incomplete events: %#v", events)
+		}
+		return
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("userpriv regression requires root")
+	}
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is unavailable")
+	}
+	if _, err := user.Lookup("portage"); err != nil {
+		t.Skip("portage account is unavailable")
+	}
+
+	base := t.TempDir()
+	caller := filepath.Join(base, "caller")
+	work := filepath.Join(base, "work")
+	if err := os.Mkdir(caller, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := filepath.Join(work, "pkg-1.ebuild")
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_unpack() { :; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=^TestPortageWorkerStartsOutsideInaccessibleCallerDirectory$")
+	command.Dir = caller
+	command.Env = append(os.Environ(),
+		"ARISE_INACCESSIBLE_CWD_HELPER=1",
+		"ARISE_TEST_WORKDIR="+work,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("worker inherited inaccessible caller directory: %v\n%s", err, output)
+	}
+}
+
 func TestBubblewrapEnhancedModeNeverFallsBack(t *testing.T) {
 	ebuild := filepath.Join(t.TempDir(), "pkg-1.ebuild")
 	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_compile() { :; }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	request := Request{Protocol: Version, ID: "enhanced-1", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: ebuild}
+	command, _, commandErr := isolatedBashCommand(context.Background(), request, false)
+	if commandErr == nil && command.Dir != "/" {
+		t.Fatalf("bubblewrap launcher directory = %q, want /", command.Dir)
+	}
 	events, err := RunBashWorkerWithOptions(context.Background(), request, WorkerOptions{Isolation: IsolationBubblewrap})
 	if err == nil && (len(events) < 2 || events[len(events)-1].Kind != "result") {
 		t.Fatalf("enhanced worker returned incomplete events: %#v", events)
