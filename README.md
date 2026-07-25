@@ -72,7 +72,11 @@ Arise is therefore being built around these priorities:
 
 The core design rules are:
 
-- **Pure Go, static binary** — `CGO_ENABLED=0`, no dynamic linking.
+- **Pure Go, static binary by default** — `CGO_ENABLED=0`, with the packaged
+  recovery build overriding Gentoo's normal PIE default so its control plane
+  does not depend on the host dynamic loader or shared-library state. PIE is a
+  sound general hardening default and remains available through the overlay's
+  opt-in `pie` USE flag.
 - **Optional integrations stay optional** — an enhancement that adds an Arise
   runtime dependency must retain a functional baseline fallback and be exposed
   through an explicit Gentoo USE flag. Bubblewrap and filesystem snapshot
@@ -340,9 +344,9 @@ make clean          # remove artifacts
 
 Requirements: Go 1.26.3+, Linux (primary target).
 
-The Gentoo ebuild enables the `static` USE flag by default. Explicitly
-disabling it opts into a cgo-enabled dynamic build; the default installation
-retains the standalone recovery guarantee.
+The Gentoo ebuild produces the static recovery binary by default rather than
+exposing a redundant `static` flag. Enable the opt-in `pie` USE flag to select
+Gentoo's normal position-independent hardening tradeoff instead.
 
 The default suite is hermetic: it does not invoke host Portage tools or open
 loopback listeners. Live comparisons are opt-in and timeout-bounded. See

@@ -2150,6 +2150,16 @@ func phaseFailureDiagnostics(events []phaseproto.Event, limit int) []string {
 		}
 	}
 	if len(selected) == 0 {
+		for index := len(logs) - 1; index >= 0; index-- {
+			message := strings.TrimSpace(logs[index])
+			lower := strings.ToLower(message)
+			if message == "" ||
+				strings.Contains(lower, "entering directory") ||
+				strings.Contains(lower, "leaving directory") {
+				continue
+			}
+			return []string{message}
+		}
 		message := "phase returned non-zero status without an explicit error diagnostic"
 		if lastPhase != "" {
 			message = "phase " + lastPhase + " returned non-zero status without an explicit error diagnostic"

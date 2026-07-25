@@ -199,6 +199,18 @@ func TestPhaseFailureDiagnosticsNamesSilentFailingPhase(t *testing.T) {
 	}
 }
 
+func TestPhaseFailureDiagnosticsUsesFinalDieMessage(t *testing.T) {
+	events := []phaseproto.Event{
+		{Kind: "phase", Message: "src_compile"},
+		{Kind: "log", Message: "go build ./cmd/arise"},
+		{Kind: "log", Message: "supported build must produce a statically linked binary"},
+	}
+	got := phaseFailureDiagnostics(events, 5)
+	if joined := strings.Join(got, "\n"); joined != "supported build must produce a statically linked binary" {
+		t.Fatalf("die diagnostic = %q", joined)
+	}
+}
+
 func TestRegenerateLiveInfoIndexReportsAllFailures(t *testing.T) {
 	base := t.TempDir()
 	root, image := filepath.Join(base, "root"), filepath.Join(base, "image")
