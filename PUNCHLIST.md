@@ -237,6 +237,11 @@ identical, proving the gated invocation performed no package-state mutation.
 - [x] Detect md5-cache changes using digest/mtime without trusting them as package state.
 - [x] Index repositories without a pre-generated metadata/md5-cache, marking
   statically discovered records incomplete and unsafe for resolution.
+- [ ] Generate authoritative metadata for uncached overlay ebuilds in an
+  isolated EAPI/eclass-aware metadata phase, atomically replace their
+  incomplete discovery records, and permit resolution only after the generated
+  record passes the same validation as repository md5-cache input. Until then,
+  overlays intended for Arise execution must publish metadata/md5-cache.
 
 ### Installed state
 
