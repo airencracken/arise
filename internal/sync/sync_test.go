@@ -80,6 +80,17 @@ func TestSyncConfig_Validate(t *testing.T) {
 	}
 }
 
+func TestSyncRejectsUnsupportedConfiguredTransport(t *testing.T) {
+	err := Sync(context.Background(), SyncConfig{
+		RepoURL:   "https://example.invalid/repo",
+		TargetDir: t.TempDir(),
+		SyncType:  "mercurial",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported sync type") {
+		t.Fatalf("Sync() error = %v", err)
+	}
+}
+
 func TestSyncConfig_Validate_ErrorMessages(t *testing.T) {
 	tests := []struct {
 		name      string

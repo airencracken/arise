@@ -18,6 +18,10 @@ type SyncConfig struct {
 	// RepoURL is the URL of the remote repository (git clone URL or rsync URL).
 	RepoURL string
 
+	// SyncType selects the configured transport. Empty and "git" use the Git
+	// path; "rsync" bypasses Git probing and invokes rsync directly.
+	SyncType string
+
 	// TargetDir is the local directory to sync into.
 	TargetDir string
 
@@ -98,6 +102,13 @@ func Sync(ctx context.Context, cfg SyncConfig) error {
 
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.SyncType)) {
+	case "rsync":
+		return syncRsync(ctx, cfg)
+	case "", "git":
+	default:
+		return fmt.Errorf("sync: unsupported sync type %q", cfg.SyncType)
 	}
 
 	if isGitRepo(cfg.TargetDir) {
