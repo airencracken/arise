@@ -39,6 +39,46 @@ func TestApplyPackagePolicyBuildsEclassAndPatchPrecedence(t *testing.T) {
 	}
 }
 
+func TestApplyPackagePolicyAllowsOverlayWithoutEclassDirectory(t *testing.T) {
+	root := t.TempDir()
+	master := filepath.Join(root, "master")
+	overlay := filepath.Join(root, "overlay")
+	if err := os.MkdirAll(filepath.Join(master, "eclass"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(overlay, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Protocol: Version,
+		ID:       "overlay-without-eclass",
+		Command:  "run_phase",
+		Phase:    "src_compile",
+		EAPI:     "8",
+		Ebuild:   filepath.Join(overlay, "pkg.ebuild"),
+	}
+	if err := os.WriteFile(request.Ebuild, []byte("EAPI=8\ninherit toolchain-funcs\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := PackagePolicy{
+		Repositories: []portage.RepoEntry{
+			{Name: "gentoo", Location: master},
+			{Name: "overlay", Location: overlay, Masters: []string{"gentoo"}},
+		},
+		Repository: "overlay",
+		ConfigRoot: root,
+		CPV:        "cat/pkg-1",
+	}
+	got, err := ApplyPackagePolicy(request, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(master, "eclass")}
+	if !reflect.DeepEqual(got.EclassDirs, want) {
+		t.Fatalf("eclass dirs = %#v, want %#v", got.EclassDirs, want)
+	}
+}
+
 func TestApplyPackagePolicyComposesPackageEnvironment(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")

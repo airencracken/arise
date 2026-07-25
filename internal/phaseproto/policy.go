@@ -255,11 +255,16 @@ func ApplyPackagePolicy(request Request, policy PackagePolicy) (Request, error) 
 	if err != nil {
 		return request, fmt.Errorf("phase policy: eclass lookup: %w", err)
 	}
+	availableEclassDirs := eclassDirs[:0]
 	for _, directory := range eclassDirs {
 		info, statErr := os.Stat(directory)
+		if os.IsNotExist(statErr) {
+			continue
+		}
 		if statErr != nil || !info.IsDir() {
 			return request, fmt.Errorf("phase policy: eclass directory %s is unavailable", directory)
 		}
+		availableEclassDirs = append(availableEclassDirs, directory)
 	}
 	var patchDirs []string
 	for _, directory := range portage.UserPatchDirectories(policy.ConfigRoot, policy.Category, policy.PN, policy.P, policy.PR, policy.Slot) {
@@ -272,7 +277,7 @@ func ApplyPackagePolicy(request Request, policy PackagePolicy) (Request, error) 
 		}
 		patchDirs = append(patchDirs, directory)
 	}
-	request.EclassDirs = eclassDirs
+	request.EclassDirs = availableEclassDirs
 	request.UserPatchDirs = patchDirs
 	request.WorkDir = policy.WorkDir
 	request.BuildDir = policy.BuildDir
