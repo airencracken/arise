@@ -1,0 +1,25 @@
+{
+  "name": "live-standard-world-warm",
+  "warmups": 1,
+  "runs": 3,
+  "cases": [
+    {
+      "name": "world-update-deep-newuse",
+      "normalize": "package-plan",
+      "report_only": true,
+      "arise": {
+        "tool": "arise",
+        "path": "./arise",
+        "args": ["--json", "--color=n", "--pretend", "--deep", "--newuse", "update", "@world"],
+        "version_args": ["--version"]
+      },
+      "reference": {
+        "tool": "emerge",
+        "path": "emerge",
+        "args": ["--color", "n", "--pretend", "--verbose", "--backtrack=20", "--update", "--deep", "--newuse", "@world"],
+        "env": ["FEATURES=-news"],
+        "version_args": ["--version"]
+      }
+    }
+  ]
+}

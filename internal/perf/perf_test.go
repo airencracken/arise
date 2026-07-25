@@ -7,6 +7,24 @@ import (
 	"testing"
 )
 
+func TestParseSmapsRollupComputesRSSPSSAndUSS(t *testing.T) {
+	data := []byte("Rss: 100 kB\nPss: 60 kB\nPrivate_Clean: 10 kB\nPrivate_Dirty: 20 kB\nPrivate_Hugetlb: 2 kB\nShared_Clean: 70 kB\n")
+	got := parseSmapsRollup(data)
+	if got.RSSBytes != 100*1024 || got.PSSBytes != 60*1024 || got.USSBytes != 32*1024 {
+		t.Fatalf("memory = %+v", got)
+	}
+}
+
+func TestColdCacheBenchmarkRequiresRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("test requires a non-root runner")
+	}
+	_, err := executePrepared(context.Background(), Command{Path: "true"}, true)
+	if err == nil {
+		t.Fatal("non-root cold-cache benchmark was accepted")
+	}
+}
+
 func TestRunRequiresEquivalentOutput(t *testing.T) {
 	w := Workload{Name: "test", Runs: 2, Cases: []Case{{
 		Name: "same", Normalize: "sorted-lines", MinSpeedup: speedupPtr(0),
@@ -22,6 +40,9 @@ func TestRunRequiresEquivalentOutput(t *testing.T) {
 	}
 	if r.Results[0].AriseMedianNS <= 0 || len(r.Results[0].Arise) != 2 {
 		t.Fatal("timing samples missing")
+	}
+	if r.Results[0].Arise[0].MemorySampleCount == 0 {
+		t.Fatal("process-tree memory samples missing")
 	}
 }
 

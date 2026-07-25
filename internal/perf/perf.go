@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +42,9 @@ type Case struct {
 	// ReportOnly records performance without allowing it to fail the workload.
 	// Correctness mismatches always remain fatal.
 	ReportOnly bool `json:"report_only,omitempty"`
+	// ColdCache syncs filesystems and drops the Linux page cache immediately
+	// before every measured command. It requires an explicit root invocation.
+	ColdCache bool `json:"cold_cache,omitempty"`
 }
 
 type Workload struct {
@@ -51,12 +55,17 @@ type Workload struct {
 }
 
 type Sample struct {
-	WallNS       int64 `json:"wall_ns"`
-	UserNS       int64 `json:"user_ns"`
-	SystemNS     int64 `json:"system_ns"`
-	MaxRSSBytes  int64 `json:"max_rss_bytes"`
-	InputBlocks  int64 `json:"input_blocks"`
-	OutputBlocks int64 `json:"output_blocks"`
+	WallNS              int64 `json:"wall_ns"`
+	UserNS              int64 `json:"user_ns"`
+	SystemNS            int64 `json:"system_ns"`
+	MaxRSSBytes         int64 `json:"max_rss_bytes"`
+	PeakTreeRSSBytes    int64 `json:"peak_tree_rss_bytes,omitempty"`
+	PeakTreePSSBytes    int64 `json:"peak_tree_pss_bytes,omitempty"`
+	PeakTreeUSSBytes    int64 `json:"peak_tree_uss_bytes,omitempty"`
+	MemorySampleCount   int64 `json:"memory_sample_count,omitempty"`
+	MemorySampleEveryNS int64 `json:"memory_sample_every_ns,omitempty"`
+	InputBlocks         int64 `json:"input_blocks"`
+	OutputBlocks        int64 `json:"output_blocks"`
 }
 
 type Result struct {
@@ -65,6 +74,7 @@ type Result struct {
 	Equivalent            bool     `json:"equivalent"`
 	PerformancePass       bool     `json:"performance_pass"`
 	PerformanceEnforced   bool     `json:"performance_enforced"`
+	ColdCache             bool     `json:"cold_cache,omitempty"`
 	MinSpeedup            float64  `json:"min_speedup"`
 	AriseExitCode         int      `json:"arise_exit_code"`
 	ReferenceTool         string   `json:"reference_tool"`
@@ -166,20 +176,28 @@ func Run(ctx context.Context, workload Workload, snapshot string) (Report, error
 
 func runCase(ctx context.Context, c Case, warmups, runs int) (Result, error) {
 	for i := 0; i < warmups; i++ {
-		if _, err := execute(ctx, c.Arise); err != nil {
+		if _, err := executePrepared(ctx, c.Arise, c.ColdCache); err != nil {
 			return Result{}, err
 		}
-		if _, err := execute(ctx, c.Reference); err != nil {
+		if _, err := executePrepared(ctx, c.Reference, c.ColdCache); err != nil {
 			return Result{}, err
 		}
 	}
 	var ariseRuns, referenceRuns []commandResult
 	for i := 0; i < runs; i++ {
-		a, err := execute(ctx, c.Arise)
-		if err != nil {
-			return Result{}, err
+		var a, p commandResult
+		var err error
+		if i%2 == 0 {
+			a, err = executePrepared(ctx, c.Arise, c.ColdCache)
+			if err == nil {
+				p, err = executePrepared(ctx, c.Reference, c.ColdCache)
+			}
+		} else {
+			p, err = executePrepared(ctx, c.Reference, c.ColdCache)
+			if err == nil {
+				a, err = executePrepared(ctx, c.Arise, c.ColdCache)
+			}
 		}
-		p, err := execute(ctx, c.Reference)
 		if err != nil {
 			return Result{}, err
 		}
@@ -204,7 +222,7 @@ func runCase(ctx context.Context, c Case, warmups, runs int) (Result, error) {
 		aRaw, pRaw = aValidation.stdout, pValidation.stdout
 		aExit, pExit = aValidation.exit, pValidation.exit
 	}
-	r := Result{Name: c.Name, Normalize: c.Normalize, AriseExitCode: ariseRuns[0].exit, ReferenceTool: c.Reference.Tool, ReferenceExitCode: referenceRuns[0].exit}
+	r := Result{Name: c.Name, Normalize: c.Normalize, ColdCache: c.ColdCache, AriseExitCode: ariseRuns[0].exit, ReferenceTool: c.Reference.Tool, ReferenceExitCode: referenceRuns[0].exit}
 	var sizeErr error
 	if r.AriseCacheBytes, sizeErr = cacheSize(c.Arise.CachePaths); sizeErr != nil {
 		return Result{}, fmt.Errorf("measure arise cache: %w", sizeErr)
@@ -246,6 +264,19 @@ func runCase(ctx context.Context, c Case, warmups, runs int) (Result, error) {
 	r.PerformancePass = r.Speedup >= r.MinSpeedup
 	r.PerformanceEnforced = !c.ReportOnly
 	return r, nil
+}
+
+func executePrepared(ctx context.Context, spec Command, coldCache bool) (commandResult, error) {
+	if coldCache {
+		if os.Geteuid() != 0 {
+			return commandResult{}, fmt.Errorf("cold-cache benchmark requires root")
+		}
+		syscall.Sync()
+		if err := os.WriteFile("/proc/sys/vm/drop_caches", []byte("3\n"), 0o644); err != nil {
+			return commandResult{}, fmt.Errorf("drop Linux page cache: %w", err)
+		}
+	}
+	return execute(ctx, spec)
 }
 
 func outputsEquivalent(ariseRaw, referenceRaw, ariseNormalized, referenceNormalized []byte, mode string) bool {
@@ -316,8 +347,22 @@ func execute(ctx context.Context, spec Command) (commandResult, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	started := time.Now()
-	err := cmd.Run()
+	if err := cmd.Start(); err != nil {
+		return commandResult{}, fmt.Errorf("execute %s: %w", spec.Path, err)
+	}
+	const memoryInterval = 10 * time.Millisecond
+	stopMemory := make(chan struct{})
+	memoryDone := make(chan processTreeMemory, 1)
+	go sampleProcessTreeMemory(cmd.Process.Pid, memoryInterval, stopMemory, memoryDone)
+	err := cmd.Wait()
+	close(stopMemory)
+	memory := <-memoryDone
 	result := commandResult{stdout: stdout.Bytes(), sample: Sample{WallNS: time.Since(started).Nanoseconds()}}
+	result.sample.PeakTreeRSSBytes = memory.RSSBytes
+	result.sample.PeakTreePSSBytes = memory.PSSBytes
+	result.sample.PeakTreeUSSBytes = memory.USSBytes
+	result.sample.MemorySampleCount = memory.Samples
+	result.sample.MemorySampleEveryNS = int64(memoryInterval)
 	if cmd.ProcessState != nil {
 		result.sample.UserNS = cmd.ProcessState.UserTime().Nanoseconds()
 		result.sample.SystemNS = cmd.ProcessState.SystemTime().Nanoseconds()
@@ -335,6 +380,93 @@ func execute(ctx context.Context, spec Command) (commandResult, error) {
 		return result, nil
 	}
 	return commandResult{}, fmt.Errorf("execute %s: %w (%s)", spec.Path, err, strings.TrimSpace(stderr.String()))
+}
+
+type processTreeMemory struct {
+	RSSBytes int64
+	PSSBytes int64
+	USSBytes int64
+	Samples  int64
+}
+
+func sampleProcessTreeMemory(rootPID int, interval time.Duration, stop <-chan struct{}, done chan<- processTreeMemory) {
+	var peak processTreeMemory
+	sample := func() {
+		current := readProcessTreeMemory(rootPID)
+		peak.RSSBytes = max(peak.RSSBytes, current.RSSBytes)
+		peak.PSSBytes = max(peak.PSSBytes, current.PSSBytes)
+		peak.USSBytes = max(peak.USSBytes, current.USSBytes)
+		peak.Samples++
+	}
+	sample()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			sample()
+		case <-stop:
+			sample()
+			done <- peak
+			return
+		}
+	}
+}
+
+func readProcessTreeMemory(rootPID int) processTreeMemory {
+	var result processTreeMemory
+	queue := []int{rootPID}
+	seen := make(map[int]bool)
+	for len(queue) > 0 {
+		pid := queue[0]
+		queue = queue[1:]
+		if pid <= 0 || seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/smaps_rollup", pid))
+		if err == nil {
+			memory := parseSmapsRollup(data)
+			result.RSSBytes += memory.RSSBytes
+			result.PSSBytes += memory.PSSBytes
+			result.USSBytes += memory.USSBytes
+		}
+		children, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", pid, pid))
+		if err != nil {
+			continue
+		}
+		for _, field := range strings.Fields(string(children)) {
+			child, parseErr := strconv.Atoi(field)
+			if parseErr == nil {
+				queue = append(queue, child)
+			}
+		}
+	}
+	return result
+}
+
+func parseSmapsRollup(data []byte) processTreeMemory {
+	var result processTreeMemory
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		value, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		bytes := value * 1024
+		switch fields[0] {
+		case "Rss:":
+			result.RSSBytes += bytes
+		case "Pss:":
+			result.PSSBytes += bytes
+		case "Private_Clean:", "Private_Dirty:", "Private_Hugetlb:":
+			result.USSBytes += bytes
+		}
+	}
+	return result
 }
 
 func normalize(data []byte, mode string) []byte {
