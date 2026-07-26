@@ -1721,6 +1721,11 @@ the complete selected plan has passed the applicable whole-plan checks below.
   weaken an explicitly approved experimental guarantee. This host is ext4 on `/dev/dm-1`, has no
   overlayfs kernel support, fuse-overlayfs or Btrfs, and requires privileged
   LVM inspection before snapshot eligibility is known.
+- [ ] Implement each rollback provider behind an independent Gentoo USE gate.
+  Btrfs, OpenZFS, LVM, kernel OverlayFS and fuse-overlayfs must have separate
+  dependency mappings plus enabled/disabled build and runtime tests. Enabling
+  one provider must not pull in or authorize another; the static journal and
+  recovery baseline remains complete with every provider disabled.
 - [~] Implement and certify EAPI 9 rather than aliasing it to EAPI 8. The phase
   protocol enforces Bash 5.3, keeps package-manager shell variables unexported,
   provides `pipestatus`/`ver_replacing`, bans `domo`/`assert`, and preserves

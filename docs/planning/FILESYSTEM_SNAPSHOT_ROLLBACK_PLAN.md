@@ -66,6 +66,20 @@ same operation boundary.
 
 ## Provider contracts
 
+Each provider is an independently USE-gated implementation. The initial
+packaging names should follow Gentoo convention (`btrfs`, `zfs`, `lvm`,
+`overlayfs` and `fuse-overlayfs`) unless repository review requires a more
+specific name. Enabling one provider must not pull in, probe or authorize
+another provider. Every gate requires enabled and disabled build tests, runtime
+capability tests, and an ebuild dependency mapping for its helper programs.
+The static journal/recovery baseline remains fully functional with every
+provider USE flag disabled.
+
+A provider disabled at build/package time is ineligible even if its commands
+and filesystem are present. Explicitly requesting it fails before mutation;
+automatic selection reports that it was not compiled/enabled and continues only
+when the approved policy permits a weaker eligible backend.
+
 ### Btrfs
 
 - Resolve the mounted ROOT to its filesystem UUID and subvolume ID; do not infer

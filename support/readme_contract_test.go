@@ -59,6 +59,8 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"### LVM",
 		"### OverlayFS and fuse-overlayfs",
 		"Overlay providers are not persistent whole-operation snapshot backends.",
+		"Each provider is an independently USE-gated implementation.",
+		"The static journal/recovery baseline remains fully functional with every",
 		"unit tests for topology, capability, capacity and provider-output parsers;",
 		"atomicity tests at every boundary between lock, record publication, snapshot",
 	)
