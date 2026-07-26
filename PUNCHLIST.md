@@ -2004,7 +2004,23 @@ specified and verified explicitly.
 - [ ] Wire `-k`, `-K`, `-g`, `-G`, `-b`, and `-B` end to end.
 - [ ] Absorb `quickpkg`'s role: create a metadata-complete binary package from
   an installed VDB instance, with explicit handling for preserved libraries,
-  config files, hardlinks, xattrs and build IDs.
+  config files, hardlinks, sparse files, ACLs, xattrs, capabilities and build
+  IDs. Treat missing, locally modified, type-changed and foreign-owned paths as
+  explicit evidence rather than silently normalizing the installed image.
+- [ ] Harden host-derived binpkgs before using them as recovery artifacts.
+  Record exact CPV/slot/subslot/repository/EAPI/USE/ABI/build identity, the
+  complete source VDB entry and environment, per-entry types/hashes/ownership/
+  modes/timestamps/linkage/extended metadata, ROOT/configuration/repository
+  fingerprints, and recovery-set/operation provenance. Distinguish
+  host-recovery artifacts from repository-built reusable packages in metadata,
+  policy and user-facing output.
+- [ ] Publish pre-update recovery sets atomically before live-root mutation.
+  Every installed package that the approved plan may replace or remove must
+  have a verified artifact, or the transaction must not begin. Retain the
+  complete set through runtime/reboot verification; deduplicate by content
+  digest while preventing collection of active, failed or pending-rollback
+  sets. Restoration re-resolves the complete set against actual state, uses
+  normal journaled transactions and requires separate approval for drift.
 - [ ] Export and import a versioned tinderbox state bundle that pairs saved
   plans with the sanitized world file, profile/repository identities, complete
   Portage configuration layering (`make.conf`, `package.*`, profile parents and
@@ -2088,13 +2104,38 @@ specified and verified explicitly.
 - [ ] Remote binhost fixture with Packages index updates.
 - [ ] Round-trip installed package -> quickpkg-equivalent GPKG -> isolated ROOT
   and compare files, metadata and VDB state.
+- [ ] Round-trip regular files, symlinks, hardlinks, sparse files, unusual path
+  names, numeric ownership, modes, timestamps, ACLs, xattrs and capabilities;
+  compare the restored image and Portage-readable VDB byte-for-byte where the
+  format is canonical and semantically everywhere else.
+- [ ] Adversarial installed-state capture for missing, locally modified,
+  type-changed, config-protected, preserved-library and foreign-owned paths.
+  Policy must fail closed or preserve explicit evidence; it must never package
+  an unexplained hybrid image.
+- [ ] Atomicity matrix for capture startup, each archive/member publication
+  boundary, disk-full/short-write/fsync failures, cancellation, process death
+  and complete recovery-set publication. No live-root mutation may begin from
+  a partial or corrupt recovery set.
+- [ ] Restore complete multi-package recovery sets in dependency-safe/reverse
+  transaction order, inject failure after every package boundary, recover the
+  active journal and prove already committed/restored packages are neither
+  lost nor silently repeated.
+- [ ] Adversarial archive tests for absolute/traversing paths, unsafe links,
+  duplicate/conflicting members, device nodes, decompression/resource bombs,
+  malformed metadata, digest/signature failures and hostile Packages indexes.
+- [ ] Concurrent capture, installation, repository publication, retention and
+  garbage-collection tests; active or rollback-referenced artifacts must never
+  be pruned.
 - [ ] Reproducibility tests for repeated tinderbox builds and interrupted
   publication recovery.
 - [ ] Corruption, signature and incompatible-USE tests.
 
 Acceptance gate:
 
-- Portage and Arise can consume each other's supported binary packages.
+- Portage and Arise can consume each other's supported binary packages, and a
+  fully captured pre-update package set can reconstruct an isolated ROOT/VDB
+  after injected interruption without claiming restoration of external or
+  package-unowned state.
 
 ## P10 — remaining emerge and maintenance behavior
 

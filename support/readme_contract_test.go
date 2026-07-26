@@ -50,6 +50,9 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"- [x] Ship the initial release-bound offline dependency archive path.",
 		"Whole-operation rollback will use verified Btrfs, OpenZFS or LVM snapshots;",
 		"- [ ] Add pre-update recovery binpkgs when Arise subsumes `quickpkg`.",
+		"- [ ] Harden host-derived binpkgs before using them as recovery artifacts.",
+		"- [ ] Publish pre-update recovery sets atomically before live-root mutation.",
+		"- [ ] Adversarial archive tests for absolute/traversing paths, unsafe links,",
 	)
 
 	snapshots := read("../docs/planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md")
