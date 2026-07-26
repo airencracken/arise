@@ -701,6 +701,74 @@ func TestExecuteConcurrentRejectsMalformedPrerequisiteGraphBeforeMutation(t *tes
 	}
 }
 
+func TestExecuteConcurrentGeneratedDAGsRespectEveryDependency(t *testing.T) {
+	for seed := uint64(1); seed <= 64; seed++ {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			next := seed
+			random := func() uint64 {
+				next ^= next << 13
+				next ^= next >> 7
+				next ^= next << 17
+				return next
+			}
+			count := 2 + int(random()%7)
+			actions := make([]resolve.PkgAction, count)
+			for index := range actions {
+				actions[index] = action(t, fmt.Sprintf("cat/pkg%d-1", index))
+				for prerequisite := 0; prerequisite < index; prerequisite++ {
+					if random()%3 == 0 {
+						actions[index].Prerequisites = append(actions[index].Prerequisites, resolve.ActionIdentity(actions[prerequisite]))
+					}
+				}
+			}
+
+			var mu sync.Mutex
+			finished := make(map[string]bool, count)
+			runs := make(map[string]int, count)
+			err := Execute(context.Background(), &resolve.ResolveResult{
+				Verified: true, Verification: resolve.VerificationVerified, Install: actions,
+			}, Config{
+				Jobs: count, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+				Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+				Runner: func(_ context.Context, label string, cfg *rebuild.RebuildConfig) error {
+					mu.Lock()
+					var current resolve.PkgAction
+					for _, candidate := range actions {
+						if actionLabel(candidate) == label {
+							current = candidate
+							break
+						}
+					}
+					for _, prerequisite := range current.Prerequisites {
+						if !finished[prerequisite] {
+							mu.Unlock()
+							return fmt.Errorf("%s started before prerequisite %s finished", label, prerequisite)
+						}
+					}
+					runs[resolve.ActionIdentity(current)]++
+					mu.Unlock()
+					if err := cfg.OnTransactionCommit(nil); err != nil {
+						return err
+					}
+					mu.Lock()
+					finished[resolve.ActionIdentity(current)] = true
+					mu.Unlock()
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, action := range actions {
+				identity := resolve.ActionIdentity(action)
+				if runs[identity] != 1 || !finished[identity] {
+					t.Fatalf("%s ran %d times, finished=%v", identity, runs[identity], finished[identity])
+				}
+			}
+		})
+	}
+}
+
 func TestExecuteConcurrentFailureCancelsPeersAndDoesNotReleaseDependent(t *testing.T) {
 	failing, peer, dependent := action(t, "cat/failing-1"), action(t, "cat/peer-1"), action(t, "cat/dependent-1")
 	dependent.Prerequisites = []string{resolve.ActionIdentity(failing)}

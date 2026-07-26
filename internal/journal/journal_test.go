@@ -3,6 +3,7 @@ package journal
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,95 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+type failingJournalFile struct {
+	journalFile
+	stage string
+}
+
+func (f failingJournalFile) Write(data []byte) (int, error) {
+	if f.stage == "write" {
+		return 0, errors.New("injected write failure")
+	}
+	return f.journalFile.Write(data)
+}
+
+func (f failingJournalFile) Sync() error {
+	if f.stage == "sync" {
+		return errors.New("injected sync failure")
+	}
+	return f.journalFile.Sync()
+}
+
+func (f failingJournalFile) Close() error {
+	err := f.journalFile.Close()
+	if f.stage == "close" {
+		return errors.New("injected close failure")
+	}
+	return err
+}
+
+func faultJournalIO(stage string) journalIO {
+	return journalIO{
+		openFile: func(path string, flag int, mode os.FileMode) (journalFile, error) {
+			if stage == "open" {
+				return nil, errors.New("injected open failure")
+			}
+			file, err := os.OpenFile(path, flag, mode)
+			if err != nil {
+				return nil, err
+			}
+			return failingJournalFile{journalFile: file, stage: stage}, nil
+		},
+		rename: func(oldPath, newPath string) error {
+			if stage == "rename" {
+				return errors.New("injected rename failure")
+			}
+			return os.Rename(oldPath, newPath)
+		},
+		syncDirectory: func(path string) error {
+			if stage == "directory sync" {
+				return errors.New("injected directory sync failure")
+			}
+			return syncDirectory(path)
+		},
+	}
+}
+
+func TestCommitFaultsLeaveARecoverableDurableState(t *testing.T) {
+	for _, stage := range []string{"open", "write", "sync", "close", "rename", "directory sync"} {
+		t.Run(stage, func(t *testing.T) {
+			journal, err := Begin(t.TempDir(), t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			journal.io = faultJournalIO(stage)
+			if err := journal.Commit(); err == nil {
+				t.Fatalf("Commit succeeded through injected %s failure", stage)
+			}
+			if journal.Status() != "active" {
+				t.Fatalf("in-memory status = %q after failed commit", journal.Status())
+			}
+
+			reopened, err := Open(journal.Dir())
+			if err != nil {
+				t.Fatalf("failed commit left unreadable state: %v", err)
+			}
+			if reopened.Status() != "active" && reopened.Status() != "committed" {
+				t.Fatalf("durable status = %q", reopened.Status())
+			}
+
+			journal.io = systemJournalIO
+			if err := journal.Commit(); err != nil {
+				t.Fatalf("commit retry after %s failure: %v", stage, err)
+			}
+			reopened, err = Open(journal.Dir())
+			if err != nil || reopened.Status() != "committed" {
+				t.Fatalf("retry durable status = %q, err = %v", reopened.Status(), err)
+			}
+		})
+	}
+}
 
 func TestActiveJournalUsesAppendOnlyCaptureLog(t *testing.T) {
 	root, base := t.TempDir(), t.TempDir()

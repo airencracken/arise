@@ -145,6 +145,28 @@ undocumented `-long-name` form cannot reappear. Adversarial empty, malformed,
 overflowing and NUL-containing arguments exercise the validator without
 panics.
 
+Durability coverage now injects journal commit failures at open, write, file
+sync, close, rename and directory-sync boundaries. Each failure must retain a
+parseable complete old-or-new state, keep the in-memory transaction retryable
+and permit a successful retry. Resume state uses both an in-process keyed
+mutex and a blocking Portage-style sibling lock around every read-modify-write
+operation. A 32-writer concurrency test proves that successful completion
+updates cannot overwrite one another. Resume writes inject create, chmod,
+write, file-sync, close, rename, directory-open, directory-sync and
+directory-close failures and require a complete old-or-new file. Resume
+decoding also rejects trailing
+documents, unknown fields, missing package lists, empty or duplicate atoms and
+truncated JSON, while invalid save input is required to preserve the previous
+durable state.
+
+Parallel executor coverage generates 64 deterministic acyclic graphs with
+varying widths and dependencies. Every generated action must run exactly once
+and may start only after all prerequisites have completed. CLI coverage parses
+the documented command list and requires every entry to select its matching
+route without losing operands. VDB adversarial tests reject records with empty
+identity metadata or symlinked required files so interrupted or externally
+redirected state cannot be treated as an installed package.
+
 Zero-percent command `main` packages are lower priority than the command logic
 in `cmd/arise`: thin process entry points should be covered through route and
 contract tests, not tests that duplicate Go's flag and exit behavior.

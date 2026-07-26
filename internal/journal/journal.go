@@ -54,6 +54,27 @@ type Journal struct {
 	dir      string
 	state    State
 	captured map[string]bool
+	io       journalIO
+}
+
+type journalFile interface {
+	io.Writer
+	Sync() error
+	Close() error
+}
+
+type journalIO struct {
+	openFile      func(string, int, os.FileMode) (journalFile, error)
+	rename        func(string, string) error
+	syncDirectory func(string) error
+}
+
+var systemJournalIO = journalIO{
+	openFile: func(path string, flag int, mode os.FileMode) (journalFile, error) {
+		return os.OpenFile(path, flag, mode)
+	},
+	rename:        os.Rename,
+	syncDirectory: syncDirectory,
 }
 
 type Summary struct {
@@ -156,7 +177,7 @@ func begin(base, root string, allowLiveRoot bool) (*Journal, error) {
 	if err := logFile.Close(); err != nil {
 		return nil, fmt.Errorf("journal: close capture log: %w", err)
 	}
-	j := &Journal{dir: dir, state: State{Version: Version, Status: "active", Root: root, LiveRoot: allowLiveRoot}, captured: make(map[string]bool)}
+	j := &Journal{dir: dir, state: State{Version: Version, Status: "active", Root: root, LiveRoot: allowLiveRoot}, captured: make(map[string]bool), io: systemJournalIO}
 	if err := j.persist(); err != nil {
 		return nil, err
 	}
@@ -185,7 +206,7 @@ func Open(dir string) (*Journal, error) {
 	if err := validateStateEntries(state); err != nil {
 		return nil, err
 	}
-	j := &Journal{dir: dir, state: state, captured: make(map[string]bool)}
+	j := &Journal{dir: dir, state: state, captured: make(map[string]bool), io: systemJournalIO}
 	for _, entry := range state.Entries {
 		j.captured[entry.Path] = true
 	}
@@ -407,7 +428,7 @@ func (j *Journal) CaptureAbsentTree(path string) error {
 // backups, and no filesystem mutation may occur until this batch is synced.
 func (j *Journal) appendEntries(entries []Entry) error {
 	path := filepath.Join(j.dir, entriesLogName)
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	file, err := j.io.openFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("journal: open capture log: %w", err)
 	}
@@ -591,7 +612,11 @@ func (j *Journal) Rollback() error {
 		}
 	}
 	j.state.Status = "rolled-back"
-	return j.persist()
+	if err := j.persist(); err != nil {
+		j.state.Status = "active"
+		return err
+	}
+	return nil
 }
 
 func (j *Journal) confined(path string) (string, string, error) {
@@ -677,7 +702,7 @@ func (j *Journal) persist() error {
 		return err
 	}
 	temporary := filepath.Join(j.dir, "state.json.tmp")
-	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := j.io.openFile(temporary, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("journal: create state: %w", err)
 	}
@@ -690,10 +715,10 @@ func (j *Journal) persist() error {
 	if err != nil {
 		return fmt.Errorf("journal: write state: %w", err)
 	}
-	if err := os.Rename(temporary, filepath.Join(j.dir, "state.json")); err != nil {
+	if err := j.io.rename(temporary, filepath.Join(j.dir, "state.json")); err != nil {
 		return fmt.Errorf("journal: publish state: %w", err)
 	}
-	return syncDirectory(j.dir)
+	return j.io.syncDirectory(j.dir)
 }
 
 func syncDirectory(path string) error {

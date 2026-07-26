@@ -2,12 +2,14 @@ package resolve
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/airencracken/arise/internal/atom"
@@ -4953,8 +4955,9 @@ func TestResume_NilResult(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResume_MarkComplete_Nonexistent(t *testing.T) {
-	if err := MarkResumeComplete("/nonexistent/resume/file", "some-atom"); err != nil {
-		t.Logf("expected no error for nonexistent file, got: %v", err)
+	path := filepath.Join(t.TempDir(), "resume")
+	if err := MarkResumeComplete(path, "some-atom"); err != nil {
+		t.Fatalf("expected no error for nonexistent file, got: %v", err)
 	}
 }
 
@@ -4963,8 +4966,9 @@ func TestResume_MarkComplete_Nonexistent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestResume_SkipFirst_Nonexistent(t *testing.T) {
-	if err := SkipFirstResume("/nonexistent/resume/file"); err != nil {
-		t.Logf("expected no error for nonexistent file, got: %v", err)
+	path := filepath.Join(t.TempDir(), "resume")
+	if err := SkipFirstResume(path); err != nil {
+		t.Fatalf("expected no error for nonexistent file, got: %v", err)
 	}
 }
 
@@ -5047,12 +5051,222 @@ func TestResume_Schema_MissingPackagesField(t *testing.T) {
 
 	os.WriteFile(path, []byte(`{"other": "data"}`), 0644)
 
-	loaded, err := LoadResume(path)
-	if err != nil {
-		t.Fatalf("LoadResume: %v", err)
+	if _, err := LoadResume(path); err == nil {
+		t.Fatal("LoadResume accepted a state without packages")
 	}
-	if len(loaded) != 0 {
-		t.Errorf("expected 0 atoms, got %d", len(loaded))
+}
+
+func TestResume_SchemaRejectsAdversarialInputs(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"trailing document", `{"packages":[]} {"packages":[]}`},
+		{"unknown field", `{"packages":[],"status":"trusted"}`},
+		{"empty atom", `{"packages":[{"cpv":"cat/pkg-1","atom":"","completed":false}]}`},
+		{"whitespace atom", `{"packages":[{"cpv":"cat/pkg-1","atom":"  ","completed":false}]}`},
+		{"duplicate atom", `{"packages":[{"atom":"cat/pkg-1"},{"atom":"cat/pkg-1"}]}`},
+		{"truncated", `{"packages":[{"atom":"cat/pkg-1"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "resume")
+			if err := os.WriteFile(path, []byte(test.data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadResume(path); err == nil {
+				t.Fatalf("LoadResume accepted %s", test.name)
+			}
+		})
+	}
+}
+
+func TestResumeConcurrentCompletionsDoNotLoseUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resume")
+	const packages = 32
+	result := &ResolveResult{Install: make([]PkgAction, 0, packages)}
+	for index := 0; index < packages; index++ {
+		result.Install = append(result.Install, PkgAction{
+			Atom: mustParse(fmt.Sprintf("app-misc/pkg%d-1", index)),
+		})
+	}
+	if err := SaveResume(path, result); err != nil {
+		t.Fatal(err)
+	}
+
+	var wait sync.WaitGroup
+	errors := make(chan error, packages)
+	for _, action := range result.Install {
+		wait.Add(1)
+		go func(completed string) {
+			defer wait.Done()
+			errors <- MarkResumeComplete(path, completed)
+		}(action.Atom.String())
+	}
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("concurrent completion: %v", err)
+		}
+	}
+	remaining, err := LoadResume(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("lost concurrent updates; remaining = %v", remaining)
+	}
+}
+
+func TestResumeSaveRejectsInvalidActionsWithoutReplacingState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resume")
+	original := &ResolveResult{Install: []PkgAction{{Atom: mustParse("app-misc/original-1")}}}
+	if err := SaveResume(path, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveResume(path, &ResolveResult{Install: []PkgAction{{Atom: nil}}}); err == nil {
+		t.Fatal("SaveResume accepted a nil action atom")
+	}
+	remaining, err := LoadResume(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(remaining, []string{"app-misc/original-1"}) {
+		t.Fatalf("invalid save replaced durable state: %v", remaining)
+	}
+}
+
+type failingResumeFile struct {
+	resumeFile
+	stage  string
+	closes *int
+}
+
+func (f failingResumeFile) Write(data []byte) (int, error) {
+	if f.stage == "write" {
+		return 0, errors.New("injected write failure")
+	}
+	return f.resumeFile.Write(data)
+}
+
+func (f failingResumeFile) Chmod(mode os.FileMode) error {
+	if f.stage == "chmod" {
+		return errors.New("injected chmod failure")
+	}
+	return f.resumeFile.Chmod(mode)
+}
+
+func (f failingResumeFile) Sync() error {
+	if f.stage == "file sync" {
+		return errors.New("injected file sync failure")
+	}
+	return f.resumeFile.Sync()
+}
+
+func (f failingResumeFile) Close() error {
+	*f.closes++
+	err := f.resumeFile.Close()
+	if f.stage == "file close" {
+		return errors.New("injected file close failure")
+	}
+	return err
+}
+
+type failingResumeDirectory struct {
+	resumeDirectory
+	stage  string
+	closes *int
+}
+
+func (d failingResumeDirectory) Sync() error {
+	if d.stage == "directory sync" {
+		return errors.New("injected directory sync failure")
+	}
+	return d.resumeDirectory.Sync()
+}
+
+func (d failingResumeDirectory) Close() error {
+	*d.closes++
+	err := d.resumeDirectory.Close()
+	if d.stage == "directory close" {
+		return errors.New("injected directory close failure")
+	}
+	return err
+}
+
+func TestResumeWriteFaultsLeaveCompleteOldOrNewState(t *testing.T) {
+	oldState := ResumeState{Packages: []ResumePackage{{Atom: "app-misc/old-1"}}}
+	newState := ResumeState{Packages: []ResumePackage{{Atom: "app-misc/new-1"}}}
+	for _, stage := range []string{"create", "chmod", "write", "file sync", "file close", "rename", "open directory", "directory sync", "directory close"} {
+		t.Run(stage, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "resume")
+			if err := writeResumeState(path, oldState); err != nil {
+				t.Fatal(err)
+			}
+			fileCloses, directoryCloses := 0, 0
+			operations := resumeIO{
+				createTemp: func(directory, pattern string) (resumeFile, error) {
+					if stage == "create" {
+						return nil, errors.New("injected create failure")
+					}
+					file, err := os.CreateTemp(directory, pattern)
+					if err != nil {
+						return nil, err
+					}
+					return failingResumeFile{resumeFile: file, stage: stage, closes: &fileCloses}, nil
+				},
+				rename: func(oldPath, newPath string) error {
+					if stage == "rename" {
+						return errors.New("injected rename failure")
+					}
+					return os.Rename(oldPath, newPath)
+				},
+				openDir: func(directory string) (resumeDirectory, error) {
+					if stage == "open directory" {
+						return nil, errors.New("injected directory open failure")
+					}
+					dir, err := os.Open(directory)
+					if err != nil {
+						return nil, err
+					}
+					return failingResumeDirectory{resumeDirectory: dir, stage: stage, closes: &directoryCloses}, nil
+				},
+				remove: os.Remove,
+			}
+			if err := writeResumeStateWithIO(path, newState, operations); err == nil {
+				t.Fatalf("write succeeded through injected %s failure", stage)
+			}
+			remaining, err := LoadResume(path)
+			if err != nil {
+				t.Fatalf("fault left corrupt state: %v", err)
+			}
+			if !reflect.DeepEqual(remaining, []string{"app-misc/old-1"}) &&
+				!reflect.DeepEqual(remaining, []string{"app-misc/new-1"}) {
+				t.Fatalf("fault left mixed state: %v", remaining)
+			}
+			if stage != "create" && fileCloses != 1 {
+				t.Fatalf("temporary file close count = %d, want 1", fileCloses)
+			}
+			if (stage == "directory sync" || stage == "directory close") && directoryCloses != 1 {
+				t.Fatalf("directory close count = %d, want 1", directoryCloses)
+			}
+		})
+	}
+}
+
+func TestResumeWriteFormatIsStableAndReviewable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resume")
+	state := ResumeState{Packages: []ResumePackage{{CPV: "app-misc/pkg-1", Atom: "app-misc/pkg-1"}}}
+	if err := writeResumeState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "\n  \"packages\": [\n") || data[len(data)-1] != '\n' {
+		t.Fatalf("resume JSON lost stable indentation or trailing newline:\n%s", data)
 	}
 }
 

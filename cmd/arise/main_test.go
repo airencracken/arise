@@ -83,6 +83,34 @@ func TestHelpUsesShortOrDoubleDashOptionSpellingsOnly(t *testing.T) {
 	}
 }
 
+func TestEveryDocumentedCommandHasASelectionRoute(t *testing.T) {
+	fs := flag.NewFlagSet("routes", flag.ContinueOnError)
+	var output bytes.Buffer
+	writeUsage(&output, fs)
+	const prefix = "Commands: "
+	var documented []string
+	for _, line := range strings.Split(output.String(), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			documented = strings.Split(strings.TrimPrefix(line, prefix), ", ")
+			break
+		}
+	}
+	if len(documented) == 0 {
+		t.Fatal("help has no documented command list")
+	}
+	seen := make(map[string]bool, len(documented))
+	for _, command := range documented {
+		if seen[command] {
+			t.Fatalf("help documents command %q more than once", command)
+		}
+		seen[command] = true
+		selected, operands := selectCommand([]string{command, "operand"})
+		if selected != command || !reflect.DeepEqual(operands, []string{"operand"}) {
+			t.Errorf("documented command %q routes as %q with operands %v", command, selected, operands)
+		}
+	}
+}
+
 func TestOptionSpellingContract(t *testing.T) {
 	for _, args := range [][]string{
 		{"--pretend"}, {"--log-level=debug"}, {"-p"}, {"-uDN"},
