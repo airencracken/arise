@@ -2186,13 +2186,14 @@ Acceptance gate:
 - [~] Complete dispatch-conf-style recursive config management. Arise now has
   protected-tree and explicit-file discovery, stable candidate ordering,
   update/keep/skip/edit/merge/diff/quit decisions, masked and identical-file
-  automation, archive rotation, configured session/update hooks, metadata
-  preservation, and ROOT/PORTAGE_CONFIGROOT-aware tests. Remaining parity work
-  includes safe automatic three-way merge behavior, rollback and interruption
-  recovery, mixed file-type and symlink semantics, archive confinement and
-  durability hardening, and differential tests against Portage's dispatch-conf
-  and etc-update in a disposable ROOT. Cover etc-update's preen and automatic
-  modes there. Run the reference dispatch-conf inside a chroot or
+  automation, safe three-way premerge, atomic confined archives and rotation,
+  mixed file-type/symlink diffs, configured session/update hooks, metadata
+  preservation, cancellation, and ROOT/PORTAGE_CONFIGROOT-aware adversarial
+  tests. Installed-Portage differential tests cover archive, symlink, and
+  three-way-merge semantics. Remaining parity work includes explicit session
+  rollback/recovery and full command-level differentials against Portage's
+  dispatch-conf and etc-update in a disposable ROOT. Cover etc-update's preen
+  and automatic modes there. Run the reference dispatch-conf inside a chroot or
   mount-isolated root because it has no root-selection CLI. Never use the live
   host configuration as a behavioral fixture.
 - [ ] Expose config-protection and dispatch decisions as a headless Go library

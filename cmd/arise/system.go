@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -64,7 +63,7 @@ func runDispatchConf(args []string) int {
 		return 1
 	}
 	opts.ArchiveDir = filepath.Join(root, strings.TrimPrefix(opts.ArchiveDir, "/"))
-	result, err := dispatchconf.Run(context.Background(), opts)
+	result, err := dispatchconf.Run(commandContext, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dispatch-conf: %v\n", err)
 		return 1

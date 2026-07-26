@@ -54,7 +54,8 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 	assertAbsent(t, manual, `Replaces \fBdispatch-conf\fR(1).`)
 	assertPresent(t, manual,
 		"Provides a usable replacement workflow.",
-		"broader differential parity\nremain under development.",
+		"confined atomic archives, mixed-file diffs, and interruption-aware processing.",
+		"command-level differential parity remain\nunder development.",
 	)
 }
 

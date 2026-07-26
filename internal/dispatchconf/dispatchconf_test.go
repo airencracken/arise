@@ -3,10 +3,13 @@ package dispatchconf
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -28,7 +31,7 @@ func fixtureOptions(t *testing.T) (string, Options) {
 	opts.Protect = []string{"/etc"}
 	opts.ArchiveDir = filepath.Join(root, "archive")
 	opts.HookDir = filepath.Join(root, "hooks")
-	opts.DiffCommand = "true"
+	opts.DiffCommand = "true %s %s"
 	opts.Input = strings.NewReader("")
 	opts.Output = &bytes.Buffer{}
 	opts.Error = &bytes.Buffer{}
@@ -57,8 +60,8 @@ func TestDiscoverRecursiveNewestStableAndPrunesHiddenDirectories(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Discover() = %#v, want %#v", got, want)
 	}
-	if _, err := os.Stat(oldCandidate); !os.IsNotExist(err) {
-		t.Fatalf("superseded candidate was not removed: %v", err)
+	if _, err := os.Stat(oldCandidate); err != nil {
+		t.Fatalf("read-only discovery removed superseded candidate: %v", err)
 	}
 }
 
@@ -214,6 +217,304 @@ func TestAdversarialRejectsRelativeRootAndArchiveEscape(t *testing.T) {
 	opts.ArchiveDir = filepath.Join(root, "archive", "..", "archive")
 	if err := archive(candidate, opts); err != nil {
 		t.Fatalf("clean archive path rejected: %v", err)
+	}
+	outside := filepath.Join(filepath.Dir(root), "outside")
+	escape := Candidate{Current: filepath.Join(outside, "value"), New: filepath.Join(outside, "._cfg0000_value")}
+	writeFixture(t, escape.Current, "old", 0o644)
+	writeFixture(t, escape.New, "new", 0o644)
+	if err := archive(escape, opts); err == nil || !strings.Contains(err.Error(), "escapes root") {
+		t.Fatalf("archive escape error = %v", err)
+	}
+}
+
+func TestArchiveRejectsSymlinkAncestorEscape(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	current := filepath.Join(root, "etc/sub/value")
+	candidate := Candidate{Current: current, New: filepath.Join(root, "etc/sub/._cfg0000_value")}
+	writeFixture(t, current, "old", 0o644)
+	writeFixture(t, candidate.New, "new", 0o644)
+	outside := t.TempDir()
+	if err := os.MkdirAll(opts.ArchiveDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(opts.ArchiveDir, "etc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive(candidate, opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "sub/value")); !os.IsNotExist(err) {
+		t.Fatalf("archive escaped through symlink: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(opts.ArchiveDir, "etc")); err != nil || !info.IsDir() {
+		t.Fatalf("unsafe ancestor was not replaced by a directory: %v %v", info, err)
+	}
+}
+
+func TestAdversarialRejectsProtectedPathTraversal(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	opts.Protect = []string{"../../etc"}
+	if _, err := Discover(opts); err == nil || !strings.Contains(err.Error(), "escapes root") {
+		t.Fatalf("protected path traversal error = %v", err)
+	}
+	_ = root
+}
+
+func TestArchiveRotationPreservesDirectoryAtMaximumSuffix(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	current := filepath.Join(root, "etc/value")
+	candidate := Candidate{Current: current, New: filepath.Join(root, "etc/._cfg0000_value")}
+	writeFixture(t, current, "current", 0o644)
+	writeFixture(t, candidate.New, "new", 0o644)
+	archiveFile, err := archivePath(candidate, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, archiveFile, "previous", 0o600)
+	for i := 1; i < 9; i++ {
+		writeFixture(t, archiveFile+"."+strconv.Itoa(i), "old", 0o600)
+	}
+	if err := os.MkdirAll(archiveFile+".9/keep", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive(candidate, opts); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(archiveFile), "."+filepath.Base(archiveFile)+".9.displaced-*"))
+	if err != nil || len(matches) != 1 {
+		t.Fatalf("preserved directory matches = %v, %v", matches, err)
+	}
+	if _, err := os.Stat(filepath.Join(matches[0], "keep")); err != nil {
+		t.Fatalf("maximum-suffix directory contents lost: %v", err)
+	}
+}
+
+func TestRunMissingCurrentAndSymlinkCandidates(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	missing := filepath.Join(root, "etc/new.conf")
+	writeFixture(t, filepath.Join(root, "etc/._cfg0000_new.conf"), "created\n", 0o640)
+	opts.Input = strings.NewReader("u")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, missing, "created\n")
+
+	link := filepath.Join(root, "etc/link")
+	candidate := filepath.Join(root, "etc/._cfg0000_link")
+	if err := os.Symlink("old-target", link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("new-target", candidate); err != nil {
+		t.Fatal(err)
+	}
+	opts.Input = strings.NewReader("u")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(link); err != nil || target != "new-target" {
+		t.Fatalf("updated symlink = %q, %v", target, err)
+	}
+}
+
+func TestRunRejectsUnsupportedCandidateTypeWithoutMutation(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	current := filepath.Join(root, "etc/value")
+	candidate := filepath.Join(root, "etc/._cfg0000_value")
+	writeFixture(t, current, "old", 0o644)
+	if err := syscall.Mkfifo(candidate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "unsupported object type") {
+		t.Fatalf("unsupported candidate error = %v", err)
+	}
+	assertFileContent(t, current, "old")
+}
+
+func TestArchivePublicationLeavesNoTemporaryFiles(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	current := filepath.Join(root, "etc/value")
+	candidate := Candidate{Current: current, New: filepath.Join(root, "etc/._cfg0000_value")}
+	writeFixture(t, current, strings.Repeat("current\n", 1024), 0o600)
+	writeFixture(t, candidate.New, strings.Repeat("new\n", 1024), 0o640)
+	if err := archive(candidate, opts); err != nil {
+		t.Fatal(err)
+	}
+	var temporary []string
+	if err := filepath.WalkDir(opts.ArchiveDir, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && strings.Contains(entry.Name(), ".tmp-") {
+			temporary = append(temporary, path)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(temporary) != 0 {
+		t.Fatalf("archive temporary files remain: %v", temporary)
+	}
+}
+
+func TestRunUsesNonConflictingThreeWayMerge(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	current := filepath.Join(root, "etc/value")
+	candidate := filepath.Join(root, "etc/._cfg0000_value")
+	writeFixture(t, current, "a=local\nseparator=true\nb=base\n", 0o600)
+	writeFixture(t, candidate, "a=base\nseparator=true\nb=new\n", 0o640)
+	archive := filepath.Join(opts.ArchiveDir, "etc/value")
+	writeFixture(t, archive+".dist", "a=base\nseparator=true\nb=base\n", 0o600)
+	opts.Input = strings.NewReader("u")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, current, "a=local\nseparator=true\nb=new\n")
+}
+
+func TestRunReportsDiffAndPostSessionHookFailures(t *testing.T) {
+	t.Run("diff", func(t *testing.T) {
+		root, opts := fixtureOptions(t)
+		current := filepath.Join(root, "etc/value")
+		candidate := filepath.Join(root, "etc/._cfg0000_value")
+		writeFixture(t, current, "old", 0o644)
+		writeFixture(t, candidate, "new", 0o644)
+		opts.DiffCommand = "sh -c 'exit 2' ignored %s %s"
+		if _, err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "show diff") {
+			t.Fatalf("diff failure = %v", err)
+		}
+		assertFileContent(t, current, "old")
+		assertFileContent(t, candidate, "new")
+	})
+	t.Run("post-session", func(t *testing.T) {
+		root, opts := fixtureOptions(t)
+		hook := filepath.Join(opts.HookDir, "10-fail")
+		writeFixture(t, hook, "#!/bin/sh\n[ \"$1\" != post-session ]\n", 0o755)
+		if _, err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "post-session") {
+			t.Fatalf("post-session failure = %v", err)
+		}
+		_ = root
+	})
+	t.Run("post-update-committed", func(t *testing.T) {
+		root, opts := fixtureOptions(t)
+		current := filepath.Join(root, "etc/value")
+		candidate := filepath.Join(root, "etc/._cfg0000_value")
+		writeFixture(t, current, "old", 0o644)
+		writeFixture(t, candidate, "new", 0o644)
+		hook := filepath.Join(opts.HookDir, "10-fail")
+		writeFixture(t, hook, "#!/bin/sh\n[ \"$1\" != post-update ]\n", 0o755)
+		opts.Input = strings.NewReader("u")
+		if _, err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "updated config committed") {
+			t.Fatalf("post-update failure = %v", err)
+		}
+		assertFileContent(t, current, "new")
+	})
+}
+
+func TestCommandTemplatesAndQuotedEditorArguments(t *testing.T) {
+	if _, err := commandParts("diff %s", "old", "new"); err == nil {
+		t.Fatal("missing command placeholder accepted")
+	}
+	if _, err := commandParts("diff %s %s %s", "old", "new"); err == nil {
+		t.Fatal("extra command placeholder accepted")
+	}
+	dir := t.TempDir()
+	log := filepath.Join(dir, "args")
+	editor := filepath.Join(dir, "editor")
+	writeFixture(t, editor, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+log+"\"\n", 0o755)
+	if err := runEditor(context.Background(), editor+" --label 'two words'", "/target"); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, log, "--label\ntwo words\n/target\n")
+}
+
+func TestInvalidCommandConfigurationFailsBeforeHooksOrMutation(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	current := filepath.Join(root, "etc/value")
+	candidate := filepath.Join(root, "etc/._cfg0000_value")
+	writeFixture(t, current, "old", 0o644)
+	writeFixture(t, candidate, "new", 0o644)
+	hookLog := filepath.Join(root, "hook.log")
+	writeFixture(t, filepath.Join(opts.HookDir, "10-record"), "#!/bin/sh\nprintf called > \""+hookLog+"\"\n", 0o755)
+	opts.DiffCommand = "diff %s"
+	if _, err := Run(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "invalid diff command") {
+		t.Fatalf("invalid command error = %v", err)
+	}
+	if _, err := os.Stat(hookLog); !os.IsNotExist(err) {
+		t.Fatalf("hook ran before command validation: %v", err)
+	}
+	assertFileContent(t, current, "old")
+	assertFileContent(t, candidate, "new")
+}
+
+func TestMixedDiffOperandsRepresentMissingSymlinkAndFIFO(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing")
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink("target", link); err != nil {
+		t.Fatal(err)
+	}
+	left, right, cleanup, err := mixedDiffOperands(missing, link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	assertFileContent(t, left, "/dev/null\n")
+	assertFileContent(t, right, "SYM: "+link+" -> target\n")
+
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rendered, _, cleanupFIFO, err := mixedDiffOperands(fifo, missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanupFIFO()
+	assertFileContent(t, rendered, "FIF: "+fifo+"\n")
+}
+
+func TestMergeOutputPublishesAtomically(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "._mrg0000_value")
+	writeFixture(t, output, "previous", 0o600)
+	failing := `sh -c 'printf partial > "$1"; exit 2' ignored %s %s %s`
+	if err := runMerge(context.Background(), failing, output, "/old", "/new"); err == nil {
+		t.Fatal("failing merge returned success")
+	}
+	assertFileContent(t, output, "previous")
+	matches, err := filepath.Glob(filepath.Join(dir, ".*.tmp-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("merge temporary files = %v, %v", matches, err)
+	}
+	success := `sh -c 'printf merged > "$1"' ignored %s %s %s`
+	if err := runMerge(context.Background(), success, output, "/old", "/new"); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContent(t, output, "merged")
+}
+
+func TestCancellationAndSkipPreservePendingCandidates(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	oldCandidate := filepath.Join(root, "etc/._cfg0000_value")
+	newCandidate := filepath.Join(root, "etc/._cfg0001_value")
+	writeFixture(t, filepath.Join(root, "etc/value"), "old", 0o644)
+	writeFixture(t, oldCandidate, "older", 0o644)
+	writeFixture(t, newCandidate, "new", 0o644)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Run(ctx, opts); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel error = %v", err)
+	}
+	for _, path := range []string{oldCandidate, newCandidate} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("cancellation removed %s: %v", path, err)
+		}
+	}
+	opts.Input = strings.NewReader("n")
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{oldCandidate, newCandidate} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("skip removed %s: %v", path, err)
+		}
 	}
 }
 

@@ -467,9 +467,10 @@ archives; and configuration-update hooks. Optional path arguments restrict
 the scan to specific protected directories or files. Honors
 \fBCONFIG_PROTECT\fR, \fBCONFIG_PROTECT_MASK\fR, \fBEROOT\fR,
 \fBROOT\fR, and \fI/etc/dispatch-conf.conf\fR.
-Provides a usable replacement workflow. Automatic three-way merge,
-rollback/recovery, mixed file-type semantics, and broader differential parity
-remain under development.
+Provides a usable replacement workflow. It includes safe three-way premerge,
+confined atomic archives, mixed-file diffs, and interruption-aware processing.
+Session rollback/recovery and broader command-level differential parity remain
+under development.
 
 .TP
 \fBenv-update\fR
