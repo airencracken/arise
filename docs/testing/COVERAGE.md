@@ -118,6 +118,25 @@ relative-symlink capture followed by rollback. A targeted `confined` run kills
 defensive `filepath.Rel` error branches that valid, canonicalized paths cannot
 reach, so this result remains diagnostic rather than a quality gate.
 
+The next survivor-driven pass covered the previously untested `PreflightAll`
+audit API and killed all 25 targeted mutants. It requires a complete,
+deterministically ordered failure set for malformed actions and rejects every
+untrusted plan shape without mutation. Frozen action-to-rebuild configuration
+now has field-completeness, map-isolation and live-eligibility matrix tests,
+killing 41 of 42 targeted mutants (97.6%). Package-local executor coverage
+rose to 82.2%.
+
+Config-protection tests now exhaust the complete `._cfg0000_` through
+`._cfg9999_` namespace, exercise deterministic filesystem errors, normalize
+protect/mask boundaries and compare binary content. They kill 32 of 34
+allocation/equality mutants (94.1%). CONTENTS parsing gained exact records,
+malformed-leading input, path confinement and a native fuzz target; a
+five-second local run executed more than 200,000 inputs without a failure.
+Replacement and CONTENTS root conversion kill all 32 targeted mutants,
+including parent-directory and prefix-sibling escape mutations. Package-local
+merge coverage rose to 75.5%, and the core whole-tree lane now covers 71.0% of
+statements.
+
 Zero-percent command `main` packages are lower priority than the command logic
 in `cmd/arise`: thin process entry points should be covered through route and
 contract tests, not tests that duplicate Go's flag and exit behavior.

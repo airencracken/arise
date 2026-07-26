@@ -30,6 +30,143 @@ func action(t *testing.T, cpv string) resolve.PkgAction {
 	return resolve.PkgAction{Atom: a, Action: "install", Repository: "test", RepositoryPath: "/repo", MergeType: "source", Domain: resolve.DomainROOT}
 }
 
+func TestPreflightAllRejectsEveryInvalidActionWithoutShortCircuiting(t *testing.T) {
+	valid := action(t, "cat/valid-1")
+	wrongDomain := valid
+	wrongDomain.Atom, _ = atom.Parse("cat/domain-1")
+	wrongDomain.Domain = resolve.DomainBROOT
+	missingRepository := valid
+	missingRepository.Atom, _ = atom.Parse("cat/repository-1")
+	missingRepository.Repository = ""
+	result := &resolve.ResolveResult{
+		Verified:     true,
+		Verification: resolve.VerificationVerified,
+		Install: []resolve.PkgAction{
+			{Action: "install", Repository: "test", RepositoryPath: "/repo", MergeType: "source", Domain: resolve.DomainROOT},
+			wrongDomain,
+			missingRepository,
+		},
+	}
+	failures := PreflightAll(result, rebuild.RebuildConfig{})
+	if len(failures) != 3 {
+		t.Fatalf("PreflightAll returned %d failures, want complete set of 3: %#v", len(failures), failures)
+	}
+	want := []string{
+		"preflight <nil>: action lacks exact package version",
+		"preflight cat/domain-1: unsupported mutation domain BROOT",
+		"preflight cat/repository-1: action lacks repository identity",
+	}
+	for index, failure := range failures {
+		if failure.Err == nil || failure.Error() != want[index] {
+			t.Errorf("failure[%d] = %q (%v), want %q", index, failure.Error(), failure.Err, want[index])
+		}
+	}
+}
+
+func TestPreflightAllRejectsEveryUntrustedPlanShape(t *testing.T) {
+	for name, result := range map[string]*resolve.ResolveResult{
+		"nil":          nil,
+		"unverified":   {Verification: resolve.VerificationVerified},
+		"wrong status": {Verified: true, Verification: "incomplete"},
+		"conflicted": {
+			Verified: true, Verification: resolve.VerificationVerified,
+			Conflicts: []string{"slot conflict"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			failures := PreflightAll(result, rebuild.RebuildConfig{})
+			if len(failures) != 1 || failures[0].Action.Atom != nil ||
+				failures[0].Err == nil || failures[0].Err.Error() != "refusing non-verified plan" {
+				t.Fatalf("PreflightAll(%s) = %#v", name, failures)
+			}
+		})
+	}
+}
+
+func TestPreflightAllEmptyVerifiedPlanIsReadOnlySuccess(t *testing.T) {
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified}
+	if failures := PreflightAll(result, rebuild.RebuildConfig{}); len(failures) != 0 {
+		t.Fatalf("empty verified plan failures = %#v", failures)
+	}
+}
+
+func TestActionRebuildConfigCopiesEveryFrozenActionFieldWithoutAliasing(t *testing.T) {
+	baseUse := map[string]bool{"base": true}
+	base := rebuild.RebuildConfig{
+		RepoDir: "/base/repo", Repository: "base", UseFlags: baseUse,
+		SourceURI: "base-uri", SelectedSlot: "base-slot", SelectedIUSE: "base-iuse",
+		AllowLiveRoot: true, AllowLiveReplacement: true, AllowLiveUpgrade: true,
+	}
+	item := action(t, "cat/pkg-2")
+	item.RepositoryPath = "/repos/overlay"
+	item.Repository = "overlay"
+	item.UseFlags = map[string]bool{"enabled": true, "disabled": false}
+	item.SrcURI = "https://example.invalid/source.tar.xz"
+	item.Slot = "3"
+	item.Subslot = "7"
+	item.IUse = "+enabled disabled"
+	item.Action = "install"
+
+	got := actionRebuildConfig(base, item)
+	if got.RepoDir != item.RepositoryPath || got.Repository != item.Repository ||
+		got.SourceURI != item.SrcURI || got.SelectedSlot != "3/7" ||
+		got.SelectedIUSE != item.IUse || got.AllowLiveReplacement || got.AllowLiveUpgrade ||
+		!reflect.DeepEqual(got.UseFlags, item.UseFlags) {
+		t.Fatalf("actionRebuildConfig() = %#v", got)
+	}
+	got.UseFlags["enabled"] = false
+	got.UseFlags["new"] = true
+	if !item.UseFlags["enabled"] || item.UseFlags["new"] || !baseUse["base"] {
+		t.Fatalf("derived USE map aliases action or base: got=%v action=%v base=%v", got.UseFlags, item.UseFlags, baseUse)
+	}
+	if base.RepoDir != "/base/repo" || base.Repository != "base" ||
+		base.SourceURI != "base-uri" || base.SelectedSlot != "base-slot" ||
+		!base.AllowLiveReplacement || !base.AllowLiveUpgrade {
+		t.Fatalf("base configuration mutated: %#v", base)
+	}
+}
+
+func TestActionRebuildConfigLiveMutationEligibilityMatrix(t *testing.T) {
+	for _, test := range []struct {
+		action          string
+		live            bool
+		wantReplacement bool
+		wantUpgrade     bool
+	}{
+		{action: "install", live: false},
+		{action: "reinstall", live: false},
+		{action: "update", live: false},
+		{action: "install", live: true},
+		{action: "reinstall", live: true, wantReplacement: true},
+		{action: "update", live: true, wantReplacement: true, wantUpgrade: true},
+	} {
+		t.Run(fmt.Sprintf("%s/live=%t", test.action, test.live), func(t *testing.T) {
+			item := action(t, "cat/pkg-1")
+			item.Action = test.action
+			got := actionRebuildConfig(rebuild.RebuildConfig{AllowLiveRoot: test.live}, item)
+			if got.AllowLiveReplacement != test.wantReplacement || got.AllowLiveUpgrade != test.wantUpgrade {
+				t.Fatalf("replacement=%t upgrade=%t, want %t/%t", got.AllowLiveReplacement, got.AllowLiveUpgrade, test.wantReplacement, test.wantUpgrade)
+			}
+		})
+	}
+}
+
+func TestActionLabelContract(t *testing.T) {
+	if got := actionLabel(resolve.PkgAction{}); got != "<nil>" {
+		t.Fatalf("nil action label = %q", got)
+	}
+	a, err := atom.Parse("cat/pkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := actionLabel(resolve.PkgAction{Atom: a}); got != "cat/pkg" {
+		t.Fatalf("unversioned action label = %q", got)
+	}
+	if got := actionLabel(action(t, "cat/pkg-1-r2")); got != "cat/pkg-1-r2" {
+		t.Fatalf("versioned action label = %q", got)
+	}
+}
+
 func TestTmpdirRequiredBytesMatchesEmergeDecay(t *testing.T) {
 	const gib = uint64(1 << 30)
 	if got, want := tmpdirRequiredBytes(18, 2), 18*gib+9*gib+6*gib; got != want {
