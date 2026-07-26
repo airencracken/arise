@@ -14,6 +14,84 @@ func TestPortageLockPath(t *testing.T) {
 	}
 }
 
+func TestPortageLockPathContract(t *testing.T) {
+	tests := []struct {
+		name      string
+		directory string
+		want      string
+	}{
+		{"trailing separator", "/var/db/pkg/", "/var/db/.pkg.portage_lockfile"},
+		{"relative", "var/db/pkg", "var/db/.pkg.portage_lockfile"},
+		{"dot elements", "/var/lib/portage/../portage/world", "/var/lib/portage/.world.portage_lockfile"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := PortageLockPath(test.directory); got != test.want {
+				t.Fatalf("PortageLockPath(%q) = %q, want %q", test.directory, got, test.want)
+			}
+		})
+	}
+}
+
+func TestMutationTryAcquirePathCreatesParentWithPortageSiblingName(t *testing.T) {
+	root := t.TempDir()
+	statePath := filepath.Join(root, "nested", "state", "world")
+	lock, err := TryAcquirePath(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, "nested", "state", ".world.portage_lockfile")
+	if got := lock.Path(); got != want {
+		t.Fatalf("lock path = %q, want %q", got, want)
+	}
+	info, err := os.Stat(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("lock mode = %v, want regular file", info.Mode())
+	}
+	if _, err := os.Stat(filepath.Dir(want)); err != nil {
+		t.Fatalf("lock parent was not created: %v", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReleaseContractIsNilSafeAndIdempotent(t *testing.T) {
+	var nilLock *Lock
+	if err := nilLock.Release(); err != nil {
+		t.Fatalf("nil Release error = %v", err)
+	}
+	if got := nilLock.Path(); got != "" {
+		t.Fatalf("nil Path = %q", got)
+	}
+
+	lock, err := TryAcquirePath(filepath.Join(t.TempDir(), "world"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := lock.Path()
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatalf("second Release error = %v", err)
+	}
+	if got := lock.Path(); got != path {
+		t.Fatalf("Path after release = %q, want stable identity %q", got, path)
+	}
+
+	reacquired, err := TryAcquirePath(filepath.Join(filepath.Dir(path), "world"))
+	if err != nil {
+		t.Fatalf("lock could not be reacquired after idempotent release: %v", err)
+	}
+	if err := reacquired.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestVDBLockContendsAcrossProcessesAndReleases(t *testing.T) {
 	vdb := filepath.Join(t.TempDir(), "var", "db", "pkg")
 	lock, err := TryAcquireVDB(vdb)

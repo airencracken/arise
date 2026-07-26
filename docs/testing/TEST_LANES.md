@@ -32,6 +32,10 @@ are unchanged.
 `make test-live-portage-compile` verifies that the opt-in lane still compiles
 without executing it.
 
+Local coverage measurements, snapshot comparison rules and current improvement
+priorities are documented in [`COVERAGE.md`](COVERAGE.md). Coverage tracking is
+not connected to hosted CI.
+
 These tests may inspect the live repository, profile and VDB, but must never
 merge, uninstall, sync or modify configuration. Captured outputs are evidence,
 not portable fixtures until sanitized and paired with an `arise state fixture`

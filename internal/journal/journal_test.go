@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -124,6 +125,165 @@ func TestOpenIgnoresTornFinalCaptureRecord(t *testing.T) {
 	}
 	if got := len(reopened.state.Entries); got != 1 {
 		t.Fatalf("reopened entries = %d, want 1", got)
+	}
+}
+
+func TestOpenRejectsAdversarialStateEntryContracts(t *testing.T) {
+	validFile := Entry{Path: "etc/value", Kind: "file", Backup: "backups/00000000"}
+	tests := []struct {
+		name    string
+		status  string
+		entries []Entry
+		want    string
+	}{
+		{"unknown status", "recovering", nil, "invalid status"},
+		{"empty path", "active", []Entry{{Kind: "absent"}}, "path"},
+		{"absolute path", "active", []Entry{{Path: "/outside", Kind: "absent"}}, "path"},
+		{"unclean path", "active", []Entry{{Path: "etc/../outside", Kind: "absent"}}, "path"},
+		{"escaping path", "active", []Entry{{Path: "../outside", Kind: "absent"}}, "path"},
+		{"unknown kind", "active", []Entry{{Path: "value", Kind: "socket"}}, "kind"},
+		{"duplicate path", "active", []Entry{{Path: "value", Kind: "absent"}, {Path: "value", Kind: "file", Backup: "backups/00000000"}}, "duplicate"},
+		{"file without backup", "active", []Entry{{Path: "value", Kind: "file"}}, "backup"},
+		{"absolute backup", "active", []Entry{{Path: "value", Kind: "file", Backup: "/outside"}}, "backup"},
+		{"escaping backup", "active", []Entry{{Path: "value", Kind: "file", Backup: "../outside"}}, "backup"},
+		{"nested escaping backup", "active", []Entry{{Path: "value", Kind: "file", Backup: "backups/../../outside"}}, "backup"},
+		{"backup on absent entry", "active", []Entry{{Path: "value", Kind: "absent", Backup: "backups/00000000"}}, "has backup"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root, dir := t.TempDir(), t.TempDir()
+			status := test.status
+			if status == "" {
+				status = "active"
+			}
+			state := State{Version: Version, Status: status, Root: root, Entries: test.entries}
+			writeJournalState(t, dir, state)
+			if _, err := Open(dir); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Open error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+
+	t.Run("valid file control", func(t *testing.T) {
+		root, dir := t.TempDir(), t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "backups"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, validFile.Backup), []byte("before"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		writeJournalState(t, dir, State{Version: Version, Status: "committed", Root: root, Entries: []Entry{validFile}})
+		if _, err := Open(dir); err != nil {
+			t.Fatalf("valid control rejected: %v", err)
+		}
+	})
+}
+
+func TestAtomicityCorruptJournalIsRejectedBeforeRecoveryMutation(t *testing.T) {
+	root, base := t.TempDir(), t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	operation, err := Begin(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.CaptureBatch([]string{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{first, second} {
+		if err := os.WriteFile(path, []byte("after"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	logPath := filepath.Join(operation.Dir(), entriesLogName)
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt, err := json.Marshal(Entry{Path: "invalid", Kind: "device"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(append(corrupt, '\n')); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := RecoverActive(base)
+	if err == nil || !strings.Contains(err.Error(), "invalid entry") {
+		t.Fatalf("RecoverActive error = %v", err)
+	}
+	if len(recovered) != 0 {
+		t.Fatalf("corrupt recovery reported mutations: %v", recovered)
+	}
+	for _, path := range []string{first, second} {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || string(data) != "after" {
+			t.Fatalf("%s changed before corrupt journal rejection: value=%q err=%v", path, data, readErr)
+		}
+	}
+}
+
+func TestMutationRepeatedCapturePreservesFirstPreimageExactlyOnce(t *testing.T) {
+	root, base := t.TempDir(), t.TempDir()
+	target := filepath.Join(root, "value")
+	if err := os.WriteFile(target, []byte("first"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := Begin(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Capture(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Capture(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("third"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(operation.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reopened.state.Entries) != 1 {
+		t.Fatalf("repeated Capture recorded %d entries", len(reopened.state.Entries))
+	}
+	if err := reopened.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "first" {
+		t.Fatalf("rollback restored %q, err=%v", data, err)
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("rollback mode=%v err=%v", info, err)
+	}
+}
+
+func writeJournalState(t *testing.T, dir string, state State) {
+	t.Helper()
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

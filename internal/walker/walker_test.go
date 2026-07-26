@@ -1,11 +1,13 @@
 package walker
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -309,8 +311,8 @@ func TestWalkCacheDir_SubdirectoryIgnored(t *testing.T) {
 	root := t.TempDir()
 
 	writeCacheEntry(t, root, "sys-apps", "portage-3.0.51", cachePayload("8", "0", "Portage"))
-	// Create a nested subdirectory with a file — WalkDir recurses into it,
-	// producing a relpath like "sys-apps/nested/pkg-1.0" which is not a normal CPV.
+	// A nested file is not an md5-cache record. In particular, it must not be
+	// interpreted as category "sys-apps/nested".
 	nestedDir := filepath.Join(root, "sys-apps", "nested")
 	if err := os.MkdirAll(nestedDir, 0755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -322,13 +324,15 @@ func TestWalkCacheDir_SubdirectoryIgnored(t *testing.T) {
 	resCh, errCh := WalkCacheDir(root, 2)
 	pkgs, errs := drainChannels(t, resCh, errCh)
 
-	if len(pkgs) < 1 {
-		t.Errorf("got %d packages, want at least 1", len(pkgs))
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
 	}
-	// The nested file may or may not error depending on whether ParseCacheEntry
-	// accepts "sys-apps/nested/pkg-1.0" as a valid CPV. Either way the walk
-	// must not crash.
-	t.Logf("packages: %d, errors: %d", len(pkgs), len(errs))
+	if len(pkgs) != 1 {
+		t.Fatalf("got %d packages, want only the direct cache entry", len(pkgs))
+	}
+	if got := pkgs[0].Category + "/" + pkgs[0].Package + "-" + pkgs[0].Version; got != "sys-apps/portage-3.0.51" {
+		t.Fatalf("walk returned %q, want direct cache entry", got)
+	}
 }
 
 func TestWalkCacheDir_ChannelClose(t *testing.T) {
@@ -596,17 +600,14 @@ func TestWalkCacheDir_SymlinkDir(t *testing.T) {
 		t.Skipf("cannot create symlink: %v", err)
 	}
 
-	// WalkDir follows symlinks by default? No — by default Go's WalkDir does
-	// NOT follow symlinks. Let's verify the walk handles this.
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("WalkCacheDir panicked on symlinked directories: %v", r)
-		}
-	}()
-
 	resCh, errCh := WalkCacheDir(root, 2)
 	pkgs, errs := drainChannels(t, resCh, errCh)
-	t.Logf("packages: %d, errors: %d", len(pkgs), len(errs))
+	if len(errs) != 0 {
+		t.Fatalf("symlinked directory produced errors: %v", errs)
+	}
+	if len(pkgs) != 0 {
+		t.Fatalf("walk followed symlinked directory and returned %d packages", len(pkgs))
+	}
 }
 
 // property: for each file written, exactly one result is produced
@@ -709,15 +710,17 @@ func TestWalkCacheDir_LongFilePaths(t *testing.T) {
 
 	writeCacheEntry(t, root, longName, "pkg-1.0", cachePayload("8", "0", "desc"))
 
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("WalkCacheDir panicked on long paths: %v", r)
-		}
-	}()
-
 	resCh, errCh := WalkCacheDir(root, 2)
 	pkgs, errs := drainChannels(t, resCh, errCh)
-	t.Logf("packages: %d, errors: %d", len(pkgs), len(errs))
+	if len(errs) != 0 {
+		t.Fatalf("long valid path produced errors: %v", errs)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("long valid path returned %d packages, want 1", len(pkgs))
+	}
+	if pkgs[0].Category != longName || pkgs[0].Package != "pkg" || pkgs[0].Version != "1.0" {
+		t.Fatalf("long path metadata = %q/%q-%q", pkgs[0].Category, pkgs[0].Package, pkgs[0].Version)
+	}
 }
 
 func TestWalkCacheDir_ConcurrentSafetyPathsChannel(t *testing.T) {
@@ -991,6 +994,129 @@ func TestReadRepositoryEAPIPolicy(t *testing.T) {
 	}
 }
 
+func TestMergeWalksContractForwardsValuesAndErrorsExactlyOnce(t *testing.T) {
+	first := &metadata.PackageMetadata{Category: "cat", Package: "first", Version: "1"}
+	second := &metadata.PackageMetadata{Category: "cat", Package: "second", Version: "2"}
+	firstErr := errors.New("first walk failed")
+	secondErr := errors.New("second walk failed")
+
+	aResults := make(chan *metadata.PackageMetadata, 1)
+	bResults := make(chan *metadata.PackageMetadata, 1)
+	aErrs := make(chan error, 1)
+	bErrs := make(chan error, 1)
+	aResults <- first
+	bResults <- second
+	aErrs <- firstErr
+	bErrs <- secondErr
+	close(aResults)
+	close(bResults)
+	close(aErrs)
+	close(bErrs)
+
+	results, errs := MergeWalks(aResults, bResults, aErrs, bErrs)
+	gotResults, gotErrs := drainChannels(t, results, errs)
+	if len(gotResults) != 2 {
+		t.Fatalf("merged results = %d, want 2", len(gotResults))
+	}
+	resultCounts := map[*metadata.PackageMetadata]int{}
+	for _, result := range gotResults {
+		resultCounts[result]++
+	}
+	if resultCounts[first] != 1 || resultCounts[second] != 1 {
+		t.Fatalf("merged result identities/counts = %v", resultCounts)
+	}
+	if len(gotErrs) != 2 {
+		t.Fatalf("merged errors = %d, want 2", len(gotErrs))
+	}
+	errorCounts := map[error]int{}
+	for _, err := range gotErrs {
+		errorCounts[err]++
+	}
+	if errorCounts[firstErr] != 1 || errorCounts[secondErr] != 1 {
+		t.Fatalf("merged error identities/counts = %v", errorCounts)
+	}
+}
+
+func TestWalkCacheRootsContractAppliesRepositoryPolicyAndOriginalPriority(t *testing.T) {
+	invalid := filepath.Join(t.TempDir(), "missing", "metadata", "md5-cache")
+	firstRepo := createRepositoryCache(t, "first-dir", "first-repo", "gentoo science", "7", "8")
+	secondRepo := createRepositoryCache(t, "second-dir", "", "", "", "")
+	writeCacheEntry(t, firstRepo, "app-misc", "one-1.0", cachePayload("7", "0", "one"))
+	writeCacheEntry(t, firstRepo, "app-misc", "two-2.0", cachePayload("8", "0", "two"))
+	writeCacheEntry(t, secondRepo, "app-misc", "three-3.0", cachePayload("8", "0", "three"))
+
+	results, errs := WalkCacheRoots([]string{invalid, firstRepo, secondRepo})
+	packages, walkErrs := drainChannels(t, results, errs)
+	if len(walkErrs) != 0 {
+		t.Fatalf("WalkCacheRoots errors: %v", walkErrs)
+	}
+	if len(packages) != 3 {
+		t.Fatalf("WalkCacheRoots packages = %d, want 3", len(packages))
+	}
+	byCPV := make(map[string]*metadata.PackageMetadata, len(packages))
+	for _, pkg := range packages {
+		byCPV[pkg.CPV()] = pkg
+	}
+	one, two, three := byCPV["app-misc/one-1.0"], byCPV["app-misc/two-2.0"], byCPV["app-misc/three-3.0"]
+	if one == nil || two == nil || three == nil {
+		t.Fatalf("WalkCacheRoots CPVs = %v", byCPV)
+	}
+	if one.Repository != "first-repo" || one.RepositoryPriority != 1 || one.RepositoryPath != filepath.Dir(filepath.Dir(firstRepo)) {
+		t.Fatalf("first repository identity = %+v", one)
+	}
+	if !one.EAPIBanned || one.EAPIDeprecated {
+		t.Fatalf("EAPI 7 policy = banned:%v deprecated:%v", one.EAPIBanned, one.EAPIDeprecated)
+	}
+	if two.EAPIBanned || !two.EAPIDeprecated {
+		t.Fatalf("EAPI 8 policy = banned:%v deprecated:%v", two.EAPIBanned, two.EAPIDeprecated)
+	}
+	if !reflect.DeepEqual(one.RepositoryMasters, []string{"gentoo", "science"}) ||
+		!reflect.DeepEqual(two.RepositoryMasters, []string{"gentoo", "science"}) {
+		t.Fatalf("repository masters = %v and %v", one.RepositoryMasters, two.RepositoryMasters)
+	}
+	one.RepositoryMasters[0] = "mutated"
+	if two.RepositoryMasters[0] != "gentoo" {
+		t.Fatalf("repository masters share mutable backing storage: %v", two.RepositoryMasters)
+	}
+	secondPath := filepath.Dir(filepath.Dir(secondRepo))
+	if three.Repository != filepath.Base(secondPath) || three.RepositoryPriority != 2 || three.RepositoryPath != secondPath {
+		t.Fatalf("fallback repository identity = %+v", three)
+	}
+}
+
+func createRepositoryCache(t *testing.T, directory, repository, masters, banned, deprecated string) string {
+	t.Helper()
+	repo := filepath.Join(t.TempDir(), directory)
+	cache := filepath.Join(repo, "metadata", "md5-cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if repository != "" {
+		if err := os.MkdirAll(filepath.Join(repo, "profiles"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, "profiles", "repo_name"), []byte(repository+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var layout strings.Builder
+	if masters != "" {
+		layout.WriteString("masters = " + masters + "\n")
+	}
+	if banned != "" {
+		layout.WriteString("eapis-banned = " + banned + "\n")
+	}
+	if deprecated != "" {
+		layout.WriteString("eapis-deprecated = " + deprecated + "\n")
+	}
+	if layout.Len() > 0 {
+		if err := os.WriteFile(filepath.Join(repo, "metadata", "layout.conf"), []byte(layout.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return cache
+}
+
 func TestWalkUncachedEbuildRootsMarksStaticMetadataIncomplete(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "profiles"), 0755); err != nil {
@@ -1141,16 +1267,17 @@ func TestWalkCacheDir_SymlinksInRoot(t *testing.T) {
 	if err := os.Symlink(depRoot, symlink); err != nil {
 		t.Skipf("cannot create symlink: %v", err)
 	}
-	_ = symlink
-
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("WalkCacheDir panicked with symlink dir: %v", r)
-		}
-	}()
 	resCh, errCh := WalkCacheDir(root, 2)
 	pkgs, errs := drainChannels(t, resCh, errCh)
-	t.Logf("packages: %d, errors: %d", len(pkgs), len(errs))
+	if len(errs) != 0 {
+		t.Fatalf("symlinked directory produced errors: %v", errs)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("walk followed symlinked directory: got %d packages, want 1", len(pkgs))
+	}
+	if got := pkgs[0].Category + "/" + pkgs[0].Package + "-" + pkgs[0].Version; got != "sys-apps/portage-3.0.51" {
+		t.Fatalf("walk returned %q from symlink scenario", got)
+	}
 }
 
 func TestWalkCacheDir_AdversarialBinaryContent(t *testing.T) {

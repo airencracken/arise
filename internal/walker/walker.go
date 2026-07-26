@@ -294,6 +294,16 @@ func walkCacheDir(root string, workers int, repository, repositoryPath string, o
 			if strings.HasPrefix(name, ".") || name == "skel.ebuild" || name == "skel.metadata.xml" || name == "header.txt" || name == ".mailmap" {
 				return nil
 			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				errs <- relErr
+				return nil
+			}
+			// An md5-cache entry is exactly category/package-version. Files
+			// below that depth are repository artifacts, not cache records.
+			if len(strings.Split(filepath.ToSlash(rel), "/")) > 2 {
+				return nil
+			}
 			paths <- path
 			return nil
 		}); err != nil {

@@ -82,6 +82,9 @@ func Decode(pid int, registers Registers, reader pathReader, resolver pathResolv
 		if !journalable {
 			return nil, false, nil
 		}
+		if !filepath.IsAbs(resolved) {
+			return nil, true, fmt.Errorf("lifecycle trace: mutation fd %d resolver returned non-absolute path %q", fd, resolved)
+		}
 		return []string{filepath.Clean(resolved)}, true, nil
 	}
 	two := func(firstDirfd, firstPath, secondDirfd, secondPath int) ([]string, bool, error) {
@@ -118,6 +121,9 @@ func Decode(pid int, registers Registers, reader pathReader, resolver pathResolv
 		how, readErr := reader.Bytes(registers.Args[2], 8)
 		if readErr != nil {
 			return nil, true, fmt.Errorf("lifecycle trace: read openat2 open_how: %w", readErr)
+		}
+		if len(how) < 8 {
+			return nil, true, fmt.Errorf("lifecycle trace: short openat2 open_how: got %d bytes, want at least 8", len(how))
 		}
 		flags := binary.LittleEndian.Uint64(how)
 		writeFlags := uint64(unix.O_WRONLY | unix.O_RDWR | unix.O_CREAT | unix.O_TRUNC | unix.O_APPEND)
@@ -173,6 +179,9 @@ func Decode(pid int, registers Registers, reader pathReader, resolver pathResolv
 		}
 		if !journalable {
 			return nil, false, nil
+		}
+		if !filepath.IsAbs(resolved) {
+			return nil, true, fmt.Errorf("lifecycle trace: shared writable mmap fd %d resolver returned non-absolute path %q", fd, resolved)
 		}
 		return []string{filepath.Clean(resolved)}, true, nil
 	case unix.SYS_MOUNT, unix.SYS_UMOUNT2, unix.SYS_PIVOT_ROOT, unix.SYS_CHROOT,

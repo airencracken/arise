@@ -316,9 +316,9 @@ func IngestWithProgress(db *badger.DB, entries <-chan *metadata.PackageMetadata,
 		if err := wb.Flush(); err != nil {
 			return count, fmt.Errorf("ingest: final flush: %w", err)
 		}
-	}
-	if progress != nil {
-		progress(count)
+		if progress != nil {
+			progress(count)
+		}
 	}
 
 	return count, nil

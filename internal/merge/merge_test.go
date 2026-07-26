@@ -615,6 +615,50 @@ func TestTransactionalMergePreservesHardlinksAndRegularFileTimestamp(t *testing.
 	}
 }
 
+func TestTransactionalMergeRepairsMetadataOnExistingServiceDirectories(t *testing.T) {
+	tmp := t.TempDir()
+	image := filepath.Join(tmp, "image")
+	root := filepath.Join(tmp, "root")
+	paths := []string{"etc/redis", "var/lib/redis", "var/log/redis"}
+	for _, relative := range paths {
+		if err := os.MkdirAll(filepath.Join(image, relative), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(image, relative), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(root, relative), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(root, relative), 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := MergeConfig{
+		RootDir: root, VdbDir: filepath.Join(root, "var", "db", "pkg"),
+		Category: "dev-db", Package: "redis", Version: "8.2.6",
+		JournalDir: filepath.Join(tmp, "journals"),
+	}
+	if err := Merge(context.Background(), image, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range paths {
+		source := filepath.Join(image, relative)
+		installed := filepath.Join(root, relative)
+		info, err := os.Stat(installed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o750 {
+			t.Fatalf("%s mode=%o want=750", relative, info.Mode().Perm())
+		}
+		sourceStat, installedStat := mustStatT(t, source), mustStatT(t, installed)
+		if installedStat.Uid != sourceStat.Uid || installedStat.Gid != sourceStat.Gid {
+			t.Fatalf("%s ownership=%d:%d want=%d:%d", relative, installedStat.Uid, installedStat.Gid, sourceStat.Uid, sourceStat.Gid)
+		}
+	}
+}
+
 func TestTransactionalMergePreservesExtendedAttributes(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux xattr transport")

@@ -404,6 +404,166 @@ func TestExecuteConcurrentRejectsMissingPrerequisite(t *testing.T) {
 	}
 }
 
+func TestExecuteConcurrentRequiresCommitProofBeforeSuccess(t *testing.T) {
+	first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{first, second}}
+	resume := filepath.Join(t.TempDir(), "resume.json")
+	var completed atomic.Int32
+	err := Execute(context.Background(), result, Config{
+		Jobs: 2, ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(context.Context, string, *rebuild.RebuildConfig) error {
+			return nil
+		},
+		OnActionComplete: func(int, int, resolve.PkgAction) {
+			completed.Add(1)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "without transaction commit notification") {
+		t.Fatalf("missing commit proof error = %v", err)
+	}
+	if completed.Load() != 0 {
+		t.Fatalf("completed callbacks = %d without commit proof", completed.Load())
+	}
+	remaining, loadErr := resolve.LoadResume(resume)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	want := []string{first.Atom.String(), second.Atom.String()}
+	if !reflect.DeepEqual(remaining, want) {
+		t.Fatalf("resume advanced without commit proof: got %v, want %v", remaining, want)
+	}
+}
+
+func TestExecuteConcurrentPostCommitErrorRequiresCommitProof(t *testing.T) {
+	first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{first, second}}
+	var notices atomic.Int32
+	err := Execute(context.Background(), result, Config{
+		Jobs: 2, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(context.Context, string, *rebuild.RebuildConfig) error {
+			return &merge.PostCommitError{Err: fmt.Errorf("claimed lifecycle failure")}
+		},
+		OnActionNotice: func(int, int, resolve.PkgAction, string, string) {
+			notices.Add(1)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "claimed lifecycle failure") {
+		t.Fatalf("unproved post-commit error = %v", err)
+	}
+	if notices.Load() != 0 {
+		t.Fatalf("unproved post-commit failure emitted %d committed notices", notices.Load())
+	}
+}
+
+func TestExecuteConcurrentRejectsDuplicateCommitNotificationExactlyOnce(t *testing.T) {
+	first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{first, second}}
+	resume := filepath.Join(t.TempDir(), "resume.json")
+	var completed atomic.Int32
+	err := Execute(context.Background(), result, Config{
+		Jobs: 2, ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(ctx context.Context, label string, cfg *rebuild.RebuildConfig) error {
+			if label == "cat/second-1" {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			if err := cfg.OnTransactionCommit(nil); err != nil {
+				return err
+			}
+			return cfg.OnTransactionCommit(nil)
+		},
+		OnActionComplete: func(int, int, resolve.PkgAction) {
+			completed.Add(1)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate transaction commit notification") {
+		t.Fatalf("duplicate commit error = %v", err)
+	}
+	if completed.Load() != 1 {
+		t.Fatalf("completion callback count = %d, want exactly 1", completed.Load())
+	}
+	remaining, loadErr := resolve.LoadResume(resume)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !reflect.DeepEqual(remaining, []string{second.Atom.String()}) {
+		t.Fatalf("remaining after duplicate notification = %v", remaining)
+	}
+}
+
+func TestExecuteConcurrentRejectsMalformedPrerequisiteGraphBeforeMutation(t *testing.T) {
+	tests := []struct {
+		name    string
+		actions func(*testing.T) []resolve.PkgAction
+		want    string
+	}{
+		{
+			name: "duplicate identity",
+			actions: func(t *testing.T) []resolve.PkgAction {
+				return []resolve.PkgAction{action(t, "cat/same-1"), action(t, "cat/same-1")}
+			},
+			want: "duplicate planned action identity",
+		},
+		{
+			name: "duplicate prerequisite",
+			actions: func(t *testing.T) []resolve.PkgAction {
+				first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+				identity := resolve.ActionIdentity(first)
+				second.Prerequisites = []string{identity, identity}
+				return []resolve.PkgAction{first, second}
+			},
+			want: "repeats prerequisite",
+		},
+		{
+			name: "cycle after independent action",
+			actions: func(t *testing.T) []resolve.PkgAction {
+				independent := action(t, "cat/independent-1")
+				first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+				first.Prerequisites = []string{resolve.ActionIdentity(second)}
+				second.Prerequisites = []string{resolve.ActionIdentity(first)}
+				return []resolve.PkgAction{independent, first, second}
+			},
+			want: "graph stalled after 1 of 3 actions",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			actions := test.actions(t)
+			result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: actions}
+			var ran, committed atomic.Int32
+			err := Execute(context.Background(), result, Config{
+				Jobs: 2, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+				Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+				Runner: func(_ context.Context, _ string, cfg *rebuild.RebuildConfig) error {
+					ran.Add(1)
+					if err := cfg.OnTransactionCommit(nil); err != nil {
+						return err
+					}
+					committed.Add(1)
+					return nil
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Execute error = %v, want substring %q", err, test.want)
+			}
+			switch test.name {
+			case "cycle after independent action":
+				if ran.Load() != 1 || committed.Load() != 1 {
+					t.Fatalf("independent work ran=%d committed=%d, want 1/1", ran.Load(), committed.Load())
+				}
+			default:
+				if ran.Load() != 0 || committed.Load() != 0 {
+					t.Fatalf("malformed graph mutated runner state: ran=%d committed=%d", ran.Load(), committed.Load())
+				}
+			}
+		})
+	}
+}
+
 func TestExecuteConcurrentFailureCancelsPeersAndDoesNotReleaseDependent(t *testing.T) {
 	failing, peer, dependent := action(t, "cat/failing-1"), action(t, "cat/peer-1"), action(t, "cat/dependent-1")
 	dependent.Prerequisites = []string{resolve.ActionIdentity(failing)}

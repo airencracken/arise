@@ -489,9 +489,10 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 			if err := os.MkdirAll(targetPath, info.Mode()); err != nil {
 				return fmt.Errorf("merge: could not create directory %s: %w", targetPath, err)
 			}
-			if created {
-				createdDirectories = append(createdDirectories, createdDirectory{path: targetPath, info: info})
-			}
+			// Portage applies the image directory's metadata even when the live
+			// directory already exists. Service packages commonly rely on this
+			// to repair account-created state directories during installation.
+			createdDirectories = append(createdDirectories, createdDirectory{path: targetPath, info: info})
 			lines = append(lines, formatContentsDir(contentsPathForRoot(cfg.RootDir, targetPath)))
 			return nil
 

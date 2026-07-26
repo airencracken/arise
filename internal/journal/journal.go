@@ -182,11 +182,49 @@ func Open(dir string) (*Journal, error) {
 		}
 		state.Entries = append(state.Entries, logged...)
 	}
+	if err := validateStateEntries(state); err != nil {
+		return nil, err
+	}
 	j := &Journal{dir: dir, state: state, captured: make(map[string]bool)}
 	for _, entry := range state.Entries {
 		j.captured[entry.Path] = true
 	}
 	return j, nil
+}
+
+func validateStateEntries(state State) error {
+	switch state.Status {
+	case "active", "committed", "rolled-back":
+	default:
+		return fmt.Errorf("journal: invalid status %q", state.Status)
+	}
+	seen := make(map[string]bool, len(state.Entries))
+	for index, entry := range state.Entries {
+		if entry.Path == "" || filepath.IsAbs(entry.Path) || filepath.Clean(entry.Path) != entry.Path ||
+			entry.Path == ".." || strings.HasPrefix(entry.Path, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("journal: invalid entry %d path %q", index+1, entry.Path)
+		}
+		if seen[entry.Path] {
+			return fmt.Errorf("journal: duplicate entry path %q", entry.Path)
+		}
+		seen[entry.Path] = true
+		switch entry.Kind {
+		case "absent", "absent-tree", "directory", "symlink":
+			if entry.Backup != "" {
+				return fmt.Errorf("journal: entry %d kind %s has backup", index+1, entry.Kind)
+			}
+		case "file":
+			backup := filepath.Clean(entry.Backup)
+			relative, err := filepath.Rel("backups", backup)
+			if entry.Backup == "" || filepath.IsAbs(entry.Backup) || backup != entry.Backup || err != nil ||
+				relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("journal: invalid entry %d backup %q", index+1, entry.Backup)
+			}
+		default:
+			return fmt.Errorf("journal: invalid entry %d kind %q", index+1, entry.Kind)
+		}
+	}
+	return nil
 }
 
 func (j *Journal) Dir() string    { return j.dir }

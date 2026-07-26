@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -120,8 +121,9 @@ func TestSyncConfig_Validate_ErrorMessages(t *testing.T) {
 
 func TestSyncConfig_Validate_Adversarial(t *testing.T) {
 	tests := []struct {
-		name string
-		cfg  SyncConfig
+		name    string
+		cfg     SyncConfig
+		wantErr string
 	}{
 		{
 			name: "whitespace-only RepoURL",
@@ -129,6 +131,7 @@ func TestSyncConfig_Validate_Adversarial(t *testing.T) {
 				RepoURL:   "   ",
 				TargetDir: "/tmp/gentoo",
 			},
+			wantErr: "RepoURL is required",
 		},
 		{
 			name: "whitespace-only TargetDir",
@@ -136,27 +139,30 @@ func TestSyncConfig_Validate_Adversarial(t *testing.T) {
 				RepoURL:   "https://example.com/repo.git",
 				TargetDir: "   ",
 			},
+			wantErr: "TargetDir is required",
 		},
 		{
-			name: "very long RepoURL",
+			name: "NUL in RepoURL",
 			cfg: SyncConfig{
-				RepoURL:   strings.Repeat("x", 10000),
+				RepoURL:   "https://example.com/repo\x00.git",
 				TargetDir: "/tmp/gentoo",
 			},
+			wantErr: "RepoURL contains NUL",
 		},
 		{
-			name: "unicode RepoURL",
+			name: "NUL in TargetDir",
 			cfg: SyncConfig{
-				RepoURL:   "https://example.com/repo\u0000.git",
-				TargetDir: "/tmp/gentoo",
+				RepoURL:   "https://example.com/repo.git",
+				TargetDir: "/tmp/gentoo\x00outside",
 			},
+			wantErr: "TargetDir contains NUL",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.cfg.Validate()
-			if err != nil {
-				t.Logf("Validate() with adversarial input returned error (expected): %v", err)
+			if err == nil || err.Error() != "sync: "+tt.wantErr {
+				t.Fatalf("Validate() error = %v, want %q", err, "sync: "+tt.wantErr)
 			}
 		})
 	}
@@ -696,4 +702,156 @@ func TestUpdateGitRepo_NonRepo(t *testing.T) {
 	if err == nil {
 		t.Error("updateGitRepo on non-repo directory should return error")
 	}
+}
+
+func TestAtomicitySyncCommandRefusesDirtyWorktreeBeforeUpdate(t *testing.T) {
+	remote := initSyncRemote(t)
+	target := filepath.Join(t.TempDir(), "target")
+	cfg := SyncConfig{RepoURL: remote, TargetDir: target, Depth: 2}
+	if err := Sync(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	before := testGitOutput(t, "-C", target, "rev-parse", "HEAD")
+	tracked := filepath.Join(target, "app-misc", "modified", "modified-1.ebuild")
+	if err := os.WriteFile(tracked, []byte("local change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeSyncFile(t, remote, "app-misc/remote/remote-1.ebuild", "EAPI=8\n")
+	commitSyncRemote(t, remote, "remote update")
+
+	var changesCalled bool
+	cfg.Changes = func(ChangeSummary) { changesCalled = true }
+	err := Sync(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "local changes") {
+		t.Fatalf("dirty sync error = %v", err)
+	}
+	if changesCalled {
+		t.Fatal("dirty refusal reported a successful change summary")
+	}
+	if got := testGitOutput(t, "-C", target, "rev-parse", "HEAD"); got != before {
+		t.Fatalf("dirty refusal changed HEAD from %s to %s", before, got)
+	}
+	data, readErr := os.ReadFile(tracked)
+	if readErr != nil || string(data) != "local change\n" {
+		t.Fatalf("dirty refusal overwrote tracked file: value=%q err=%v", data, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(target, "app-misc", "remote", "remote-1.ebuild")); !os.IsNotExist(statErr) {
+		t.Fatalf("dirty refusal applied remote file: %v", statErr)
+	}
+}
+
+func TestSyncCommandRejectsDetachedHeadWithoutReset(t *testing.T) {
+	remote := initSyncRemote(t)
+	target := filepath.Join(t.TempDir(), "target")
+	cfg := SyncConfig{RepoURL: remote, TargetDir: target, Depth: 2}
+	if err := Sync(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	before := testGitOutput(t, "-C", target, "rev-parse", "HEAD")
+	testGit(t, "-C", target, "checkout", "--detach", before)
+	writeSyncFile(t, remote, "app-misc/remote/remote-1.ebuild", "EAPI=8\n")
+	commitSyncRemote(t, remote, "remote update")
+
+	err := Sync(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "detached HEAD") {
+		t.Fatalf("detached sync error = %v", err)
+	}
+	if got := testGitOutput(t, "-C", target, "rev-parse", "HEAD"); got != before {
+		t.Fatalf("detached refusal changed HEAD from %s to %s", before, got)
+	}
+	if branch := testGitOutput(t, "-C", target, "branch", "--show-current"); branch != "" {
+		t.Fatalf("detached refusal selected branch %q", branch)
+	}
+}
+
+func TestSyncCommandReportsExactEbuildChangesAndProgress(t *testing.T) {
+	remote := initSyncRemote(t)
+	target := filepath.Join(t.TempDir(), "target")
+	cfg := SyncConfig{RepoURL: remote, TargetDir: target, Depth: 2}
+	if err := Sync(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	writeSyncFile(t, remote, "app-misc/modified/modified-1.ebuild", "EAPI=8\nDESCRIPTION=changed\n")
+	if err := os.Remove(filepath.Join(remote, "app-misc", "old", "old-1.ebuild")); err != nil {
+		t.Fatal(err)
+	}
+	writeSyncFile(t, remote, "app-misc/added/added-2.ebuild", "EAPI=8\n")
+	writeSyncFile(t, remote, "README", "not an ebuild\n")
+	commitSyncRemote(t, remote, "package changes")
+
+	var stages []string
+	var summaries []ChangeSummary
+	cfg.Progress = func(stage, _ string) { stages = append(stages, stage) }
+	cfg.Changes = func(summary ChangeSummary) { summaries = append(summaries, summary) }
+	if err := Sync(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stages, []string{"check", "fetch", "update", "changes"}) {
+		t.Fatalf("progress stages = %v", stages)
+	}
+	want := ChangeSummary{
+		Added:    []string{"app-misc/added-2"},
+		Removed:  []string{"app-misc/old-1"},
+		Modified: []string{"app-misc/modified-1"},
+	}
+	if !reflect.DeepEqual(summaries, []ChangeSummary{want}) {
+		t.Fatalf("change summaries = %#v, want %#v", summaries, want)
+	}
+	for relative, content := range map[string]string{
+		"app-misc/added/added-2.ebuild":       "EAPI=8\n",
+		"app-misc/modified/modified-1.ebuild": "EAPI=8\nDESCRIPTION=changed\n",
+	} {
+		data, err := os.ReadFile(filepath.Join(target, relative))
+		if err != nil || string(data) != content {
+			t.Fatalf("updated %s=%q err=%v", relative, data, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(target, "app-misc", "old", "old-1.ebuild")); !os.IsNotExist(err) {
+		t.Fatalf("removed ebuild remains: %v", err)
+	}
+}
+
+func initSyncRemote(t *testing.T) string {
+	t.Helper()
+	remote := t.TempDir()
+	testGit(t, "init", "-b", "master", remote)
+	writeSyncFile(t, remote, "app-misc/modified/modified-1.ebuild", "EAPI=8\nDESCRIPTION=initial\n")
+	writeSyncFile(t, remote, "app-misc/old/old-1.ebuild", "EAPI=8\n")
+	commitSyncRemote(t, remote, "initial")
+	return remote
+}
+
+func writeSyncFile(t *testing.T, root, relative, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(relative))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func commitSyncRemote(t *testing.T, remote, message string) {
+	t.Helper()
+	testGit(t, "-C", remote, "add", "-A")
+	testGit(t, "-C", remote, "-c", "user.name=Arise Test", "-c", "user.email=arise@example.invalid", "commit", "-m", message)
+}
+
+func testGit(t *testing.T, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+}
+
+func testGitOutput(t *testing.T, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+	return strings.TrimSpace(string(output))
 }
