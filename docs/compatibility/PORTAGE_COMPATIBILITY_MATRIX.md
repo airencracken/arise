@@ -107,6 +107,14 @@ Important `make.conf` variables are tracked independently from file parsing:
 | `/var/log/emerge.log` | partial | locked compatibility projection; readers tolerate historical NUL padding and append fails closed on NUL-corrupt logs; wider tool-format differential open |
 | Portage VDB lock | supported subset | held across ownership validation, recovery, mutation and commit |
 
+## Maintenance commands
+
+| Portage interface | Arise spelling/value | Status | Enforcement |
+|---|---|---|---|
+| installed `pkg_config` phase | `arise config ATOM` | supported subset | persisted lifecycle and legacy installed-environment tests; wider EAPI/package differential corpus remains open |
+| `dispatch-conf` | `arise dispatch-conf` | partial | recursive and explicit-path discovery, decisions, archive rotation, hooks, metadata, ROOT/config-root, schema, property and adversarial tests; automatic three-way merge, rollback/recovery and differential corpus remain open |
+| `emaint --check/--fix world` | `arise maintain world --check/--fix` | planned | state-bound atomic repair contract specified |
+
 ## Maintenance rules
 
 1. Review installed `emerge(1)`, `make.conf(5)`, and Portage configuration

@@ -117,6 +117,14 @@ emaint sync -r arise-overlay
 emerge --ask sys-apps/arise
 ```
 
+That Portage bootstrap is only for systems where Arise is not installed yet.
+An existing Arise installation updates itself and its overlay directly:
+
+```sh
+arise sync
+arise -1 --reinstall =sys-apps/arise-0.0.1
+```
+
 For source development:
 
 ```sh
@@ -298,25 +306,26 @@ harness must follow generation symlinks before its numbers are trustworthy.
 The dated `@system` samples and normalized outcome record are preserved in
 [`P3_SYSTEM_SHALLOW_TIMINGS_2026-07-18.json`](docs/evidence/P3_SYSTEM_SHALLOW_TIMINGS_2026-07-18.json).
 
-Not yet claimed:
+Claim boundaries:
 
-- The isolated `emerge --metadata` workload is ready but still needs a
-  privileged run because Portage enforces root/portage-group access.
-- A 2026-07-18 deep, newuse, complete-graph `@world` snapshot produced an exact
-  369-action comparison with Portage and a successful whole-plan preflight.
-  No resolver speedup is published yet because that result has not completed
-  the repeated, correctness-gated benchmark protocol.
-- A successful deep `@world` execution is not yet evidence of
-  general Portage execution parity. Parallel scheduling, fetch policy,
-  lifecycle coverage, failure recovery, and long-running mutation still need
-  broader machine and package-corpus coverage.
-- The current deep/newuse `@system` outcome is ineligible for the equivalence
-  table because Arise repairs the state while Portage reports an unresolved
-  partial plan. Its separately labeled recovery diagnostic appears above.
-- Signal Desktop remains useful as a binary-package and user-patch regression,
-  but is no longer treated as a representative resolver or execution benchmark.
-  Resolver performance work now uses the explicit-package, `@system`, normal
-  `@world`, damaged-world, and empty-tree matrix.
+- Dependency-aware parallel preparation with serialized commits, atomic
+  Manifest-verified fetching, installed lifecycle execution, durable journals,
+  resume recovery, and fault-injected atomicity tests are implemented. They are
+  operational capabilities, not remaining design work.
+- General Portage execution parity is still not claimed. It requires broader
+  machine, EAPI, package, filesystem-layout, failure, and long-running upgrade
+  corpora than the current successful live and disposable-root runs.
+- The isolated `emerge --metadata` workload and the 369-action 2026-07-18
+  deep/newuse/complete-graph `@world` snapshot remain unpublished performance
+  results because they have not completed the repeated correctness-gated
+  benchmark protocol.
+- The current deep/newuse `@system` outcome remains ineligible for the
+  equivalence table because Arise repairs the state while Portage reports an
+  unresolved partial plan. It is reported separately as a recovery diagnostic.
+- Signal Desktop remains a binary-package and user-patch regression, not a
+  representative resolver benchmark. Resolver performance uses the
+  explicit-package, `@system`, normal `@world`, damaged-world, and empty-tree
+  matrix.
 
 The complete current and planned task matrix is in
 [BENCHMARK_MATRIX.md](BENCHMARK_MATRIX.md), with methodology in

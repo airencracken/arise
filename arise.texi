@@ -289,8 +289,9 @@ comparisons use the dedicated performance harness.
 @table @command
 @item dispatch-conf
 Interactively review and merge recursive CONFIG_PROTECT updates with archives
-and conf-update hooks.
-List pending @file{._cfg*} config file updates in @file{/etc/}.
+and conf-update hooks. This is a usable replacement workflow, while automatic
+three-way merge, rollback/recovery, mixed file-type semantics, and broader
+differential parity remain under development.
 
 @item env-update
 Regenerate @file{/etc/profile.env} and @file{/etc/csh.env}.

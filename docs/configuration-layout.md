@@ -10,8 +10,11 @@ namespace.
 - Work trees, journals, resume state, and named plans default beneath
   `${PORTAGE_TMPDIR:-/var/tmp}/arise`; command-line flags can relocate each.
 - `/var/log/emerge.log` is the default Portage-compatible merge-timing output.
-- Arise-specific system configuration under `/etc/arise` and canonical native
-  history under `/var/log/arise` are not yet general implemented interfaces.
+- Arise-specific system configuration under `/etc/arise` is not yet a
+  generally implemented interface. Arise does write durable native package logs and
+  operation records beneath `/var/log/arise`, but the broader target layout
+  below remains an ownership contract rather than a claim that every namespace
+  and retention policy is complete.
 
 ## Target ownership boundary
 
