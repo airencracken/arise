@@ -64,3 +64,61 @@ func TestScanIgnoresInterruptedPartialRecord(t *testing.T) {
 		t.Fatalf("partial VDB directory treated as installed: %+v", packages)
 	}
 }
+
+func TestScanRejectsStructurallyInvalidCommittedRecords(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		breakRecord func(*testing.T, string)
+	}{
+		{"empty slot", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "SLOT"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"empty eapi", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "EAPI"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"empty repository", func(t *testing.T, dir string) {
+			if err := os.WriteFile(filepath.Join(dir, "repository"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"symlinked contents", func(t *testing.T, dir string) {
+			if err := os.Remove(filepath.Join(dir, "CONTENTS")); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), "CONTENTS")
+			if err := os.WriteFile(outside, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(dir, "CONTENTS")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "app-misc", "example-1")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for name, value := range map[string]string{
+				"CONTENTS": "", "EAPI": "8\n", "SLOT": "0\n", "repository": "gentoo\n",
+			} {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			test.breakRecord(t, dir)
+			packages, err := Scan(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(packages) != 0 {
+				t.Fatalf("invalid record treated as installed: %+v", packages)
+			}
+		})
+	}
+}

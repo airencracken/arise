@@ -270,6 +270,66 @@ func infoMode(info os.FileInfo) os.FileMode {
 	return info.Mode().Perm()
 }
 
+func TestBashWorkerOpenRCHelpersAcceptGeneratedStandardInput(t *testing.T) {
+	directory := t.TempDir()
+	image := filepath.Join(directory, "image")
+	ebuild := filepath.Join(directory, "postgresql-18.4.ebuild")
+	content := `EAPI=8
+IUSE="+server"
+src_install() {
+	if use server; then
+		printf 'PGDATA=/var/lib/postgresql/18/data\n' | newconfd - postgresql-18
+		printf '#!/sbin/openrc-run\ncommand=/usr/bin/postgres18\n' | newinitd - postgresql-18
+	fi
+}`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Protocol: Version, ID: "openrc-generated-stdin", Command: "run_phase", Phase: "src_install",
+		EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: image,
+		Package: PackageIdentity{Category: "dev-db", PN: "postgresql", PV: "18.4", PR: "r0", P: "postgresql-18.4", PVR: "18.4", PF: "postgresql-18.4", Slot: "18", Repository: "test"},
+		Env:     map[string]string{"USE": "server"},
+	}
+	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
+	if err != nil {
+		t.Fatalf("generated OpenRC helpers: %v; events=%#v", err, events)
+	}
+	for relative, want := range map[string]string{
+		"etc/conf.d/postgresql-18": "PGDATA=/var/lib/postgresql/18/data\n",
+		"etc/init.d/postgresql-18": "#!/sbin/openrc-run\ncommand=/usr/bin/postgres18\n",
+	} {
+		got, readErr := os.ReadFile(filepath.Join(image, relative))
+		if readErr != nil {
+			t.Fatalf("read %s: %v", relative, readErr)
+		}
+		if string(got) != want {
+			t.Fatalf("%s=%q want=%q", relative, got, want)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(image, "etc/init.d/postgresql-18")); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("init script mode=%v error=%v", infoMode(info), err)
+	}
+}
+
+func TestBashWorkerInstallHelperFailureCannotBeMaskedByLaterCommand(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := "EAPI=8\nsrc_install() { newinitd missing-source service; :; }\n"
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Protocol: Version, ID: "install-helper-failure", Command: "run_phase", Phase: "src_install",
+		EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory,
+		ImageDir: filepath.Join(directory, "image"),
+	}
+	events, err := RunBashWorker(context.Background(), request)
+	if err == nil {
+		t.Fatalf("missing helper source was masked by later success; events=%#v", events)
+	}
+}
+
 func TestBashWorkerInstallHelpersRejectImageEscape(t *testing.T) {
 	for name, command := range map[string]string{
 		"directory":   "dodir /safe/../../../escaped",
@@ -547,8 +607,8 @@ src_install() {
 	if !bytes.Equal(unstripped, original) {
 		t.Fatal("dostrip exclusion did not preserve the original executable")
 	}
-	if len(stripped) >= len(unstripped) {
-		t.Fatalf("stripped executable size = %d, unstripped = %d", len(stripped), len(unstripped))
+	if bytes.Equal(stripped, unstripped) {
+		t.Fatal("dostrip did not transform the queued executable")
 	}
 }
 
@@ -859,6 +919,44 @@ printf '%s\n' "$@" > "$T/configure.args"
 		if !strings.Contains(arguments, want) {
 			t.Fatalf("configure args missing %q:\n%s", want, arguments)
 		}
+	}
+}
+
+func TestBashWorkerEconfDerivesLibdirFromEbuildPrefix(t *testing.T) {
+	directory := t.TempDir()
+	configure := filepath.Join(directory, "configure")
+	if err := os.WriteFile(configure, []byte(`#!/bin/sh
+if [ "$1" = --help ]; then
+	exit 0
+fi
+printf '%s\n' "$@" > "$T/configure.args"
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ebuild := filepath.Join(directory, "postgresql-18.4.ebuild")
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_configure() { econf --prefix=/usr/lib64/postgresql-18; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	temp := filepath.Join(directory, "temp")
+	if err := os.MkdirAll(temp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{
+		Protocol: Version, ID: "econf-custom-prefix", Command: "run_phase", Phase: "src_configure",
+		EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory,
+		ImageDir: filepath.Join(directory, "image"), TempDir: temp,
+		Env: map[string]string{"DEFAULT_ABI": "amd64", "CHOST": "x86_64-pc-linux-gnu"},
+	}
+	if events, err := RunBashWorker(context.Background(), request); err != nil {
+		t.Fatalf("econf custom prefix: %v; events=%#v", err, events)
+	}
+	data, err := os.ReadFile(filepath.Join(temp, "configure.args"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments := string(data)
+	if !strings.Contains(arguments, "--libdir=/usr/lib64/postgresql-18/lib64\n") {
+		t.Fatalf("custom-prefix libdir was not derived:\n%s", arguments)
 	}
 }
 
@@ -2123,8 +2221,14 @@ func TestPhaseEnvironmentOverlayCarriesStateAcrossWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(saved), "SANDBOX_WRITE") || strings.Contains(string(saved), "LD_PRELOAD") {
+	if strings.Contains(string(saved), "declare -- SANDBOX_WRITE") ||
+		strings.Contains(string(saved), "declare -x SANDBOX_WRITE") ||
+		strings.Contains(string(saved), "declare -- LD_PRELOAD") ||
+		strings.Contains(string(saved), "declare -x LD_PRELOAD") {
 		t.Fatalf("phase overlay persisted package-manager isolation controls: %s", saved)
+	}
+	if !strings.Contains(string(saved), "pkg_setup ()") {
+		t.Fatalf("phase overlay omitted installed lifecycle function: %s", saved)
 	}
 	prepare := base
 	prepare.ID, prepare.Command, prepare.Phase, prepare.EnvironmentOverlay = "overlay-prepare", "run_phase", "src_prepare", overlay

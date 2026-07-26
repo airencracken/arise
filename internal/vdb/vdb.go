@@ -78,7 +78,7 @@ func Scan(root string) ([]Package, error) {
 			// records with the minimum committed Portage metadata are authoritative.
 			valid := true
 			for _, required := range []string{"CONTENTS", "EAPI", "SLOT", "repository"} {
-				if info, statErr := os.Stat(filepath.Join(dir, required)); statErr != nil || !info.Mode().IsRegular() {
+				if info, statErr := os.Lstat(filepath.Join(dir, required)); statErr != nil || !info.Mode().IsRegular() {
 					valid = false
 					break
 				}
@@ -93,12 +93,16 @@ func Scan(root string) ([]Package, error) {
 				}
 				return strings.TrimSpace(string(data))
 			}
-			slot, subslot := splitSlot(read("SLOT"))
+			slotValue, eapi, repository := read("SLOT"), read("EAPI"), read("repository")
+			if slotValue == "" || eapi == "" || repository == "" {
+				continue
+			}
+			slot, subslot := splitSlot(slotValue)
 			packages = append(packages, Package{
 				Category: cat, Package: pn, Version: version, Slot: slot, Subslot: subslot,
-				Repository: read("repository"), Use: strings.Fields(read("USE")), IUse: strings.Fields(read("IUSE")),
+				Repository: repository, Use: strings.Fields(read("USE")), IUse: strings.Fields(read("IUSE")),
 				Depend: read("DEPEND"), RDepend: read("RDEPEND"), BDepend: read("BDEPEND"),
-				IDepend: read("IDEPEND"), PDepend: read("PDEPEND"), EAPI: read("EAPI"),
+				IDepend: read("IDEPEND"), PDepend: read("PDEPEND"), EAPI: eapi,
 				BuildTime: parseInt(read("BUILD_TIME")), BuildID: read("BUILD_ID"),
 				PhaseEnvABI: read("ARISE_PHASE_ENV_ABI"), Counter: parseInt(read("COUNTER")),
 				Contents: read("CONTENTS"),

@@ -124,7 +124,7 @@ For source development:
 CGO_ENABLED=0 go build -ldflags="-s -w" -o arise ./cmd/arise/
 
 # Sync the repository
-arise -repo-url https://... sync
+arise --repo-url https://... sync
 
 # Index the repo for fast queries
 arise index

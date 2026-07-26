@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/airencracken/arise/internal/fetch"
@@ -303,7 +304,12 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 	remaining := make([]int, len(actions))
 	dependents := make(map[int][]int)
 	for index, action := range actions {
+		seenPrerequisites := make(map[string]bool, len(action.Prerequisites))
 		for _, prerequisite := range action.Prerequisites {
+			if seenPrerequisites[prerequisite] {
+				return fmt.Errorf("executor: %s repeats prerequisite %q", actionLabel(action), prerequisite)
+			}
+			seenPrerequisites[prerequisite] = true
 			before, ok := identities[prerequisite]
 			if !ok {
 				return fmt.Errorf("executor: %s references missing prerequisite %q", actionLabel(action), prerequisite)
@@ -368,7 +374,11 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 				}
 			}
 			actionCfg.CommitLock = commitLock
+			var transactionCommitted atomic.Bool
 			actionCfg.OnTransactionCommit = func(committedErr error) error {
+				if !transactionCommitted.CompareAndSwap(false, true) {
+					return fmt.Errorf("duplicate transaction commit notification for %s", actionLabel(action))
+				}
 				if cfg.ResumePath != "" {
 					if err := resolve.MarkResumeComplete(cfg.ResumePath, action.Atom.String()); err != nil {
 						return err
@@ -381,11 +391,14 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 			}
 			err := cfg.Runner(ctx, actionLabel(action), &actionCfg)
 			var postCommit *merge.PostCommitError
-			if errors.As(err, &postCommit) {
+			if errors.As(err, &postCommit) && transactionCommitted.Load() {
 				if cfg.OnActionNotice != nil {
 					cfg.OnActionNotice(index+1, len(actions), action, "WARN", "committed package has a post-commit lifecycle failure: "+err.Error())
 				}
 				err = nil
+			}
+			if err == nil && !transactionCommitted.Load() {
+				err = fmt.Errorf("runner returned without transaction commit notification")
 			}
 			results <- concurrentResult{index: index, err: err}
 		}()

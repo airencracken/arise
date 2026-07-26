@@ -35,19 +35,19 @@ func startTerminalProgress(label string, enabled bool) *terminalProgress {
 
 func startTerminalProgressMode(label string, output, animate bool) *terminalProgress {
 	terminal := output && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(os.Stdout.Fd()))
-	p := &terminalProgress{output: output, enabled: terminal && animate, terminal: terminal, animate: animate, writer: os.Stdout, label: label}
-	if !p.terminal {
+	return startTerminalProgressWriter(label, output, animate, terminal, os.Stdout)
+}
+
+func startTerminalProgressWriter(label string, output, animate, terminal bool, writer io.Writer) *terminalProgress {
+	p := &terminalProgress{output: output, enabled: terminal && animate, terminal: terminal, animate: animate, writer: writer, label: label}
+	if !p.terminal || !p.animate {
 		return p
 	}
 	p.done = make(chan struct{})
 	p.wait.Add(1)
 	go func() {
 		defer p.wait.Done()
-		latency := 2 * time.Second
-		if p.animate {
-			latency = 80 * time.Millisecond
-		}
-		ticker := time.NewTicker(latency)
+		ticker := time.NewTicker(80 * time.Millisecond)
 		defer ticker.Stop()
 		frame := 0
 		p.render(frame)
@@ -170,8 +170,10 @@ func (p *terminalProgress) stop() {
 	if p == nil || !p.terminal {
 		return
 	}
-	close(p.done)
-	p.wait.Wait()
+	if p.done != nil {
+		close(p.done)
+		p.wait.Wait()
+	}
 	p.mu.Lock()
 	if p.displayed {
 		fmt.Fprint(p.writer, "\r\033[K\n")

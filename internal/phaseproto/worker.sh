@@ -523,18 +523,30 @@ newins() {
   return "$status"
 }
 arise_special_install() {
-  local destination=$1 mode=$2 rename=${3-} source target
+  local destination=$1 mode=$2 rename=${3-} source target temporary=''
   shift 3
-  (( $# > 0 )) || { printf 'installation helper requires files\n'; return 1; }
+  (( $# > 0 )) || die "installation helper requires files"
   target=$(arise_image_path "$destination") || return
-  install -d -m0755 -- "$target" || return
+  install -d -m0755 -- "$target" || die "could not create installation directory $destination"
   if [[ $rename ]]; then
-    [[ $# == 1 ]] || { printf 'renaming helper requires one source\n'; return 1; }
-    arise_safe_name "$rename" || { printf 'renaming helper requires a safe name\n'; return 1; }
-    install -m "$mode" -- "$1" "$target/$rename"
-    return
+    [[ $# == 1 ]] || die "renaming helper requires one source"
+    arise_safe_name "$rename" || die "renaming helper requires a safe name"
+    source=$1
+    if [[ $source == - ]]; then
+      temporary=$(mktemp "${T:-${TMPDIR:-/tmp}}/special-install-stdin.XXXXXXXX") || die "could not stage helper standard input"
+      cat > "$temporary" || { rm -f -- "$temporary"; die "could not read helper standard input"; }
+      source=$temporary
+    fi
+    install -m "$mode" -- "$source" "$target/$rename"
+    local status=$?
+    [[ -z $temporary ]] || rm -f -- "$temporary"
+    (( status == 0 )) || die "could not install $source as $destination/$rename"
+    return 0
   fi
-  for source in "$@"; do install -m "$mode" -- "$source" "$target/${source##*/}" || return; done
+  for source in "$@"; do
+    install -m "$mode" -- "$source" "$target/${source##*/}" ||
+      die "could not install $source into $destination"
+  done
 }
 doinitd() { arise_special_install /etc/init.d 0755 '' "$@"; }
 newinitd() { [[ $# == 2 ]] || { printf 'newinitd requires source and name\n'; return 1; }; arise_special_install /etc/init.d 0755 "$2" "$1"; }
@@ -623,17 +635,25 @@ emake() {
   "${MAKE:-make}" "${makeopts[@]}" ${EXTRA_EMAKE-} "$@"
 }
 econf() {
-  local source=${ECONF_SOURCE:-.} prefix=${EPREFIX-}/usr build=${CBUILD:-${CHOST-}}
+  local source=${ECONF_SOURCE:-.} prefix=${EPREFIX-}/usr conf_prefix=${EPREFIX-}/usr build=${CBUILD:-${CHOST-}} argument
+  local explicit_libdir=
+  for argument in "$@"; do
+    case $argument in
+      --exec-prefix=*) conf_prefix=${argument#*=} ;;
+      --prefix=*) conf_prefix=${argument#*=} ;;
+      --libdir=*) explicit_libdir=1 ;;
+    esac
+  done
   local conf_help=
   local -a defaults=(
     "--prefix=$prefix"
-    "--libdir=$prefix/$(get_libdir)"
     "--datadir=$prefix/share"
     "--mandir=$prefix/share/man"
     "--infodir=$prefix/share/info"
     "--sysconfdir=${EPREFIX-}/etc"
     "--localstatedir=${EPREFIX-}/var/lib"
   )
+  [[ $explicit_libdir ]] || defaults+=("--libdir=$conf_prefix/$(get_libdir)")
   # Match the configure defaults supplied by Portage for the EAPIs Arise
   # supports.  These are conditional because not every configure script
   # accepts the standard Automake/GNU directory and policy switches.
@@ -964,7 +984,7 @@ run_one_phase() {
 }
 
 arise_save_phase_environment() {
-	local output=${ARISE_SAVE_ENVIRONMENT-} temporary name declaration
+	local output=${ARISE_SAVE_ENVIRONMENT-} temporary name declaration phase_name
 	[[ $output ]] || return 0
 	temporary=${output}.tmp.$$
 	: >"$temporary" || return
@@ -978,6 +998,10 @@ arise_save_phase_environment() {
 		[[ $declaration == declare\ -r* || $declaration == declare\ -ar* || $declaration == declare\ -Ar* ]] && continue
 		printf '%s\n' "$declaration" >>"$temporary" || return
 	done < <(compgen -v | LC_ALL=C sort -u)
+	for phase_name in pkg_pretend pkg_setup pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
+		declare -F "$phase_name" >/dev/null || continue
+		declare -f "$phase_name" >>"$temporary" || return
+	done
 	mv -f -- "$temporary" "$output"
 }
 

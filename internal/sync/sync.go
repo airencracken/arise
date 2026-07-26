@@ -68,11 +68,17 @@ func RemoteURL(dir string) string {
 
 // Validate checks that required fields are present.
 func (c SyncConfig) Validate() error {
-	if c.RepoURL == "" {
+	if strings.TrimSpace(c.RepoURL) == "" {
 		return errors.New("sync: RepoURL is required")
 	}
-	if c.TargetDir == "" {
+	if strings.IndexByte(c.RepoURL, 0) >= 0 {
+		return errors.New("sync: RepoURL contains NUL")
+	}
+	if strings.TrimSpace(c.TargetDir) == "" {
 		return errors.New("sync: TargetDir is required")
+	}
+	if strings.IndexByte(c.TargetDir, 0) >= 0 {
+		return errors.New("sync: TargetDir contains NUL")
 	}
 	return nil
 }
@@ -209,13 +215,27 @@ func gitEbuildChanges(ctx context.Context, dir, oldRevision, newRevision string)
 		if len(fields) < 2 {
 			continue
 		}
-		path := fields[len(fields)-1]
-		parts := strings.Split(path, "/")
-		if len(parts) < 3 || !strings.HasSuffix(path, ".ebuild") {
+		status := fields[0][0]
+		if status == 'R' && len(fields) >= 3 {
+			if cpv, ok := ebuildCPV(fields[1]); ok {
+				summary.Removed = append(summary.Removed, cpv)
+			}
+			if cpv, ok := ebuildCPV(fields[2]); ok {
+				summary.Added = append(summary.Added, cpv)
+			}
 			continue
 		}
-		cpv := parts[0] + "/" + strings.TrimSuffix(parts[len(parts)-1], ".ebuild")
-		switch fields[0][0] {
+		if status == 'C' && len(fields) >= 3 {
+			if cpv, ok := ebuildCPV(fields[2]); ok {
+				summary.Added = append(summary.Added, cpv)
+			}
+			continue
+		}
+		cpv, ok := ebuildCPV(fields[len(fields)-1])
+		if !ok {
+			continue
+		}
+		switch status {
 		case 'A':
 			summary.Added = append(summary.Added, cpv)
 		case 'D':
@@ -225,6 +245,15 @@ func gitEbuildChanges(ctx context.Context, dir, oldRevision, newRevision string)
 		}
 	}
 	return summary, nil
+}
+
+func ebuildCPV(path string) (string, bool) {
+	parts := strings.Split(path, "/")
+	if len(parts) < 3 || !strings.HasSuffix(path, ".ebuild") {
+		return "", false
+	}
+	cpv := parts[0] + "/" + strings.TrimSuffix(parts[len(parts)-1], ".ebuild")
+	return cpv, true
 }
 
 func cloneGitRepoCommand(ctx context.Context, cfg SyncConfig) error {

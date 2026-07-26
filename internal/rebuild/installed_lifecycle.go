@@ -1,6 +1,7 @@
 package rebuild
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -13,13 +14,15 @@ import (
 	"github.com/airencracken/arise/internal/portage"
 )
 
-// InstalledLifecycle executes removal hooks from the environment persisted in
+// InstalledLifecycle executes package hooks from the environment persisted in
 // an installed VDB entry. It deliberately does not re-source current eclasses.
 type InstalledLifecycle struct {
-	request phaseproto.Request
-	log     *phaseproto.PackageLog
-	workDir string
-	cfg     *RebuildConfig
+	request           phaseproto.Request
+	log               *phaseproto.PackageLog
+	workDir           string
+	cfg               *RebuildConfig
+	phases            map[string]bool
+	environmentPhases map[string]bool
 }
 
 func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifecycle, error) {
@@ -40,6 +43,9 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 	if err != nil {
 		return nil, fmt.Errorf("installed lifecycle: stored ebuild: %w", err)
 	}
+	if err := ensureWorkDirectory(cfg.WorkDirBase); err != nil {
+		return nil, fmt.Errorf("installed lifecycle: %w", err)
+	}
 	workDir, err := os.MkdirTemp(cfg.WorkDirBase, category+"-"+a.Package+"-remove-")
 	if err != nil {
 		return nil, fmt.Errorf("installed lifecycle: work directory: %w", err)
@@ -56,6 +62,10 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 	environment, err := materializeInstalledEnvironment(vdbPath, workDir)
 	if err != nil {
 		return fail(fmt.Errorf("installed lifecycle: environment: %w", err))
+	}
+	environmentPhases, err := lifecycleFunctionsInEnvironment(environment)
+	if err != nil {
+		return fail(fmt.Errorf("installed lifecycle: inspect environment functions: %w", err))
 	}
 	repository := strings.TrimSpace(readInstalledValue(vdbPath, "repository"))
 	if repository == "" {
@@ -88,11 +98,41 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 		return fail(fmt.Errorf("installed lifecycle: log: %w", err))
 	}
 	request.LogFile = log.Path()
-	return &InstalledLifecycle{request: request, log: log, workDir: workDir, cfg: cfg}, nil
+	definedPhases := strings.Fields(readInstalledValue(vdbPath, "DEFINED_PHASES"))
+	phases := make(map[string]bool, len(definedPhases))
+	for _, phase := range definedPhases {
+		phases[phase] = true
+	}
+	// Old or synthetic VDB records may predate DEFINED_PHASES. Direct
+	// definitions in the stored ebuild remain a safe compatibility fallback.
+	if len(phases) == 0 {
+		for phase := range eb.RawPhases {
+			phases[phase] = true
+		}
+	}
+	return &InstalledLifecycle{
+		request: request, log: log, workDir: workDir, cfg: cfg, phases: phases,
+		environmentPhases: environmentPhases,
+	}, nil
+}
+
+func (l *InstalledLifecycle) HasPhase(phase string) bool {
+	return l != nil && l.phases[phase]
+}
+
+func (l *InstalledLifecycle) requestForPhase(phase string) phaseproto.Request {
+	request := l.request
+	if l.phases[phase] && !l.environmentPhases[phase] {
+		// Early Arise VDB environments recorded variables but omitted function
+		// bodies. Re-source the stored ebuild only for that legacy state; normal
+		// installed lifecycle execution remains isolated from current eclasses.
+		request.Environment = ""
+	}
+	return request
 }
 
 func (l *InstalledLifecycle) Run(ctx context.Context, phase string) error {
-	request := l.request
+	request := l.requestForPhase(phase)
 	request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(request.Package.Category + "-" + request.Package.PF + "-" + phase)
 	request.Phase = phase
 	request = applyPortageLifecyclePolicy(request, phase)
@@ -109,6 +149,26 @@ func (l *InstalledLifecycle) Run(ctx context.Context, phase string) error {
 		return fmt.Errorf("installed lifecycle %s: %w%s", phase, err, lifecycleDetails(details))
 	}
 	return nil
+}
+
+func lifecycleFunctionsInEnvironment(path string) (map[string]bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	functions := make(map[string]bool)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		for _, phase := range []string{"pkg_pretend", "pkg_setup", "pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm", "pkg_config", "pkg_info", "pkg_nofetch"} {
+			if line == phase+" ()" || line == phase+"()" || line == "function "+phase+" ()" || line == "function "+phase+"()" {
+				functions[phase] = true
+			}
+		}
+	}
+	return functions, scanner.Err()
 }
 
 func lifecycleDetails(lines []string) string {

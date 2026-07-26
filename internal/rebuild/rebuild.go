@@ -96,6 +96,23 @@ type RebuildConfig struct {
 	OnError      func(pkg string, err error)
 }
 
+func ensureWorkDirectory(path string) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("rebuild: work directory must be an absolute path")
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return fmt.Errorf("rebuild: create work directory %s: %w", path, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("rebuild: inspect work directory %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("rebuild: work path is not a directory: %s", path)
+	}
+	return nil
+}
+
 func (c *RebuildConfig) fetcher() *fetch.Fetcher {
 	if c.Fetcher == nil {
 		c.Fetcher = &fetch.Fetcher{}
@@ -249,6 +266,9 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 	}
 	var verified distfiles.VerifiedSet
 
+	if err := ensureWorkDirectory(cfg.WorkDirBase); err != nil {
+		return err
+	}
 	workDir, err := os.MkdirTemp(cfg.WorkDirBase, cat+"-"+pkg+"-"+ver+"-*")
 	if err != nil {
 		return fmt.Errorf("rebuild: could not create temporary build directory: %w", err)
@@ -404,6 +424,9 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 		if path == "" || !filepath.IsAbs(path) {
 			return fmt.Errorf("rebuild: preflight %s path must be absolute", label)
 		}
+	}
+	if err := ensureWorkDirectory(cfg.WorkDirBase); err != nil {
+		return err
 	}
 	preflightDir, err := os.MkdirTemp(cfg.WorkDirBase, "preflight-")
 	if err != nil {
@@ -2192,7 +2215,7 @@ func applyPortageLifecyclePolicy(request phaseproto.Request, phaseName string) p
 		// Portage retains pid-sandbox for setup/pretend; they are not in
 		// doebuild.py's _global_pid_phases.
 		return request
-	case "pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm":
+	case "pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm", "pkg_config":
 	case "src_unpack", "src_prepare", "src_configure", "src_compile", "src_test":
 		if request.Policy.UserPriv {
 			request.Policy.DropPrivileges = true

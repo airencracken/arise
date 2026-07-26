@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -612,6 +613,50 @@ func TestTransactionalMergePreservesHardlinksAndRegularFileTimestamp(t *testing.
 	installedStat := mustStatT(t, installedFirst)
 	if installedStat.Uid != sourceStat.Uid || installedStat.Gid != sourceStat.Gid {
 		t.Fatalf("ownership=%d:%d want=%d:%d", installedStat.Uid, installedStat.Gid, sourceStat.Uid, sourceStat.Gid)
+	}
+}
+
+func TestTransactionalMergeRepairsMetadataOnExistingServiceDirectories(t *testing.T) {
+	tmp := t.TempDir()
+	image := filepath.Join(tmp, "image")
+	root := filepath.Join(tmp, "root")
+	paths := []string{"etc/redis", "var/lib/redis", "var/log/redis"}
+	for _, relative := range paths {
+		if err := os.MkdirAll(filepath.Join(image, relative), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(image, relative), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(root, relative), 0o777); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(root, relative), 0o777); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := MergeConfig{
+		RootDir: root, VdbDir: filepath.Join(root, "var", "db", "pkg"),
+		Category: "dev-db", Package: "redis", Version: "8.2.6",
+		JournalDir: filepath.Join(tmp, "journals"),
+	}
+	if err := Merge(context.Background(), image, cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range paths {
+		source := filepath.Join(image, relative)
+		installed := filepath.Join(root, relative)
+		info, err := os.Stat(installed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o750 {
+			t.Fatalf("%s mode=%o want=750", relative, info.Mode().Perm())
+		}
+		sourceStat, installedStat := mustStatT(t, source), mustStatT(t, installed)
+		if installedStat.Uid != sourceStat.Uid || installedStat.Gid != sourceStat.Gid {
+			t.Fatalf("%s ownership=%d:%d want=%d:%d", relative, installedStat.Uid, installedStat.Gid, sourceStat.Uid, sourceStat.Gid)
+		}
 	}
 }
 
@@ -1518,6 +1563,92 @@ func TestTransactionalMergeConfigProtectAndMask(t *testing.T) {
 	}
 }
 
+func TestPropertyConfigProtectNormalizesEntriesAndRequiresPathBoundaries(t *testing.T) {
+	tests := []struct {
+		name     string
+		relative string
+		protect  []string
+		mask     []string
+		want     bool
+	}{
+		{name: "exact", relative: "etc", protect: []string{"/etc"}, want: true},
+		{name: "descendant", relative: "etc/ssh/sshd_config", protect: []string{" /etc/./ "}, want: true},
+		{name: "relative policy", relative: "etc/app.conf", protect: []string{"etc"}, want: true},
+		{name: "prefix sibling", relative: "etc-backup/app.conf", protect: []string{"/etc"}, want: false},
+		{name: "exact mask", relative: "etc/masked", protect: []string{"/etc"}, mask: []string{"/etc/masked"}, want: false},
+		{name: "masked descendant", relative: "etc/masked/value", protect: []string{"/etc"}, mask: []string{"/etc/masked"}, want: false},
+		{name: "mask prefix sibling", relative: "etc/masked-safe/value", protect: []string{"/etc"}, mask: []string{"/etc/masked"}, want: true},
+		{name: "outside", relative: "var/lib/value", protect: []string{"/etc"}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := protectedPath(test.relative, test.protect, test.mask); got != test.want {
+				t.Fatalf("protectedPath(%q, %q, %q) = %t, want %t", test.relative, test.protect, test.mask, got, test.want)
+			}
+		})
+	}
+}
+
+func TestMutationNextProtectedPathIncludesFinalCounterAndThenExhausts(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "app.conf")
+	for index := 0; index < 9999; index++ {
+		path := filepath.Join(directory, fmt.Sprintf("._cfg%04d_app.conf", index))
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	final := filepath.Join(directory, "._cfg9999_app.conf")
+	got, err := nextProtectedPath(target)
+	if err != nil || got != final {
+		t.Fatalf("nextProtectedPath before exhaustion = %q, %v; want %q", got, err, final)
+	}
+	if err := os.WriteFile(final, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := nextProtectedPath(target); err == nil || got != "" ||
+		!strings.Contains(err.Error(), "no CONFIG_PROTECT update name available") {
+		t.Fatalf("nextProtectedPath after exhaustion = %q, %v", got, err)
+	}
+}
+
+func TestAdversarialNextProtectedPathPropagatesFilesystemErrors(t *testing.T) {
+	// NAME_MAX rejection is deterministic even when tests run as root, unlike
+	// directory permission failures.
+	target := filepath.Join(t.TempDir(), strings.Repeat("x", 256))
+	if got, err := nextProtectedPath(target); err == nil || got != "" {
+		t.Fatalf("overlong protected filename accepted as %q, error %v", got, err)
+	}
+}
+
+func TestSameRegularFileContractAndReadFailures(t *testing.T) {
+	directory := t.TempDir()
+	left, equal, different := filepath.Join(directory, "left"), filepath.Join(directory, "equal"), filepath.Join(directory, "different")
+	for path, content := range map[string]string{left: "same\x00bytes", equal: "same\x00bytes", different: "different"} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		name        string
+		left, right string
+		want        bool
+		wantErr     bool
+	}{
+		{name: "binary equal", left: left, right: equal, want: true},
+		{name: "different", left: left, right: different},
+		{name: "missing left", left: filepath.Join(directory, "missing"), right: equal, wantErr: true},
+		{name: "missing right", left: left, right: filepath.Join(directory, "missing"), wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := sameRegularFile(test.left, test.right)
+			if got != test.want || (err != nil) != test.wantErr {
+				t.Fatalf("sameRegularFile() = %t, %v; want %t, error=%t", got, err, test.want, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestTransactionalMergeConfigProtectDoesNotReadSymlinkToDirectory(t *testing.T) {
 	tmp := t.TempDir()
 	destDir, rootDir := filepath.Join(tmp, "dest"), filepath.Join(tmp, "root")
@@ -2077,6 +2208,107 @@ sym /usr/lib/libx.so -> libx.so.1 ffff 9876543210`
 	}
 	if entries[2].Type != "sym" {
 		t.Errorf("entry 2 type = %q, want sym", entries[2].Type)
+	}
+	if entries[2].Path != "/usr/lib/libx.so" || entries[2].Mtime != 9876543210 {
+		t.Errorf("entry 2 = %#v, want symlink path and mtime preserved", entries[2])
+	}
+}
+
+func TestParseContentsExactRecordContracts(t *testing.T) {
+	input := strings.Join([]string{
+		"malformed-first-line",
+		"  obj /path with spaces deadbeef 42  ",
+		"sym /link with spaces -> ../target with spaces feedface 73",
+		"dir /empty directory",
+		"fif /run/service.pipe",
+		"dev /dev/example",
+		"obj malformed",
+		"sym missing-arrow",
+		"unknown /ignored",
+	}, "\n")
+	got, err := parseContents(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []contentsEntry{
+		{Type: "obj", Path: "/path with spaces", MD5: "deadbeef", Mtime: 42},
+		{Type: "sym", Path: "/link with spaces", Mtime: 73},
+		{Type: "dir", Path: "/empty directory"},
+		{Type: "fif", Path: "/run/service.pipe"},
+		{Type: "dev", Path: "/dev/example"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseContents() = %#v, want %#v", got, want)
+	}
+}
+
+func FuzzParseContentsNeverPanicsAndReturnsKnownNonemptyRecords(f *testing.F) {
+	for _, seed := range []string{
+		"",
+		"obj /usr/bin/tool deadbeef 1",
+		"sym /link -> target deadbeef 2",
+		"\x00\nobj  x  y  z\n",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		if len(input) > 1<<20 {
+			t.Skip()
+		}
+		entries, err := parseContents(input)
+		if err != nil {
+			t.Fatalf("parseContents(%q): %v", input, err)
+		}
+		for index, entry := range entries {
+			switch entry.Type {
+			case "obj", "sym", "dir", "fif", "dev":
+			default:
+				t.Fatalf("entry %d has unknown type %q", index, entry.Type)
+			}
+			if entry.Path == "" {
+				t.Fatalf("entry %d has empty path", index)
+			}
+		}
+	})
+}
+
+func TestReplacementAndContentsPathsRemainConfinedToRoot(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "tmp", "root")
+	for _, test := range []struct {
+		name          string
+		recorded      string
+		wantCanonical string
+		wantTarget    string
+		wantErr       bool
+	}{
+		{name: "root relative contents", recorded: "/etc/value", wantCanonical: "/etc/value", wantTarget: filepath.Join(root, "etc/value")},
+		{name: "already rooted", recorded: filepath.Join(root, "etc/value"), wantCanonical: "/etc/value", wantTarget: filepath.Join(root, "etc/value")},
+		{name: "root itself", recorded: root, wantCanonical: "/", wantTarget: root},
+		{name: "parent directory is outside", recorded: filepath.Dir(root), wantCanonical: "/tmp", wantTarget: filepath.Join(root, "tmp")},
+		{name: "prefix sibling is not inside", recorded: root + "-backup/etc/value", wantCanonical: root + "-backup/etc/value", wantTarget: filepath.Join(root, "tmp/root-backup/etc/value")},
+		{name: "relative rejected", recorded: "../etc/value", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			canonical, target, err := replacementPath(root, test.recorded)
+			if (err != nil) != test.wantErr || canonical != test.wantCanonical || target != test.wantTarget {
+				t.Fatalf("replacementPath(%q) = %q, %q, %v; want %q, %q, error=%t", test.recorded, canonical, target, err, test.wantCanonical, test.wantTarget, test.wantErr)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name, target, want string
+	}{
+		{name: "inside", target: filepath.Join(root, "etc/value"), want: "/etc/value"},
+		{name: "root itself", target: root, want: "/"},
+		{name: "outside", target: "/var/outside", want: "/var/outside"},
+		{name: "parent directory", target: filepath.Dir(root), want: filepath.Dir(root)},
+		{name: "prefix sibling", target: root + "-backup/value", want: root + "-backup/value"},
+	} {
+		t.Run("contents "+test.name, func(t *testing.T) {
+			if got := contentsPathForRoot(root, test.target); got != test.want {
+				t.Fatalf("contentsPathForRoot(%q, %q) = %q, want %q", root, test.target, got, test.want)
+			}
+		})
 	}
 }
 

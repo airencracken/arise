@@ -143,17 +143,103 @@ func TestApplyPortageUserprivPolicyByPhase(t *testing.T) {
 			t.Fatalf("%s policy = %+v", phase, got.Policy)
 		}
 	}
-	for _, phase := range []string{"pkg_setup", "src_install", "pkg_preinst", "pkg_postinst"} {
+	for _, phase := range []string{"pkg_setup", "src_install", "pkg_preinst", "pkg_postinst", "pkg_config"} {
 		got := applyPortageLifecyclePolicy(base, phase)
 		if got.Policy.DropPrivileges {
 			t.Fatalf("%s unexpectedly drops privileges: %+v", phase, got.Policy)
 		}
+	}
+	config := applyPortageLifecyclePolicy(base, "pkg_config")
+	if config.Policy.Sandbox || config.Policy.NetworkSandbox || config.Policy.IPCSandbox || config.Policy.PIDSandbox {
+		t.Fatalf("pkg_config retained Portage namespaces: %+v", config.Policy)
 	}
 	withoutUserSandbox := base
 	withoutUserSandbox.Policy.UserSandbox = false
 	got := applyPortageLifecyclePolicy(withoutUserSandbox, "src_compile")
 	if !got.Policy.DropPrivileges || got.Policy.Sandbox {
 		t.Fatalf("userpriv without usersandbox policy = %+v", got.Policy)
+	}
+}
+
+func TestInstalledLifecycleHasPhaseIsNilSafeAndExact(t *testing.T) {
+	var nilLifecycle *InstalledLifecycle
+	if nilLifecycle.HasPhase("pkg_config") {
+		t.Fatal("nil lifecycle reported a phase")
+	}
+	lifecycle := &InstalledLifecycle{phases: map[string]bool{"pkg_config": true}}
+	if !lifecycle.HasPhase("pkg_config") {
+		t.Fatal("stored pkg_config phase was not reported")
+	}
+	if lifecycle.HasPhase("pkg_config_extra") || lifecycle.HasPhase("") {
+		t.Fatal("nonexistent phase was reported")
+	}
+}
+
+func TestInstalledLifecycleFallsBackOnlyForMissingPersistedFunctions(t *testing.T) {
+	lifecycle := &InstalledLifecycle{
+		request:           phaseproto.Request{Environment: "/installed/environment"},
+		phases:            map[string]bool{"pkg_config": true, "pkg_postinst": true},
+		environmentPhases: map[string]bool{"pkg_postinst": true},
+	}
+	if got := lifecycle.requestForPhase("pkg_config"); got.Environment != "" {
+		t.Fatalf("legacy pkg_config retained incomplete environment %q", got.Environment)
+	}
+	if got := lifecycle.requestForPhase("pkg_postinst"); got.Environment != "/installed/environment" {
+		t.Fatalf("persisted pkg_postinst lost installed environment: %q", got.Environment)
+	}
+	if got := lifecycle.requestForPhase("pkg_prerm"); got.Environment != "/installed/environment" {
+		t.Fatalf("undeclared phase unexpectedly enabled fallback: %q", got.Environment)
+	}
+}
+
+func TestLifecycleFunctionsInEnvironmentRecognizesExactShellDeclarations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environment")
+	content := "pkg_config ()\n{\n:\n}\nfunction pkg_postinst()\n{\n:\n}\npkg_config_extra ()\n{\n:\n}\n# pkg_prerm ()\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	functions, err := lifecycleFunctionsInEnvironment(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !functions["pkg_config"] || !functions["pkg_postinst"] {
+		t.Fatalf("recognized functions = %v", functions)
+	}
+	if functions["pkg_config_extra"] || functions["pkg_prerm"] {
+		t.Fatalf("accepted prefix or comment as lifecycle function: %v", functions)
+	}
+}
+
+func TestEnsureWorkDirectoryRecreatesDeletedRuntimeState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deleted", "var", "tmp", "arise")
+	if err := ensureWorkDirectory(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("work directory info=%v err=%v", info, err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("work directory mode = %o, want 755", info.Mode().Perm())
+	}
+	if err := ensureWorkDirectory(path); err != nil {
+		t.Fatalf("idempotent ensure: %v", err)
+	}
+}
+
+func TestEnsureWorkDirectoryRejectsUnsafeAndConflictingPaths(t *testing.T) {
+	if err := ensureWorkDirectory(""); err == nil {
+		t.Fatal("empty work path was accepted")
+	}
+	if err := ensureWorkDirectory("relative/work"); err == nil {
+		t.Fatal("relative work path was accepted")
+	}
+	path := filepath.Join(t.TempDir(), "arise")
+	if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureWorkDirectory(path); err == nil {
+		t.Fatal("regular-file work path was accepted")
 	}
 }
 

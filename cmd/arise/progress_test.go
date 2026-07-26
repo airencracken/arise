@@ -96,6 +96,26 @@ func TestNonTerminalPackageProgressUsesMilestones(t *testing.T) {
 	}
 }
 
+func TestNonAnimatedTerminalProgressHasNoBackgroundRedraw(t *testing.T) {
+	var output bytes.Buffer
+	progress := startTerminalProgressWriter("package transaction", true, false, true, &output)
+	if progress.done != nil {
+		t.Fatal("non-animated terminal progress started a redraw loop")
+	}
+	progress.setStatus(">>> Jobs: 0 of 1 complete")
+	progress.setProgress(">>> Installing package contents (1 of 1) cat/pkg-1", 1, 1)
+	progress.clearProgress()
+	progress.stop()
+
+	got := output.String()
+	if strings.Count(got, "Installing package contents") != 1 {
+		t.Fatalf("measured progress was redrawn without a state change: %q", got)
+	}
+	if strings.Count(got, ">>> Jobs: 0 of 1 complete") != 2 {
+		t.Fatalf("status render count=%d want=2: %q", strings.Count(got, ">>> Jobs: 0 of 1 complete"), got)
+	}
+}
+
 func TestFetchProgressCanShareTerminalMessageOwner(t *testing.T) {
 	var output bytes.Buffer
 	terminal := &terminalProgress{output: true, terminal: true, writer: &output}

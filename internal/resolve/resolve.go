@@ -6,7 +6,9 @@ package resolve
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,6 +22,7 @@ import (
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/binpkg"
 	"github.com/airencracken/arise/internal/depstring"
+	"github.com/airencracken/arise/internal/oplock"
 	"github.com/airencracken/arise/internal/portage"
 )
 
@@ -6414,19 +6417,39 @@ type ResumeState struct {
 // ResumePath is the default filesystem location for the resume file.
 const ResumePath = "/var/tmp/arise/resume"
 
+var resumeLocks sync.Map
+
+func resumeMutex(path string) *sync.Mutex {
+	lock, _ := resumeLocks.LoadOrStore(filepath.Clean(path), &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+func withResumeLock(path string, update func() error) (returnErr error) {
+	local := resumeMutex(path)
+	local.Lock()
+	defer local.Unlock()
+	lock, err := oplock.AcquirePath(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, lock.Release())
+	}()
+	return update()
+}
+
 // SaveResume saves the current resolution state for --resume support.
 func SaveResume(path string, result *ResolveResult) error {
 	if result == nil {
 		return nil
 	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("resolve: could not save build progress for --resume: %w", err)
-	}
 	state := ResumeState{
 		Packages: make([]ResumePackage, 0, len(result.Install)),
 	}
 	for _, a := range result.Install {
+		if a.Atom == nil {
+			return fmt.Errorf("resolve: could not save build progress for --resume: invalid install action")
+		}
 		cpv := a.Atom.CP()
 		if a.Atom.Version != nil && a.Atom.Version.Raw != "" {
 			cpv += "-" + a.Atom.Version.Raw
@@ -6439,24 +6462,58 @@ func SaveResume(path string, result *ResolveResult) error {
 			Completed: false,
 		})
 	}
-	if err := writeResumeState(path, state); err != nil {
+	err := withResumeLock(path, func() error {
+		dir := filepath.Dir(path)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+		return writeResumeState(path, state)
+	})
+	if err != nil {
 		return fmt.Errorf("resolve: could not save build progress for --resume: %w", err)
 	}
 	return nil
 }
 
-// LoadResume loads a previous resume state.
-func LoadResume(path string) ([]string, error) {
+func readResumeState(path string) (ResumeState, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolve: could not load saved build progress: %w", err)
+		return ResumeState{}, err
 	}
-	defer func() {
-		if cerr := f.Close(); cerr != nil { /* Best effort */
-		}
-	}()
+	defer f.Close()
+	decoder := json.NewDecoder(f)
+	decoder.DisallowUnknownFields()
 	var state ResumeState
-	if err := json.NewDecoder(f).Decode(&state); err != nil {
+	if err := decoder.Decode(&state); err != nil {
+		return ResumeState{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return ResumeState{}, fmt.Errorf("multiple JSON values")
+		}
+		return ResumeState{}, err
+	}
+	if state.Packages == nil {
+		return ResumeState{}, fmt.Errorf("missing packages")
+	}
+	seen := make(map[string]bool, len(state.Packages))
+	for index, pkg := range state.Packages {
+		if strings.TrimSpace(pkg.Atom) == "" {
+			return ResumeState{}, fmt.Errorf("package %d has empty atom", index+1)
+		}
+		if seen[pkg.Atom] {
+			return ResumeState{}, fmt.Errorf("duplicate atom %q", pkg.Atom)
+		}
+		seen[pkg.Atom] = true
+	}
+	return state, nil
+}
+
+// LoadResume loads a previous resume state.
+func LoadResume(path string) ([]string, error) {
+	state, err := readResumeState(path)
+	if err != nil {
 		return nil, fmt.Errorf("resolve: could not load saved build progress: %w", err)
 	}
 	var result []string
@@ -6470,28 +6527,23 @@ func LoadResume(path string) ([]string, error) {
 
 // MarkResumeComplete marks a package as completed in the resume file.
 func MarkResumeComplete(path string, completedAtom string) error {
-	f, err := os.Open(path)
-	if err != nil {
+	err := withResumeLock(path, func() error {
+		state, err := readResumeState(path)
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("resolve: could not update build progress record: %w", err)
-	}
-	defer func() {
-		if cerr := f.Close(); cerr != nil { /* Best effort */
+		if err != nil {
+			return err
 		}
-	}()
-	var state ResumeState
-	if err := json.NewDecoder(f).Decode(&state); err != nil {
-		return fmt.Errorf("resolve: could not update build progress record: %w", err)
-	}
-	for i := range state.Packages {
-		if state.Packages[i].Atom == completedAtom {
-			state.Packages[i].Completed = true
-			break
+		for i := range state.Packages {
+			if state.Packages[i].Atom == completedAtom {
+				state.Packages[i].Completed = true
+				break
+			}
 		}
-	}
-	if err := writeResumeState(path, state); err != nil {
+		return writeResumeState(path, state)
+	})
+	if err != nil {
 		return fmt.Errorf("resolve: could not update build progress record: %w", err)
 	}
 	return nil
@@ -6499,41 +6551,71 @@ func MarkResumeComplete(path string, completedAtom string) error {
 
 // SkipFirstResume removes the first uncompleted entry from the resume file.
 func SkipFirstResume(path string) error {
-	f, err := os.Open(path)
-	if err != nil {
+	err := withResumeLock(path, func() error {
+		state, err := readResumeState(path)
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
-	}
-	defer func() {
-		if cerr := f.Close(); cerr != nil { /* Best effort */
+		if err != nil {
+			return err
 		}
-	}()
-	var state ResumeState
-	if err := json.NewDecoder(f).Decode(&state); err != nil {
-		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
-	}
-	for i := range state.Packages {
-		if !state.Packages[i].Completed {
-			state.Packages[i].Completed = true
-			break
+		for i := range state.Packages {
+			if !state.Packages[i].Completed {
+				state.Packages[i].Completed = true
+				break
+			}
 		}
-	}
-	if err := writeResumeState(path, state); err != nil {
+		return writeResumeState(path, state)
+	})
+	if err != nil {
 		return fmt.Errorf("resolve: could not skip first item in saved build list: %w", err)
 	}
 	return nil
 }
 
 func writeResumeState(path string, state ResumeState) error {
+	return writeResumeStateWithIO(path, state, systemResumeIO)
+}
+
+type resumeFile interface {
+	io.Writer
+	Name() string
+	Chmod(os.FileMode) error
+	Sync() error
+	Close() error
+}
+
+type resumeDirectory interface {
+	Sync() error
+	Close() error
+}
+
+type resumeIO struct {
+	createTemp func(string, string) (resumeFile, error)
+	rename     func(string, string) error
+	openDir    func(string) (resumeDirectory, error)
+	remove     func(string) error
+}
+
+var systemResumeIO = resumeIO{
+	createTemp: func(directory, pattern string) (resumeFile, error) {
+		return os.CreateTemp(directory, pattern)
+	},
+	rename: os.Rename,
+	openDir: func(path string) (resumeDirectory, error) {
+		return os.Open(path)
+	},
+	remove: os.Remove,
+}
+
+func writeResumeStateWithIO(path string, state ResumeState, operations resumeIO) error {
 	directory := filepath.Dir(path)
-	temporary, err := os.CreateTemp(directory, ".resume-*")
+	temporary, err := operations.createTemp(directory, ".resume-*")
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	defer operations.remove(temporaryPath)
 	if err := temporary.Chmod(0o644); err != nil {
 		temporary.Close()
 		return err
@@ -6551,10 +6633,10 @@ func writeResumeState(path string, state ResumeState) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := operations.rename(temporaryPath, path); err != nil {
 		return err
 	}
-	dir, err := os.Open(directory)
+	dir, err := operations.openDir(directory)
 	if err != nil {
 		return err
 	}

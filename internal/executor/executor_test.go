@@ -30,6 +30,143 @@ func action(t *testing.T, cpv string) resolve.PkgAction {
 	return resolve.PkgAction{Atom: a, Action: "install", Repository: "test", RepositoryPath: "/repo", MergeType: "source", Domain: resolve.DomainROOT}
 }
 
+func TestPreflightAllRejectsEveryInvalidActionWithoutShortCircuiting(t *testing.T) {
+	valid := action(t, "cat/valid-1")
+	wrongDomain := valid
+	wrongDomain.Atom, _ = atom.Parse("cat/domain-1")
+	wrongDomain.Domain = resolve.DomainBROOT
+	missingRepository := valid
+	missingRepository.Atom, _ = atom.Parse("cat/repository-1")
+	missingRepository.Repository = ""
+	result := &resolve.ResolveResult{
+		Verified:     true,
+		Verification: resolve.VerificationVerified,
+		Install: []resolve.PkgAction{
+			{Action: "install", Repository: "test", RepositoryPath: "/repo", MergeType: "source", Domain: resolve.DomainROOT},
+			wrongDomain,
+			missingRepository,
+		},
+	}
+	failures := PreflightAll(result, rebuild.RebuildConfig{})
+	if len(failures) != 3 {
+		t.Fatalf("PreflightAll returned %d failures, want complete set of 3: %#v", len(failures), failures)
+	}
+	want := []string{
+		"preflight <nil>: action lacks exact package version",
+		"preflight cat/domain-1: unsupported mutation domain BROOT",
+		"preflight cat/repository-1: action lacks repository identity",
+	}
+	for index, failure := range failures {
+		if failure.Err == nil || failure.Error() != want[index] {
+			t.Errorf("failure[%d] = %q (%v), want %q", index, failure.Error(), failure.Err, want[index])
+		}
+	}
+}
+
+func TestPreflightAllRejectsEveryUntrustedPlanShape(t *testing.T) {
+	for name, result := range map[string]*resolve.ResolveResult{
+		"nil":          nil,
+		"unverified":   {Verification: resolve.VerificationVerified},
+		"wrong status": {Verified: true, Verification: "incomplete"},
+		"conflicted": {
+			Verified: true, Verification: resolve.VerificationVerified,
+			Conflicts: []string{"slot conflict"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			failures := PreflightAll(result, rebuild.RebuildConfig{})
+			if len(failures) != 1 || failures[0].Action.Atom != nil ||
+				failures[0].Err == nil || failures[0].Err.Error() != "refusing non-verified plan" {
+				t.Fatalf("PreflightAll(%s) = %#v", name, failures)
+			}
+		})
+	}
+}
+
+func TestPreflightAllEmptyVerifiedPlanIsReadOnlySuccess(t *testing.T) {
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified}
+	if failures := PreflightAll(result, rebuild.RebuildConfig{}); len(failures) != 0 {
+		t.Fatalf("empty verified plan failures = %#v", failures)
+	}
+}
+
+func TestActionRebuildConfigCopiesEveryFrozenActionFieldWithoutAliasing(t *testing.T) {
+	baseUse := map[string]bool{"base": true}
+	base := rebuild.RebuildConfig{
+		RepoDir: "/base/repo", Repository: "base", UseFlags: baseUse,
+		SourceURI: "base-uri", SelectedSlot: "base-slot", SelectedIUSE: "base-iuse",
+		AllowLiveRoot: true, AllowLiveReplacement: true, AllowLiveUpgrade: true,
+	}
+	item := action(t, "cat/pkg-2")
+	item.RepositoryPath = "/repos/overlay"
+	item.Repository = "overlay"
+	item.UseFlags = map[string]bool{"enabled": true, "disabled": false}
+	item.SrcURI = "https://example.invalid/source.tar.xz"
+	item.Slot = "3"
+	item.Subslot = "7"
+	item.IUse = "+enabled disabled"
+	item.Action = "install"
+
+	got := actionRebuildConfig(base, item)
+	if got.RepoDir != item.RepositoryPath || got.Repository != item.Repository ||
+		got.SourceURI != item.SrcURI || got.SelectedSlot != "3/7" ||
+		got.SelectedIUSE != item.IUse || got.AllowLiveReplacement || got.AllowLiveUpgrade ||
+		!reflect.DeepEqual(got.UseFlags, item.UseFlags) {
+		t.Fatalf("actionRebuildConfig() = %#v", got)
+	}
+	got.UseFlags["enabled"] = false
+	got.UseFlags["new"] = true
+	if !item.UseFlags["enabled"] || item.UseFlags["new"] || !baseUse["base"] {
+		t.Fatalf("derived USE map aliases action or base: got=%v action=%v base=%v", got.UseFlags, item.UseFlags, baseUse)
+	}
+	if base.RepoDir != "/base/repo" || base.Repository != "base" ||
+		base.SourceURI != "base-uri" || base.SelectedSlot != "base-slot" ||
+		!base.AllowLiveReplacement || !base.AllowLiveUpgrade {
+		t.Fatalf("base configuration mutated: %#v", base)
+	}
+}
+
+func TestActionRebuildConfigLiveMutationEligibilityMatrix(t *testing.T) {
+	for _, test := range []struct {
+		action          string
+		live            bool
+		wantReplacement bool
+		wantUpgrade     bool
+	}{
+		{action: "install", live: false},
+		{action: "reinstall", live: false},
+		{action: "update", live: false},
+		{action: "install", live: true},
+		{action: "reinstall", live: true, wantReplacement: true},
+		{action: "update", live: true, wantReplacement: true, wantUpgrade: true},
+	} {
+		t.Run(fmt.Sprintf("%s/live=%t", test.action, test.live), func(t *testing.T) {
+			item := action(t, "cat/pkg-1")
+			item.Action = test.action
+			got := actionRebuildConfig(rebuild.RebuildConfig{AllowLiveRoot: test.live}, item)
+			if got.AllowLiveReplacement != test.wantReplacement || got.AllowLiveUpgrade != test.wantUpgrade {
+				t.Fatalf("replacement=%t upgrade=%t, want %t/%t", got.AllowLiveReplacement, got.AllowLiveUpgrade, test.wantReplacement, test.wantUpgrade)
+			}
+		})
+	}
+}
+
+func TestActionLabelContract(t *testing.T) {
+	if got := actionLabel(resolve.PkgAction{}); got != "<nil>" {
+		t.Fatalf("nil action label = %q", got)
+	}
+	a, err := atom.Parse("cat/pkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := actionLabel(resolve.PkgAction{Atom: a}); got != "cat/pkg" {
+		t.Fatalf("unversioned action label = %q", got)
+	}
+	if got := actionLabel(action(t, "cat/pkg-1-r2")); got != "cat/pkg-1-r2" {
+		t.Fatalf("versioned action label = %q", got)
+	}
+}
+
 func TestTmpdirRequiredBytesMatchesEmergeDecay(t *testing.T) {
 	const gib = uint64(1 << 30)
 	if got, want := tmpdirRequiredBytes(18, 2), 18*gib+9*gib+6*gib; got != want {
@@ -401,6 +538,234 @@ func TestExecuteConcurrentRejectsMissingPrerequisite(t *testing.T) {
 		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil }})
 	if err == nil || !strings.Contains(err.Error(), "missing prerequisite") {
 		t.Fatalf("missing prerequisite error = %v", err)
+	}
+}
+
+func TestExecuteConcurrentRequiresCommitProofBeforeSuccess(t *testing.T) {
+	first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{first, second}}
+	resume := filepath.Join(t.TempDir(), "resume.json")
+	var completed atomic.Int32
+	err := Execute(context.Background(), result, Config{
+		Jobs: 2, ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(context.Context, string, *rebuild.RebuildConfig) error {
+			return nil
+		},
+		OnActionComplete: func(int, int, resolve.PkgAction) {
+			completed.Add(1)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "without transaction commit notification") {
+		t.Fatalf("missing commit proof error = %v", err)
+	}
+	if completed.Load() != 0 {
+		t.Fatalf("completed callbacks = %d without commit proof", completed.Load())
+	}
+	remaining, loadErr := resolve.LoadResume(resume)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	want := []string{first.Atom.String(), second.Atom.String()}
+	if !reflect.DeepEqual(remaining, want) {
+		t.Fatalf("resume advanced without commit proof: got %v, want %v", remaining, want)
+	}
+}
+
+func TestExecuteConcurrentPostCommitErrorRequiresCommitProof(t *testing.T) {
+	first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{first, second}}
+	var notices atomic.Int32
+	err := Execute(context.Background(), result, Config{
+		Jobs: 2, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(context.Context, string, *rebuild.RebuildConfig) error {
+			return &merge.PostCommitError{Err: fmt.Errorf("claimed lifecycle failure")}
+		},
+		OnActionNotice: func(int, int, resolve.PkgAction, string, string) {
+			notices.Add(1)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "claimed lifecycle failure") {
+		t.Fatalf("unproved post-commit error = %v", err)
+	}
+	if notices.Load() != 0 {
+		t.Fatalf("unproved post-commit failure emitted %d committed notices", notices.Load())
+	}
+}
+
+func TestExecuteConcurrentRejectsDuplicateCommitNotificationExactlyOnce(t *testing.T) {
+	first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{first, second}}
+	resume := filepath.Join(t.TempDir(), "resume.json")
+	var completed atomic.Int32
+	err := Execute(context.Background(), result, Config{
+		Jobs: 2, ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(ctx context.Context, label string, cfg *rebuild.RebuildConfig) error {
+			if label == "cat/second-1" {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			if err := cfg.OnTransactionCommit(nil); err != nil {
+				return err
+			}
+			return cfg.OnTransactionCommit(nil)
+		},
+		OnActionComplete: func(int, int, resolve.PkgAction) {
+			completed.Add(1)
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate transaction commit notification") {
+		t.Fatalf("duplicate commit error = %v", err)
+	}
+	if completed.Load() != 1 {
+		t.Fatalf("completion callback count = %d, want exactly 1", completed.Load())
+	}
+	remaining, loadErr := resolve.LoadResume(resume)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !reflect.DeepEqual(remaining, []string{second.Atom.String()}) {
+		t.Fatalf("remaining after duplicate notification = %v", remaining)
+	}
+}
+
+func TestExecuteConcurrentRejectsMalformedPrerequisiteGraphBeforeMutation(t *testing.T) {
+	tests := []struct {
+		name    string
+		actions func(*testing.T) []resolve.PkgAction
+		want    string
+	}{
+		{
+			name: "duplicate identity",
+			actions: func(t *testing.T) []resolve.PkgAction {
+				return []resolve.PkgAction{action(t, "cat/same-1"), action(t, "cat/same-1")}
+			},
+			want: "duplicate planned action identity",
+		},
+		{
+			name: "duplicate prerequisite",
+			actions: func(t *testing.T) []resolve.PkgAction {
+				first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+				identity := resolve.ActionIdentity(first)
+				second.Prerequisites = []string{identity, identity}
+				return []resolve.PkgAction{first, second}
+			},
+			want: "repeats prerequisite",
+		},
+		{
+			name: "cycle after independent action",
+			actions: func(t *testing.T) []resolve.PkgAction {
+				independent := action(t, "cat/independent-1")
+				first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+				first.Prerequisites = []string{resolve.ActionIdentity(second)}
+				second.Prerequisites = []string{resolve.ActionIdentity(first)}
+				return []resolve.PkgAction{independent, first, second}
+			},
+			want: "graph stalled after 1 of 3 actions",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			actions := test.actions(t)
+			result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: actions}
+			var ran, committed atomic.Int32
+			err := Execute(context.Background(), result, Config{
+				Jobs: 2, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+				Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+				Runner: func(_ context.Context, _ string, cfg *rebuild.RebuildConfig) error {
+					ran.Add(1)
+					if err := cfg.OnTransactionCommit(nil); err != nil {
+						return err
+					}
+					committed.Add(1)
+					return nil
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Execute error = %v, want substring %q", err, test.want)
+			}
+			switch test.name {
+			case "cycle after independent action":
+				if ran.Load() != 1 || committed.Load() != 1 {
+					t.Fatalf("independent work ran=%d committed=%d, want 1/1", ran.Load(), committed.Load())
+				}
+			default:
+				if ran.Load() != 0 || committed.Load() != 0 {
+					t.Fatalf("malformed graph mutated runner state: ran=%d committed=%d", ran.Load(), committed.Load())
+				}
+			}
+		})
+	}
+}
+
+func TestExecuteConcurrentGeneratedDAGsRespectEveryDependency(t *testing.T) {
+	for seed := uint64(1); seed <= 64; seed++ {
+		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
+			next := seed
+			random := func() uint64 {
+				next ^= next << 13
+				next ^= next >> 7
+				next ^= next << 17
+				return next
+			}
+			count := 2 + int(random()%7)
+			actions := make([]resolve.PkgAction, count)
+			for index := range actions {
+				actions[index] = action(t, fmt.Sprintf("cat/pkg%d-1", index))
+				for prerequisite := 0; prerequisite < index; prerequisite++ {
+					if random()%3 == 0 {
+						actions[index].Prerequisites = append(actions[index].Prerequisites, resolve.ActionIdentity(actions[prerequisite]))
+					}
+				}
+			}
+
+			var mu sync.Mutex
+			finished := make(map[string]bool, count)
+			runs := make(map[string]int, count)
+			err := Execute(context.Background(), &resolve.ResolveResult{
+				Verified: true, Verification: resolve.VerificationVerified, Install: actions,
+			}, Config{
+				Jobs: count, Rebuild: rebuild.RebuildConfig{RootDir: t.TempDir()},
+				Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+				Runner: func(_ context.Context, label string, cfg *rebuild.RebuildConfig) error {
+					mu.Lock()
+					var current resolve.PkgAction
+					for _, candidate := range actions {
+						if actionLabel(candidate) == label {
+							current = candidate
+							break
+						}
+					}
+					for _, prerequisite := range current.Prerequisites {
+						if !finished[prerequisite] {
+							mu.Unlock()
+							return fmt.Errorf("%s started before prerequisite %s finished", label, prerequisite)
+						}
+					}
+					runs[resolve.ActionIdentity(current)]++
+					mu.Unlock()
+					if err := cfg.OnTransactionCommit(nil); err != nil {
+						return err
+					}
+					mu.Lock()
+					finished[resolve.ActionIdentity(current)] = true
+					mu.Unlock()
+					return nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, action := range actions {
+				identity := resolve.ActionIdentity(action)
+				if runs[identity] != 1 || !finished[identity] {
+					t.Fatalf("%s ran %d times, finished=%v", identity, runs[identity], finished[identity])
+				}
+			}
+		})
 	}
 }
 

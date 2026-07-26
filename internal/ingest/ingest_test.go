@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/gob"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/airencracken/arise/internal/metadata"
@@ -457,6 +460,84 @@ func TestQueryRange(t *testing.T) {
 	})
 }
 
+func TestPropertyQueryRangeParallelMatchesSerialOrderAndStoppingContracts(t *testing.T) {
+	db := openTestDB(t)
+	entries := []*metadata.PackageMetadata{
+		{Repository: "gentoo", Category: "app-editors", Package: "vim", Version: "9.1"},
+		{Repository: "gentoo", Category: "dev-lang", Package: "go", Version: "1.26"},
+		{Repository: "local", Category: "dev-lang", Package: "go", Version: "1.27"},
+		{Repository: "gentoo", Category: "sys-apps", Package: "portage", Version: "3.0"},
+	}
+	if _, err := Ingest(db, sendEntries(t, entries...)); err != nil {
+		t.Fatal(err)
+	}
+	var serial []string
+	if err := QueryRange(db, keyPrefix, func(entry *metadata.PackageMetadata) error {
+		serial = append(serial, entry.RepositoryCPVKey())
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, workers := range []int{1, 2, 7, 0, -1} {
+		t.Run(fmt.Sprintf("workers=%d", workers), func(t *testing.T) {
+			var parallel []string
+			if err := QueryRangeParallel(db, keyPrefix, workers, func(entry *metadata.PackageMetadata) error {
+				parallel = append(parallel, entry.RepositoryCPVKey())
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(parallel, serial) {
+				t.Fatalf("parallel order = %v, serial = %v", parallel, serial)
+			}
+		})
+	}
+
+	stop := errors.New("callback stop")
+	calls := 0
+	err := QueryRangeParallel(db, keyPrefix, 4, func(*metadata.PackageMetadata) error {
+		calls++
+		if calls == 2 {
+			return stop
+		}
+		return nil
+	})
+	if !errors.Is(err, stop) || calls != 2 {
+		t.Fatalf("callback error = %v after %d calls", err, calls)
+	}
+	calls = 0
+	if err := QueryRangeParallel(db, keyPrefix, 4, func(*metadata.PackageMetadata) error {
+		calls++
+		return io.EOF
+	}); err != nil || calls != 1 {
+		t.Fatalf("EOF stop error = %v after %d calls", err, calls)
+	}
+}
+
+func TestAtomicityQueryRangeParallelDecodesAllRecordsBeforeCallbacks(t *testing.T) {
+	db := openTestDB(t)
+	valid := &metadata.PackageMetadata{Repository: "gentoo", Category: "sys-apps", Package: "portage", Version: "3.0"}
+	if _, err := Ingest(db, sendEntries(t, valid)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(keyPrefix+"aaa/corrupt\x00identity"), []byte("not a gob record"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	err := QueryRangeParallel(db, keyPrefix, 4, func(*metadata.PackageMetadata) error {
+		calls++
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "decode") {
+		t.Fatalf("corrupt parallel query error = %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("parallel query invoked %d callbacks before rejecting corrupt snapshot", calls)
+	}
+}
+
 func TestIngestBatchExceedsMaxBatchSize(t *testing.T) {
 	db := openTestDB(t)
 
@@ -477,6 +558,50 @@ func TestIngestBatchExceedsMaxBatchSize(t *testing.T) {
 	}
 	if count != n {
 		t.Errorf("expected %d entries, got %d", n, count)
+	}
+}
+
+func TestIngestProgressReportsCommittedBatchesExactlyOnce(t *testing.T) {
+	tests := []struct {
+		name string
+		size int
+		want []int
+	}{
+		{"empty", 0, nil},
+		{"partial batch", 3, []int{3}},
+		{"exact batch", maxBatchSize, []int{maxBatchSize}},
+		{"batch plus one", maxBatchSize + 1, []int{maxBatchSize, maxBatchSize + 1}},
+		{"two exact batches", maxBatchSize * 2, []int{maxBatchSize, maxBatchSize * 2}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db := openTestDB(t)
+			entries := make([]*metadata.PackageMetadata, 0, test.size)
+			for index := 0; index < test.size; index++ {
+				entries = append(entries, &metadata.PackageMetadata{
+					Repository: "test",
+					Category:   "cat",
+					Package:    "pkg",
+					Version:    fmt.Sprintf("%d", index),
+				})
+			}
+			var reports []int
+			count, err := IngestWithProgress(db, sendEntries(t, entries...), func(committed int) {
+				reports = append(reports, committed)
+				if records, countErr := CountRecords(db); countErr != nil || records != committed {
+					t.Fatalf("progress(%d) observed %d records, err=%v", committed, records, countErr)
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count != test.size {
+				t.Fatalf("count = %d, want %d", count, test.size)
+			}
+			if !reflect.DeepEqual(reports, test.want) {
+				t.Fatalf("progress reports = %v, want %v", reports, test.want)
+			}
+		})
 	}
 }
 

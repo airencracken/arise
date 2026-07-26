@@ -33,6 +33,29 @@ func TryAcquirePath(path string) (*Lock, error) {
 	return tryAcquire(PortageLockPath(path))
 }
 
+// AcquirePath waits for the sibling lock protecting a mutable state path.
+// Callers that perform read-modify-write updates should use this instead of
+// TryAcquirePath so concurrent writers cannot lose one another's changes.
+func AcquirePath(path string) (*Lock, error) {
+	return acquire(PortageLockPath(path))
+}
+
+func acquire(path string) (*Lock, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("operation lock: create parent: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o660)
+	if err != nil {
+		return nil, fmt.Errorf("operation lock: open %s: %w", path, err)
+	}
+	flock := unix.Flock_t{Type: unix.F_WRLCK, Whence: 0, Start: 0, Len: 0}
+	if err := unix.FcntlFlock(file.Fd(), unix.F_SETLKW, &flock); err != nil {
+		file.Close()
+		return nil, fmt.Errorf("operation lock: acquire %s: %w", path, err)
+	}
+	return &Lock{file: file, path: path}, nil
+}
+
 func tryAcquire(path string) (*Lock, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("operation lock: create parent: %w", err)
