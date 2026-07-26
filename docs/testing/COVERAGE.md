@@ -108,6 +108,16 @@ configure prefixes must derive the same ABI-specific library layout as
 Portage. Merge atomicity tests require staged metadata to repair pre-existing
 Redis-shaped config, data and log directories.
 
+The mutation-guided pass raised whole-tree coverage to 70.8%,
+`internal/journal` to 77.4%, and `internal/log` from 0% to 100%. The logging
+tests assert default and runtime level transitions, structured attributes,
+error-return contracts and adversarial odd argument lists. Journal survivors
+produced new public-API tests for absent-tree coverage boundaries and nested
+relative-symlink capture followed by rollback. A targeted `confined` run kills
+60 of 107 covered mutants (56.1% covered-code score); many survivors alter
+defensive `filepath.Rel` error branches that valid, canonicalized paths cannot
+reach, so this result remains diagnostic rather than a quality gate.
+
 Zero-percent command `main` packages are lower priority than the command logic
 in `cmd/arise`: thin process entry points should be covered through route and
 contract tests, not tests that duplicate Go's flag and exit behavior.
@@ -133,14 +143,33 @@ being protected.
 
 ## Test-type maturity
 
-`make test-mutation` currently runs tests whose names contain `Mutation`.
-Those tests mutate input bytes or state and are useful adversarial tests, but
-they are not mutation analysis: they do not alter production expressions and
-measure whether the suite kills each change. Introduce a Go mutation runner in
-a separate, explicitly slow local lane, start with `internal/resolve`,
-`internal/journal`, `internal/merge` and `internal/rebuild`, and record killed,
-survived, timed-out and non-viable mutants. Do not set a repository-wide score
-until equivalent-mutant review and timeout behavior are understood.
+`make test-mutation` runs tests whose names contain `Mutation`. Those tests
+mutate input bytes or state and remain useful adversarial regression tests.
+They are distinct from the real source-mutation lane:
+
+```sh
+go install github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@v2.7.9
+make test-mutation-analysis
+make test-mutation-analysis MUTATION_TARGETS=internal/journal \
+  MUTATION_MATCH=coveredByAbsentTree
+```
+
+The default target is the fast `internal/log` pilot. It killed 16 of 17
+mutants (94.1%) on 2026-07-25; the lone survivor removes an explicit
+`LevelInfo` initialization that is equivalent to `slog.LevelVar`'s zero value.
+The first `coveredByAbsentTree` journal run killed only 4 of 10 covered
+mutants. Tests derived from the survivors now exercise unrelated earlier
+entries, path-prefix siblings, ordinary directories and rollback of a
+descendant covered by an absent-tree record. They kill 18 of 23 mutants
+(78.3%); the remaining survivors principally mutate defensive conditions that
+cannot be reached after `confined` has canonicalized a public input.
+
+Keep this lane local and scoped with `MUTATION_TARGETS` and `MUTATION_MATCH`.
+The full transaction packages contain thousands of candidate mutations and
+can take hours. Review surviving mutants before setting a threshold: record
+equivalent and unreachable mutants separately from actionable escapes. Do not
+publish a repository-wide mutation score until timeout behavior and equivalent
+mutant review are stable.
 
 The repository already has broad named adversarial coverage across parsers,
 configuration, graph, phase, merge, rebuild, resolver, sync and walker code.

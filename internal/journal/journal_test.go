@@ -332,6 +332,108 @@ func TestCaptureAbsentTreeRollsBackAllCreatedDescendants(t *testing.T) {
 	}
 }
 
+func TestMutationAbsentTreeCoverageSkipsDescendantAfterUnrelatedPreimage(t *testing.T) {
+	base := t.TempDir()
+	root := t.TempDir()
+	unrelated := filepath.Join(root, "existing.conf")
+	if err := os.WriteFile(unrelated, []byte("before"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := Begin(base, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Capture(unrelated); err != nil {
+		t.Fatal(err)
+	}
+	tree := filepath.Join(root, "created")
+	if err := operation.CaptureAbsentTree(tree); err != nil {
+		t.Fatal(err)
+	}
+	descendant := filepath.Join(tree, "nested", "value")
+	if err := operation.Capture(descendant); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(operation.Dir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(reopened.state.Entries); got != 2 {
+		t.Fatalf("covered descendant added a redundant journal entry: got %d entries, want 2", got)
+	}
+	if err := os.MkdirAll(filepath.Dir(descendant), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(descendant, []byte("created"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tree); !os.IsNotExist(err) {
+		t.Fatalf("rollback left captured absent tree behind: %v", err)
+	}
+	data, err := os.ReadFile(unrelated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(unrelated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "before" || info.Mode().Perm() != 0o640 {
+		t.Fatalf("unrelated preimage changed: content %q mode %o", data, info.Mode().Perm())
+	}
+}
+
+func TestAdversarialAbsentTreeCoverageDoesNotConsumePrefixSiblingOrDirectoryChild(t *testing.T) {
+	t.Run("prefix sibling", func(t *testing.T) {
+		operation, err := Begin(t.TempDir(), t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		tree := filepath.Join(operation.Root(), "service")
+		if err := operation.CaptureAbsentTree(tree); err != nil {
+			t.Fatal(err)
+		}
+		if err := operation.Capture(filepath.Join(operation.Root(), "service-backup", "value")); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := Open(operation.Dir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(reopened.state.Entries); got != 2 {
+			t.Fatalf("path-prefix sibling treated as descendant: got %d entries, want 2", got)
+		}
+	})
+
+	t.Run("ordinary directory child", func(t *testing.T) {
+		root := t.TempDir()
+		directory := filepath.Join(root, "existing")
+		if err := os.Mkdir(directory, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		operation, err := Begin(t.TempDir(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := operation.Capture(directory); err != nil {
+			t.Fatal(err)
+		}
+		if err := operation.Capture(filepath.Join(directory, "value")); err != nil {
+			t.Fatal(err)
+		}
+		reopened, err := Open(operation.Dir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(reopened.state.Entries); got != 2 {
+			t.Fatalf("ordinary directory incorrectly covered child: got %d entries, want 2", got)
+		}
+	})
+}
+
 func TestCaptureAbsentTreeRefusesExistingPath(t *testing.T) {
 	root, base := t.TempDir(), t.TempDir()
 	tree := filepath.Join(root, "existing")
@@ -696,6 +798,48 @@ func TestCaptureAllowsConfinedRelativeSymlinkAncestor(t *testing.T) {
 	}
 	if got := j.state.Entries[0].Path; got != filepath.Join("usr", "lib", "value") {
 		t.Fatalf("canonical journal path=%q", got)
+	}
+}
+
+func TestMutationNestedRelativeSymlinkResolvesFromContainingDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "etc", "service"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "etc", "target"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../target", filepath.Join(root, "etc", "service", "active")); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "etc", "target", "value")
+	if err := os.WriteFile(target, []byte("before"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := Begin(t.TempDir(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	throughLink := filepath.Join(root, "etc", "service", "active", "value")
+	if err := operation.Capture(throughLink); err != nil {
+		t.Fatal(err)
+	}
+	if len(operation.state.Entries) != 1 {
+		t.Fatalf("captured %d entries, want 1", len(operation.state.Entries))
+	}
+	entry := operation.state.Entries[0]
+	if entry.Path != filepath.Join("etc", "target", "value") || entry.Kind != "file" {
+		t.Fatalf("nested relative link resolved to %#v", entry)
+	}
+	if err := os.WriteFile(target, []byte("after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := operation.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "before" {
+		t.Fatalf("rollback target = %q, %v", data, err)
 	}
 }
 

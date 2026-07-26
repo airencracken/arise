@@ -7,6 +7,9 @@
 # test coverage
 *.out
 *.test
+/go-mutesting-agentic.json
+/go-mutesting-summary.json
+/report.json
 
 # Host-specific profiler output. Keep harnesses and curated summaries/JSON
 # evidence, but never commit raw traces or command captures.

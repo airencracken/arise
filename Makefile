@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
+.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -46,6 +46,15 @@ test-adversarial:
 
 test-mutation:
 	$(GO) test ./internal/... -run 'Mutation' -count=1 -timeout 60s
+
+# Real source mutation analysis is deliberately local and narrowly targeted.
+# Install the pinned runner documented in docs/testing/COVERAGE.md first.
+MUTATION_TOOL ?= go-mutesting
+MUTATION_TARGETS ?= internal/log
+MUTATION_MATCH ?=
+test-mutation-analysis:
+	@command -v $(MUTATION_TOOL) >/dev/null 2>&1 || { echo "$(MUTATION_TOOL) is required; see docs/testing/COVERAGE.md" >&2; exit 1; }
+	$(MUTATION_TOOL) --coverage --per-test --quiet --no-diffs --logger-summary-json --exec-timeout=20 $(if $(MUTATION_MATCH),--match='$(MUTATION_MATCH)',) $(MUTATION_TARGETS)
 
 test-race:
 	$(GO) test ./internal/... -race -count=1 -timeout 300s
