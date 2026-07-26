@@ -984,7 +984,7 @@ run_one_phase() {
 }
 
 arise_save_phase_environment() {
-	local output=${ARISE_SAVE_ENVIRONMENT-} temporary name declaration
+	local output=${ARISE_SAVE_ENVIRONMENT-} temporary name declaration phase_name
 	[[ $output ]] || return 0
 	temporary=${output}.tmp.$$
 	: >"$temporary" || return
@@ -998,6 +998,10 @@ arise_save_phase_environment() {
 		[[ $declaration == declare\ -r* || $declaration == declare\ -ar* || $declaration == declare\ -Ar* ]] && continue
 		printf '%s\n' "$declaration" >>"$temporary" || return
 	done < <(compgen -v | LC_ALL=C sort -u)
+	for phase_name in pkg_pretend pkg_setup pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
+		declare -F "$phase_name" >/dev/null || continue
+		declare -f "$phase_name" >>"$temporary" || return
+	done
 	mv -f -- "$temporary" "$output"
 }
 

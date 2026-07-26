@@ -175,6 +175,41 @@ func TestInstalledLifecycleHasPhaseIsNilSafeAndExact(t *testing.T) {
 	}
 }
 
+func TestInstalledLifecycleFallsBackOnlyForMissingPersistedFunctions(t *testing.T) {
+	lifecycle := &InstalledLifecycle{
+		request:           phaseproto.Request{Environment: "/installed/environment"},
+		phases:            map[string]bool{"pkg_config": true, "pkg_postinst": true},
+		environmentPhases: map[string]bool{"pkg_postinst": true},
+	}
+	if got := lifecycle.requestForPhase("pkg_config"); got.Environment != "" {
+		t.Fatalf("legacy pkg_config retained incomplete environment %q", got.Environment)
+	}
+	if got := lifecycle.requestForPhase("pkg_postinst"); got.Environment != "/installed/environment" {
+		t.Fatalf("persisted pkg_postinst lost installed environment: %q", got.Environment)
+	}
+	if got := lifecycle.requestForPhase("pkg_prerm"); got.Environment != "/installed/environment" {
+		t.Fatalf("undeclared phase unexpectedly enabled fallback: %q", got.Environment)
+	}
+}
+
+func TestLifecycleFunctionsInEnvironmentRecognizesExactShellDeclarations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "environment")
+	content := "pkg_config ()\n{\n:\n}\nfunction pkg_postinst()\n{\n:\n}\npkg_config_extra ()\n{\n:\n}\n# pkg_prerm ()\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	functions, err := lifecycleFunctionsInEnvironment(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !functions["pkg_config"] || !functions["pkg_postinst"] {
+		t.Fatalf("recognized functions = %v", functions)
+	}
+	if functions["pkg_config_extra"] || functions["pkg_prerm"] {
+		t.Fatalf("accepted prefix or comment as lifecycle function: %v", functions)
+	}
+}
+
 func TestEnsureWorkDirectoryRecreatesDeletedRuntimeState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "deleted", "var", "tmp", "arise")
 	if err := ensureWorkDirectory(path); err != nil {

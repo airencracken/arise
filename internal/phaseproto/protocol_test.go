@@ -2221,8 +2221,14 @@ func TestPhaseEnvironmentOverlayCarriesStateAcrossWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(saved), "SANDBOX_WRITE") || strings.Contains(string(saved), "LD_PRELOAD") {
+	if strings.Contains(string(saved), "declare -- SANDBOX_WRITE") ||
+		strings.Contains(string(saved), "declare -x SANDBOX_WRITE") ||
+		strings.Contains(string(saved), "declare -- LD_PRELOAD") ||
+		strings.Contains(string(saved), "declare -x LD_PRELOAD") {
 		t.Fatalf("phase overlay persisted package-manager isolation controls: %s", saved)
+	}
+	if !strings.Contains(string(saved), "pkg_setup ()") {
+		t.Fatalf("phase overlay omitted installed lifecycle function: %s", saved)
 	}
 	prepare := base
 	prepare.ID, prepare.Command, prepare.Phase, prepare.EnvironmentOverlay = "overlay-prepare", "run_phase", "src_prepare", overlay
