@@ -2192,7 +2192,7 @@ func applyPortageLifecyclePolicy(request phaseproto.Request, phaseName string) p
 		// Portage retains pid-sandbox for setup/pretend; they are not in
 		// doebuild.py's _global_pid_phases.
 		return request
-	case "pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm":
+	case "pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm", "pkg_config":
 	case "src_unpack", "src_prepare", "src_configure", "src_compile", "src_test":
 		if request.Policy.UserPriv {
 			request.Policy.DropPrivileges = true

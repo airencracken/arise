@@ -143,17 +143,35 @@ func TestApplyPortageUserprivPolicyByPhase(t *testing.T) {
 			t.Fatalf("%s policy = %+v", phase, got.Policy)
 		}
 	}
-	for _, phase := range []string{"pkg_setup", "src_install", "pkg_preinst", "pkg_postinst"} {
+	for _, phase := range []string{"pkg_setup", "src_install", "pkg_preinst", "pkg_postinst", "pkg_config"} {
 		got := applyPortageLifecyclePolicy(base, phase)
 		if got.Policy.DropPrivileges {
 			t.Fatalf("%s unexpectedly drops privileges: %+v", phase, got.Policy)
 		}
+	}
+	config := applyPortageLifecyclePolicy(base, "pkg_config")
+	if config.Policy.Sandbox || config.Policy.NetworkSandbox || config.Policy.IPCSandbox || config.Policy.PIDSandbox {
+		t.Fatalf("pkg_config retained Portage namespaces: %+v", config.Policy)
 	}
 	withoutUserSandbox := base
 	withoutUserSandbox.Policy.UserSandbox = false
 	got := applyPortageLifecyclePolicy(withoutUserSandbox, "src_compile")
 	if !got.Policy.DropPrivileges || got.Policy.Sandbox {
 		t.Fatalf("userpriv without usersandbox policy = %+v", got.Policy)
+	}
+}
+
+func TestInstalledLifecycleHasPhaseIsNilSafeAndExact(t *testing.T) {
+	var nilLifecycle *InstalledLifecycle
+	if nilLifecycle.HasPhase("pkg_config") {
+		t.Fatal("nil lifecycle reported a phase")
+	}
+	lifecycle := &InstalledLifecycle{phases: map[string]bool{"pkg_config": true}}
+	if !lifecycle.HasPhase("pkg_config") {
+		t.Fatal("stored pkg_config phase was not reported")
+	}
+	if lifecycle.HasPhase("pkg_config_extra") || lifecycle.HasPhase("") {
+		t.Fatal("nonexistent phase was reported")
 	}
 }
 

@@ -13,13 +13,14 @@ import (
 	"github.com/airencracken/arise/internal/portage"
 )
 
-// InstalledLifecycle executes removal hooks from the environment persisted in
+// InstalledLifecycle executes package hooks from the environment persisted in
 // an installed VDB entry. It deliberately does not re-source current eclasses.
 type InstalledLifecycle struct {
 	request phaseproto.Request
 	log     *phaseproto.PackageLog
 	workDir string
 	cfg     *RebuildConfig
+	phases  map[string]bool
 }
 
 func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifecycle, error) {
@@ -88,7 +89,23 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 		return fail(fmt.Errorf("installed lifecycle: log: %w", err))
 	}
 	request.LogFile = log.Path()
-	return &InstalledLifecycle{request: request, log: log, workDir: workDir, cfg: cfg}, nil
+	definedPhases := strings.Fields(readInstalledValue(vdbPath, "DEFINED_PHASES"))
+	phases := make(map[string]bool, len(definedPhases))
+	for _, phase := range definedPhases {
+		phases[phase] = true
+	}
+	// Old or synthetic VDB records may predate DEFINED_PHASES. Direct
+	// definitions in the stored ebuild remain a safe compatibility fallback.
+	if len(phases) == 0 {
+		for phase := range eb.RawPhases {
+			phases[phase] = true
+		}
+	}
+	return &InstalledLifecycle{request: request, log: log, workDir: workDir, cfg: cfg, phases: phases}, nil
+}
+
+func (l *InstalledLifecycle) HasPhase(phase string) bool {
+	return l != nil && l.phases[phase]
 }
 
 func (l *InstalledLifecycle) Run(ctx context.Context, phase string) error {

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,11 +13,12 @@ import (
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/color"
-	"github.com/airencracken/arise/internal/ebuild"
 	"github.com/airencracken/arise/internal/env"
 	"github.com/airencracken/arise/internal/metadata"
 	"github.com/airencracken/arise/internal/oplock"
 	"github.com/airencracken/arise/internal/portage"
+	"github.com/airencracken/arise/internal/rebuild"
+	"github.com/airencracken/arise/internal/vdb"
 	"github.com/airencracken/arise/internal/world"
 )
 
@@ -73,6 +75,44 @@ func runLdConfig() {
 	fmt.Println("ldconfig complete.")
 }
 
+func findInstalledConfigTarget(vdbDir string, requested *atom.Atom) (string, error) {
+	if requested == nil || requested.Category == "" || requested.Package == "" {
+		return "", fmt.Errorf("a complete category/package atom is required")
+	}
+	packages, err := vdb.Scan(vdbDir)
+	if err != nil {
+		return "", err
+	}
+	var matches []vdb.Package
+	for _, installed := range packages {
+		if installed.Category != requested.Category || installed.Package != requested.Package {
+			continue
+		}
+		if requested.Version != nil && requested.Version.Raw != installed.Version {
+			continue
+		}
+		if requested.Slot != "" && requested.Slot != installed.Slot {
+			continue
+		}
+		if requested.Repo != "" && requested.Repo != installed.Repository {
+			continue
+		}
+		matches = append(matches, installed)
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no installed package matches %s", requested.String())
+	}
+	if len(matches) != 1 {
+		var identities []string
+		for _, installed := range matches {
+			identities = append(identities, installed.CPV()+":"+installed.Slot+"::"+installed.Repository)
+		}
+		return "", fmt.Errorf("%s matches multiple installed packages: %s", requested.String(), strings.Join(identities, ", "))
+	}
+	installed := matches[0]
+	return filepath.Join(vdbDir, installed.Category, installed.Package+"-"+installed.Version), nil
+}
+
 func runConfig(args []string, repoDir string) {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "config: missing package atom argument\n")
@@ -85,30 +125,43 @@ func runConfig(args []string, repoDir string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("pkg_config for %s\n", a.String())
-	if a.Version == nil || a.Version.Raw == "" {
-		fmt.Fprintf(os.Stderr, "config: atom must include a version\n")
-		os.Exit(1)
-	}
-
-	ebuildFile := filepath.Join(repoDir, a.Category, a.Package, a.Package+"-"+a.Version.Raw+".ebuild")
-	if _, statErr := os.Stat(ebuildFile); os.IsNotExist(statErr) {
-		fmt.Fprintf(os.Stderr, "config: ebuild not found: %s\n", ebuildFile)
-		os.Exit(1)
-	}
-
-	eb, err := ebuild.ParseEbuild(ebuildFile)
+	vdbPath, err := findInstalledConfigTarget(*vdbDir, a)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: parse ebuild: %v\n", err)
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		os.Exit(1)
 	}
-
-	if _, ok := eb.RawPhases["pkg_config"]; !ok {
+	lock, err := oplock.TryAcquireVDB(*vdbDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: acquire operation VDB lock: %v\n", err)
+		os.Exit(1)
+	}
+	defer lock.Release()
+	cfg := buildRebuildConfig(repoDir, 0, nil, nil)
+	cfg.AllowLiveRoot = commandEnv("ROOT", "/") == "/"
+	lifecycle, err := rebuild.OpenInstalledLifecycle(vdbPath, cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: prepare installed lifecycle: %v\n", err)
+		os.Exit(1)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = lifecycle.Close()
+		}
+	}()
+	fmt.Printf("pkg_config for %s\n", a.String())
+	if !lifecycle.HasPhase("pkg_config") {
 		fmt.Printf("No pkg_config phase defined for %s\n", a.String())
 		return
 	}
-
-	fmt.Println("pkg_config phase found; native execution pending")
+	runErr := lifecycle.Run(commandContext, "pkg_config")
+	closeErr := lifecycle.Close()
+	closed = true
+	if err := errors.Join(runErr, closeErr); err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("pkg_config complete for %s\n", a.String())
 }
 
 func runDeselect(atomStr string) {

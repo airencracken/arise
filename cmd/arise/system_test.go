@@ -4,8 +4,61 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/airencracken/arise/internal/atom"
 )
+
+func writeConfigTarget(t *testing.T, root, category, pf, slot, repository string) string {
+	t.Helper()
+	directory := filepath.Join(root, category, pf)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"CONTENTS": "", "EAPI": "8\n", "SLOT": slot + "\n", "repository": repository + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return directory
+}
+
+func TestFindInstalledConfigTargetSupportsEmergeSlotSyntax(t *testing.T) {
+	root := t.TempDir()
+	writeConfigTarget(t, root, "dev-db", "postgresql-17.8", "17", "gentoo")
+	want := writeConfigTarget(t, root, "dev-db", "postgresql-18.4", "18", "gentoo")
+	requested, err := atom.Parse("dev-db/postgresql:18")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := findInstalledConfigTarget(root, requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("target = %q, want %q", got, want)
+	}
+}
+
+func TestFindInstalledConfigTargetRejectsMissingAndAmbiguousAtoms(t *testing.T) {
+	root := t.TempDir()
+	writeConfigTarget(t, root, "dev-db", "postgresql-18.3", "18", "gentoo")
+	writeConfigTarget(t, root, "dev-db", "postgresql-18.4", "18", "gentoo")
+	requested, _ := atom.Parse("dev-db/postgresql:18")
+	if _, err := findInstalledConfigTarget(root, requested); err == nil || !strings.Contains(err.Error(), "multiple installed packages") {
+		t.Fatalf("ambiguous target error = %v", err)
+	}
+	missing, _ := atom.Parse("dev-db/postgresql:19")
+	if _, err := findInstalledConfigTarget(root, missing); err == nil || !strings.Contains(err.Error(), "no installed package") {
+		t.Fatalf("missing target error = %v", err)
+	}
+	if _, err := findInstalledConfigTarget(root, nil); err == nil {
+		t.Fatal("nil atom was accepted")
+	}
+}
 
 func TestInstalledVDBForCPRejectsHyphenatedSibling(t *testing.T) {
 	vdb := t.TempDir()
