@@ -149,7 +149,9 @@ measured optimization with unchanged correctness evidence.
 
 Implement the already-specified `arise maintain world --check` and `--fix`
 contract. This is the cycle's maintenance-UX slice; broader `emerge --info`,
-dispatch-conf, bug-report, and recovery-TUI work stays separate.
+dispatch-conf parity hardening, bug-report, and recovery-TUI work stays
+separate. The baseline `arise dispatch-conf` command already exists; this plan
+does not treat its implemented recursive review workflow as future work.
 
 ### Check mode
 

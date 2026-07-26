@@ -60,11 +60,10 @@ Important internal dependencies:
 - P6 journaling precedes any live-root merge, unmerge, world or VDB mutation.
 - P7 can be tested synthetically now, but cannot schedule live mutations before P6.
 
-Current critical path: P0B cleanup -> portable P2/P3 fixtures -> mandatory P3
-verification -> P4 protocol/environment -> P5 delivery completion -> P4 helper
-ABI -> P6 isolated-ROOT journal and recovery -> P7/P8 integration.
-
-Near-term consolidation after the current live-world verification follows
+The original P0--P8 dependency path has reached journaled live install,
+reinstall, upgrade, removal, resume, and bounded parallel execution. Remaining
+work is parity breadth and promotion rather than connecting those layers for
+the first time. Near-term consolidation follows
 [`docs/planning/CONSOLIDATION_CYCLE_PLAN.md`](docs/planning/CONSOLIDATION_CYCLE_PLAN.md):
 ship a useful offline-build overlay, capture a frozen performance baseline and
 accept one equivalence-gated optimization, implement world check/fix, then run
@@ -195,26 +194,20 @@ Acceptance gate:
 
 ## P0B — stop unsafe or misleading behavior
 
-- [x] Mark install/update/uninstall/depclean/prune as experimental until their
-  execution paths meet the gates below. Install/update still fail explicitly
-  after a successful non-pretend plan instead of returning false success;
-  source fetch-only may populate DISTDIR through the Manifest-verified P5 path
-  while binary acquisition and unsupported transports fail explicitly. Pretend
-  remains available for real-machine validation. Uninstall,
-  depclean and prune likewise produce read-only proposals in pretend mode and
-  explicitly refuse non-pretend execution pending P6 journaling and safety.
-  Preserved/reverse-dependency rebuilds and audit fixes can scan in pretend
-  mode but can no longer bypass the P4/P6 execution gate.
+- [x] Gate mutation commands until their transaction paths are independently
+  ready. Install, reinstall, update, exact uninstall, deselect, and bounded
+  multi-action source plans now cross preflight, state-bound approval, operation
+  locking, journaling, recovery, and final verification. Depclean, prune,
+  preserved/reverse-dependency rebuild execution, binary-only acquisition, and
+  audit fixes remain explicitly gated while their corresponding complete plans
+  and transaction paths are unfinished.
 - [x] Remove or qualify “full emerge parity” claims in user documentation.
-- [~] Convert unsupported ebuild phases and FEATURES from silent success to
-  explicit errors. Unknown phases and every unimplemented pkg_* lifecycle phase
-  now return a typed execution-ABI error instead of succeeding. The legacy
-  runner rejects every enabled known or unknown feature outside its explicit
-  supported set instead of logging sandbox stubs. The legacy synthetic
-  src_prepare placeholder remains the sole deliberate exception because the
-  prototype rebuild assumes an EAPI default phase sequence; it must be replaced
-  by phase discovery plus real default src_prepare/eapply_user in the versioned
-  Bash ABI. Production install/update remain hard-gated meanwhile.
+- [x] Convert unsupported ebuild phases and FEATURES from silent success to
+  explicit errors. Unknown phases and unsupported lifecycle entry points return
+  typed execution-ABI errors. The production phase worker discovers exported
+  and default phases, implements real default `src_prepare`/`eapply_user`, and
+  rejects enabled known or unknown features outside its supported set before
+  mutation.
 - [x] Fix all current `go vet` findings; keep vet clean in CI.
 - [x] Add a schema version and application version to persistent state.
 - [x] Keep progress indicators ASCII-only so early boot, recovery consoles and
@@ -229,10 +222,10 @@ Acceptance gate:
 - Commands cannot report success for work they did not perform.
 - Documentation accurately distinguishes usable, experimental, and planned behavior.
 
-Current live safety check: a copied binary produced the exact one-action Signal
-pretend plan; the equivalent non-pretend command exited 1 at the execution gate.
-Before/after fingerprints of every VDB file and `/var/lib/portage/world` were
-identical, proving the gated invocation performed no package-state mutation.
+Current live safety evidence includes successful journaled install, reinstall,
+upgrade, exact removal, deselect, multi-action execution, lifecycle, and resume
+operations. Pretend and failed preflight paths retain zero-mutation fingerprint
+tests, while incomplete maintenance mutations continue to fail explicitly.
 
 ## P1 — correct package-state model
 
@@ -1594,46 +1587,62 @@ Acceptance gate:
 
 ## P8 — wire install, update and removal end to end
 
-- [ ] Establish the Arise-owned filesystem contract: administrator settings in
+- [~] Establish the Arise-owned filesystem contract: administrator settings in
   `/etc/arise`, durable state in `/var/lib/arise`, cache in `/var/cache/arise`,
   logs in `/var/log/arise`, runtime coordination in `/run/arise`, and build or
   transaction scratch in `/var/tmp/arise`. Continue reading `/etc/portage` as
   shared Gentoo policy, but never write Arise-only syntax there; anything
   emitted into a Portage namespace must remain valid and useful to Portage.
+  Work/resume/journal paths, native package logs, the metadata database, and
+  Portage-compatible VDB/world/emerge.log projections are implemented. General
+  `/etc/arise`, cache/runtime placement, migration, retention, and permissions
+  policy remain.
 
-- [!] Connect resolved plans to fetch/build/binpkg/merge/unmerge execution.
+- [~] Connect resolved plans to fetch/build/binpkg/merge/unmerge execution.
+  Verified source plans now execute through fetch, phase workers, image
+  preparation, serialized journaled merge/unmerge, resume, and final
+  verification. Local/remote binary-package production and consumption remain
+  P9 work, and depclean/prune still stop before mutation.
 - [~] Correctly implement pretend, ask, fetchonly and buildpkgonly. Source
   fetch-only now executes the resolved plan through the shared Manifest-backed
   verified DISTDIR pipeline without entering build or merge. Human output calls
   this a fetch plan, labels entries as fetches and reports packages to fetch
   rather than misleadingly promising installs; binary fetch,
   complete ask semantics and buildpkgonly remain.
-- [ ] Update world only for successful explicit installs and respect oneshot.
-- [~] Mark resume nodes complete after transaction commit. Versioned resume
-  persistence, load, skip-first and completion primitives have fixtures, but
-  no P6 transaction commit exists to authorize completion.
-- [ ] Implement update @world and package sets.
-- [ ] Implement uninstall with reverse-dependency safety.
+- [x] Update world only after successful explicit installs and respect oneshot.
+  Selection is derived before execution, published after successful completion,
+  and covered by explicit-target, set-target, dependency-only, and oneshot
+  tests.
+- [x] Mark resume nodes complete only after transaction commit. Versioned resume
+  persistence, committed-prefix skipping, recovery-before-resume, failure-stage
+  retries, and skip-first behavior have executor fixtures.
+- [x] Implement executable `update @world` planning and transactions.
+- [ ] Implement custom package sets and list-sets behavior.
+- [x] Implement exact uninstall with whole-state reverse-dependency and reverse-
+  ELF safety, locked state revalidation, lifecycle hooks, and journaled
+  unmerge. General atom expansion and depclean-style selection remain separate.
 - [ ] Implement depclean and prune execution with confirmation and journaling.
-- [ ] Implement deselect interactions and preserved rebuild scheduling.
-- [ ] Handle signals and cancellation without corrupting state.
+- [x] Implement locked atomic deselect and successful-install world selection.
+- [ ] Wire preserved-rebuild scheduling through the safe planner/executor.
+- [~] Handle signals and cancellation without corrupting state. The command
+  context handles SIGINT/SIGTERM; resolver, fetch, phase-worker process groups,
+  scheduler, merge, and journal paths have bounded cancellation tests.
+  Differential interruption tests at every public mutation boundary remain.
 
 ### Mutation-readiness critical path
 
-The first live mutation does not wait for broad P4R certification or a parallel
-P7 scheduler, but it does require the following serial, fail-closed path. No
-individual package may enter its first mutable phase until the entire selected
-action has passed these checks.
+The initial serial live-mutation gate has been promoted through bounded
+dependency-aware execution. No package may enter its first mutable phase until
+the complete selected plan has passed the applicable whole-plan checks below.
 
 - [~] Build the production action executor: resolved action -> repository/VDB
-  identity -> Manifest-verified artifacts -> typed P4 request -> existing
-  durable per-package log manager ->
-  image tree -> P6 merge/replacement/unmerge -> terminal result. The serial
-  disposable-root source-install path is wired. The initial live lane now
-  accepts exactly one verified additive source action when every non-directory
-  target and VDB entry is absent and the sourced ebuild/eclass closure defines
-  no custom `pkg_*` lifecycle phase; upgrades, removals and general lifecycle
-  write-set capture remain promotion gates.
+  identity -> Manifest-verified artifacts -> typed P4 request -> durable
+  per-package log -> image tree -> P6 merge/replacement/unmerge -> terminal
+  result. Disposable and live-root source install, reinstall, upgrade,
+  lifecycle, exact removal, bounded dependency-aware multi-action scheduling,
+  committed-prefix resume, and serialized commits are wired. Binary-package
+  breadth, general depclean/prune/removal planning, preserve-libs closure, and
+  wider EAPI/helper/package certification remain promotion gates.
 - [~] Preflight the selected ebuild, EAPI, inherited eclasses, exported/default
   phases, helper closure, FEATURES/RESTRICT/PROPERTIES, isolation backend,
   writable paths, log destination, disk space and every artifact before worker
@@ -1681,23 +1690,23 @@ action has passed these checks.
   under globally allowed `/tmp`.
   Portage-compatible post-commit lifecycle handling and installed VDB
   environment execution raise the same audit to all 369 install actions
-  passing. One separately planned obsolete Perl removal remains; its installed
-  VDB declares `pkg_postrm`, so standalone uninstall lifecycle execution must
-  land before that saved plan is handed to root. The current host
+  passing. The separately planned obsolete Perl removal exposed an installed
+  `pkg_postrm` requirement; standalone uninstall lifecycle execution has since
+  landed with installed-environment replay. The current host
   has `CONFIG_OVERLAY_FS` disabled, so lifecycle delta capture must not require
   overlayfs. Disk-space and full helper-closure certification remain.
-- [!] Bind lifecycle execution to the transaction. `pkg_preinst`, old
+- [~] Bind lifecycle execution to the transaction. `pkg_preinst`, old
   `pkg_prerm`/`pkg_postrm`, new `pkg_postinst`, and standalone removal hooks
-  must have exact failure boundaries; every permitted ROOT write must be
-  journal-observable and recoverable where Arise controls the writes. The
-  baseline now follows Portage's committed-state semantics for write-capable
-  postinstall/postremove hooks: controlled payload/VDB changes commit first,
-  failures remain visible with durable logs, and resume state records the
-  package as committed rather than rebuilding it. Old removal hooks execute
-  from the installed VDB `environment.bz2`, with typed current ROOT/path values
-  restored after sourcing. Stronger rollback is an additional experimental
-  plan-bound capability with overlay/fuse-overlay lifecycle delta and Btrfs/LVM
-  snapshot providers; see
+  now have explicit phase ordering and failure boundaries. Controlled
+  payload/VDB changes are journaled; the baseline follows Portage's
+  committed-state semantics for write-capable postinstall/postremove hooks, so
+  failures remain visible with durable logs and resume records the package as
+  committed rather than rebuilding it. Old removal hooks execute from the
+  installed VDB `environment.bz2`, with typed current ROOT/path values restored
+  after sourcing. Arbitrary lifecycle ROOT writes remain outside the payload
+  journal. Stronger rollback is an additional experimental plan-bound
+  capability with overlay/fuse-overlay lifecycle delta and Btrfs/LVM snapshot
+  providers; see
   `docs/transaction-backends.md`. Provider probes and capacity must be
   revalidated under the operation lock, and fallback must never silently
   weaken an explicitly approved experimental guarantee. This host is ext4 on `/dev/dm-1`, has no
@@ -1710,8 +1719,9 @@ action has passed these checks.
   first live world consumers, `dev-lang/go-1.26.4` and
   `dev-util/github-cli-2.93.0`, now pass whole-plan preflight. Broader EAPI 9
   eclass/helper corpus certification remains.
-- [!] Couple successful explicit installs to a journaled world addition while
-  preserving `--oneshot`; never add dependency actions or failed targets.
+- [x] Couple successful explicit installs to a locked atomic world addition
+  while preserving `--oneshot`; dependency actions and failed targets are not
+  selected.
 - [~] Add an administrator-facing recovery command that lists active journals,
   performs deterministic recovery under the VDB lock, reports preserved build
   logs, and is usable from the copied static binary. Status, targeted rollback
@@ -1733,14 +1743,15 @@ action has passed these checks.
   inspection, resolution, preflight, recovery or Portage-compatible execution.
   Add and test the concrete IUSE/package dependency mapping with the repository
   ebuild; no ebuild is currently maintained in this source tree.
-- [~] Add a whole-action canary eligibility check for the initial live lane.
+- [~] Maintain whole-action eligibility checks for promoted live lanes.
   It must reject blockers, preserve-libs transitions, unsupported helpers or
   policy, unverified artifacts, foreign-owner collisions, unsafe lifecycle
   writes and any action outside the approved exact CPV/slot/repository plan.
-  The first-install subset enforces one exact action, source/ROOT domain,
-  whole-plan preflight, no custom package lifecycle, absent file/VDB targets,
-  locked state revalidation and exact state-bound approval. Preserve-libs and
-  broader blocker/policy evidence remain for later lanes. The first live
+  Current source lanes enforce exact source/ROOT actions, whole-plan preflight,
+  lifecycle policy, collision/ownership checks, locked state revalidation and
+  state-bound approval. Bounded multi-action plans and serialized commits are
+  promoted; preserve-libs and broader blocker/policy evidence remain for later
+  lanes. The first live
   `media-sound/apulse-0.1.14` install passed with a committed 47-entry journal,
   root-owned payload/VDB, expected CONTENTS and ELF linkage. Same-version
   reinstall then passed with a second committed 47-entry journal and intact
@@ -2169,15 +2180,20 @@ Acceptance gate:
   names, versioned atoms and a no-useful-suggestion case.
 - [ ] Implement package sets and list-sets behavior.
 - [ ] Complete autounmask suggestions and atomic config writes.
-- [ ] Implement pkg_config execution.
-- [ ] Complete dispatch-conf-style recursive config management: protected-tree
-  discovery; stable candidate ordering; update/keep/skip/edit/merge/diff/quit
-  decisions; identical-file and safe auto-merge handling; isolated archive and
-  rollback; configured pre/post-session and pre/post-update hooks; metadata
-  preservation; explicit interruption recovery; and differential tests against
-  Portage's dispatch-conf and etc-update in a disposable ROOT. Cover
-  etc-update's preen and automatic modes, explicit scan paths, and
-  PORTAGE_CONFIGROOT/EROOT behavior. Run dispatch-conf inside a chroot or
+- [x] Implement installed `pkg_config` execution. Lifecycle snapshots now
+  persist phase functions, with a legacy installed-environment fallback, and
+  fail explicitly when an installed package genuinely has no `pkg_config`.
+- [~] Complete dispatch-conf-style recursive config management. Arise now has
+  protected-tree and explicit-file discovery, stable candidate ordering,
+  update/keep/skip/edit/merge/diff/quit decisions, masked and identical-file
+  automation, safe three-way premerge, atomic confined archives and rotation,
+  mixed file-type/symlink diffs, configured session/update hooks, metadata
+  preservation, cancellation, and ROOT/PORTAGE_CONFIGROOT-aware adversarial
+  tests. Installed-Portage differential tests cover archive, symlink, and
+  three-way-merge semantics. Remaining parity work includes explicit session
+  rollback/recovery and full command-level differentials against Portage's
+  dispatch-conf and etc-update in a disposable ROOT. Cover etc-update's preen
+  and automatic modes there. Run the reference dispatch-conf inside a chroot or
   mount-isolated root because it has no root-selection CLI. Never use the live
   host configuration as a behavioral fixture.
 - [ ] Expose config-protection and dispatch decisions as a headless Go library

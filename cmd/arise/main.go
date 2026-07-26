@@ -269,7 +269,9 @@ func main() {
 	case "audit":
 		runAudit(cmdArgs, *repoPath)
 	case "dispatch-conf":
-		runDispatchConf()
+		if code := runDispatchConf(cmdArgs); code != 0 {
+			os.Exit(code)
+		}
 	case "quickpkg":
 		runQuickPkg(cmdArgs)
 	case "depclean":

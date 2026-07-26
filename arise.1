@@ -460,8 +460,17 @@ comparisons use the dedicated performance harness.
 
 .TP
 \fBdispatch-conf\fR
-List pending config file updates (\fI._cfg*\fR files in \fI/etc\fR).
-Replaces \fBdispatch-conf\fR(1).
+Recursively review protected configuration updates. Supports the familiar
+update, zap, skip, edit, merge, diff, toggle, and quit decisions; automatic
+handling of identical, masked, and configured trivial updates; rotated
+archives; and configuration-update hooks. Optional path arguments restrict
+the scan to specific protected directories or files. Honors
+\fBCONFIG_PROTECT\fR, \fBCONFIG_PROTECT_MASK\fR, \fBEROOT\fR,
+\fBROOT\fR, and \fI/etc/dispatch-conf.conf\fR.
+Provides a usable replacement workflow. It includes safe three-way premerge,
+confined atomic archives, mixed-file diffs, and interruption-aware processing.
+Session rollback/recovery and broader command-level differential parity remain
+under development.
 
 .TP
 \fBenv-update\fR
