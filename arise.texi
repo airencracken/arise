@@ -113,7 +113,7 @@ unavailable until their complete transaction and recovery contracts pass.
 $ CGO_ENABLED=0 go build -ldflags="-s -w" -o arise ./cmd/arise/
 
 # Sync the Gentoo repository
-$ arise -repo-url https://anongit.gentoo.org/git/repo/gentoo.git sync
+$ arise --repo-url https://anongit.gentoo.org/git/repo/gentoo.git sync
 
 # Index metadata for fast queries
 $ arise index

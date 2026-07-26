@@ -51,70 +51,70 @@ weakening determinism or final-state verification.
 .SS Global Flags
 These flags apply to all commands and must precede the command name.
 .TP
-\fB\-db\fR \fIpath\fR
+\fB\-\-db\fR \fIpath\fR
 Database path (default: \fI/var/lib/arise/data\fR).
 .TP
-\fB\-repo\fR \fIpath\fR
+\fB\-\-repo\fR \fIpath\fR
 Repository path (default: \fI/var/db/repos/gentoo\fR).
 .TP
-\fB\-repo-url\fR \fIurl\fR
+\fB\-\-repo-url\fR \fIurl\fR
 Remote repository URL for sync operations.
 
 .SS Package Flags
 These flags apply to \fBinstall\fR, \fBupdate\fR, and \fBdepclean\fR.
 .TP
-\fB\-1\fR, \fB\-oneshot\fR
+\fB\-1\fR, \fB\-\-oneshot\fR
 Install without adding to the world set.
 .TP
-\fB\-O\fR, \fB\-nodeps\fR
+\fB\-O\fR, \fB\-\-nodeps\fR
 Skip dependency resolution. Install only the specified packages.
 .TP
-\fB\-o\fR, \fB\-onlydeps\fR
+\fB\-o\fR, \fB\-\-onlydeps\fR
 Only install dependencies, not the target packages themselves.
 .TP
 \fB\-e\fR, \fB\-\-emptytree\fR
 Rebuild the entire dependency tree as if nothing is installed.
 .TP
-\fB\-D\fR, \fB\-deep\fR
+\fB\-D\fR, \fB\-\-deep\fR
 Consider the full dependency tree, not just direct dependencies.
 .TP
-\fB\-u\fR, \fB\-update\fR
+\fB\-u\fR, \fB\-\-update\fR
 Update packages to the best available version.
 .TP
-\fB\-N\fR, \fB\-newuse\fR
+\fB\-N\fR, \fB\-\-newuse\fR
 Rebuild packages when USE flags have changed.
 .TP
-\fB\-p\fR, \fB\-pretend\fR
+\fB\-p\fR, \fB\-\-pretend\fR
 Dry run. Display what would be done without performing actions.
 .TP
-\fB\-a\fR, \fB\-ask\fR
+\fB\-a\fR, \fB\-\-ask\fR
 Prompt for confirmation before performing actions.
 .TP
-\fB\-q\fR, \fB\-quiet\fR
+\fB\-q\fR, \fB\-\-quiet\fR
 Suppress non-essential output.
 .TP
-\fB\-v\fR, \fB\-verbose\fR
+\fB\-v\fR, \fB\-\-verbose\fR
 Increase output verbosity.
 .TP
-\fB\-t\fR, \fB\-tree\fR
+\fB\-t\fR, \fB\-\-tree\fR
 Display the dependency tree instead of a flat list.
 .TP
-\fB\-j\fR \fIN\fR, \fB\-jobs\fR \fIN\fR
+\fB\-j\fR \fIN\fR, \fB\-\-jobs\fR \fIN\fR
 Number of parallel build jobs (default: 1).
 .TP
-\fB\-k\fR, \fB\-usepkg\fR
+\fB\-k\fR, \fB\-\-usepkg\fR
 Use binary packages when available, falling back to source.
 .TP
-\fB\-K\fR, \fB\-usepkgonly\fR
+\fB\-K\fR, \fB\-\-usepkgonly\fR
 Only use binary packages. Fail if a binary package is unavailable.
 .TP
-\fB\-b\fR, \fB\-buildpkg\fR
+\fB\-b\fR, \fB\-\-buildpkg\fR
 Build binary packages during installation.
 .TP
-\fB\-B\fR, \fB\-buildpkgonly\fR
+\fB\-B\fR, \fB\-\-buildpkgonly\fR
 Only build binary packages, do not install.
 .TP
-\fB\-f\fR, \fB\-fetchonly\fR
+\fB\-f\fR, \fB\-\-fetchonly\fR
 Only fetch source files, do not build.
 .TP
 \fB\-\-backtrack\fR \fIN\fR
@@ -148,50 +148,50 @@ Rebuild reverse dependencies when packages change.
 \fB\-\-keep-going\fR
 Continue as much as possible after an error.
 .TP
-\fB\-reinstall\fR
+\fB\-\-reinstall\fR
 Force reinstall of already-installed packages.
 .TP
-\fB\-changed-use\fR
+\fB\-\-changed-use\fR
 Reinstall when USE flags differ from current settings.
 .TP
-\fB\-changed-deps\fR
+\fB\-\-changed-deps\fR
 Reinstall when dependency specifications have changed.
 .TP
-\fB\-noreplace\fR
+\fB\-\-noreplace\fR
 Do not reinstall the exact same version if already installed.
 .TP
-\fB\-resume\fR
+\fB\-\-resume\fR
 Resume the last interrupted operation.
 .TP
-\fB\-skipfirst\fR
-Skip the first package when resuming (used with \fB\-resume\fR).
+\fB\-\-skipfirst\fR
+Skip the first package when resuming (used with \fB\-\-resume\fR).
 .TP
-\fB\-autounmask-write\fR
+\fB\-\-autounmask-write\fR
 Write necessary package.unmask and package.license entries when resolution
 fails.
 .TP
-\fB\-color\fR \fIy|n\fR
+\fB\-\-color\fR \fIy|n\fR
 Enable or disable colored output (default: terminal auto-detect).
 .TP
-\fB\-unordered-display\fR
+\fB\-\-unordered-display\fR
 Display results in resolution order rather than sorted.
 .TP
-\fB\-l\fR \fILOAD\fR, \fB\-load-average\fR \fILOAD\fR
+\fB\-l\fR \fILOAD\fR, \fB\-\-load-average\fR \fILOAD\fR
 Pause when system load average exceeds the given value.
 .TP
-\fB\-getbinpkg\fR
+\fB\-\-getbinpkg\fR
 Download binary packages from configured binhosts.
 .TP
-\fB\-getbinpkgonly\fR
+\fB\-\-getbinpkgonly\fR
 Only use downloaded binary packages.
 .TP
-\fB\-binpkg-respect-use\fR
+\fB\-\-binpkg-respect-use\fR
 Respect USE flag compatibility when selecting binary packages.
 .TP
-\fB\-with-bdeps\fR \fIy|n|auto\fR
+\fB\-\-with-bdeps\fR \fIy|n|auto\fR
 How to handle build dependencies (default: n).
 .TP
-\fB\-ignore-built-slot-operator-deps\fR \fIy|n\fR
+\fB\-\-ignore-built-slot-operator-deps\fR \fIy|n\fR
 Ignore slot operator rebuilds (default: n).
 .TP
 \fB\-\-plan-dir\fR \fIPATH\fR
@@ -211,109 +211,109 @@ Show advisory historical per-package and serial-total merge-time estimates.
 
 .SS Search Flags
 .TP
-\fB\-name-only\fR
+\fB\-\-name-only\fR
 Search only package/category names, not descriptions.
 .TP
-\fB\-desc\fR
+\fB\-\-desc\fR
 Search descriptions.
 .TP
-\fB\-installed\fR
+\fB\-\-installed\fR
 Only show installed packages.
 .TP
-\fB\-exact\fR
+\fB\-\-exact\fR
 Exact match instead of substring.
 .TP
-\fB\-regex\fR
+\fB\-\-regex\fR
 Use regular expression patterns.
 .TP
-\fB\-category\fR \fIcat\fR
+\fB\-\-category\fR \fIcat\fR
 Filter by category.
 .TP
-\fB\-name\fR \fIpkg\fR
+\fB\-\-name\fR \fIpkg\fR
 Filter by package name.
 .TP
-\fB\-slot\fR \fIslot\fR
+\fB\-\-slot\fR \fIslot\fR
 Filter by SLOT.
 .TP
-\fB\-use\fR \fIflags\fR
+\fB\-\-use\fR \fIflags\fR
 USE flag filter (\fI+flag\fR required, \fI\-flag\fR excluded).
 .TP
-\fB\-keywords\fR \fIkw\fR
+\fB\-\-keywords\fR \fIkw\fR
 Filter by KEYWORDS.
 .TP
-\fB\-license\fR \fIlic\fR
+\fB\-\-license\fR \fIlic\fR
 Filter by LICENSE.
 .TP
-\fB\-stable\fR
+\fB\-\-stable\fR
 Only stable-keyworded packages.
 .TP
-\fB\-testing\fR
+\fB\-\-testing\fR
 Only testing-keyworded packages.
 .TP
-\fB\-sort\fR \fIorder\fR
+\fB\-\-sort\fR \fIorder\fR
 Sort by: category, name, version, slot.
 .TP
-\fB\-compact\fR
+\fB\-\-compact\fR
 Compact output format.
 .TP
-\fB\-versions\fR
+\fB\-\-versions\fR
 Show all available versions.
 .TP
-\fB\-format\fR \fIfmt\fR
+\fB\-\-format\fR \fIfmt\fR
 Custom format string with template variables.
 .TP
-\fB\-print\fR \fIfields\fR
+\fB\-\-print\fR \fIfields\fR
 Print specific fields.
 .TP
-\fB\-json\fR
+\fB\-\-json\fR
 Output results as JSON.
 .TP
-\fB\-brief\fR
+\fB\-\-brief\fR
 Brief single-line output.
 .TP
-\fB\-only-names\fR
+\fB\-\-only-names\fR
 Only output package names.
 .TP
-\fB\-count-only\fR
+\fB\-\-count-only\fR
 Only output result count.
 .TP
-\fB\-and\fR
+\fB\-\-and\fR
 Combine multiple queries with AND logic.
 .TP
-\fB\-not\fR \fIpattern\fR
+\fB\-\-not\fR \fIpattern\fR
 Exclude packages matching this pattern.
 .TP
-\fB\-world\fR
+\fB\-\-world\fR
 Only packages in the @world set.
 .TP
-\fB\-system\fR
+\fB\-\-system\fR
 Only packages in the @system set.
 .TP
-\fB\-depends-on\fR \fIatom\fR
+\fB\-\-depends-on\fR \fIatom\fR
 Packages that depend on this.
 .TP
-\fB\-required-by\fR \fIatom\fR
+\fB\-\-required-by\fR \fIatom\fR
 Packages required by this.
 .TP
-\fB\-has-use\fR \fIflag\fR
+\fB\-\-has-use\fR \fIflag\fR
 Packages with this USE flag available.
 .TP
-\fB\-has-version\fR \fIpat\fR
+\fB\-\-has-version\fR \fIpat\fR
 Packages with version matching glob pattern.
 .TP
-\fB\-care\fR
+\fB\-\-care\fR
 Show packages needing attention (masked, overflow, etc.).
 .TP
-\fB\-overflow\fR
+\fB\-\-overflow\fR
 Only show packages with masked keywords.
 .TP
-\fB\-masked\fR
+\fB\-\-masked\fR
 Only show masked packages.
 .TP
-\fB\-duplicates\fR
+\fB\-\-duplicates\fR
 Show all versions of each package.
 .TP
-\fB\-dump\fR
+\fB\-\-dump\fR
 Dump output in eix-compatible format.
 
 .SH COMMANDS
@@ -427,7 +427,7 @@ List installed packages matching a pattern.
 \fBsync\fR
 Synchronize the Gentoo repository. Uses \fBgit\fR(1) as primary method with
 \fBrsync\fR(1) fallback, then atomically publish the refreshed resolver index.
-Success means both stages completed. Requires \fB\-repo-url\fR to be set.
+Success means both stages completed. Requires \fB\-\-repo-url\fR to be set.
 
 .TP
 \fBindex\fR

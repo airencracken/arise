@@ -1,14 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime/pprof"
 	runtimeTrace "runtime/trace"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,21 +51,21 @@ var (
 	repoURL                 = flag.String("repo-url", "", "remote repository URL for sync")
 
 	// Filesystem path configuration
-	distfilesDir             = flag.String("distfiles-dir", commandEnv("DISTDIR", "/var/cache/distfiles"), "path to distfiles directory")
-	vdbDir                   = flag.String("vdb-dir", commandRootPath("/var/db/pkg"), "path to VDB (var/db/pkg)")
-	workDir                  = flag.String("work-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise"), "path to working directory")
-	binpkgDir                = flag.String("binpkg-dir", commandEnv("PKGDIR", "/var/cache/binpkgs"), "path to binary package directory")
-	portageConfigRoot        = flag.String("portage-config-root", commandConfigRoot(), "path to portage configuration directory")
-	worldFile                = flag.String("world-file", commandRootPath("/var/lib/portage/world"), "path to world set file")
-	resumeFile               = flag.String("resume-file", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "resume"), "path to resume state file")
-	journalDir               = flag.String("journal-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "journal"), "path to durable operation journals")
-	approvePlanSHA256        = flag.String("approve-plan-sha256", "", "authorize exactly the canonical verified plan with this SHA-256 digest")
-	approvePlan              = flag.String("approve-plan", "", "authorize from a saved JSON plan path or name")
-	savePlan                 = flag.String("save-plan", "", "save the generated JSON plan to a path or name")
-	planDir                  = flag.String("plan-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "plans"), "directory for named saved plans")
-	emergeLog                = flag.String("emerge-log", commandRootPath("/var/log/emerge.log"), "Portage-compatible merge timing log")
-	showEstimates            = flag.Bool("show-estimates", false, "show historical per-package and total merge-time estimates")
-	preflightOnly            = flag.Bool("preflight-only", false, "validate every planned package without fetching, building, or mutating")
+	distfilesDir      = flag.String("distfiles-dir", commandEnv("DISTDIR", "/var/cache/distfiles"), "path to distfiles directory")
+	vdbDir            = flag.String("vdb-dir", commandRootPath("/var/db/pkg"), "path to VDB (var/db/pkg)")
+	workDir           = flag.String("work-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise"), "path to working directory")
+	binpkgDir         = flag.String("binpkg-dir", commandEnv("PKGDIR", "/var/cache/binpkgs"), "path to binary package directory")
+	portageConfigRoot = flag.String("portage-config-root", commandConfigRoot(), "path to portage configuration directory")
+	worldFile         = flag.String("world-file", commandRootPath("/var/lib/portage/world"), "path to world set file")
+	resumeFile        = flag.String("resume-file", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "resume"), "path to resume state file")
+	journalDir        = flag.String("journal-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "journal"), "path to durable operation journals")
+	approvePlanSHA256 = flag.String("approve-plan-sha256", "", "authorize exactly the canonical verified plan with this SHA-256 digest")
+	approvePlan       = flag.String("approve-plan", "", "authorize from a saved JSON plan path or name")
+	savePlan          = flag.String("save-plan", "", "save the generated JSON plan to a path or name")
+	planDir           = flag.String("plan-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "plans"), "directory for named saved plans")
+	emergeLog         = flag.String("emerge-log", commandRootPath("/var/log/emerge.log"), "Portage-compatible merge timing log")
+	showEstimates     = flag.Bool("show-estimates", false, "show historical per-package and total merge-time estimates")
+	preflightOnly     = flag.Bool("preflight-only", false, "validate every planned package without fetching, building, or mutating")
 
 	// Logging
 	logLevel = flag.String("log-level", "info", "log level: debug, info, warn, error")
@@ -184,6 +187,9 @@ func init() {
 	}
 	flag.IntVar(jobsVal, "j", 0, "alias for --jobs")
 	flag.Float64Var(loadAverage, "l", 0, "alias for --load-average")
+	flag.Usage = func() {
+		writeUsage(flag.CommandLine.Output(), flag.CommandLine)
+	}
 }
 
 func main() {
@@ -196,6 +202,10 @@ func main() {
 	stopRuntimeProfiles := startRuntimeProfilesFromEnvironment()
 	finalizeRuntimeProfiles = stopRuntimeProfiles
 	defer stopRuntimeProfiles()
+	if err := validateOptionSpellings(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "arise: %v\n", err)
+		os.Exit(2)
+	}
 	os.Args = normalizeEmergeArgs(os.Args)
 	flag.Parse()
 	stopTrapHandler := startDiagnosticTrapHandler()
@@ -218,10 +228,7 @@ func main() {
 
 	args := flag.Args()
 	if len(args) == 0 && *deselectArg == "" {
-		fmt.Fprintf(os.Stderr, "Usage: arise [flags] <command> [args...]\n")
-		fmt.Fprintf(os.Stderr, "Commands: sync, index, install, update, uninstall, select, recover, query, state, search, installed, info, audit, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench\n")
-		fmt.Fprintf(os.Stderr, "Flags:\n")
-		flag.PrintDefaults()
+		writeUsage(os.Stderr, flag.CommandLine)
 		os.Exit(1)
 	}
 
@@ -310,6 +317,67 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: arise [flags] <command> [args...]\n")
 		os.Exit(1)
 	}
+}
+
+func writeUsage(w io.Writer, fs *flag.FlagSet) {
+	fmt.Fprintln(w, "Usage: arise [options] <command> [args...]")
+	fmt.Fprintln(w, "Commands: sync, index, install, update, uninstall, select, recover, query, state, search, installed, info, audit, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench")
+	fmt.Fprintln(w, "Options:")
+	var rendered bytes.Buffer
+	original := fs.Output()
+	fs.SetOutput(&rendered)
+	fs.PrintDefaults()
+	fs.SetOutput(original)
+	for _, line := range strings.Split(rendered.String(), "\n") {
+		if strings.HasPrefix(line, "  -") && !strings.HasPrefix(line, "  --") {
+			nameEnd := strings.IndexAny(line[3:], " \t=")
+			if nameEnd < 0 {
+				nameEnd = len(line) - 3
+			}
+			if nameEnd > 1 {
+				line = "  --" + line[3:]
+			}
+		}
+		fmt.Fprintln(w, line)
+	}
+}
+
+func validateOptionSpellings(args []string) error {
+	boolShort := map[byte]bool{'1': true, 'u': true, 'O': true, 'o': true, 'e': true, 'N': true, 'D': true, 'p': true, 'a': true, 'q': true, 'v': true, 't': true, 'b': true, 'B': true, 'k': true, 'K': true, 'f': true, 'n': true, 'g': true, 'G': true}
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if len(arg) <= 2 || arg[0] != '-' || arg[1] == '-' {
+			continue
+		}
+		allShort := true
+		for index := 1; index < len(arg); index++ {
+			if !boolShort[arg[index]] {
+				allShort = false
+				break
+			}
+		}
+		if allShort {
+			continue
+		}
+		if arg[1] == 'j' {
+			if _, err := strconv.Atoi(strings.TrimPrefix(arg[2:], "=")); err == nil {
+				continue
+			}
+		}
+		if arg[1] == 'l' {
+			if _, err := strconv.ParseFloat(strings.TrimPrefix(arg[2:], "="), 64); err == nil {
+				continue
+			}
+		}
+		name := arg[1:]
+		if equals := strings.IndexByte(name, '='); equals >= 0 {
+			name = name[:equals]
+		}
+		return fmt.Errorf("invalid option %q: long options require --%s", arg, name)
+	}
+	return nil
 }
 
 func exitAfterRuntimeProfiles(code int) {

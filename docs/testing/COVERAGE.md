@@ -137,6 +137,14 @@ including parent-directory and prefix-sibling escape mutations. Package-local
 merge coverage rose to 75.5%, and the core whole-tree lane now covers 71.0% of
 statements.
 
+CLI option spelling has an explicit contract test: one-character aliases use
+`-s`, long names use `--style`, boolean short options may cluster, attached
+`-j`/`-l` values remain valid, and `--` terminates validation. Generated help,
+the man page, README and Texinfo examples are checked so Go's accepted but
+undocumented `-long-name` form cannot reappear. Adversarial empty, malformed,
+overflowing and NUL-containing arguments exercise the validator without
+panics.
+
 Zero-percent command `main` packages are lower priority than the command logic
 in `cmd/arise`: thin process entry points should be covered through route and
 contract tests, not tests that duplicate Go's flag and exit behavior.

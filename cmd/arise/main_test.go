@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,82 @@ func TestVersionFlagRegistered(t *testing.T) {
 	}
 	if f.Usage != "print version and exit" {
 		t.Fatalf("version flag usage = %q", f.Usage)
+	}
+}
+
+func TestHelpUsesShortOrDoubleDashOptionSpellingsOnly(t *testing.T) {
+	fs := flag.NewFlagSet("contract", flag.ContinueOnError)
+	fs.Bool("q", false, "quiet")
+	fs.Bool("pretend", false, "dry run")
+	fs.String("log-level", "info", "logging threshold")
+	var output bytes.Buffer
+	writeUsage(&output, fs)
+	got := output.String()
+	for _, want := range []string{"  -q", "  --pretend", "  --log-level"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("help missing %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"  -pretend", "  -log-level"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("help advertises forbidden single-dash long option %q:\n%s", forbidden, got)
+		}
+	}
+}
+
+func TestOptionSpellingContract(t *testing.T) {
+	for _, args := range [][]string{
+		{"--pretend"}, {"--log-level=debug"}, {"-p"}, {"-uDN"},
+		{"-j4"}, {"-j=4"}, {"-l2.5"}, {"-l=2.5"},
+		{"install", "--", "-literal-operand"},
+	} {
+		if err := validateOptionSpellings(args); err != nil {
+			t.Errorf("validateOptionSpellings(%q): %v", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"-pretend"}, {"-log-level=debug"}, {"-jobs=4"}, {"-load-average", "2"},
+		{"-uDpretend"}, {"-jwrong"}, {"-lwrong"},
+	} {
+		err := validateOptionSpellings(args)
+		if err == nil {
+			t.Errorf("validateOptionSpellings(%q) accepted forbidden spelling", args)
+			continue
+		}
+		if !strings.Contains(err.Error(), "long options require --") {
+			t.Errorf("validateOptionSpellings(%q) error = %q", args, err)
+		}
+	}
+}
+
+func TestAdversarialOptionSpellingValidationNeverPanics(t *testing.T) {
+	for _, args := range [][]string{
+		nil, {""}, {"-"}, {"--"}, {"---"}, {"-\x00"}, {"--\x00"},
+		{"-j999999999999999999999999999999"}, {"-lNaN"}, {"-lInf"},
+	} {
+		_ = validateOptionSpellings(args)
+	}
+}
+
+func TestDocumentedAriseOptionsUseDoubleDashForLongNames(t *testing.T) {
+	man, err := os.ReadFile(filepath.Join("..", "..", "arise.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matches := regexp.MustCompile(`\\fB\\-([a-z][a-z-]+)`).FindAllStringSubmatch(string(man), -1); len(matches) != 0 {
+		t.Fatalf("man page contains single-dash long options: %q", matches)
+	}
+	for _, path := range []string{
+		filepath.Join("..", "..", "README.md"),
+		filepath.Join("..", "..", "arise.texi"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "arise -repo-url") {
+			t.Errorf("%s documents single-dash --repo-url", path)
+		}
 	}
 }
 
