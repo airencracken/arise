@@ -13,6 +13,9 @@ to `../archive/planning/` with a dated archival note.
   overlay, bounded performance, world maintenance, and stage3 G1 sequence.
 - [`EXECUTION_RECOVERY_PLAN.md`](EXECUTION_RECOVERY_PLAN.md) — keep-going,
   bounded retry, continuation, and re-resolution.
+- [`FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md`](FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md)
+  — Btrfs, OpenZFS and LVM whole-operation recovery, OverlayFS boundaries,
+  retention and boot-safe provider promotion.
 - [`JOURNAL_RECOVERY_UX_PLAN.md`](JOURNAL_RECOVERY_UX_PLAN.md) — actionable
   recovery status, inspection, retention, and corruption handling.
 - [`LIFECYCLE_TRANSACTION_PLAN.md`](LIFECYCLE_TRANSACTION_PLAN.md) — optional

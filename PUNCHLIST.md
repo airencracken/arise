@@ -1713,10 +1713,11 @@ the complete selected plan has passed the applicable whole-plan checks below.
   installed VDB `environment.bz2`, with typed current ROOT/path values restored
   after sourcing. Arbitrary lifecycle ROOT writes remain outside the payload
   journal. Stronger rollback is an additional experimental plan-bound
-  capability with overlay/fuse-overlay lifecycle delta and Btrfs/LVM snapshot
-  providers; see
-  `docs/transaction-backends.md`. Provider probes and capacity must be
-  revalidated under the operation lock, and fallback must never silently
+  capability with overlay/fuse-overlay lifecycle delta and Btrfs/OpenZFS/LVM
+  snapshot providers; see `docs/transaction-backends.md` and
+  `docs/planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md`. Provider probes,
+  complete mount/dataset/subvolume/LV coverage, capacity and boot recovery must
+  be revalidated under the operation lock, and fallback must never silently
   weaken an explicitly approved experimental guarantee. This host is ext4 on `/dev/dm-1`, has no
   overlayfs kernel support, fuse-overlayfs or Btrfs, and requires privileged
   LVM inspection before snapshot eligibility is known.
@@ -2290,6 +2291,10 @@ These are product goals, not substitutes for correctness:
   durable undo journal, process-death coverage, active-operation recovery and
   retry through the public command path. Extend the same operator-facing
   recovery contract to every mutation class and whole-operation world updates.
+  Whole-operation rollback will use verified Btrfs, OpenZFS or LVM snapshots;
+  Arise will not build an immutable package store, generation-symlink ROOT or
+  second path garbage collector. OverlayFS remains a rehearsal/lifecycle-delta
+  mechanism rather than a post-commit rollback claim.
 - [ ] Plan diff: show what changed since the last sync or previous solution.
 - [ ] Resolver trace that can be attached to bug reports without private data.
 - [ ] Counterfactual planning: compare profile, USE, keyword, license, repository

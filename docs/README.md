@@ -64,6 +64,11 @@ hot paths, experiment protocol, and acceptance criteria for performance work.
 defines commit-aware `--keep-going`, locked graph recalculation, continuation
 approval, and bounded retry/rebatch semantics for long transactions.
 
+[`planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md`](planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md)
+defines provider-specific whole-operation rollback contracts for Btrfs,
+OpenZFS and LVM, keeps OverlayFS scoped to rehearsal/lifecycle capture, and
+rejects generation-symlink package stores.
+
 [`planning/SOLVER_LIBRARY_PLAN.md`](planning/SOLVER_LIBRARY_PLAN.md) defines the
 pure-Go reusable solver boundary, the Gentoo semantic frontend, first-class
 explanations, and the ideas to study from libsolv without adding cgo or a

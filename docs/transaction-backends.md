@@ -36,13 +36,23 @@ fail-closed coverage and promotion tests are specified in
 
 ### Filesystem snapshot
 
-The whole mutation window is protected by a snapshot provider such as a Btrfs
-subvolume snapshot or an LVM snapshot. Selection requires proof that ROOT is a
-suitable snapshot boundary, sufficient snapshot capacity exists, rollback is
-possible for the mounted root, and boot/recovery instructions are durable.
+The whole mutation window is protected by a snapshot provider such as Btrfs,
+OpenZFS or LVM. Selection requires proof that ROOT is a suitable snapshot
+boundary, every separate mount/dataset/subvolume/LV in the mutation scope is
+accounted for, sufficient snapshot capacity exists, rollback is possible for
+the mounted root, and boot/recovery instructions are durable.
 Snapshots do not replace the package journal: the journal remains the normal
 inspection and recovery interface, while the snapshot is the final escape
-hatch for writes outside its known set.
+hatch for writes outside its known set. OverlayFS and fuse-overlayfs are
+lifecycle-delta/rehearsal providers, not persistent post-commit snapshot
+backends. The provider contracts, retention rules and promotion matrix are in
+`planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md`.
+
+Arise deliberately preserves the ordinary Gentoo ROOT and VDB model. It does
+not implement rollback by replacing package paths with generation symlinks,
+building an immutable package store, or retaining parallel ROOT generations.
+Those designs require a second path ownership and garbage-collection model and
+would weaken Portage interoperability.
 
 ### Portage-compatible baseline
 

@@ -48,6 +48,22 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"- [~] Complete EAPI-correct DEPEND/RDEPEND/BDEPEND/IDEPEND/PDEPEND parity.",
 		"- [x] Repair the formerly failing laptop `--update @world` differential.",
 		"- [x] Ship the initial release-bound offline dependency archive path.",
+		"Whole-operation rollback will use verified Btrfs, OpenZFS or LVM snapshots;",
+	)
+
+	snapshots := read("../docs/planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md")
+	assertPresent(t, snapshots,
+		"This is not an immutable package store.",
+		"### Btrfs",
+		"### OpenZFS",
+		"### LVM",
+		"### OverlayFS and fuse-overlayfs",
+		"Overlay providers are not persistent whole-operation snapshot backends.",
+		"unit tests for topology, capability, capacity and provider-output parsers;",
+		"atomicity tests at every boundary between lock, record publication, snapshot",
+	)
+	assertAbsent(t, snapshots,
+		"snapshot exists, therefore rollback is available",
 	)
 
 	matrix := read("../docs/compatibility/PORTAGE_COMPATIBILITY_MATRIX.md")
