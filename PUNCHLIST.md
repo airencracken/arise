@@ -2300,6 +2300,14 @@ These are product goals, not substitutes for correctness:
   Arise will not build an immutable package store, generation-symlink ROOT or
   second path garbage collector. OverlayFS remains a rehearsal/lifecycle-delta
   mechanism rather than a post-commit rollback claim.
+- [ ] Add pre-update recovery binpkgs when Arise subsumes `quickpkg`. Before an
+  approved replacement/removal transaction, capture the complete affected
+  installed package set with exact VDB identity, file metadata/integrity,
+  locally modified or missing-path evidence, ROOT/plan fingerprints and bounded
+  recovery-set retention. Restore through normal journaled transactions after
+  re-resolution and separate approval for drift. This is portable package-set
+  reconstruction, not atomic rollback of lifecycle, external or package-unowned
+  state.
 - [ ] Plan diff: show what changed since the last sync or previous solution.
 - [ ] Resolver trace that can be attached to bug reports without private data.
 - [ ] Counterfactual planning: compare profile, USE, keyword, license, repository

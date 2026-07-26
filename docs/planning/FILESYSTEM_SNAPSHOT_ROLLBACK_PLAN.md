@@ -14,6 +14,11 @@ primary package model, or introduce a second garbage collector for path
 generations. Selective downgrade remains a package/binpkg operation; coherent
 whole-operation rollback belongs to the filesystem provider.
 
+Future `quickpkg` compatibility should add pre-update recovery binpkgs as the
+portable middle tier. Those host-derived artifacts can reconstruct the affected
+package set through ordinary journaled transactions, but they do not replace
+snapshot coverage or claim atomic restoration of lifecycle and external state.
+
 ## Required semantics
 
 A provider is eligible only when it can prove all of the following before the

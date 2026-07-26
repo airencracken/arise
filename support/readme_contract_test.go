@@ -49,6 +49,7 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"- [x] Repair the formerly failing laptop `--update @world` differential.",
 		"- [x] Ship the initial release-bound offline dependency archive path.",
 		"Whole-operation rollback will use verified Btrfs, OpenZFS or LVM snapshots;",
+		"- [ ] Add pre-update recovery binpkgs when Arise subsumes `quickpkg`.",
 	)
 
 	snapshots := read("../docs/planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md")
@@ -61,6 +62,7 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"Overlay providers are not persistent whole-operation snapshot backends.",
 		"Each provider is an independently USE-gated implementation.",
 		"The static journal/recovery baseline remains fully functional with every",
+		"Future `quickpkg` compatibility should add pre-update recovery binpkgs",
 		"unit tests for topology, capability, capacity and provider-output parsers;",
 		"atomicity tests at every boundary between lock, record publication, snapshot",
 	)

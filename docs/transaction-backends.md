@@ -54,6 +54,26 @@ building an immutable package store, or retaining parallel ROOT generations.
 Those designs require a second path ownership and garbage-collection model and
 would weaken Portage interoperability.
 
+### Pre-update recovery binpkgs
+
+When Arise subsumes `quickpkg`, it may capture every installed package that an
+approved transaction will replace or remove as a verified host-derived binary
+package before mutation. The complete pre-update set provides a portable,
+filesystem-independent downgrade path when snapshots are unavailable.
+
+This is package-set reconstruction, not atomic system rollback. Recovery must
+re-resolve the complete captured set against actual state, restore it through
+normal journaled package transactions, and require new approval for any changed
+action. Lifecycle side effects, package-unowned files, external databases and
+configuration outside the captured package/VDB state remain outside the
+guarantee.
+
+Recovery artifacts must retain exact package/VDB identity, content and metadata
+integrity, the originating ROOT/plan fingerprint, missing or locally modified
+path warnings, and their recovery-set membership. Retention is bounded, but a
+set referenced by an active operation, failed verification or pending rollback
+cannot be pruned.
+
 ### Portage-compatible baseline
 
 Arise commits the journaled payload and VDB first and then runs write-capable
