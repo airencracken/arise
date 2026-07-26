@@ -41,6 +41,9 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 	if err != nil {
 		return nil, fmt.Errorf("installed lifecycle: stored ebuild: %w", err)
 	}
+	if err := ensureWorkDirectory(cfg.WorkDirBase); err != nil {
+		return nil, fmt.Errorf("installed lifecycle: %w", err)
+	}
 	workDir, err := os.MkdirTemp(cfg.WorkDirBase, category+"-"+a.Package+"-remove-")
 	if err != nil {
 		return nil, fmt.Errorf("installed lifecycle: work directory: %w", err)

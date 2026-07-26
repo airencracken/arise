@@ -175,6 +175,39 @@ func TestInstalledLifecycleHasPhaseIsNilSafeAndExact(t *testing.T) {
 	}
 }
 
+func TestEnsureWorkDirectoryRecreatesDeletedRuntimeState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deleted", "var", "tmp", "arise")
+	if err := ensureWorkDirectory(path); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("work directory info=%v err=%v", info, err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("work directory mode = %o, want 755", info.Mode().Perm())
+	}
+	if err := ensureWorkDirectory(path); err != nil {
+		t.Fatalf("idempotent ensure: %v", err)
+	}
+}
+
+func TestEnsureWorkDirectoryRejectsUnsafeAndConflictingPaths(t *testing.T) {
+	if err := ensureWorkDirectory(""); err == nil {
+		t.Fatal("empty work path was accepted")
+	}
+	if err := ensureWorkDirectory("relative/work"); err == nil {
+		t.Fatal("relative work path was accepted")
+	}
+	path := filepath.Join(t.TempDir(), "arise")
+	if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureWorkDirectory(path); err == nil {
+		t.Fatal("regular-file work path was accepted")
+	}
+}
+
 func TestProtocolBuildPhasesKeepsPreinstOutOfBuildSandbox(t *testing.T) {
 	phases := protocolBuildPhases(phaseproto.ExecutionPolicy{Configured: true})
 	for _, phase := range phases {
