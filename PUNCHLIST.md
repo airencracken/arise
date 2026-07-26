@@ -522,13 +522,14 @@ validity and promotion criteria, in
   REQUIRED_USE-only cardinality operators and empty groups rather than
   flattening them into a different plan. Broader live nested-choice coverage
   remains.
-- [!] Implement EAPI-correct DEPEND/RDEPEND/BDEPEND/IDEPEND/PDEPEND behavior.
+- [~] Complete EAPI-correct DEPEND/RDEPEND/BDEPEND/IDEPEND/PDEPEND parity.
   Resolver records preserve EAPI; BDEPEND before EAPI 7 and IDEPEND before
   EAPI 8 are ignored as unavailable metadata variables, matching Portage,
   while malformed syntax in active classes still fails closed. Retained
   packages keep RDEPEND/PDEPEND, never IDEPEND,
   and include DEPEND/BDEPEND only according to `--with-bdeps`. Source versus
-  binary transaction roots and a full Portage differential matrix remain.
+  binary transaction roots are covered by portable fixtures; broader live
+  Portage differential coverage remains.
   Cross-root placement now follows the historical boundary: pre-EAPI-7 DEPEND
   is satisfied in the running BROOT, while EAPI 7+ DEPEND uses SYSROOT;
   BDEPEND/IDEPEND use BROOT and runtime/post dependencies use ROOT.
@@ -805,12 +806,9 @@ validity and promotion criteria, in
   The aligned live recovery command and its five installed Python slots are
   recorded in `docs/evidence/P3_BROKEN_WORLD_BASELINE_2026-07-18.json`; reducing
   the wider reverse-dependency fanout, blockers and overlays remains.
-- [!] Current laptop `--update @world` differential is intentionally failing.
+- [x] Repair the formerly failing laptop `--update @world` differential.
   Installed/repository EAPI contamination and raw live-LLVM candidate selection
   are fixed, and deep/newuse set planning now produces comparable actions.
-  Freeze the remaining stale Python targets, virtual transitions, ordering
-  conflicts and installed-only state before repairing the laptop; no world
-  speed claim is valid meanwhile.
   With the caller's exact recovery semantics (`--deep --newuse
   --complete-graph --with-bdeps=y --keep-going --backtrack=20`), Portage
   completes dependency resolution in 47.39 seconds using 3/20 backtracks;
@@ -970,6 +968,11 @@ from the core execution ABI; they do not block P4 closure.
 
 ### Overlay-owned Go dependency supply chain
 
+- [x] Ship the initial release-bound offline dependency archive path. The
+  versioned overlay ebuild consumes a Manifest-verified module-cache archive
+  tied to the release, so installation does not depend on a mutable Go proxy or
+  a pre-populated global module cache. Per-module Gentoo packaging remains the
+  experiment below rather than a prerequisite for the first release.
 - [ ] Build a reusable `g-cpan`-style Go module packaging tool for Gentoo.
   Consume `go.mod`/`go.sum` and Go's structured module metadata; resolve module
   paths, semantic/pseudo versions, major-version suffixes, `replace`/`exclude`
@@ -1339,8 +1342,10 @@ Acceptance gate:
   reopen after process loss, and deterministically recover active operations.
   The disposable phase-protocol merge path now journals every image target and
   its new VDB directory, rolls back an injected mid-tree failure, and commits a
-  durable success record. Replacement VDB entries, ownership/config protection,
-  metadata breadth and production-command wiring remain gated. Mutation entry
+  durable success record. Production merge/unmerge now uses the journal,
+  including replacement VDB entries and lifecycle execution. Broader metadata,
+  ownership/config-protection edge cases, operator UX, and other lifecycle
+  mutation classes remain. Mutation entry
   points recover active journals while holding the VDB lock; exhaustive
   process-death tests now kill merge and unmerge after payload/VDB mutation but
   before commit, then prove the public retry rolls back the active journal and
@@ -1371,7 +1376,8 @@ Acceptance gate:
 - [~] Run collision/ownership validation before live-root mutation. The
   transactional merge path now runs the VDB ownership scanner before journal
   creation and rejects foreign-owned image targets without mutation. Production
-  command wiring and the full FEATURES matrix remain gated.
+  merge wiring is covered; the full FEATURES and Portage differential matrix
+  remains gated.
 - [~] Implement CONFIG_PROTECT and CONFIG_PROTECT_MASK. Transactional merges
   preserve changed regular files beneath protected paths using deterministic
   `._cfg0000_` names, advance past existing pending files, honor mask precedence,
@@ -1514,12 +1520,14 @@ Acceptance gate:
   retain explicit `mirror://` expansion. Remaining parity includes mirror
   layout discovery/cache, `fetch+`/`mirror+`, local and read-only DISTDIRs,
   bounded checksum retry policy, and mismatch quarantine naming.
-- [~] Start scheduler promotion with bounded parallel fetch-ahead. Source
+- [x] Promote bounded parallel fetch-ahead and dependency-ready preparation.
+  Source
   acquisition uses a separate `--fetch-jobs` pool (default four) for both
   fetch-only and live execution, retains Manifest verification, coalesces shared
   distfiles through the fetcher's process/file locks, and completes before any
-  package mutation. Build and commit concurrency remain disabled until their
-  dependency/resource boundaries are certified. Concurrent terminal fetches use
+  package mutation. Dependency-ready source preparation now runs concurrently,
+  while commits remain serialized behind the VDB/ROOT mutation boundary.
+  Concurrent terminal fetches use
   complete event-per-line output because a single carriage-return percentage
   line cannot safely have multiple owners; single-worker fetching retains the
   animated percentage/rate display. The first live 369-action fetch-ahead run
@@ -2278,7 +2286,10 @@ These are product goals, not substitutes for correctness:
   recovery depend on a database reader.
 - [ ] Content-addressed fetch/build cache with verified reuse.
 - [ ] Safe operation preview including exact filesystem/config/VDB mutations.
-- [ ] First-class rollback and crash recovery.
+- [~] First-class rollback and crash recovery. Package merge/unmerge has a
+  durable undo journal, process-death coverage, active-operation recovery and
+  retry through the public command path. Extend the same operator-facing
+  recovery contract to every mutation class and whole-operation world updates.
 - [ ] Plan diff: show what changed since the last sync or previous solution.
 - [ ] Resolver trace that can be attached to bug reports without private data.
 - [ ] Counterfactual planning: compare profile, USE, keyword, license, repository
@@ -2350,10 +2361,14 @@ These are product goals, not substitutes for correctness:
   VDB identity/invalidation so stale installation state is never returned.
 - [ ] Consider version/slot/keyword postings only after their workloads expose
   a measurable metadata-decoding bottleneck.
-- [ ] One static recovery binary capable of inspecting and repairing state when
-  Python/Portage is unusable.
-- [ ] Preserve the single self-contained Go-tool model: no Python runtime or
-  cgo database dependency; track binary size and cold startup as budgets.
+- [~] One static recovery binary capable of inspecting and repairing state when
+  Python/Portage is unusable. Release artifacts are built with `CGO_ENABLED=0`,
+  static linkage is packaging-gated, and the recovery command can inspect and
+  repair journal state. Preserved Bash/tool drills, log correlation and broader
+  state repair remain.
+- [x] Preserve the single self-contained Go-tool model: no Python runtime or
+  cgo database dependency. Binary size and cold startup remain numeric P0A
+  budgets rather than architectural dependencies.
 
 These targets must be converted into numeric budgets after the P0A baseline.
 The budgets should be ambitious enough that “slightly faster emerge” fails.

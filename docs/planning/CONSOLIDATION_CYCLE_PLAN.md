@@ -16,15 +16,16 @@ the detailed performance, execution, recovery, or construction gates.
 
 ## Entry condition
 
-Begin after the current 19-action live world update has:
+Begin a consolidation cycle only from a clean, current baseline that has:
 
-- committed every package transaction;
-- passed journal, resume, preserved-library, VDB, log, and plan-parity checks;
-- survived the required reboot/runtime probes;
-- produced a dated checkpoint with exact binary and plan identities.
+- passed the relevant test and vet gates;
+- recorded exact binary, repository, configuration and plan identities for any
+  live or performance claim;
+- no unresolved active journals or recovery-incomplete mutations.
 
 If verification exposes another correctness defect, reduce it to a regression
-and repair the affected state before starting performance claims or G1.
+and repair the affected state before starting performance claims or G1. Dated
+historical evidence retains the entry conditions that applied to its run.
 
 ## Scope and order
 

@@ -35,6 +35,9 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"- [ ] Update world only for successful explicit installs and respect oneshot.",
 		"- [ ] Implement uninstall with reverse-dependency safety.",
 		"- [!] Connect resolved plans to fetch/build/binpkg/merge/unmerge execution.",
+		"- [!] Implement EAPI-correct DEPEND/RDEPEND/BDEPEND/IDEPEND/PDEPEND behavior.",
+		"- [!] Current laptop `--update @world` differential is intentionally failing.",
+		"Build and commit concurrency remain disabled until their",
 	)
 	assertPresent(t, punchlist,
 		"- [x] Implement installed `pkg_config` execution.",
@@ -42,6 +45,9 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"- [x] Update world only after successful explicit installs and respect oneshot.",
 		"- [x] Implement exact uninstall with whole-state reverse-dependency and reverse-",
 		"- [~] Connect resolved plans to fetch/build/binpkg/merge/unmerge execution.",
+		"- [~] Complete EAPI-correct DEPEND/RDEPEND/BDEPEND/IDEPEND/PDEPEND parity.",
+		"- [x] Repair the formerly failing laptop `--update @world` differential.",
+		"- [x] Ship the initial release-bound offline dependency archive path.",
 	)
 
 	matrix := read("../docs/compatibility/PORTAGE_COMPATIBILITY_MATRIX.md")
