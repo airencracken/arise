@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/color"
+	"github.com/airencracken/arise/internal/dispatchconf"
 	"github.com/airencracken/arise/internal/ebuild"
 	"github.com/airencracken/arise/internal/env"
 	"github.com/airencracken/arise/internal/metadata"
@@ -20,36 +22,55 @@ import (
 	"github.com/airencracken/arise/internal/world"
 )
 
-func runDispatchConf() {
-	etcDir := "/etc"
-	entries, err := os.ReadDir(etcDir)
+func runDispatchConf(args []string) int {
+	for _, arg := range args {
+		switch arg {
+		case "-h", "--help":
+			fmt.Println("dispatch-conf: sane configuration file update")
+			fmt.Println("\nUsage: arise dispatch-conf [config dirs]")
+			return 0
+		case "--version":
+			fmt.Printf("arise %s\n", version)
+			return 0
+		}
+	}
+	root := commandEnv("EROOT", commandEnv("ROOT", "/"))
+	opts := dispatchconf.DefaultOptions()
+	opts.Root = root
+	opts.HookDir = filepath.Join(root, "etc", "portage", "conf-update.d")
+
+	cfg, err := portage.LoadEffectiveConfigWithEnvironment(*portageConfigRoot, os.Environ())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dispatch-conf: reading %s: %v\n", etcDir, err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "dispatch-conf: load Portage configuration: %v\n", err)
+		return 1
+	}
+	if len(args) != 0 {
+		opts.Protect = args
+	} else {
+		opts.Protect = strings.Fields(cfg.MakeConf["CONFIG_PROTECT"])
+	}
+	opts.Mask = strings.Fields(cfg.MakeConf["CONFIG_PROTECT_MASK"])
+	if len(opts.Protect) == 0 {
+		fmt.Fprintln(os.Stderr, "dispatch-conf: CONFIG_PROTECT is empty")
+		return 1
 	}
 
-	var pending []string
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, "._cfg") {
-			pending = append(pending, filepath.Join(etcDir, name))
-		}
+	dispatchConfig := filepath.Join(root, "etc", "dispatch-conf.conf")
+	opts, err = dispatchconf.LoadConfig(dispatchConfig, commandEnv("EPREFIX", ""), opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dispatch-conf: %v\n", err)
+		return 1
 	}
-
-	if len(pending) == 0 {
+	opts.ArchiveDir = filepath.Join(root, strings.TrimPrefix(opts.ArchiveDir, "/"))
+	result, err := dispatchconf.Run(context.Background(), opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dispatch-conf: %v\n", err)
+		return 1
+	}
+	if result.Discovered == 0 {
 		fmt.Println("No pending config file updates.")
-		return
 	}
-
-	fmt.Printf("Found %d pending config file updates:\n", len(pending))
-	for _, p := range pending {
-		base := strings.TrimPrefix(filepath.Base(p), "._cfg0000_")
-		if base == filepath.Base(p) {
-			base = strings.TrimPrefix(base, "._cfg")
-			base = strings.TrimLeft(base, "0123456789_")
-		}
-		fmt.Printf("  %s -> %s\n", p, filepath.Join(etcDir, base))
-	}
+	return 0
 }
 
 func runEnvUpdate() {

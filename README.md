@@ -216,7 +216,7 @@ Commands:
   audit           Audit Python/Perl site-packages
   preserved-rebuild  Rebuild after soname changes
   revdep-rebuild  Full reverse dependency scan
-  dispatch-conf   List pending config updates
+  dispatch-conf   Review and merge protected config updates
   env-update      Regenerate profile.env
   ldconfig        Update linker cache
   config          Run pkg_config phase

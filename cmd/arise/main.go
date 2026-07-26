@@ -48,21 +48,21 @@ var (
 	repoURL                 = flag.String("repo-url", "", "remote repository URL for sync")
 
 	// Filesystem path configuration
-	distfilesDir             = flag.String("distfiles-dir", commandEnv("DISTDIR", "/var/cache/distfiles"), "path to distfiles directory")
-	vdbDir                   = flag.String("vdb-dir", commandRootPath("/var/db/pkg"), "path to VDB (var/db/pkg)")
-	workDir                  = flag.String("work-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise"), "path to working directory")
-	binpkgDir                = flag.String("binpkg-dir", commandEnv("PKGDIR", "/var/cache/binpkgs"), "path to binary package directory")
-	portageConfigRoot        = flag.String("portage-config-root", commandConfigRoot(), "path to portage configuration directory")
-	worldFile                = flag.String("world-file", commandRootPath("/var/lib/portage/world"), "path to world set file")
-	resumeFile               = flag.String("resume-file", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "resume"), "path to resume state file")
-	journalDir               = flag.String("journal-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "journal"), "path to durable operation journals")
-	approvePlanSHA256        = flag.String("approve-plan-sha256", "", "authorize exactly the canonical verified plan with this SHA-256 digest")
-	approvePlan              = flag.String("approve-plan", "", "authorize from a saved JSON plan path or name")
-	savePlan                 = flag.String("save-plan", "", "save the generated JSON plan to a path or name")
-	planDir                  = flag.String("plan-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "plans"), "directory for named saved plans")
-	emergeLog                = flag.String("emerge-log", commandRootPath("/var/log/emerge.log"), "Portage-compatible merge timing log")
-	showEstimates            = flag.Bool("show-estimates", false, "show historical per-package and total merge-time estimates")
-	preflightOnly            = flag.Bool("preflight-only", false, "validate every planned package without fetching, building, or mutating")
+	distfilesDir      = flag.String("distfiles-dir", commandEnv("DISTDIR", "/var/cache/distfiles"), "path to distfiles directory")
+	vdbDir            = flag.String("vdb-dir", commandRootPath("/var/db/pkg"), "path to VDB (var/db/pkg)")
+	workDir           = flag.String("work-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise"), "path to working directory")
+	binpkgDir         = flag.String("binpkg-dir", commandEnv("PKGDIR", "/var/cache/binpkgs"), "path to binary package directory")
+	portageConfigRoot = flag.String("portage-config-root", commandConfigRoot(), "path to portage configuration directory")
+	worldFile         = flag.String("world-file", commandRootPath("/var/lib/portage/world"), "path to world set file")
+	resumeFile        = flag.String("resume-file", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "resume"), "path to resume state file")
+	journalDir        = flag.String("journal-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "journal"), "path to durable operation journals")
+	approvePlanSHA256 = flag.String("approve-plan-sha256", "", "authorize exactly the canonical verified plan with this SHA-256 digest")
+	approvePlan       = flag.String("approve-plan", "", "authorize from a saved JSON plan path or name")
+	savePlan          = flag.String("save-plan", "", "save the generated JSON plan to a path or name")
+	planDir           = flag.String("plan-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "plans"), "directory for named saved plans")
+	emergeLog         = flag.String("emerge-log", commandRootPath("/var/log/emerge.log"), "Portage-compatible merge timing log")
+	showEstimates     = flag.Bool("show-estimates", false, "show historical per-package and total merge-time estimates")
+	preflightOnly     = flag.Bool("preflight-only", false, "validate every planned package without fetching, building, or mutating")
 
 	// Logging
 	logLevel = flag.String("log-level", "info", "log level: debug, info, warn, error")
@@ -262,7 +262,9 @@ func main() {
 	case "audit":
 		runAudit(cmdArgs, *repoPath)
 	case "dispatch-conf":
-		runDispatchConf()
+		if code := runDispatchConf(cmdArgs); code != 0 {
+			os.Exit(code)
+		}
 	case "quickpkg":
 		runQuickPkg(cmdArgs)
 	case "depclean":

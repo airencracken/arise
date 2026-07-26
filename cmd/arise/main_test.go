@@ -188,6 +188,7 @@ func TestSelectCommandDefaultsToInstall(t *testing.T) {
 		{name: "explicit install", args: []string{"install", "net-im/signal-desktop-bin"}, wantCmd: "install", wantArgs: []string{"net-im/signal-desktop-bin"}},
 		{name: "explicit query", args: []string{"query", "sys-apps/portage"}, wantCmd: "query", wantArgs: []string{"sys-apps/portage"}},
 		{name: "recover status", args: []string{"recover", "status"}, wantCmd: "recover", wantArgs: []string{"status"}},
+		{name: "dispatch explicit path", args: []string{"dispatch-conf", "/etc/ssh"}, wantCmd: "dispatch-conf", wantArgs: []string{"/etc/ssh"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

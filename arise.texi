@@ -288,6 +288,8 @@ comparisons use the dedicated performance harness.
 
 @table @command
 @item dispatch-conf
+Interactively review and merge recursive CONFIG_PROTECT updates with archives
+and conf-update hooks.
 List pending @file{._cfg*} config file updates in @file{/etc/}.
 
 @item env-update
