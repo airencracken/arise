@@ -263,7 +263,9 @@ List installed packages matching a pattern.
 Synchronize all configured repositories, or only the repositories named as
 arguments, via git (primary) or rsync (fallback), then atomically publish the
 refreshed resolver index. Git repositories whose fetched branch has not
-changed are left untouched. Success means both stages completed.
+changed are left untouched. The default output summarizes package/version-set
+changes with eix-style tags; @option{-v} includes transport and per-ebuild
+diagnostics. Success means both stages completed.
 
 @item index
 Rebuild the BadgerDB metadata database from the ebuild tree.

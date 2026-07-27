@@ -7,9 +7,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/airencracken/arise/internal/atom"
 	"github.com/go-git/go-git/v5"
 )
 
@@ -45,6 +47,14 @@ type ChangeSummary struct {
 	Added    []string
 	Removed  []string
 	Modified []string
+	Packages []PackageChange
+}
+
+type PackageChange struct {
+	CP     string
+	Kind   string
+	Before []string
+	After  []string
 }
 
 // RemoteURL returns the first URL configured for the origin remote in an
@@ -252,7 +262,109 @@ func gitEbuildChanges(ctx context.Context, dir, oldRevision, newRevision string)
 			summary.Modified = append(summary.Modified, cpv)
 		}
 	}
+	affected := make(map[string]struct{})
+	for _, cpv := range append(append(append([]string{}, summary.Added...), summary.Removed...), summary.Modified...) {
+		if cp, ok := cpFromCPV(cpv); ok {
+			affected[cp] = struct{}{}
+		}
+	}
+	for cp := range affected {
+		before, versionErr := gitPackageVersions(ctx, dir, oldRevision, cp)
+		if versionErr != nil {
+			return ChangeSummary{}, versionErr
+		}
+		after, versionErr := gitPackageVersions(ctx, dir, newRevision, cp)
+		if versionErr != nil {
+			return ChangeSummary{}, versionErr
+		}
+		summary.Packages = append(summary.Packages, PackageChange{
+			CP: cp, Kind: packageChangeKind(before, after), Before: before, After: after,
+		})
+	}
+	sort.Slice(summary.Packages, func(i, j int) bool { return summary.Packages[i].CP < summary.Packages[j].CP })
 	return summary, nil
+}
+
+func cpFromCPV(cpv string) (string, bool) {
+	category, pf, ok := strings.Cut(cpv, "/")
+	if !ok {
+		return "", false
+	}
+	for index := len(pf) - 1; index >= 0; index-- {
+		if pf[index] == '-' && index+1 < len(pf) && pf[index+1] >= '0' && pf[index+1] <= '9' {
+			return category + "/" + pf[:index], true
+		}
+	}
+	return "", false
+}
+
+func gitPackageVersions(ctx context.Context, dir, revision, cp string) ([]string, error) {
+	category, packageName, ok := strings.Cut(cp, "/")
+	if !ok {
+		return nil, fmt.Errorf("sync: invalid package key %q", cp)
+	}
+	out, err := gitOutput(ctx, "-C", dir, "ls-tree", "-r", "--name-only", revision, "--", cp)
+	if err != nil {
+		return nil, err
+	}
+	var versions []string
+	prefix := packageName + "-"
+	for _, path := range strings.Split(out, "\n") {
+		parts := strings.Split(path, "/")
+		if len(parts) != 3 || parts[0] != category || parts[1] != packageName ||
+			!strings.HasPrefix(parts[2], prefix) || !strings.HasSuffix(parts[2], ".ebuild") {
+			continue
+		}
+		versions = append(versions, strings.TrimSuffix(strings.TrimPrefix(parts[2], prefix), ".ebuild"))
+	}
+	sort.Slice(versions, func(i, j int) bool {
+		left, leftErr := atom.ParseVersion(versions[i])
+		right, rightErr := atom.ParseVersion(versions[j])
+		if leftErr != nil || rightErr != nil {
+			return versions[i] < versions[j]
+		}
+		return left.Compare(right) < 0
+	})
+	return versions, nil
+}
+
+func packageChangeKind(before, after []string) string {
+	switch {
+	case len(before) == 0:
+		return "new"
+	case len(after) == 0:
+		return "removed"
+	case strings.Join(before, "\x00") == strings.Join(after, "\x00"):
+		return "changed"
+	case versionsContain(after, before):
+		return "better"
+	case versionsContain(before, after):
+		return "worse"
+	default:
+		oldBest, oldErr := atom.ParseVersion(before[len(before)-1])
+		newBest, newErr := atom.ParseVersion(after[len(after)-1])
+		if oldErr == nil && newErr == nil {
+			if comparison := newBest.Compare(oldBest); comparison > 0 {
+				return "upgrade"
+			} else if comparison < 0 {
+				return "downgrade"
+			}
+		}
+		return "changed"
+	}
+}
+
+func versionsContain(superset, subset []string) bool {
+	available := make(map[string]struct{}, len(superset))
+	for _, version := range superset {
+		available[version] = struct{}{}
+	}
+	for _, version := range subset {
+		if _, ok := available[version]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func ebuildCPV(path string) (string, bool) {

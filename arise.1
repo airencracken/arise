@@ -428,8 +428,9 @@ List installed packages matching a pattern.
 Synchronize all configured repositories, or only the repositories named as
 arguments. Uses \fBgit\fR(1) as primary method with \fBrsync\fR(1) fallback,
 then atomically publishes the refreshed resolver index. Git repositories whose
-fetched branch has not changed are left untouched. Success means both stages
-completed.
+fetched branch has not changed are left untouched. Default output summarizes
+package/version-set changes with eix-style tags; \fB\-v\fR includes transport
+and per-ebuild diagnostics. Success means both stages completed.
 
 .TP
 \fBindex\fR

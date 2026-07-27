@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/portage"
+	internalsync "github.com/airencracken/arise/internal/sync"
 )
 
 func TestConfiguredSyncTargetsIncludesPrimaryAndAllConfiguredRepositories(t *testing.T) {
@@ -64,5 +68,42 @@ func TestSelectSyncTargetsRejectsUnknownName(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `unknown repository "missing"`) ||
 		!strings.Contains(err.Error(), "configured: gentoo, guru") {
 		t.Fatalf("unknown target error = %v", err)
+	}
+}
+
+func TestPrintSyncTargetReportUsesEixStylePackageChanges(t *testing.T) {
+	previousColor := color.UseColor
+	color.UseColor = false
+	t.Cleanup(func() { color.UseColor = previousColor })
+
+	var output bytes.Buffer
+	printSyncTargetReport(&output, "arise-overlay", syncTargetReport{
+		Stage: "changes", HasChanges: true,
+		Changes: internalsync.ChangeSummary{Packages: []internalsync.PackageChange{
+			{CP: "app-misc/new", Kind: "new", After: []string{"1"}},
+			{CP: "sys-apps/arise", Kind: "better", Before: []string{"0.0.2"}, After: []string{"0.0.2", "0.0.3"}},
+			{CP: "x11-apps/old", Kind: "removed", Before: []string{"1", "2"}},
+		}},
+	}, 541*time.Millisecond)
+
+	want := "" +
+		"  arise-overlay        updated      541ms\n" +
+		"    [N] app-misc/new 1\n" +
+		"    [>] sys-apps/arise 0.0.2 -> [0.0.2 0.0.3]\n" +
+		"    [D] x11-apps/old [1 2]\n"
+	if output.String() != want {
+		t.Fatalf("sync report = %q, want %q", output.String(), want)
+	}
+}
+
+func TestPrintSyncTargetReportKeepsUnchangedOutputToOneLine(t *testing.T) {
+	previousColor := color.UseColor
+	color.UseColor = false
+	t.Cleanup(func() { color.UseColor = previousColor })
+
+	var output bytes.Buffer
+	printSyncTargetReport(&output, "gentoo", syncTargetReport{Stage: "unchanged"}, 1706*time.Millisecond)
+	if got, want := output.String(), "  gentoo               unchanged    1.706s\n"; got != want {
+		t.Fatalf("unchanged report = %q, want %q", got, want)
 	}
 }

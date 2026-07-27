@@ -131,6 +131,11 @@ To synchronize only selected configured repositories, name them explicitly:
 arise sync arise-overlay
 ```
 
+Sync output summarizes one repository per line and reports package/version-set
+changes with eix-style tags: `[N]` new, `[D]` deleted, `[U]` upgraded, `[>]`
+versions added, `[<]` versions removed or downgraded, and `[C]` metadata
+changed. Use `-v` for transport and per-ebuild diagnostics.
+
 For source development:
 
 ```sh

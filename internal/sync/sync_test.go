@@ -793,6 +793,11 @@ func TestSyncCommandReportsExactEbuildChangesAndProgress(t *testing.T) {
 		Added:    []string{"app-misc/added-2"},
 		Removed:  []string{"app-misc/old-1"},
 		Modified: []string{"app-misc/modified-1"},
+		Packages: []PackageChange{
+			{CP: "app-misc/added", Kind: "new", After: []string{"2"}},
+			{CP: "app-misc/modified", Kind: "changed", Before: []string{"1"}, After: []string{"1"}},
+			{CP: "app-misc/old", Kind: "removed", Before: []string{"1"}},
+		},
 	}
 	if !reflect.DeepEqual(summaries, []ChangeSummary{want}) {
 		t.Fatalf("change summaries = %#v, want %#v", summaries, want)
@@ -808,6 +813,39 @@ func TestSyncCommandReportsExactEbuildChangesAndProgress(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, "app-misc", "old", "old-1.ebuild")); !os.IsNotExist(err) {
 		t.Fatalf("removed ebuild remains: %v", err)
+	}
+}
+
+func TestGitEbuildChangesReportsPackageVersionTransition(t *testing.T) {
+	repository := initSyncRemote(t)
+	oldRevision := testGitOutput(t, "-C", repository, "rev-parse", "HEAD")
+	if err := os.Remove(filepath.Join(repository, "app-misc", "modified", "modified-1.ebuild")); err != nil {
+		t.Fatal(err)
+	}
+	writeSyncFile(t, repository, "app-misc/modified/modified-2-r1.ebuild", "EAPI=8\n")
+	commitSyncRemote(t, repository, "upgrade package")
+	newRevision := testGitOutput(t, "-C", repository, "rev-parse", "HEAD")
+
+	changes, err := gitEbuildChanges(context.Background(), repository, oldRevision, newRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PackageChange{{
+		CP: "app-misc/modified", Kind: "upgrade", Before: []string{"1"}, After: []string{"2-r1"},
+	}}
+	if !reflect.DeepEqual(changes.Packages, want) {
+		t.Fatalf("package changes = %#v, want %#v", changes.Packages, want)
+	}
+}
+
+func TestPackageChangeKindHandlesLiveEbuildAlongsideReleaseGrowth(t *testing.T) {
+	before := []string{"0.0.2", "9999"}
+	after := []string{"0.0.2", "0.0.3", "9999"}
+	if got, want := packageChangeKind(before, after), "better"; got != want {
+		t.Fatalf("package change kind = %q, want %q", got, want)
+	}
+	if got, want := packageChangeKind(after, before), "worse"; got != want {
+		t.Fatalf("reverse package change kind = %q, want %q", got, want)
 	}
 }
 
