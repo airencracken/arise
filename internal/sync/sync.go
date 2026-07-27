@@ -119,6 +119,9 @@ func Sync(ctx context.Context, cfg SyncConfig) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	switch strings.ToLower(strings.TrimSpace(cfg.SyncType)) {
 	case "rsync":
 		return syncRsync(ctx, cfg)
@@ -138,9 +141,15 @@ func Sync(ctx context.Context, cfg SyncConfig) error {
 		if err := cloneGitRepoCommand(ctx, cfg); err == nil {
 			return nil
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 	if err := cloneGitRepo(ctx, cfg); err == nil {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	return syncRsync(ctx, cfg)
@@ -151,6 +160,9 @@ func runGit(ctx context.Context, output io.Writer, args ...string) error {
 	cmd.Stdout = output
 	cmd.Stderr = output
 	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf("git %s failed: %w", strings.Join(args, " "), err)
 	}
 	return nil
@@ -160,6 +172,9 @@ func gitOutput(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	out, err := cmd.Output()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 		return "", fmt.Errorf("git %s failed: %w", strings.Join(args, " "), err)
 	}
 	return strings.TrimSpace(string(out)), nil
@@ -448,5 +463,11 @@ func syncRsync(ctx context.Context, cfg SyncConfig) error {
 	cfg.progress("rsync", "Synchronizing repository")
 	cmd.Stdout = cfg.Output
 	cmd.Stderr = cfg.Output
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return err
+	}
+	return nil
 }

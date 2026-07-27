@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -75,7 +76,11 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 				}
 			},
 		}
-		if err := sync.Sync(context.Background(), cfg); err != nil {
+		if err := sync.Sync(commandContext, cfg); err != nil {
+			if errors.Is(err, context.Canceled) {
+				fmt.Fprintln(os.Stderr, "sync: interrupted by user")
+				os.Exit(130)
+			}
 			if transport.Len() > 0 {
 				fmt.Fprint(os.Stderr, transport.String())
 			}
@@ -87,6 +92,10 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 		} else {
 			printSyncTargetReport(os.Stdout, target.Name, report, time.Since(targetStarted))
 		}
+	}
+	if err := commandContext.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, "sync: interrupted by user")
+		os.Exit(130)
 	}
 	fmt.Printf("\n%s\n", color.Bold("Refreshing resolver index"))
 	runIndex(dbPath, repoPath)

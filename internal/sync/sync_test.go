@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -865,6 +866,59 @@ func TestSyncCommandDoesNotResetUnchangedRepository(t *testing.T) {
 	}
 	if !reflect.DeepEqual(stages, []string{"check", "fetch", "unchanged"}) {
 		t.Fatalf("progress stages = %v", stages)
+	}
+}
+
+func TestSyncRsyncCancellationStopsTransport(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "rsync")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	cfg := SyncConfig{
+		RepoURL: "rsync://example.invalid/repo", TargetDir: t.TempDir(),
+		SyncType: "rsync", RsyncPath: script,
+		Progress: func(stage, _ string) {
+			if stage == "rsync" {
+				close(started)
+			}
+		},
+	}
+	result := make(chan error, 1)
+	go func() { result <- Sync(ctx, cfg) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("rsync transport did not start")
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Sync error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Sync did not stop after cancellation")
+	}
+}
+
+func TestSyncCanceledContextDoesNotStartFallbackTransport(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "invoked")
+	script := filepath.Join(t.TempDir(), "rsync")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := Sync(ctx, SyncConfig{
+		RepoURL: marker, TargetDir: t.TempDir(), RsyncPath: script,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Sync error = %v, want context.Canceled", err)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("fallback transport ran after cancellation: %v", statErr)
 	}
 }
 

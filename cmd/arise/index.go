@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,6 +21,7 @@ import (
 )
 
 func runIndex(dbPath, repoPath string) {
+	exitIfIndexInterrupted(commandContext)
 	if err := indexPrivilegeError(os.Geteuid(), dbPath); err != nil {
 		fmt.Fprintf(os.Stderr, "index: %v\n", err)
 		os.Exit(1)
@@ -75,6 +78,7 @@ func runIndex(dbPath, repoPath string) {
 
 	lastUpdate := time.Time{}
 	stats, seen, err := ingest.ReconcileWithProgress(db, results, func(count int) {
+		exitIfIndexInterrupted(commandContext)
 		if !interactive || (!lastUpdate.IsZero() && time.Since(lastUpdate) < 100*time.Millisecond) {
 			return
 		}
@@ -89,6 +93,7 @@ func runIndex(dbPath, repoPath string) {
 		os.Exit(1)
 	}
 	<-errsDone
+	exitIfIndexInterrupted(commandContext)
 	if parseErrors == 0 {
 		stats.Removed, err = ingest.RemoveMissing(db, seen)
 		if err != nil {
@@ -115,6 +120,7 @@ func runIndex(dbPath, repoPath string) {
 		fmt.Fprintf(os.Stderr, "index: write resolver snapshot: %v\n", err)
 		os.Exit(1)
 	}
+	exitIfIndexInterrupted(commandContext)
 	recordCount, validationErr := ingest.CountRecords(db)
 	if validationErr != nil || recordCount != len(seen) {
 		fmt.Fprintf(os.Stderr, "index: validate candidate: records=%d expected=%d error=%v\n", recordCount, len(seen), validationErr)
@@ -146,6 +152,14 @@ func runIndex(dbPath, repoPath string) {
 		fmt.Printf(" (%d non-fatal parse errors, use -v to see)", parseErrors)
 	}
 	fmt.Println()
+}
+
+func exitIfIndexInterrupted(ctx context.Context) {
+	if err := ctx.Err(); !errors.Is(err, context.Canceled) {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "index: interrupted by user")
+	os.Exit(130)
 }
 
 func formatIndexProgress(count int, elapsed time.Duration) string {
