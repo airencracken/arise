@@ -11,7 +11,7 @@ import (
 func TestReleasedCLIMaintainWorldFixRepairsWithoutPlanApproval(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "arise")
-	build := exec.Command("go", "build", "-trimpath", "-o", binary, "../cmd/arise")
+	build := exec.Command("go", "build", "-buildvcs=false", "-trimpath", "-o", binary, "../cmd/arise")
 	buildOutput, err := build.CombinedOutput()
 	if err != nil {
 		t.Fatalf("build release CLI: %v\n%s", err, buildOutput)
