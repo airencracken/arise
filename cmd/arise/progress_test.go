@@ -81,6 +81,26 @@ func TestTerminalPackageProgressRewritesOneLine(t *testing.T) {
 	}
 }
 
+func TestTerminalPackageProgressUsesBoundedMilestones(t *testing.T) {
+	var output bytes.Buffer
+	progress := &terminalProgress{output: true, terminal: true, writer: &output, progressBucket: -1}
+	for current := 1; current <= 1000; current++ {
+		progress.setProgress(fmt.Sprintf("%d/1000 entries (%d%%)", current, current/10), current, 1000)
+	}
+	progress.setProgress("duplicate completion", 1000, 1000)
+
+	got := output.String()
+	if renders := strings.Count(got, "\r\033[K"); renders != 11 {
+		t.Fatalf("terminal render count = %d, want 11 bounded milestones: %q", renders, got)
+	}
+	if strings.Contains(got, "duplicate completion") {
+		t.Fatalf("duplicate completion was rendered: %q", got)
+	}
+	if !strings.Contains(got, "1000/1000 entries (100%)") {
+		t.Fatalf("completion milestone is missing: %q", got)
+	}
+}
+
 func TestNonTerminalPackageProgressUsesMilestones(t *testing.T) {
 	var output bytes.Buffer
 	progress := &terminalProgress{output: true, writer: &output, progressBucket: -1}

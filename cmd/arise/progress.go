@@ -39,7 +39,7 @@ func startTerminalProgressMode(label string, output, animate bool) *terminalProg
 }
 
 func startTerminalProgressWriter(label string, output, animate, terminal bool, writer io.Writer) *terminalProgress {
-	p := &terminalProgress{output: output, enabled: terminal && animate, terminal: terminal, animate: animate, writer: writer, label: label}
+	p := &terminalProgress{output: output, enabled: terminal && animate, terminal: terminal, animate: animate, writer: writer, label: label, progressBucket: -1}
 	if !p.terminal || !p.animate {
 		return p
 	}
@@ -126,15 +126,16 @@ func (p *terminalProgress) setProgress(message string, current, total int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.transient = message
+	bucket := current * 10 / total
+	if bucket <= p.progressBucket {
+		return
+	}
+	p.progressBucket = bucket
 	if p.terminal {
 		p.renderLocked(0)
 		return
 	}
-	bucket := current * 10 / total
-	if bucket > p.progressBucket || current >= total {
-		fmt.Fprintln(p.writer, message)
-		p.progressBucket = bucket
-	}
+	fmt.Fprintln(p.writer, message)
 }
 
 func (p *terminalProgress) clearProgress() {

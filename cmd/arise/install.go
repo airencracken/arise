@@ -822,7 +822,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			},
 			OnActionProgress: func(index, total int, action resolve.PkgAction, stage string, current, stageTotal int) {
 				if stage == "merge" && stageTotal > 0 {
-					executionProgress.setProgress(fmt.Sprintf(">>> Installing package contents (%d of %d) %s: %d/%d entries (%.1f%%)", index, total, colorActionAtom(action), current, stageTotal, 100*float64(current)/float64(stageTotal)), current, stageTotal)
+					executionProgress.setProgress(formatInstallProgress(index, total, action, current, stageTotal), current, stageTotal)
 				}
 			},
 			OnActionNotice: func(index, total int, action resolve.PkgAction, class, message string) {
@@ -876,6 +876,18 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		return
 	}
 
+}
+
+func formatInstallProgress(index, total int, action resolve.PkgAction, current, stageTotal int) string {
+	return fmt.Sprintf(
+		">>> Installing package contents: %d/%d entries (%.0f%%) (%d of %d) %s",
+		current,
+		stageTotal,
+		100*float64(current)/float64(stageTotal),
+		index,
+		total,
+		colorActionAtom(action),
+	)
 }
 
 func targetsNeedCompleteGraph(targets []string) bool {
