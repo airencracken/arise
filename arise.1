@@ -442,6 +442,14 @@ With \fB\-\-fix \-\-pretend\fR, list the affected rebuild set. Non-pretend
 Replaces \fBpython-updater\fR and \fBperl-cleaner\fR.
 
 .TP
+\fBmaintain world \-\-check|\-\-fix\fR
+Check the selected world set against installed packages and every configured
+repository. Check mode emits deterministic diagnostics and supports versioned
+JSON. Fix mode requires a state-bound approved plan, revalidates beneath the
+Portage world lock, and publishes atomically while preserving file mode and
+ownership.
+
+.TP
 \fBpreserved-rebuild\fR [\fIflags\fR]
 Scan for broken shared library links and rebuild affected packages.
 Equivalent to \fBemerge @preserved-rebuild\fR.

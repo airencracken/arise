@@ -162,7 +162,7 @@ func EvaluateExecutionPolicy(featureText, restrictText, propertyText string, use
 			policy.Strip = false
 		case "interactive":
 			policy.Interactive = false
-		case "mirror", "primaryuri", "bindist", "parallel", "binchecks":
+		case "mirror", "primaryuri", "bindist", "parallel", "binchecks", "splitdebug":
 		default:
 			return policy, fmt.Errorf("unsupported enabled RESTRICT behavior %q", name)
 		}

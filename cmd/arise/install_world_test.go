@@ -20,6 +20,9 @@ func TestInstallWorldSelections(t *testing.T) {
 		{name: "exact atom", targets: []string{"=dev-util/perf-6.19.12"}, want: []string{"dev-util/perf"}},
 		{name: "name only", targets: []string{"perf"}, result: &resolve.ResolveResult{Install: []resolve.PkgAction{{Atom: perf, Reason: "explicit target"}}}, want: []string{"dev-util/perf"}},
 		{name: "oneshot", targets: []string{"dev-util/perf"}, cfg: resolve.ResolveConfig{Oneshot: true}},
+		{name: "onlydeps implies oneshot", targets: []string{"dev-util/perf"}, cfg: resolve.ResolveConfig{OnlyDeps: true}},
+		{name: "system package", targets: []string{"sys-fs/udev"}, cfg: resolve.ResolveConfig{SystemSet: &resolve.WorldSet{Entries: []string{"sys-fs/udev"}}}},
+		{name: "system virtual remains selectable", targets: []string{"virtual/udev"}, cfg: resolve.ResolveConfig{SystemSet: &resolve.WorldSet{Entries: []string{"virtual/udev"}}}, want: []string{"virtual/udev"}},
 		{name: "package set", targets: []string{"@preserved-rebuild"}, result: &resolve.ResolveResult{Install: []resolve.PkgAction{{Atom: perf, Reason: "explicit target"}}}},
 	}
 	for _, test := range tests {

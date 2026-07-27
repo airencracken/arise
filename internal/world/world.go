@@ -154,8 +154,10 @@ func (ws *WorldSet) Save(path string) error {
 
 	directory := filepath.Dir(path)
 	mode := os.FileMode(0o644)
+	uid, gid := -1, -1
 	if info, err := os.Stat(path); err == nil {
 		mode = info.Mode().Perm()
+		uid, gid = fileOwner(info)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("world: could not inspect file %s: %w", path, err)
 	}
@@ -173,6 +175,11 @@ func (ws *WorldSet) Save(path string) error {
 	}()
 	if err := f.Chmod(mode); err != nil {
 		return fmt.Errorf("world: could not set temporary file mode: %w", err)
+	}
+	if uid >= 0 && gid >= 0 {
+		if err := f.Chown(uid, gid); err != nil {
+			return fmt.Errorf("world: could not preserve temporary file ownership: %w", err)
+		}
 	}
 
 	sorted := make([]string, len(ws.Atoms))

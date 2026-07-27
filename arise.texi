@@ -272,6 +272,12 @@ Audit installed packages for outdated Python or Perl site-packages paths.
 @option{--fix --pretend} lists the affected rebuild set. Non-pretend
 @option{--fix} remains gated and fails explicitly.
 
+@item maintain world --check|--fix
+Check the selected world set against installed packages and every configured
+repository. Check mode supports deterministic text and versioned JSON. Fix
+mode requires a state-bound approved plan, revalidates beneath the Portage
+world lock, and atomically preserves file mode and ownership.
+
 @item preserved-rebuild [flags]
 Scan for broken shared library links and rebuild affected packages.
 

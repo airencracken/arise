@@ -122,7 +122,7 @@ An existing Arise installation updates itself and its overlay directly:
 
 ```sh
 arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.1
+arise -1 --reinstall =sys-apps/arise-0.0.2
 ```
 
 For source development:
@@ -182,6 +182,9 @@ arise info
 # Maintenance
 arise depclean --pretend
 arise prune --pretend
+arise maintain world --check
+arise --pretend --save-plan world-repair maintain world --fix
+arise --approve-plan world-repair maintain world --fix
 # Read-only maintenance proposals
 arise --pretend preserved-rebuild
 arise --pretend revdep-rebuild
@@ -222,6 +225,7 @@ Commands:
   info            Partial system information
   equery          Package queries (equery-familiar surface)
   audit           Audit Python/Perl site-packages
+  maintain        Check or repair package-manager state
   preserved-rebuild  Rebuild after soname changes
   revdep-rebuild  Full reverse dependency scan
   dispatch-conf   Review and merge protected config updates

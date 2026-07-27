@@ -931,6 +931,7 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 		cycleSeen:             make(map[string]bool),
 		selectedCPs:           make(map[string]bool),
 		explicitTargets:       make(map[string]bool),
+		worldTargets:          make(map[string]bool),
 		onlyDepsTargets:       make(map[string]bool),
 		constraints:           make(map[string][]*atom.Atom),
 		constraintCauses:      make(map[string][]ConflictRequirement),
@@ -1215,6 +1216,7 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 		cycleSeen:        make(map[string]bool),
 		selectedCPs:      make(map[string]bool),
 		explicitTargets:  make(map[string]bool),
+		worldTargets:     make(map[string]bool),
 		constraints:      make(map[string][]*atom.Atom),
 		constraintCauses: make(map[string][]ConflictRequirement),
 		useOverrides:     make(map[string]map[string]bool),
@@ -1313,6 +1315,7 @@ type resolver struct {
 	cycleSeen             map[string]bool
 	selectedCPs           map[string]bool // final target/dependency closure
 	explicitTargets       map[string]bool // atoms named directly, excluding expanded sets
+	worldTargets          map[string]bool // atoms selected by the user world set
 	onlyDepsTargets       map[string]bool // argument packages receiving --onlydeps policy
 	backtrackRemaining    int
 	decisionHistory       []BacktrackDecision
@@ -1340,6 +1343,20 @@ type resolver struct {
 	transactions          []*resolverTransaction
 	setScoped             bool // @world/@system excludes unrelated installed orphans
 	strictWholeState      bool // explicit transaction verification cannot downgrade breakage to depclean advice
+}
+
+func (r *resolver) warnRetainedInstalled(cp, version string) {
+	if r.worldTargets[cp] {
+		r.warnings = append(r.warnings, fmt.Sprintf(
+			"world selection %s has no installable repository candidate; retained installed %s-%s (after confirming it is obsolete, run: arise deselect %s)",
+			cp, cp, version, cp,
+		))
+		return
+	}
+	r.warnings = append(r.warnings, fmt.Sprintf(
+		"retaining installed dependency %s-%s because no matching repository candidate is currently installable",
+		cp, version,
+	))
 }
 
 func (r *resolver) consumeBacktrack(kind, key, from, to string) error {
@@ -1765,6 +1782,12 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 				return fmt.Errorf("resolve: could not parse %s entry %q: %w", label, entry, err)
 			}
 			atoms = append(atoms, a)
+			if label == "world" {
+				if r.worldTargets == nil {
+					r.worldTargets = make(map[string]bool)
+				}
+				r.worldTargets[a.CP()] = true
+			}
 		}
 		return nil
 	}
@@ -2112,7 +2135,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 				return nil
 			}
 			if !r.explicitTargets[cp] {
-				r.warnings = append(r.warnings, fmt.Sprintf("retaining installed package %s-%s because no matching repository candidate is currently installable", cp, installed.Version.Raw))
+				r.warnRetainedInstalled(cp, installed.Version.Raw)
 				if r.config.Deep {
 					return r.processDeps(node, installed, target.String(), depth+1, DomainROOT)
 				}
@@ -2131,7 +2154,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	}
 	if vi.Installed && !vi.Available {
 		if !r.explicitTargets[cp] {
-			r.warnings = append(r.warnings, fmt.Sprintf("retaining installed package %s-%s because no matching repository candidate is currently installable", cp, vi.Version.Raw))
+			r.warnRetainedInstalled(cp, vi.Version.Raw)
 			if r.config.Deep {
 				return r.processDeps(node, vi, target.String(), depth+1, DomainROOT)
 			}
