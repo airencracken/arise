@@ -241,6 +241,7 @@ vendor:
 deps:
 	@test -n "$(VERSION)" || { echo "VERSION is required"; exit 1; }
 	@test -n "$(SOURCE_DATE_EPOCH)" || { echo "SOURCE_DATE_EPOCH is required"; exit 1; }
+	mkdir -p dist
 	sha256sum go.mod go.sum > dist/.go-module-input.sha256
 	rm -rf dist/go-mod
 	mkdir -p dist/go-mod
