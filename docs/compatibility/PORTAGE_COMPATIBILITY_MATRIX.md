@@ -107,7 +107,7 @@ Important `make.conf` variables are tracked independently from file parsing:
 | `NEEDED`, `NEEDED.ELF.2` | partial | native ELF dynamic-section generation; multilib corpus differential open |
 | `BUILD_TIME`, package/global `COUNTER` | partial | VDB-locked journaled allocation and rollback; Portage differential open |
 | installed built slot bindings | partial | new merges expand `:=` to explicit `slot/subslot=` metadata; unexpanded historical `:=` is not treated as a concrete rebuild binding |
-| `/var/lib/portage/world` | partial | locked atomic deselect; merge-coupled additions and `emaint`-equivalent check/fix remain gated |
+| `/var/lib/portage/world` | partial | locked atomic deselect and approval-gated world maintenance preserve mode/ownership; broader repository-move and redundant-constraint differential corpus remains open |
 | `/var/log/emerge.log` | partial | locked compatibility projection; readers tolerate historical NUL padding and append fails closed on NUL-corrupt logs; wider tool-format differential open |
 | Portage VDB lock | supported subset | held across ownership validation, recovery, mutation and commit |
 
@@ -117,7 +117,7 @@ Important `make.conf` variables are tracked independently from file parsing:
 |---|---|---|---|
 | installed `pkg_config` phase | `arise config ATOM` | supported subset | persisted lifecycle and legacy installed-environment tests; wider EAPI/package differential corpus remains open |
 | `dispatch-conf` | `arise dispatch-conf` | partial | recursive/explicit discovery, decisions, safe three-way premerge, atomic confined archives, hooks, mixed-file diffs, metadata, cancellation, ROOT/config-root, schema, property, adversarial and installed-Portage archive differentials; session rollback/recovery and full command differential corpus remain open |
-| `emaint --check/--fix world` | `arise maintain world --check/--fix` | planned | state-bound atomic repair contract specified |
+| `emaint --check/--fix world` | `arise maintain world --check/--fix` | partial | deterministic text/JSON checks, configured-repository coverage, state-bound saved plans, lock-time revalidation, atomic repair, and live unavailable-entry parity; redundant constraints and wider move/mask corpus remain open |
 
 ## Maintenance rules
 

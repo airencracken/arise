@@ -122,8 +122,19 @@ An existing Arise installation updates itself and its overlay directly:
 
 ```sh
 arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.1
+arise -1 --reinstall =sys-apps/arise-0.0.3
 ```
+
+To synchronize only selected configured repositories, name them explicitly:
+
+```sh
+arise sync arise-overlay
+```
+
+Sync output summarizes one repository per line and reports package/version-set
+changes with eix-style tags: `[N]` new, `[D]` deleted, `[U]` upgraded, `[>]`
+versions added, `[<]` versions removed or downgraded, and `[C]` metadata
+changed. Use `-v` for transport and per-ebuild diagnostics.
 
 For source development:
 
@@ -182,6 +193,9 @@ arise info
 # Maintenance
 arise depclean --pretend
 arise prune --pretend
+arise maintain world --check
+arise --pretend --save-plan world-repair maintain world --fix
+arise --approve-plan world-repair maintain world --fix
 # Read-only maintenance proposals
 arise --pretend preserved-rebuild
 arise --pretend revdep-rebuild
@@ -205,7 +219,7 @@ boundaries join the same transaction model.
 arise [global-flags] <command> [args...]
 
 Commands:
-  sync            Sync the Gentoo repository
+  sync [repo...]  Sync all or selected configured repositories
   index           Rebuild metadata database from ebuild tree
   install         Resolve package installation (execution gated)
   update          Resolve an @world update (execution gated)
@@ -222,6 +236,7 @@ Commands:
   info            Partial system information
   equery          Package queries (equery-familiar surface)
   audit           Audit Python/Perl site-packages
+  maintain        Check or repair package-manager state
   preserved-rebuild  Rebuild after soname changes
   revdep-rebuild  Full reverse dependency scan
   dispatch-conf   Review and merge protected config updates

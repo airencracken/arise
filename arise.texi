@@ -277,10 +277,13 @@ List installed packages matching a pattern.
 @section System Maintenance
 
 @table @command
-@item sync
-Synchronize the Gentoo repository via git (primary) or rsync (fallback), then
-atomically publish the refreshed resolver index. Success means both stages
-completed.
+@item sync [@var{repository}...]
+Synchronize all configured repositories, or only the repositories named as
+arguments, via git (primary) or rsync (fallback), then atomically publish the
+refreshed resolver index. Git repositories whose fetched branch has not
+changed are left untouched. The default output summarizes package/version-set
+changes with eix-style tags; @option{-v} includes transport and per-ebuild
+diagnostics. Success means both stages completed.
 
 @item index
 Rebuild the BadgerDB metadata database from the ebuild tree.
@@ -289,6 +292,12 @@ Rebuild the BadgerDB metadata database from the ebuild tree.
 Audit installed packages for outdated Python or Perl site-packages paths.
 @option{--fix --pretend} lists the affected rebuild set. Non-pretend
 @option{--fix} remains gated and fails explicitly.
+
+@item maintain world --check|--fix
+Check the selected world set against installed packages and every configured
+repository. Check mode supports deterministic text and versioned JSON. Fix
+mode requires a state-bound approved plan, revalidates beneath the Portage
+world lock, and atomically preserves file mode and ownership.
 
 @item preserved-rebuild [flags]
 Scan for broken shared library links and rebuild affected packages.

@@ -6,7 +6,7 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install update uninstall select deselect recover query state search installed info audit dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild equery bench"
+    local commands="sync index install update uninstall select deselect recover query state search installed info audit maintain dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild equery bench"
 
     local audit_sub="python perl"
     local news_sub="list read display"
@@ -45,6 +45,13 @@ _arise() {
         audit)
             if [[ $cword -eq 2 ]]; then
                 COMPREPLY=($(compgen -W "$audit_sub" -- "$cur"))
+            fi
+            ;;
+        maintain)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "world" -- "$cur"))
+            elif [[ $cword -eq 3 && ${words[2]} == world ]]; then
+                COMPREPLY=($(compgen -W "--check --fix" -- "$cur"))
             fi
             ;;
         news)

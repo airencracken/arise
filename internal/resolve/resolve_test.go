@@ -6493,7 +6493,10 @@ func TestResolve_SetRetainsInstalledVersionWithoutRepositoryCandidate(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Verified || len(result.Install) != 0 || !strings.Contains(strings.Join(result.Warnings, "\n"), "retaining installed package llvm-core/llvm-23.0.0.9999") {
+	warnings := strings.Join(result.Warnings, "\n")
+	if !result.Verified || len(result.Install) != 0 ||
+		!strings.Contains(warnings, "world selection llvm-core/llvm has no installable repository candidate") ||
+		!strings.Contains(warnings, "arise deselect llvm-core/llvm") {
 		t.Fatalf("installed live set member was not retained safely: %#v", result)
 	}
 }

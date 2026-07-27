@@ -442,10 +442,13 @@ List installed packages matching a pattern.
 .SS Maintenance
 
 .TP
-\fBsync\fR
-Synchronize the Gentoo repository. Uses \fBgit\fR(1) as primary method with
-\fBrsync\fR(1) fallback, then atomically publish the refreshed resolver index.
-Success means both stages completed. Requires \fB\-\-repo-url\fR to be set.
+\fBsync\fR [\fIrepository\fR ...]
+Synchronize all configured repositories, or only the repositories named as
+arguments. Uses \fBgit\fR(1) as primary method with \fBrsync\fR(1) fallback,
+then atomically publishes the refreshed resolver index. Git repositories whose
+fetched branch has not changed are left untouched. Default output summarizes
+package/version-set changes with eix-style tags; \fB\-v\fR includes transport
+and per-ebuild diagnostics. Success means both stages completed.
 
 .TP
 \fBindex\fR
@@ -458,6 +461,14 @@ Audit installed packages for outdated Python or Perl site-packages.
 With \fB\-\-fix \-\-pretend\fR, list the affected rebuild set. Non-pretend
 \fB\-\-fix\fR remains gated and fails explicitly.
 Replaces \fBpython-updater\fR and \fBperl-cleaner\fR.
+
+.TP
+\fBmaintain world \-\-check|\-\-fix\fR
+Check the selected world set against installed packages and every configured
+repository. Check mode emits deterministic diagnostics and supports versioned
+JSON. Fix mode requires a state-bound approved plan, revalidates beneath the
+Portage world lock, and publishes atomically while preserving file mode and
+ownership.
 
 .TP
 \fBpreserved-rebuild\fR [\fIflags\fR]

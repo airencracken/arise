@@ -58,8 +58,17 @@ func recoveryPackagesForActions(vdbRoot string, actions []resolve.PkgAction) []r
 }
 
 func installWorldSelections(targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult) []string {
-	if cfg.Oneshot {
+	if cfg.Oneshot || cfg.OnlyDeps {
 		return nil
+	}
+	systemPackages := make(map[string]bool)
+	if cfg.SystemSet != nil {
+		for _, entry := range cfg.SystemSet.Entries {
+			a, err := atom.ParsePackageAtom(entry)
+			if err == nil && a.Category != "virtual" {
+				systemPackages[a.CP()] = true
+			}
+		}
 	}
 	selected := make(map[string]bool)
 	hasNameOnlyTarget := false
@@ -70,7 +79,9 @@ func installWorldSelections(targets []string, cfg resolve.ResolveConfig, result 
 		}
 		a, err := atom.ParsePackageAtom(target)
 		if err == nil {
-			selected[a.CP()] = true
+			if !systemPackages[a.CP()] {
+				selected[a.CP()] = true
+			}
 			continue
 		}
 		if !strings.Contains(target, "/") {
@@ -80,7 +91,9 @@ func installWorldSelections(targets []string, cfg resolve.ResolveConfig, result 
 	if hasNameOnlyTarget && result != nil {
 		for _, action := range result.Install {
 			if action.Atom != nil && action.Reason == "explicit target" {
-				selected[action.Atom.CP()] = true
+				if cp := action.Atom.CP(); !systemPackages[cp] {
+					selected[cp] = true
+				}
 			}
 		}
 	}
@@ -908,7 +921,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			},
 			OnActionProgress: func(index, total int, action resolve.PkgAction, stage string, current, stageTotal int) {
 				if stage == "merge" && stageTotal > 0 {
-					executionProgress.setProgress(fmt.Sprintf(">>> Installing package contents (%d of %d) %s: %d/%d entries (%.1f%%)", index, total, colorActionAtom(action), current, stageTotal, 100*float64(current)/float64(stageTotal)), current, stageTotal)
+					executionProgress.setProgress(formatInstallProgress(index, total, action, current, stageTotal), current, stageTotal)
 				}
 			},
 			OnActionNotice: func(index, total int, action resolve.PkgAction, class, message string) {
@@ -1003,6 +1016,18 @@ func markRecoverySetOutcome(path string, operationErr error) error {
 		return recoveryset.MarkStatus(path, recoveryset.StatusFailed, operationErr.Error())
 	}
 	return recoveryset.MarkStatus(path, recoveryset.StatusPendingVerification, "")
+}
+
+func formatInstallProgress(index, total int, action resolve.PkgAction, current, stageTotal int) string {
+	return fmt.Sprintf(
+		">>> Installing package contents: %d/%d entries (%.0f%%) (%d of %d) %s",
+		current,
+		stageTotal,
+		100*float64(current)/float64(stageTotal),
+		index,
+		total,
+		colorActionAtom(action),
+	)
 }
 
 func targetsNeedCompleteGraph(targets []string) bool {
@@ -1194,14 +1219,16 @@ func printExecutionInterrupted(w io.Writer) {
 }
 
 func warningsForDisplay(warnings []string, verbose bool) []string {
-	if verbose {
-		return warnings
-	}
 	visible := make([]string, 0, len(warnings))
+	seen := make(map[string]bool, len(warnings))
 	for _, warning := range warnings {
-		if strings.HasPrefix(warning, "circular dependency: ") {
+		if !verbose && strings.HasPrefix(warning, "circular dependency: ") {
 			continue
 		}
+		if seen[warning] {
+			continue
+		}
+		seen[warning] = true
 		visible = append(visible, warning)
 	}
 	return visible

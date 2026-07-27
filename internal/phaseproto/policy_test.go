@@ -215,6 +215,16 @@ func TestEvaluateExecutionPolicyAppliesUseConditionalRestrictions(t *testing.T) 
 	}
 }
 
+func TestEvaluateExecutionPolicyAcceptsSplitDebugRestriction(t *testing.T) {
+	policy, err := EvaluateExecutionPolicy("", "splitdebug", "", nil)
+	if err != nil {
+		t.Fatalf("RESTRICT=splitdebug: %v", err)
+	}
+	if !reflect.DeepEqual(policy.Restrict, []string{"splitdebug"}) {
+		t.Fatalf("RESTRICT=%v, want [splitdebug]", policy.Restrict)
+	}
+}
+
 func TestEvaluateExecutionPolicyRejectsUnsupportedEnabledBehavior(t *testing.T) {
 	for _, test := range []struct{ features, restrict, properties, want string }{
 		{features: "unknown-feature", want: "FEATURE"},
