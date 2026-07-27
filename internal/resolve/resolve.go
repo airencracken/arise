@@ -2542,7 +2542,16 @@ func (r *resolver) selectMergeType(node *PkgNode, version *VersionInfo) (string,
 		directory = "/var/cache/binpkgs"
 	}
 	exact := "=" + node.Atom.CP() + "-" + version.Version.Raw
-	binary, err := binpkg.FindPackageMatchingUse(directory, exact, r.candidateUseFlags(node, version), r.config.BinpkgRespectUse)
+	chost, abi := "", ""
+	if r.config.PortageConfig != nil {
+		chost = r.config.PortageConfig.MakeConf["CHOST"]
+		abi = r.config.PortageConfig.MakeConf["ABI"]
+	}
+	binary, err := binpkg.FindCompatiblePackage(directory, exact, binpkg.CompatibilityPolicy{
+		UseFlags: r.candidateUseFlags(node, version), IUse: version.IUse,
+		RespectUse: r.config.BinpkgRespectUse, CHOST: chost, ABI: abi,
+		Repository: version.Repository, Slot: version.Slot, Subslot: version.Subslot,
+	})
 	if err != nil && r.config.UsePkgOnly {
 		return "", "", fmt.Errorf("binary-only: inspect %s: %w", exact, err)
 	}

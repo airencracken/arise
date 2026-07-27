@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -350,11 +351,15 @@ func TestCreate_NonexistentFile(t *testing.T) {
 	os.WriteFile(filepath.Join(rootDir, "usr", "bin", "broken"), []byte("binary"), 0755)
 
 	outPath, err := Create(context.Background(), vdbPath, rootDir, pkgDir)
-	if err != nil {
-		t.Fatalf("Create() should skip missing files: %v", err)
+	if err == nil || outPath != "" {
+		t.Fatalf("Create() = %q, %v; want fail-closed missing-file error", outPath, err)
 	}
-	if outPath == "" {
-		t.Error("Create() returned empty path")
+	if _, statErr := os.Stat(filepath.Join(pkgDir, "sys-devel", "broken-1.0.tbz2")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed capture published an artifact: %v", statErr)
+	}
+	temporary, globErr := filepath.Glob(filepath.Join(pkgDir, "sys-devel", ".broken-1.0.tbz2.tmp-*"))
+	if globErr != nil || len(temporary) != 0 {
+		t.Fatalf("failed capture retained temporary artifacts %v: %v", temporary, globErr)
 	}
 }
 
@@ -539,6 +544,9 @@ func TestParseContents_SymlinkEntry(t *testing.T) {
 	os.MkdirAll(filepath.Join(rootDir, "usr", "bin"), 0755)
 
 	os.WriteFile(filepath.Join(rootDir, "usr", "bin", "real"), []byte("real"), 0755)
+	if err := os.Symlink("/usr/bin/real", filepath.Join(rootDir, "usr", "bin", "alias")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
 
 	contents := "obj /usr/bin/real 4 1700000000\nsym /usr/bin/alias -> /usr/bin/real 1700000000\ndir /usr/bin\n"
 	os.WriteFile(filepath.Join(vdbPath, "CONTENTS"), []byte(contents), 0644)
@@ -739,16 +747,8 @@ func TestCreate_InvalidContentsLine(t *testing.T) {
 	os.WriteFile(filepath.Join(vdbPath, "BUILD_TIME"), []byte("1700000000"), 0644)
 
 	outPath, err := Create(context.Background(), vdbPath, rootDir, pkgDir)
-	if err != nil {
-		t.Fatalf("Create() should skip invalid lines: %v", err)
-	}
-
-	info, err := ReadInfo(outPath)
-	if err != nil {
-		t.Fatalf("ReadInfo() on package with invalid contents lines: %v", err)
-	}
-	if info.Category != "sys-devel" {
-		t.Errorf("Category = %q, want sys-devel", info.Category)
+	if err == nil || outPath != "" {
+		t.Fatalf("Create() = %q, %v; want malformed CONTENTS rejection", outPath, err)
 	}
 }
 
@@ -825,9 +825,9 @@ func TestParseContents_InputTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.wantType, func(t *testing.T) {
-			e := parseContentsLine(tt.line)
-			if e == nil {
-				t.Fatal("parseContentsLine returned nil")
+			e, err := parseContentsLine(tt.line)
+			if err != nil {
+				t.Fatalf("parseContentsLine() error = %v", err)
 			}
 			if e.Type != tt.wantType {
 				t.Errorf("Type = %q, want %q", e.Type, tt.wantType)
@@ -842,12 +842,13 @@ func TestParseContents_InputTypes(t *testing.T) {
 	}
 }
 
-func TestParseContents_NilOnEmpty(t *testing.T) {
-	if e := parseContentsLine(""); e != nil {
-		t.Errorf("expected nil for empty line, got %+v", e)
-	}
-	if e := parseContentsLine("single"); e != nil {
-		t.Errorf("expected nil for short line, got %+v", e)
+func TestParseContents_RejectsMalformedEntries(t *testing.T) {
+	for _, line := range []string{"", "single", "fifo /run/service", "obj /usr/bin/test hash invalid", "sym /bin/x ->"} {
+		t.Run(line, func(t *testing.T) {
+			if entry, err := parseContentsLine(line); err == nil || entry != nil {
+				t.Errorf("parseContentsLine(%q) = %+v, %v; want rejection", line, entry, err)
+			}
+		})
 	}
 }
 
@@ -1063,8 +1064,348 @@ func TestAdversarial_ExtractPathTraversal(t *testing.T) {
 
 	err := Extract(context.Background(), path, destDir)
 	if err == nil {
-		t.Log("path traversal extract completed without error")
+		t.Fatal("Extract() accepted a path traversal entry")
 	}
+	if _, statErr := os.Stat(filepath.Join(baseDir, "etc", "passwd")); !os.IsNotExist(statErr) {
+		t.Fatalf("path traversal wrote outside destination: %v", statErr)
+	}
+}
+
+func TestExtractRejectsUnsafeArchiveContracts(t *testing.T) {
+	tests := []struct {
+		name    string
+		headers []*tar.Header
+		bodies  [][]byte
+	}{
+		{
+			name:    "absolute path",
+			headers: []*tar.Header{{Name: "/etc/passwd", Typeflag: tar.TypeReg, Mode: 0644, Size: 1}},
+			bodies:  [][]byte{[]byte("x")},
+		},
+		{
+			name: "normalized duplicate",
+			headers: []*tar.Header{
+				{Name: "usr/bin/tool", Typeflag: tar.TypeReg, Mode: 0644, Size: 1},
+				{Name: "usr/./bin/tool", Typeflag: tar.TypeReg, Mode: 0644, Size: 1},
+			},
+			bodies: [][]byte{[]byte("a"), []byte("b")},
+		},
+		{
+			name:    "device node",
+			headers: []*tar.Header{{Name: "dev/host", Typeflag: tar.TypeChar, Mode: 0600}},
+			bodies:  [][]byte{nil},
+		},
+		{
+			name: "symlink parent",
+			headers: []*tar.Header{
+				{Name: "escape", Typeflag: tar.TypeSymlink, Linkname: "../outside", Mode: 0777},
+				{Name: "escape/payload", Typeflag: tar.TypeReg, Mode: 0644, Size: 1},
+			},
+			bodies: [][]byte{nil, []byte("x")},
+		},
+		{
+			name:    "hard link",
+			headers: []*tar.Header{{Name: "hard", Typeflag: tar.TypeLink, Linkname: "../../outside", Mode: 0644}},
+			bodies:  [][]byte{nil},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			pkg := writeTestTarPackage(t, base, test.headers, test.bodies)
+			if err := Extract(context.Background(), pkg, filepath.Join(base, "root")); err == nil {
+				t.Fatalf("Extract() accepted %s archive", test.name)
+			}
+			if _, err := os.Stat(filepath.Join(base, "outside", "payload")); !os.IsNotExist(err) {
+				t.Fatalf("unsafe archive wrote outside extraction root: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractRejectsPreexistingSymlinkTarget(t *testing.T) {
+	base := t.TempDir()
+	destination := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(filepath.Join(destination, "usr"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outside, []byte("safe"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(destination, "usr", "tool")); err != nil {
+		t.Fatal(err)
+	}
+	pkg := writeTestTarPackage(t, base,
+		[]*tar.Header{{Name: "usr/tool", Typeflag: tar.TypeReg, Mode: 0644, Size: 6}},
+		[][]byte{[]byte("unsafe")},
+	)
+	if err := Extract(context.Background(), pkg, destination); err == nil {
+		t.Fatal("Extract() followed a preexisting symlink target")
+	}
+	data, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "safe" {
+		t.Fatalf("outside file changed to %q", data)
+	}
+}
+
+func TestCreateRejectsInstalledStateDrift(t *testing.T) {
+	tests := []struct {
+		name     string
+		contents string
+		prepare  func(string) error
+	}{
+		{
+			name:     "object became symlink",
+			contents: "obj /usr/bin/item digest 1700000000\n",
+			prepare:  func(path string) error { return os.Symlink("/elsewhere", path) },
+		},
+		{
+			name:     "directory became file",
+			contents: "dir /usr/bin/item\n",
+			prepare:  func(path string) error { return os.WriteFile(path, []byte("file"), 0644) },
+		},
+		{
+			name:     "symlink became file",
+			contents: "sym /usr/bin/item -> target 1700000000\n",
+			prepare:  func(path string) error { return os.WriteFile(path, []byte("file"), 0644) },
+		},
+		{
+			name:     "symlink target changed",
+			contents: "sym /usr/bin/item -> expected 1700000000\n",
+			prepare:  func(path string) error { return os.Symlink("different", path) },
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			vdb, root := createCaptureFixture(t, base, test.contents)
+			path := filepath.Join(root, "usr", "bin", "item")
+			if err := test.prepare(path); err != nil {
+				t.Fatal(err)
+			}
+			output, err := Create(context.Background(), vdb, root, filepath.Join(base, "packages"))
+			if err == nil || output != "" {
+				t.Fatalf("Create() = %q, %v; want state-drift rejection", output, err)
+			}
+		})
+	}
+}
+
+func TestCreateRejectsEscapingAndSymlinkedParentPaths(t *testing.T) {
+	t.Run("relative CONTENTS path", func(t *testing.T) {
+		base := t.TempDir()
+		vdb, root := createCaptureFixture(t, base, "obj ../../outside digest 1700000000\n")
+		if _, err := Create(context.Background(), vdb, root, filepath.Join(base, "packages")); err == nil {
+			t.Fatal("Create() accepted a relative CONTENTS path")
+		}
+	})
+	t.Run("symlinked parent", func(t *testing.T) {
+		base := t.TempDir()
+		vdb, root := createCaptureFixture(t, base, "obj /usr/bin/item digest 1700000000\n")
+		outside := filepath.Join(base, "outside")
+		if err := os.MkdirAll(outside, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(root, "usr", "bin")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, "usr", "bin")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(outside, "item"), []byte("foreign"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Create(context.Background(), vdb, root, filepath.Join(base, "packages")); err == nil {
+			t.Fatal("Create() captured through a symlinked ROOT parent")
+		}
+	})
+}
+
+func TestCreateRejectsUnsafeIdentityAndDestination(t *testing.T) {
+	t.Run("metadata path component", func(t *testing.T) {
+		base := t.TempDir()
+		vdb, root := createCaptureFixture(t, base, "")
+		if err := os.WriteFile(filepath.Join(vdb, "CATEGORY"), []byte("../outside"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Create(context.Background(), vdb, root, filepath.Join(base, "packages")); err == nil {
+			t.Fatal("Create() accepted a path-bearing CATEGORY")
+		}
+	})
+	t.Run("category destination symlink", func(t *testing.T) {
+		base := t.TempDir()
+		vdb, root := createCaptureFixture(t, base, "")
+		pkgDir := filepath.Join(base, "packages")
+		outside := filepath.Join(base, "outside")
+		if err := os.MkdirAll(pkgDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(outside, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(pkgDir, "sys-devel")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Create(context.Background(), vdb, root, pkgDir); err == nil {
+			t.Fatal("Create() published through a symlinked category directory")
+		}
+		if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+			t.Fatalf("unsafe destination received package data: entries=%v err=%v", entries, err)
+		}
+	})
+}
+
+func TestCreateCancellationLeavesNoArtifact(t *testing.T) {
+	base := t.TempDir()
+	vdb, root := createCaptureFixture(t, base, "obj /usr/bin/item digest 1700000000\n")
+	if err := os.WriteFile(filepath.Join(root, "usr", "bin", "item"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	pkgDir := filepath.Join(base, "packages")
+	if _, err := Create(ctx, vdb, root, pkgDir); err == nil {
+		t.Fatal("Create() ignored cancellation")
+	}
+	matches, err := filepath.Glob(filepath.Join(pkgDir, "sys-devel", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("cancelled capture left artifacts: %v", matches)
+	}
+}
+
+func TestCreateConcurrentPublicationProducesReadableArtifact(t *testing.T) {
+	base := t.TempDir()
+	vdb, root := createCaptureFixture(t, base, "obj /usr/bin/item digest 1700000000\n")
+	if err := os.WriteFile(filepath.Join(root, "usr", "bin", "item"), []byte("data"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	pkgDir := filepath.Join(base, "packages")
+	errors := make(chan error, 8)
+	for range 8 {
+		go func() {
+			_, err := Create(context.Background(), vdb, root, pkgDir)
+			errors <- err
+		}()
+	}
+	for range 8 {
+		if err := <-errors; err != nil {
+			t.Errorf("concurrent Create() error: %v", err)
+		}
+	}
+	path := filepath.Join(pkgDir, "sys-devel", "fixture-1.0.tbz2")
+	if _, err := ReadInfo(path); err != nil {
+		t.Fatalf("concurrent publication produced unreadable package: %v", err)
+	}
+	temporaries, err := filepath.Glob(filepath.Join(pkgDir, "sys-devel", ".*.tmp-*"))
+	if err != nil || len(temporaries) != 0 {
+		t.Fatalf("concurrent publication left temporary files %v: %v", temporaries, err)
+	}
+}
+
+func TestCreateFailedReplacementPreservesPublishedArtifact(t *testing.T) {
+	base := t.TempDir()
+	vdb, root := createCaptureFixture(t, base, "obj /usr/bin/item digest 1700000000\n")
+	item := filepath.Join(root, "usr", "bin", "item")
+	if err := os.WriteFile(item, []byte("original"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	pkgDir := filepath.Join(base, "packages")
+	path, err := Create(context.Background(), vdb, root, pkgDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(item); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := Create(context.Background(), vdb, root, pkgDir); err == nil || output != "" {
+		t.Fatalf("replacement Create() = %q, %v; want failure", output, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed replacement removed the prior artifact: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("failed replacement changed the prior artifact")
+	}
+}
+
+func TestConfinedArchivePathProperty(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	for _, name := range []string{
+		"a", "usr/bin/tool", "usr/../etc/config", "./var/lib/data",
+		"../outside", "../../outside", "/absolute", "", ".",
+	} {
+		clean, target, err := confinedArchivePath(root, name)
+		if err != nil {
+			continue
+		}
+		relative, relErr := filepath.Rel(root, target)
+		if relErr != nil || relative != clean || relative == ".." ||
+			strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			t.Fatalf("confinedArchivePath(%q) escaped: clean=%q target=%q relative=%q err=%v", name, clean, target, relative, relErr)
+		}
+	}
+}
+
+func createCaptureFixture(t *testing.T, base, contents string) (string, string) {
+	t.Helper()
+	root := filepath.Join(base, "root")
+	vdb := filepath.Join(base, "vdb", "sys-devel", "fixture-1.0")
+	for _, directory := range []string{filepath.Join(root, "usr", "bin"), vdb} {
+		if err := os.MkdirAll(directory, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, value := range map[string]string{
+		"CONTENTS": contents, "CATEGORY": "sys-devel", "PF": "fixture-1.0",
+		"SLOT": "0", "USE": "", "EAPI": "8", "BUILD_TIME": "1700000000",
+	} {
+		if err := os.WriteFile(filepath.Join(vdb, name), []byte(value), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return vdb, root
+}
+
+func writeTestTarPackage(t *testing.T, base string, headers []*tar.Header, bodies [][]byte) string {
+	t.Helper()
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	for index, header := range headers {
+		if err := writer.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if len(bodies[index]) > 0 {
+			if _, err := writer.Write(bodies[index]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	meta := []byte("CATEGORY=test\nPF=fixture-1\n")
+	offset := offsetToStr(len(meta) + len(xpakMagic) + 1)
+	archive.Write(meta)
+	archive.WriteString(xpakMagic + "\n" + offset + "\n")
+	path := filepath.Join(base, "fixture.tar")
+	if err := os.WriteFile(path, archive.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func offsetToStr(base int) string {
@@ -1260,6 +1601,61 @@ func TestFindPackageMatchingUse(t *testing.T) {
 	})
 }
 
+func TestFindCompatiblePackageFiltersConfigurationDomain(t *testing.T) {
+	base := t.TempDir()
+	image := filepath.Join(base, "image")
+	if err := os.MkdirAll(image, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkgDir := filepath.Join(base, "packages")
+	path := filepath.Join(pkgDir, "app-misc", "demo-1.gpkg.tar")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateGPKG(context.Background(), GPKGCreateRequest{
+		Path: path, Basename: "demo-1", ImageRoot: image,
+		Metadata: map[string][]byte{
+			"CATEGORY": []byte("app-misc\n"), "PF": []byte("demo-1\n"),
+			"SLOT": []byte("2/3\n"), "EAPI": []byte("8\n"),
+			"USE": []byte("ssl\n"), "IUSE": []byte("ssl test\n"),
+			"CHOST": []byte("x86_64-pc-linux-gnu\n"), "ABI": []byte("amd64\n"),
+			"repository": []byte("gentoo\n"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	matching := CompatibilityPolicy{
+		UseFlags: map[string]bool{"ssl": true, "test": false}, IUse: "ssl test",
+		RespectUse: true, CHOST: "x86_64-pc-linux-gnu", ABI: "amd64",
+		Repository: "gentoo", Slot: "2", Subslot: "3",
+	}
+	got, err := FindCompatiblePackage(pkgDir, "=app-misc/demo-1", matching)
+	if err != nil || got == nil {
+		t.Fatalf("matching candidate = %v, %v", got, err)
+	}
+	for name, mutate := range map[string]func(*CompatibilityPolicy){
+		"USE":        func(policy *CompatibilityPolicy) { policy.UseFlags["ssl"] = false },
+		"CHOST":      func(policy *CompatibilityPolicy) { policy.CHOST = "aarch64-unknown-linux-gnu" },
+		"ABI":        func(policy *CompatibilityPolicy) { policy.ABI = "arm64" },
+		"repository": func(policy *CompatibilityPolicy) { policy.Repository = "overlay" },
+		"slot":       func(policy *CompatibilityPolicy) { policy.Slot = "1" },
+		"subslot":    func(policy *CompatibilityPolicy) { policy.Subslot = "4" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			policy := matching
+			policy.UseFlags = map[string]bool{"ssl": true, "test": false}
+			mutate(&policy)
+			got, err := FindCompatiblePackage(pkgDir, "=app-misc/demo-1", policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != nil {
+				t.Fatalf("incompatible candidate selected: %+v", got)
+			}
+		})
+	}
+}
+
 func TestDownloadFromBinhost_HTTP(t *testing.T) {
 	pkgContent := []byte("fake binary package")
 	client := testHTTPClient(func(request *http.Request) (int, []byte) {
@@ -1294,6 +1690,93 @@ func TestDownloadFromBinhost_HTTP(t *testing.T) {
 	}
 }
 
+func TestDownloadFromBinhostPackagesIndexVerifiesAndPublishesGPKG(t *testing.T) {
+	base := t.TempDir()
+	hostDir := filepath.Join(base, "host")
+	image := filepath.Join(base, "image")
+	if err := os.MkdirAll(image, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packagePath := filepath.Join(hostDir, "app-misc", "demo-1.gpkg.tar")
+	if err := os.MkdirAll(filepath.Dir(packagePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateGPKG(context.Background(), GPKGCreateRequest{
+		Path: packagePath, Basename: "demo-1", ImageRoot: image,
+		Metadata: map[string][]byte{
+			"CATEGORY": []byte("app-misc\n"), "PF": []byte("demo-1\n"),
+			"SLOT": []byte("0\n"), "EAPI": []byte("8\n"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := ReadInfo(packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageMetadata, err := ReadMetadata(context.Background(), packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := NewPackageIndexEntry(packagePath, hostDir, info, packageMetadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := &PackagesIndex{Header: map[string]string{"VERSION": "0"}, Packages: []PackageIndexEntry{entry}}
+	if err := WritePackagesIndex(filepath.Join(hostDir, "Packages"), index, time.Unix(0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	indexBytes, err := os.ReadFile(filepath.Join(hostDir, "Packages"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	packageBytes, err := os.ReadFile(packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := testHTTPClient(func(request *http.Request) (int, []byte) {
+		switch request.URL.Path {
+		case "/Packages":
+			return http.StatusOK, indexBytes
+		case "/app-misc/demo-1.gpkg.tar":
+			return http.StatusOK, packageBytes
+		default:
+			return http.StatusNotFound, nil
+		}
+	})
+	destination := filepath.Join(base, "destination")
+	downloaded, err := downloadFromBinhost(context.Background(), client, "https://binhost.invalid", []string{"app-misc/demo"}, destination)
+	if err != nil {
+		t.Fatalf("downloadFromBinhost: %v", err)
+	}
+	want := filepath.Join(destination, "app-misc", "demo-1.gpkg.tar")
+	if len(downloaded) != 1 || downloaded[0] != want {
+		t.Fatalf("downloaded = %v, want %s", downloaded, want)
+	}
+	if _, err := ReadGPKG(context.Background(), want); err != nil {
+		t.Fatalf("published GPKG: %v", err)
+	}
+
+	t.Run("digest mismatch leaves no artifact", func(t *testing.T) {
+		corrupt := append([]byte(nil), packageBytes...)
+		corrupt[len(corrupt)/2] ^= 0xff
+		badClient := testHTTPClient(func(request *http.Request) (int, []byte) {
+			if request.URL.Path == "/Packages" {
+				return http.StatusOK, indexBytes
+			}
+			return http.StatusOK, corrupt
+		})
+		badDestination := filepath.Join(base, "bad")
+		_, err := downloadFromBinhost(context.Background(), badClient, "https://binhost.invalid", []string{"app-misc/demo"}, badDestination)
+		if err == nil || !strings.Contains(err.Error(), "mismatch") {
+			t.Fatalf("digest error = %v", err)
+		}
+		if _, statErr := os.Stat(filepath.Join(badDestination, "app-misc", "demo-1.gpkg.tar")); !os.IsNotExist(statErr) {
+			t.Fatalf("corrupt package published: %v", statErr)
+		}
+	})
+}
+
 func TestDownloadFromBinhost_404(t *testing.T) {
 	client := testHTTPClient(func(*http.Request) (int, []byte) { return http.StatusNotFound, nil })
 
@@ -1307,7 +1790,12 @@ func TestDownloadFromBinhost_404(t *testing.T) {
 }
 
 func TestDownloadFromBinhost_NoVersion(t *testing.T) {
-	client := testHTTPClient(func(*http.Request) (int, []byte) { return http.StatusOK, []byte("fake") })
+	client := testHTTPClient(func(request *http.Request) (int, []byte) {
+		if request.URL.Path == "/Packages" {
+			return http.StatusNotFound, nil
+		}
+		return http.StatusOK, []byte("fake")
+	})
 
 	destDir := filepath.Join(t.TempDir(), "dest")
 	url := "https://binhost.invalid/"

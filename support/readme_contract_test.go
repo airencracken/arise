@@ -25,6 +25,7 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"Dependency-aware parallel preparation with serialized commits",
 		"installed lifecycle execution, durable journals",
 		"General Portage execution parity is still not claimed.",
+		"recover         Inspect journals; inspect, restore, verify, or prune recovery sets",
 	)
 
 	punchlist := read("../PUNCHLIST.md")
@@ -50,9 +51,18 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"- [x] Ship the initial release-bound offline dependency archive path.",
 		"Whole-operation rollback will use verified Btrfs, OpenZFS or LVM snapshots;",
 		"- [ ] Add pre-update recovery binpkgs when Arise subsumes `quickpkg`.",
-		"- [ ] Harden host-derived binpkgs before using them as recovery artifacts.",
-		"- [ ] Publish pre-update recovery sets atomically before live-root mutation.",
+		"- [~] Harden host-derived binpkgs before using them as recovery artifacts.",
+		"- [~] Publish pre-update recovery sets atomically before live-root mutation.",
 		"- [ ] Adversarial archive tests for absolute/traversing paths, unsafe links,",
+		"The initial capture boundary now fails closed for malformed `CONTENTS`,",
+		"Each artifact now embeds a versioned `host-recovery` manifest containing its",
+		"A versioned capture context now binds operation kind/ID,",
+		"The live install/update executor now publishes resolver-identified replaced",
+		"Exact uninstall plans now publish the",
+		"Conservative pruning removes only explicitly `verified` sets",
+		"Immutable recovery objects separate",
+		"Recovery-set\n  inspection verifies every artifact and constructs a reverse-capture-order",
+		"XPAK extraction now rejects the path/link/duplicate/device subset,",
 	)
 
 	snapshots := read("../docs/planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md")
@@ -85,6 +95,10 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"Provides a usable replacement workflow.",
 		"confined atomic archives, mixed-file diffs, and interruption-aware processing.",
 		"command-level differential parity remain\nunder development.",
+		`recover inspect-set`,
+		`recover verify-set`,
+		`recover prune-sets`,
+		`approve-recovery-drift-sha256`,
 	)
 }
 

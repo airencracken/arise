@@ -35,10 +35,14 @@ import (
 
 // RebuildConfig holds the configuration for rebuilding packages.
 type RebuildConfig struct {
-	RepoDir      string
-	DistfilesDir string
-	SourceURI    string // resolved metadata, including eclass-derived SRC_URI
-	RootDir      string
+	RepoDir           string
+	DistfilesDir      string
+	SourceURI         string // resolved metadata, including eclass-derived SRC_URI
+	BinaryPackagePath string
+	PackageDir        string
+	BuildPackage      bool
+	BuildOnly         bool
+	RootDir           string
 	// SysrootDir supplies target build dependencies. It defaults to RootDir.
 	// BrootDir supplies build-host dependencies. It defaults to RootDir.
 	// Keeping these distinct is required for cross-root/disposable image builds.
@@ -1195,6 +1199,20 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 			cfg.fireNotice("QA", warning.Error())
 		}
 	}
+	vdbMetadata := protocolVDBMetadata(eb, ebuildFile, cat, pf, cfg.SelectedIUSE, cfg.UseFlags, base, packageEvents)
+	if err := expandBuiltSlotOperators(vdbMetadata, cfg); err != nil {
+		return fmt.Errorf("rebuild: expand built slot operators: %w", err)
+	}
+	environment := protocolEnvironmentSnapshot(base)
+	if cfg.BuildPackage {
+		cfg.fireStage("package")
+		if _, err := publishBuiltGPKG(ctx, cfg, cat, pf, destDir, vdbMetadata, environment); err != nil {
+			return err
+		}
+	}
+	if cfg.BuildOnly {
+		return nil
+	}
 	// Portage runs pkg_preinst unsandboxed with host IPC/network/PID access
 	// after src_install has produced the image and before any payload is copied
 	// into ROOT. It cannot share the build worker's isolation policy.
@@ -1209,10 +1227,6 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	if journalDir == "" {
 		journalDir = filepath.Join(workDir, "journal")
 	}
-	vdbMetadata := protocolVDBMetadata(eb, ebuildFile, cat, pf, cfg.SelectedIUSE, cfg.UseFlags, base, packageEvents)
-	if err := expandBuiltSlotOperators(vdbMetadata, cfg); err != nil {
-		return fmt.Errorf("rebuild: expand built slot operators: %w", err)
-	}
 	mergeCfg := merge.MergeConfig{
 		RootDir: cfg.RootDir, VdbDir: cfg.VdbDir, Category: cat, Package: pn, Version: pvr,
 		JournalDir:           journalDir,
@@ -1220,7 +1234,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		AllowLiveReplacement: cfg.AllowLiveReplacement,
 		VDBLockHeld:          cfg.VDBLockHeld,
 		VDBMetadata:          vdbMetadata,
-		Environment:          protocolEnvironmentSnapshot(base),
+		Environment:          environment,
 		OnStage:              cfg.fireStage,
 		OnProgress:           cfg.fireProgress,
 		// Portage runs pkg_postinst after payload/VDB commit and retains the

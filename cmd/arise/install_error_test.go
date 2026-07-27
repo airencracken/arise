@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/resolve"
 )
 
 func TestPrintExecutionErrorSeparatesWrappedContext(t *testing.T) {
@@ -69,5 +73,29 @@ func TestPrintExecutionErrorIndentsMultilineLeaf(t *testing.T) {
 	want := "arise: package transaction failed\n\n  first line\n  second line\n\n"
 	if output.String() != want {
 		t.Fatalf("unexpected output %q, want %q", output.String(), want)
+	}
+}
+
+func TestRecoveryPackagesForActionsIncludesOnlyReplacedInstalledInstances(t *testing.T) {
+	updated, err := atom.Parse("sys-devel/gcc-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := atom.Parse("app-misc/new-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := []resolve.PkgAction{
+		{Atom: updated, Action: "update", InstalledVersion: "14.2.1"},
+		{Atom: fresh, Action: "install"},
+		{Atom: updated, Action: "update", InstalledVersion: "14.2.1"},
+	}
+	packages := recoveryPackagesForActions("/vdb", actions)
+	if len(packages) != 1 {
+		t.Fatalf("recovery packages = %+v", packages)
+	}
+	want := filepath.Join("/vdb", "sys-devel", "gcc-14.2.1")
+	if packages[0].VDBEntryPath != want {
+		t.Fatalf("recovery VDB path = %q, want %q", packages[0].VDBEntryPath, want)
 	}
 }

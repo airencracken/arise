@@ -293,6 +293,11 @@ func TestSelectCommandDefaultsToInstall(t *testing.T) {
 		{name: "explicit install", args: []string{"install", "net-im/signal-desktop-bin"}, wantCmd: "install", wantArgs: []string{"net-im/signal-desktop-bin"}},
 		{name: "explicit query", args: []string{"query", "sys-apps/portage"}, wantCmd: "query", wantArgs: []string{"sys-apps/portage"}},
 		{name: "recover status", args: []string{"recover", "status"}, wantCmd: "recover", wantArgs: []string{"status"}},
+		{name: "inspect recovery set", args: []string{"recover", "inspect-set", "/sets/one"}, wantCmd: "recover", wantArgs: []string{"inspect-set", "/sets/one"}},
+		{name: "restore recovery set", args: []string{"recover", "restore-set", "/sets/one"}, wantCmd: "recover", wantArgs: []string{"restore-set", "/sets/one"}},
+		{name: "verify recovery set", args: []string{"recover", "verify-set", "/sets/one"}, wantCmd: "recover", wantArgs: []string{"verify-set", "/sets/one"}},
+		{name: "prune recovery sets", args: []string{"recover", "prune-sets", "3"}, wantCmd: "recover", wantArgs: []string{"prune-sets", "3"}},
+		{name: "quickpkg GPKG", args: []string{"quickpkg", "--gpkg", "app/pkg"}, wantCmd: "quickpkg", wantArgs: []string{"--gpkg", "app/pkg"}},
 		{name: "dispatch explicit path", args: []string{"dispatch-conf", "/etc/ssh"}, wantCmd: "dispatch-conf", wantArgs: []string{"/etc/ssh"}},
 	}
 	for _, tt := range tests {

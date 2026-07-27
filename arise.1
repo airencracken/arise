@@ -109,10 +109,10 @@ Use binary packages when available, falling back to source.
 Only use binary packages. Fail if a binary package is unavailable.
 .TP
 \fB\-b\fR, \fB\-\-buildpkg\fR
-Build binary packages during installation.
+Build deterministic GPKG binary packages in PKGDIR during installation.
 .TP
 \fB\-B\fR, \fB\-\-buildpkgonly\fR
-Only build binary packages, do not install.
+Only build deterministic GPKG binary packages in PKGDIR; do not modify ROOT.
 .TP
 \fB\-f\fR, \fB\-\-fetchonly\fR
 Only fetch source files, do not build.
@@ -180,10 +180,10 @@ Display results in resolution order rather than sorted.
 Pause when system load average exceeds the given value.
 .TP
 \fB\-\-getbinpkg\fR
-Download binary packages from configured binhosts.
+Download the resolved dependency closure from configured Packages-indexed binhosts and use compatible binary packages, with source fallback.
 .TP
 \fB\-\-getbinpkgonly\fR
-Only use downloaded binary packages.
+Download the resolved dependency closure from configured Packages-indexed binhosts and fail unless compatible binary packages satisfy it.
 .TP
 \fB\-\-binpkg-respect-use\fR
 Respect USE flag compatibility when selecting binary packages.
@@ -358,6 +358,24 @@ List durable package transaction journals and their states.
 \fBrecover rollback\fR \fIid\fR
 Roll back one active journal while holding the VDB mutation lock. Use
 \fB\-\-all-active\fR instead of an identifier to recover every active journal.
+.TP
+\fBrecover inspect-set\fR \fIpath\fR
+Verify a complete recovery set, display reverse capture order, and report the
+exact approval digest required when configuration or repository state drifted.
+.TP
+\fBrecover restore-set\fR \fIpath\fR
+Restore every verified artifact through journaled package merges while holding
+the VDB lock. Drift requires \fB\-\-approve-recovery-drift-sha256\fR with the
+digest reported by \fBinspect-set\fR.
+.TP
+\fBrecover verify-set\fR \fIpath\fR
+Mark a pending recovery set verified only after the kernel reports a different
+boot identity from the one recorded when the set was captured.
+.TP
+\fBrecover prune-sets\fR \fIkeep\fR
+Retain the newest requested number of verified recovery sets. Active, failed,
+pending-verification, pending-rollback, missing-status, and malformed sets are
+preserved.
 
 .SS Query and Information
 
@@ -504,9 +522,10 @@ Display a specific news item.
 .SS Binary Packages
 
 .TP
-\fBquickpkg\fR \fIatom\fR
-Create a binary package (.tbz2) from an installed package.
-Replaces \fBquickpkg\fR(1).
+\fBquickpkg\fR [\fB\-\-gpkg\fR] \fIatom\fR
+Replaces \fBquickpkg\fR(1). The default creates a machine-bound recovery
+artifact. \fB\-\-gpkg\fR writes a zstd-compressed, GLEP 78
+Portage-compatible package with complete installed VDB metadata.
 
 .SH FILES
 

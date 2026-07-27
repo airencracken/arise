@@ -72,6 +72,10 @@ type Config struct {
 	// ValidateLocked reruns state authorization after acquiring the live VDB
 	// lock and immediately before the first worker starts.
 	ValidateLocked func() error
+	// PrepareMutation must durably publish prerequisites such as a complete
+	// recovery set. It runs after locked validation and before resume state,
+	// build workers, or package mutation.
+	PrepareMutation func(context.Context) error
 }
 
 func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) error {
@@ -102,7 +106,12 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 		return fmt.Errorf("executor: removal actions are not supported by the install canary executor")
 	}
 	if cfg.Runner == nil {
-		cfg.Runner = rebuild.RebuildPackage
+		cfg.Runner = func(ctx context.Context, label string, packageConfig *rebuild.RebuildConfig) error {
+			if packageConfig.BinaryPackagePath != "" {
+				return rebuild.InstallBinaryPackage(ctx, label, packageConfig)
+			}
+			return rebuild.RebuildPackage(ctx, label, packageConfig)
+		}
 	}
 	if cfg.Rebuild.Fetcher == nil {
 		cfg.Rebuild.Fetcher = &fetch.Fetcher{}
@@ -144,6 +153,11 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 		}
 		if err := cfg.ValidateLocked(); err != nil {
 			return fmt.Errorf("executor: locked state validation: %w", err)
+		}
+	}
+	if cfg.PrepareMutation != nil {
+		if err := cfg.PrepareMutation(ctx); err != nil {
+			return fmt.Errorf("executor: prepare mutation: %w", err)
 		}
 	}
 	if cfg.ResumePath != "" {
@@ -453,8 +467,12 @@ func PreflightAction(action resolve.PkgAction, cfg *rebuild.RebuildConfig) error
 	if action.Domain != "" && action.Domain != resolve.DomainROOT {
 		return fmt.Errorf("unsupported mutation domain %s", action.Domain)
 	}
-	if action.MergeType != "" && action.MergeType != "source" {
+	if action.MergeType != "" && action.MergeType != "source" && action.MergeType != "binary" {
 		return fmt.Errorf("unsupported merge type %q", action.MergeType)
+	}
+	if action.MergeType == "binary" {
+		cfg.BinaryPackagePath = action.BinaryPath
+		return rebuild.PreflightBinaryPackage(actionLabel(action), cfg)
 	}
 	if action.Repository == "" || action.RepositoryPath == "" {
 		return fmt.Errorf("action lacks repository identity")
@@ -481,6 +499,10 @@ func actionRebuildConfig(base rebuild.RebuildConfig, action resolve.PkgAction) r
 		base.SelectedSlot += "/" + action.Subslot
 	}
 	base.SelectedIUSE = action.IUse
+	base.BinaryPackagePath = ""
+	if action.MergeType == "binary" {
+		base.BinaryPackagePath = action.BinaryPath
+	}
 	base.AllowLiveReplacement = base.AllowLiveRoot && action.Action == "reinstall"
 	base.AllowLiveUpgrade = base.AllowLiveRoot && action.Action == "update"
 	if base.AllowLiveUpgrade {

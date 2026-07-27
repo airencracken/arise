@@ -29,9 +29,13 @@ Status values are `supported`, `partial`, `planned`, and `not-applicable`.
 | `-O`, `--nodeps` | same | supported | verification-status tests |
 | `-o`, `--onlydeps` | same | supported | root/dependency action tests |
 | `--root-deps=VALUE` | same | partial | domain policy tested; full value matrix open |
-| `-k`, `--usepkg` | same | partial | local policy implemented; P9 breadth open |
-| `-K`, `--usepkgonly` | same | partial | fail-closed local selection implemented |
-| `--binpkg-respect-use` | same | partial | local USE matching; remote P9 open |
+| `-k`, `--usepkg` | same | supported | compatible local XPAK/GPKG selection with source fallback and transactional binary install |
+| `-K`, `--usepkgonly` | same | supported | compatible local selection fails closed when no candidate is available |
+| `-g`, `--getbinpkg` | same | supported | `Packages`-indexed dependency-closure acquisition with source fallback |
+| `-G`, `--getbinpkgonly` | same | supported | strict `Packages`-indexed dependency-closure acquisition and binary-only resolution |
+| `-b`, `--buildpkg` | same | supported | deterministic GPKG publication followed by normal installation |
+| `-B`, `--buildpkgonly` | same | supported | deterministic GPKG publication without ROOT mutation |
+| `--binpkg-respect-use` | same | supported | IUSE-domain USE matching plus available CHOST, ABI, repository and slot metadata |
 | `-j`, `--jobs=N` | same | supported | speculative resolver determinism tests |
 | `-l`, `--load-average=N` | same | supported | context-aware scheduler throttle and configuration tests |
 | `--resolver-timeout=DURATION` | Arise extension | supported | structured context cancellation tests |
@@ -48,9 +52,9 @@ subset of the man-page inventory, not a claim of full emerge CLI parity.
 | `PORTAGE_CONFIGROOT` | configuration root | supported | config loading tests |
 | `PORTDIR` | primary repository | supported | CLI default tests |
 | `DISTDIR` | distfile cache | supported | CLI/fetch tests |
-| `PKGDIR` | binary package directory | supported | binpkg selection tests |
+| `PKGDIR` | binary package directory | supported | XPAK/GPKG selection, multi-instance and Portage cross-read tests |
 | `PORTAGE_TMPDIR` | work/resume base | partial | paths tested; lifecycle parity is P4 |
-| `PORTAGE_BINHOST` | binary hosts | partial | ordered URL parsing and remote download tests; Packages-index/signature breadth remains P9 |
+| `PORTAGE_BINHOST` | binary hosts | supported | ordered URLs, bounded `Packages` parsing, version/build selection, closure acquisition, advertised digest/size checks and GPKG Manifest verification |
 | `FEATURES` | execution/package features | partial | typed P4 policy; precedence open |
 | `USE`, `ACCEPT_KEYWORDS`, `ACCEPT_LICENSE` | resolver policy | supported | layered config tests |
 | `MAKEOPTS`, `CFLAGS`, `CXXFLAGS` | build environment | partial | P4 differential gate open |

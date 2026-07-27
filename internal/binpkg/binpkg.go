@@ -6,6 +6,10 @@ import (
 	"bytes"
 	"compress/bzip2"
 	"context"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,25 +19,47 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/airencracken/arise/internal/atom"
+	"golang.org/x/crypto/blake2b"
 )
 
 const xpakMagic = "XPAKSTOP"
 const xpakTrailerLen = 4096
+const maxXPAKMetadataBytes = 64 << 20
+
+type ExtractionPolicy struct {
+	MaxEntries        int
+	MaxTotalBytes     int64
+	MaxFileBytes      int64
+	MaxXAttrBytes     int64
+	PreserveOwnership bool
+}
+
+var DefaultExtractionPolicy = ExtractionPolicy{
+	MaxEntries: 1_000_000, MaxTotalBytes: 64 << 30, MaxFileBytes: 16 << 30,
+	MaxXAttrBytes:     16 << 20,
+	PreserveOwnership: os.Geteuid() == 0,
+}
 
 type BinPkgInfo struct {
-	Category  string
-	Package   string
-	Version   string
-	Slot      string
-	Subslot   string
-	Use       string
-	EAPI      string
-	BuildTime int64
-	Size      int64
-	Path      string
+	Category   string
+	Package    string
+	Version    string
+	Slot       string
+	Subslot    string
+	Use        string
+	EAPI       string
+	BuildTime  int64
+	BuildID    string
+	Repository string
+	CHOST      string
+	ABI        string
+	IUse       string
+	Size       int64
+	Path       string
 }
 
 func (b *BinPkgInfo) CPV() string {
@@ -69,6 +95,36 @@ func detectCompression(path string) Compression {
 }
 
 func ReadInfo(path string) (*BinPkgInfo, error) {
+	if IsGPKG(path) {
+		pkg, err := ReadGPKG(context.Background(), path)
+		if err != nil {
+			return nil, err
+		}
+		meta := make(map[string]string, len(pkg.Metadata))
+		for key, value := range pkg.Metadata {
+			meta[key] = strings.TrimSpace(string(value))
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		result := &BinPkgInfo{Path: path, Size: info.Size()}
+		result.Category = meta["CATEGORY"]
+		result.Package = meta["PACKAGE"]
+		result.Version = meta["VERSION"]
+		result.Slot, result.Subslot = parseSlot(meta["SLOT"])
+		result.Use, result.EAPI = meta["USE"], meta["EAPI"]
+		result.BuildTime, _ = strconv.ParseInt(meta["BUILD_TIME"], 10, 64)
+		result.BuildID, result.Repository = meta["BUILD_ID"], meta["repository"]
+		result.CHOST, result.ABI, result.IUse = meta["CHOST"], meta["ABI"], meta["IUSE"]
+		if result.Package == "" || result.Version == "" {
+			pf := meta["PF"]
+			if parsed, parseErr := atom.Parse(result.Category + "/" + pf); parseErr == nil && parsed.Version != nil {
+				result.Package, result.Version = parsed.Package, parsed.Version.Raw
+			}
+		}
+		return result, nil
+	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("binpkg: could not read information for %s: %w", path, err)
@@ -104,6 +160,8 @@ func ReadInfo(path string) (*BinPkgInfo, error) {
 	if bt, ok := meta["BUILD_TIME"]; ok {
 		info.BuildTime, _ = strconv.ParseInt(bt, 10, 64)
 	}
+	info.BuildID, info.Repository = meta["BUILD_ID"], meta["repository"]
+	info.CHOST, info.ABI, info.IUse = meta["CHOST"], meta["ABI"], meta["IUSE"]
 
 	if info.Version == "" {
 		pf := meta["PF"]
@@ -152,6 +210,9 @@ func readXPAKMetadata(f *os.File, size int64) (map[string]string, error) {
 	if offset > size || offset < 0 {
 		return nil, fmt.Errorf("binpkg: the package file metadata offset %d is outside the file (file is %d bytes)", offset, size)
 	}
+	if offset > maxXPAKMetadataBytes {
+		return nil, fmt.Errorf("binpkg: package metadata exceeds the %d byte limit", maxXPAKMetadataBytes)
+	}
 
 	metaStart := size - offset
 
@@ -189,6 +250,17 @@ func parseMetadataLines(data []byte) map[string]string {
 }
 
 func Extract(ctx context.Context, pkgPath string, destDir string) error {
+	return ExtractWithPolicy(ctx, pkgPath, destDir, DefaultExtractionPolicy)
+}
+
+func ExtractWithPolicy(ctx context.Context, pkgPath string, destDir string, policy ExtractionPolicy) error {
+	if policy.MaxEntries <= 0 || policy.MaxTotalBytes <= 0 || policy.MaxFileBytes <= 0 || policy.MaxXAttrBytes <= 0 ||
+		policy.MaxFileBytes > policy.MaxTotalBytes {
+		return fmt.Errorf("binpkg: invalid extraction resource policy")
+	}
+	if IsGPKG(pkgPath) {
+		return ExtractGPKG(ctx, pkgPath, destDir, GPKGPolicy{Extraction: policy})
+	}
 	comp := detectCompression(pkgPath)
 
 	f, err := os.Open(pkgPath)
@@ -221,7 +293,7 @@ func Extract(ctx context.Context, pkgPath string, destDir string) error {
 		reader = io.LimitReader(f, tarStart)
 		reader = bzip2.NewReader(reader)
 	case CompressionXz:
-		return extractWithXz(ctx, pkgPath, destDir, tarStart)
+		return extractWithXz(ctx, pkgPath, destDir, policy)
 	case CompressionNone:
 		reader = io.LimitReader(f, tarStart)
 	default:
@@ -229,25 +301,31 @@ func Extract(ctx context.Context, pkgPath string, destDir string) error {
 		reader = bzip2.NewReader(reader)
 	}
 
-	return untar(reader, destDir)
+	return untar(reader, destDir, policy)
 }
 
-func extractWithXz(ctx context.Context, pkgPath, destDir string, tarStart int64) error {
+func extractWithXz(ctx context.Context, pkgPath, destDir string, policy ExtractionPolicy) error {
 	cmd := exec.CommandContext(ctx, "xz", "-d", "-c", pkgPath)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
-	if err := cmd.Run(); err != nil {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("binpkg: could not open xz output: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("binpkg: could not decompress xz-compressed package: %w", err)
 	}
-
-	data := stdout.Bytes()
-	if tarStart > 0 && tarStart < int64(len(data)) {
-		data = data[:tarStart]
+	extractErr := untar(stdout, destDir, policy)
+	_, drainErr := io.Copy(io.Discard, io.LimitReader(stdout, policy.MaxTotalBytes+1))
+	waitErr := cmd.Wait()
+	if extractErr != nil {
+		return extractErr
 	}
-
-	return untar(bytes.NewReader(data), destDir)
+	if drainErr != nil {
+		return fmt.Errorf("binpkg: could not drain xz output: %w", drainErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("binpkg: could not decompress xz-compressed package: %w", waitErr)
+	}
+	return nil
 }
 
 func findXPAKStart(f *os.File, size int64) (int64, error) {
@@ -287,8 +365,15 @@ func findXPAKStart(f *os.File, size int64) (int64, error) {
 	return size - offset, nil
 }
 
-func untar(r io.Reader, destDir string) error {
+func untar(r io.Reader, destDir string, policy ExtractionPolicy) error {
 	tr := tar.NewReader(r)
+	seen := make(map[string]struct{})
+	entries := 0
+	var totalBytes int64
+	var directories []struct {
+		path string
+		hdr  tar.Header
+	}
 
 	for {
 		hdr, err := tr.Next()
@@ -298,23 +383,60 @@ func untar(r io.Reader, destDir string) error {
 		if err != nil {
 			return fmt.Errorf("binpkg: could not read an entry from the package archive: %w", err)
 		}
+		entries++
+		if entries > policy.MaxEntries {
+			return fmt.Errorf("binpkg: archive exceeds the %d entry limit", policy.MaxEntries)
+		}
+		if hdr.Size < 0 || hdr.Size > policy.MaxFileBytes || totalBytes > policy.MaxTotalBytes-hdr.Size {
+			return fmt.Errorf("binpkg: archive entry %q exceeds extraction size limits", hdr.Name)
+		}
+		totalBytes += hdr.Size
+		var xattrBytes int64
+		for key, value := range hdr.PAXRecords {
+			if strings.HasPrefix(key, xattrPAXPrefix) {
+				xattrBytes += int64(len(key) + len(value))
+			}
+		}
+		if xattrBytes > policy.MaxXAttrBytes {
+			return fmt.Errorf("binpkg: archive entry %q exceeds extended-attribute limits", hdr.Name)
+		}
 
-		target := filepath.Join(destDir, hdr.Name)
+		name, target, err := confinedArchivePath(destDir, hdr.Name)
+		if err != nil {
+			return fmt.Errorf("binpkg: unsafe archive entry %q: %w", hdr.Name, err)
+		}
+		if _, exists := seen[name]; exists {
+			return fmt.Errorf("binpkg: unsafe archive entry %q: duplicate path", hdr.Name)
+		}
+		seen[name] = struct{}{}
+		if err := rejectSymlinkParents(destDir, target); err != nil {
+			return fmt.Errorf("binpkg: unsafe archive entry %q: %w", hdr.Name, err)
+		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
+			if err := rejectExistingNonDirectory(target); err != nil {
+				return fmt.Errorf("binpkg: unsafe archive entry %q: %w", hdr.Name, err)
+			}
 			if err := os.MkdirAll(target, os.FileMode(hdr.Mode)&0777); err != nil {
 				return fmt.Errorf("binpkg: could not create directory %s while extracting: %w", target, err)
 			}
-		case tar.TypeReg:
+			directories = append(directories, struct {
+				path string
+				hdr  tar.Header
+			}{target, *hdr})
+		case tar.TypeReg, tar.TypeRegA:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return fmt.Errorf("binpkg: could not create parent directory during extraction: %w", err)
+			}
+			if err := rejectExistingSymlinkOrDirectory(target); err != nil {
+				return fmt.Errorf("binpkg: unsafe archive entry %q: %w", hdr.Name, err)
 			}
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0777)
 			if err != nil {
 				return fmt.Errorf("binpkg: could not create file %s while extracting: %w", target, err)
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			if err := copyArchiveFile(f, tr, hdr); err != nil {
 				if cerr := f.Close(); cerr != nil { /* cleanup on error */
 				}
 				return fmt.Errorf("binpkg: failed writing extracted file %s: %w", target, err)
@@ -322,23 +444,211 @@ func untar(r io.Reader, destDir string) error {
 			if err := f.Close(); err != nil {
 				return fmt.Errorf("binpkg: failed closing extracted file %s: %w", target, err)
 			}
+			if err := applyArchiveMetadata(target, hdr, false, policy.PreserveOwnership); err != nil {
+				return fmt.Errorf("binpkg: restore metadata for %s: %w", target, err)
+			}
+		case tar.TypeLink:
+			_, linkTarget, err := confinedArchivePath(destDir, hdr.Linkname)
+			if err != nil {
+				return fmt.Errorf("binpkg: unsafe hardlink target %q: %w", hdr.Linkname, err)
+			}
+			if _, exists := seen[filepath.Clean(filepath.FromSlash(hdr.Linkname))]; !exists {
+				return fmt.Errorf("binpkg: unsafe hardlink target %q: target must precede link", hdr.Linkname)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return fmt.Errorf("binpkg: create hardlink parent: %w", err)
+			}
+			if err := os.Link(linkTarget, target); err != nil {
+				return fmt.Errorf("binpkg: create hardlink %s: %w", target, err)
+			}
 		case tar.TypeSymlink:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return fmt.Errorf("binpkg: could not create parent directory during extraction: %w", err)
 			}
-			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("binpkg: could not remove %s before creating symlink: %w", target, err)
+			if _, err := os.Lstat(target); err == nil {
+				return fmt.Errorf("binpkg: unsafe archive entry %q: target already exists", hdr.Name)
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("binpkg: could not inspect symlink target %s: %w", target, err)
 			}
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return fmt.Errorf("binpkg: could not create symlink %s -> %s: %w", target, hdr.Linkname, err)
 			}
+			if err := applyArchiveMetadata(target, hdr, true, policy.PreserveOwnership); err != nil {
+				return fmt.Errorf("binpkg: restore symlink metadata for %s: %w", target, err)
+			}
+		default:
+			return fmt.Errorf("binpkg: unsafe archive entry %q: unsupported type %d", hdr.Name, hdr.Typeflag)
+		}
+	}
+	for index := len(directories) - 1; index >= 0; index-- {
+		if err := applyArchiveMetadata(directories[index].path, &directories[index].hdr, false, policy.PreserveOwnership); err != nil {
+			return fmt.Errorf("binpkg: restore directory metadata for %s: %w", directories[index].path, err)
 		}
 	}
 
 	return nil
 }
 
+func copyArchiveFile(file *os.File, reader io.Reader, hdr *tar.Header) error {
+	encoded := hdr.PAXRecords[sparsePAXKey]
+	if encoded == "" {
+		_, err := io.Copy(file, reader)
+		return err
+	}
+	var extents []SparseExtent
+	if err := json.Unmarshal([]byte(encoded), &extents); err != nil {
+		return fmt.Errorf("invalid sparse extent map: %w", err)
+	}
+	cursor := int64(0)
+	for _, extent := range extents {
+		if extent.Offset < cursor || extent.Length < 0 || extent.Offset > hdr.Size ||
+			extent.Length > hdr.Size-extent.Offset {
+			return fmt.Errorf("invalid sparse extent")
+		}
+		if _, err := io.CopyN(io.Discard, reader, extent.Offset-cursor); err != nil {
+			return err
+		}
+		if _, err := file.Seek(extent.Offset, io.SeekStart); err != nil {
+			return err
+		}
+		if _, err := io.CopyN(file, reader, extent.Length); err != nil {
+			return err
+		}
+		cursor = extent.Offset + extent.Length
+	}
+	if _, err := io.CopyN(io.Discard, reader, hdr.Size-cursor); err != nil {
+		return err
+	}
+	return file.Truncate(hdr.Size)
+}
+
+func applyArchiveMetadata(path string, hdr *tar.Header, symlink, preserveOwnership bool) error {
+	if symlink {
+		if preserveOwnership {
+			if err := os.Lchown(path, hdr.Uid, hdr.Gid); err != nil {
+				return err
+			}
+		}
+	} else {
+		if preserveOwnership {
+			if err := os.Chown(path, hdr.Uid, hdr.Gid); err != nil {
+				return err
+			}
+		}
+		mode := os.FileMode(hdr.Mode) & os.ModePerm
+		if hdr.Mode&04000 != 0 {
+			mode |= os.ModeSetuid
+		}
+		if hdr.Mode&02000 != 0 {
+			mode |= os.ModeSetgid
+		}
+		if hdr.Mode&01000 != 0 {
+			mode |= os.ModeSticky
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			return err
+		}
+	}
+	if err := applyExtendedAttributes(path, hdr.PAXRecords, symlink); err != nil {
+		return err
+	}
+	atime := hdr.AccessTime
+	if atime.IsZero() {
+		atime = hdr.ModTime
+	}
+	if symlink {
+		return setSymlinkTimes(path, atime, hdr.ModTime)
+	}
+	return os.Chtimes(path, atime, hdr.ModTime)
+}
+
+func rejectExistingNonDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("could not inspect target %s: %w", path, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("target %s exists and is not a directory", path)
+	}
+	return nil
+}
+
+func rejectExistingSymlinkOrDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("could not inspect target %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("target %s exists and is not a regular file", path)
+	}
+	return nil
+}
+
+func confinedArchivePath(destDir, name string) (string, string, error) {
+	if name == "" || filepath.IsAbs(name) {
+		return "", "", fmt.Errorf("path must be relative")
+	}
+	clean := filepath.Clean(filepath.FromSlash(name))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("path escapes the extraction root")
+	}
+	root := filepath.Clean(destDir)
+	target := filepath.Join(root, clean)
+	relative, err := filepath.Rel(root, target)
+	if err != nil || relative != clean {
+		return "", "", fmt.Errorf("path escapes the extraction root")
+	}
+	return clean, target, nil
+}
+
+func rejectSymlinkParents(root, target string) error {
+	relative, err := filepath.Rel(filepath.Clean(root), filepath.Clean(target))
+	if err != nil {
+		return fmt.Errorf("could not resolve extraction path: %w", err)
+	}
+	current := filepath.Clean(root)
+	parts := strings.Split(relative, string(filepath.Separator))
+	for _, part := range parts[:len(parts)-1] {
+		current = filepath.Join(current, part)
+		info, statErr := os.Lstat(current)
+		if os.IsNotExist(statErr) {
+			continue
+		}
+		if statErr != nil {
+			return fmt.Errorf("could not inspect parent %s: %w", current, statErr)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("parent %s is a symlink", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("parent %s is not a directory", current)
+		}
+	}
+	return nil
+}
+
 func Create(ctx context.Context, vdbEntryPath string, rootDir string, pkgDir string) (string, error) {
+	return CreateRecoveryArtifact(ctx, CaptureRequest{
+		VDBEntryPath: vdbEntryPath,
+		RootDir:      rootDir,
+		PackageDir:   pkgDir,
+		Provenance:   LegacyCaptureProvenance(),
+	})
+}
+
+func CreateRecoveryArtifact(ctx context.Context, request CaptureRequest) (string, error) {
+	if err := validateCaptureProvenance(request.Provenance); err != nil {
+		return "", err
+	}
+	vdbEntryPath := request.VDBEntryPath
+	rootDir := request.RootDir
+	pkgDir := request.PackageDir
 	meta, err := readVDBMetadata(vdbEntryPath)
 	if err != nil {
 		return "", fmt.Errorf("binpkg: could not read installed package metadata: %w", err)
@@ -352,6 +662,22 @@ func Create(ctx context.Context, vdbEntryPath string, rootDir string, pkgDir str
 	cat := meta["CATEGORY"]
 	pkg := meta["PACKAGE"]
 	ver := meta["VERSION"]
+	for _, field := range []struct{ name, value string }{
+		{"CATEGORY", cat}, {"PACKAGE", pkg}, {"VERSION", ver},
+	} {
+		if err := validatePackagePathComponent(field.value); err != nil {
+			return "", fmt.Errorf("binpkg: invalid installed package %s %q: %w", field.name, field.value, err)
+		}
+	}
+	recoveryManifest, recoveryJSON, err := buildRecoveryManifest(meta, vdbEntryPath, rootDir, entries, request.Provenance)
+	if err != nil {
+		return "", err
+	}
+	embedRecoveryManifest(meta, recoveryJSON)
+	payloadEvidence := make(map[string]FileEvidence, len(recoveryManifest.Payload))
+	for _, evidence := range recoveryManifest.Payload {
+		payloadEvidence[evidence.Path] = evidence
+	}
 
 	outDir := filepath.Join(pkgDir, cat)
 	if err := os.MkdirAll(outDir, 0755); err != nil {
@@ -359,71 +685,108 @@ func Create(ctx context.Context, vdbEntryPath string, rootDir string, pkgDir str
 	}
 
 	outPath := filepath.Join(outDir, pkg+"-"+ver+".tbz2")
+	if err := rejectSymlinkParents(pkgDir, outPath); err != nil {
+		return "", fmt.Errorf("binpkg: unsafe binary package destination: %w", err)
+	}
 
-	tmpPath := outPath + ".tmp"
-	tmpF, err := os.Create(tmpPath)
+	tmpF, err := os.CreateTemp(outDir, "."+filepath.Base(outPath)+".tmp-*")
 	if err != nil {
 		return "", fmt.Errorf("binpkg: failed to create temporary package file: %w", err)
 	}
+	tmpPath := tmpF.Name()
+	published := false
+	defer func() {
+		if !published {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	bzWriter := newBzip2Writer(tmpF)
 	tw := tar.NewWriter(bzWriter)
+	type inodeKey struct {
+		dev uint64
+		ino uint64
+	}
+	hardlinks := make(map[inodeKey]string)
 
 	for _, entry := range entries {
-		srcPath := filepath.Join(rootDir, entry.Path)
+		if err := ctx.Err(); err != nil {
+			cleanup(tw, bzWriter, tmpF)
+			return "", fmt.Errorf("binpkg: package capture cancelled: %w", err)
+		}
+		archivePath, srcPath, err := installedContentPath(rootDir, entry.Path)
+		if err != nil {
+			cleanup(tw, bzWriter, tmpF)
+			return "", fmt.Errorf("binpkg: invalid installed path %q: %w", entry.Path, err)
+		}
+		fi, err := os.Lstat(srcPath)
+		if err != nil {
+			cleanup(tw, bzWriter, tmpF)
+			return "", fmt.Errorf("binpkg: cannot capture installed path %s: %w", entry.Path, err)
+		}
+		if err := rejectSymlinkParents(rootDir, srcPath); err != nil {
+			cleanup(tw, bzWriter, tmpF)
+			return "", fmt.Errorf("binpkg: cannot capture installed path %s: %w", entry.Path, err)
+		}
 		switch entry.Type {
 		case "dir":
-			hdr := &tar.Header{
-				Name:     entry.Path,
-				Typeflag: tar.TypeDir,
-				Mode:     0755,
+			if !fi.IsDir() {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: installed path %s changed type: CONTENTS records a directory, found %s", entry.Path, fi.Mode().Type())
+			}
+			hdr, err := tar.FileInfoHeader(fi, "")
+			if err != nil {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: cannot describe directory %s: %w", entry.Path, err)
+			}
+			hdr.Name = archivePath
+			if err := addFilesystemMetadata(hdr, srcPath, false); err != nil {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: capture directory metadata for %s: %w", entry.Path, err)
 			}
 			if err := tw.WriteHeader(hdr); err != nil {
 				cleanup(tw, bzWriter, tmpF)
 				return "", fmt.Errorf("binpkg: failed to write directory entry for %s in package: %w", entry.Path, err)
 			}
 		case "obj":
-			fi, err := os.Lstat(srcPath)
-			if err != nil {
-				if os.IsNotExist(err) {
-					continue
-				}
+			if !fi.Mode().IsRegular() {
 				cleanup(tw, bzWriter, tmpF)
-				return "", fmt.Errorf("binpkg: cannot read file %s to include in package: %w", srcPath, err)
+				return "", fmt.Errorf("binpkg: installed path %s changed type: CONTENTS records a regular file, found %s", entry.Path, fi.Mode().Type())
 			}
-			if fi.Mode()&os.ModeSymlink != 0 {
-				link, err := os.Readlink(srcPath)
-				if err != nil {
-					cleanup(tw, bzWriter, tmpF)
-					return "", fmt.Errorf("binpkg: cannot read symlink target at %s: %w", srcPath, err)
-				}
-				hdr := &tar.Header{
-					Name:     entry.Path,
-					Typeflag: tar.TypeSymlink,
-					Linkname: link,
-					Mode:     int64(fi.Mode() & os.ModePerm),
-				}
-				if err := tw.WriteHeader(hdr); err != nil {
-					cleanup(tw, bzWriter, tmpF)
-					return "", fmt.Errorf("binpkg: failed to write symlink entry for %s in package: %w", entry.Path, err)
-				}
-				continue
+			hdr, err := tar.FileInfoHeader(fi, "")
+			if err != nil {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: cannot describe file %s: %w", entry.Path, err)
 			}
-			hdr := &tar.Header{
-				Name: entry.Path,
-				Size: fi.Size(),
-				Mode: int64(fi.Mode() & os.ModePerm),
+			hdr.Name = archivePath
+			if stat, ok := fi.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
+				key := inodeKey{dev: uint64(stat.Dev), ino: stat.Ino}
+				if first, exists := hardlinks[key]; exists {
+					hdr.Typeflag = tar.TypeLink
+					hdr.Linkname = first
+					hdr.Size = 0
+				} else {
+					hardlinks[key] = archivePath
+				}
+			}
+			if err := addFilesystemMetadata(hdr, srcPath, false); err != nil {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: capture file metadata for %s: %w", entry.Path, err)
 			}
 			if err := tw.WriteHeader(hdr); err != nil {
 				cleanup(tw, bzWriter, tmpF)
 				return "", fmt.Errorf("binpkg: failed to write file entry for %s in package: %w", entry.Path, err)
+			}
+			if hdr.Typeflag == tar.TypeLink {
+				continue
 			}
 			srcF, err := os.Open(srcPath)
 			if err != nil {
 				cleanup(tw, bzWriter, tmpF)
 				return "", fmt.Errorf("binpkg: cannot open file %s to include in package: %w", srcPath, err)
 			}
-			if _, err := io.Copy(tw, srcF); err != nil {
+			hash := sha256.New()
+			if _, err := io.Copy(io.MultiWriter(tw, hash), srcF); err != nil {
 				srcF.Close()
 				cleanup(tw, bzWriter, tmpF)
 				return "", fmt.Errorf("binpkg: failed copying file %s into package: %w", srcPath, err)
@@ -432,18 +795,42 @@ func Create(ctx context.Context, vdbEntryPath string, rootDir string, pkgDir str
 				cleanup(tw, bzWriter, tmpF)
 				return "", fmt.Errorf("binpkg: failed closing file %s after packaging: %w", srcPath, err)
 			}
+			captured := hex.EncodeToString(hash.Sum(nil))
+			if captured != payloadEvidence[archivePath].SHA256 {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: installed file %s changed while it was being captured", entry.Path)
+			}
 		case "sym":
-			link := entry.Target
-			hdr := &tar.Header{
-				Name:     entry.Path,
-				Typeflag: tar.TypeSymlink,
-				Linkname: link,
-				Mode:     0777,
+			if fi.Mode()&os.ModeSymlink == 0 {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: installed path %s changed type: CONTENTS records a symlink, found %s", entry.Path, fi.Mode().Type())
+			}
+			link, err := os.Readlink(srcPath)
+			if err != nil {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: cannot read symlink target at %s: %w", srcPath, err)
+			}
+			if link != entry.Target {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: installed symlink %s changed target: CONTENTS records %q, found %q", entry.Path, entry.Target, link)
+			}
+			hdr, err := tar.FileInfoHeader(fi, link)
+			if err != nil {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: cannot describe symlink %s: %w", entry.Path, err)
+			}
+			hdr.Name = archivePath
+			if err := addFilesystemMetadata(hdr, srcPath, true); err != nil {
+				cleanup(tw, bzWriter, tmpF)
+				return "", fmt.Errorf("binpkg: capture symlink metadata for %s: %w", entry.Path, err)
 			}
 			if err := tw.WriteHeader(hdr); err != nil {
 				cleanup(tw, bzWriter, tmpF)
 				return "", fmt.Errorf("binpkg: could not write symlink header to package: %w", err)
 			}
+		default:
+			cleanup(tw, bzWriter, tmpF)
+			return "", fmt.Errorf("binpkg: unsupported CONTENTS entry type %q for %s", entry.Type, entry.Path)
 		}
 	}
 
@@ -486,6 +873,10 @@ func Create(ctx context.Context, vdbEntryPath string, rootDir string, pkgDir str
 		return "", fmt.Errorf("binpkg: could not write package footer: %w", err)
 	}
 
+	if err := tmpF.Sync(); err != nil {
+		_ = tmpF.Close()
+		return "", fmt.Errorf("binpkg: could not sync the temporary package file: %w", err)
+	}
 	if err := tmpF.Close(); err != nil {
 		return "", fmt.Errorf("binpkg: could not finalize the temporary package file: %w", err)
 	}
@@ -493,13 +884,89 @@ func Create(ctx context.Context, vdbEntryPath string, rootDir string, pkgDir str
 	if err := os.Rename(tmpPath, outPath); err != nil {
 		return "", fmt.Errorf("binpkg: could not save the completed package: %w", err)
 	}
+	published = true
+	outDirectory, err := os.Open(outDir)
+	if err != nil {
+		return "", fmt.Errorf("binpkg: could not open package directory for sync: %w", err)
+	}
+	syncErr := outDirectory.Sync()
+	closeErr := outDirectory.Close()
+	if syncErr != nil {
+		return "", fmt.Errorf("binpkg: could not sync package directory: %w", syncErr)
+	}
+	if closeErr != nil {
+		return "", fmt.Errorf("binpkg: could not close package directory after sync: %w", closeErr)
+	}
 
 	return outPath, nil
 }
 
+func addFilesystemMetadata(hdr *tar.Header, path string, symlink bool) error {
+	hdr.Format = tar.FormatPAX
+	attributes, err := readExtendedAttributes(path, symlink)
+	if err != nil {
+		return err
+	}
+	if len(attributes) > 0 && hdr.PAXRecords == nil {
+		hdr.PAXRecords = make(map[string]string)
+	}
+	for name, value := range attributes {
+		hdr.PAXRecords[xattrPAXPrefix+name] = value
+	}
+	if !symlink && hdr.Typeflag == tar.TypeReg {
+		extents, err := sparseMap(path, hdr.Size)
+		if err != nil {
+			return err
+		}
+		if extents != nil {
+			encoded, err := encodeSparseMap(extents)
+			if err != nil {
+				return err
+			}
+			if hdr.PAXRecords == nil {
+				hdr.PAXRecords = make(map[string]string)
+			}
+			hdr.PAXRecords[sparsePAXKey] = encoded
+		}
+	}
+	return nil
+}
+
+func validatePackagePathComponent(value string) error {
+	if value == "" || value == "." || value == ".." {
+		return fmt.Errorf("value is empty or reserved")
+	}
+	if filepath.Base(value) != value || strings.ContainsAny(value, `/\`) {
+		return fmt.Errorf("value contains a path separator")
+	}
+	return nil
+}
+
+func installedContentPath(rootDir, recorded string) (string, string, error) {
+	if recorded == "" || !filepath.IsAbs(recorded) {
+		return "", "", fmt.Errorf("CONTENTS path must be absolute")
+	}
+	clean := filepath.Clean(recorded)
+	relative := strings.TrimPrefix(clean, string(filepath.Separator))
+	if relative == "" || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("CONTENTS path escapes ROOT")
+	}
+	root := filepath.Clean(rootDir)
+	target := filepath.Join(root, relative)
+	inside, err := filepath.Rel(root, target)
+	if err != nil || inside != relative {
+		return "", "", fmt.Errorf("CONTENTS path escapes ROOT")
+	}
+	return filepath.ToSlash(relative), target, nil
+}
+
 func buildXPAKMetadata(meta map[string]string) []byte {
 	var buf bytes.Buffer
-	for _, key := range []string{"CATEGORY", "PF", "PACKAGE", "VERSION", "SLOT", "USE", "EAPI", "BUILD_TIME", "CHOST", "repository"} {
+	for _, key := range []string{
+		"CATEGORY", "PF", "PACKAGE", "VERSION", "SLOT", "USE", "EAPI", "BUILD_TIME", "CHOST", "repository",
+		"BUILD_ID", "ABI", "CBUILD", "CTARGET",
+		recoveryManifestKey, recoveryManifestSHA256Key,
+	} {
 		if v, ok := meta[key]; ok {
 			buf.WriteString(key)
 			buf.WriteByte('=')
@@ -512,7 +979,10 @@ func buildXPAKMetadata(meta map[string]string) []byte {
 
 func readVDBMetadata(vdbPath string) (map[string]string, error) {
 	meta := make(map[string]string)
-	files := []string{"CATEGORY", "PF", "SLOT", "USE", "EAPI", "BUILD_TIME", "CHOST", "repository"}
+	files := []string{
+		"CATEGORY", "PF", "SLOT", "USE", "EAPI", "BUILD_TIME", "BUILD_ID",
+		"ABI", "CBUILD", "CHOST", "CTARGET", "repository",
+	}
 
 	for _, fn := range files {
 		data, err := os.ReadFile(filepath.Join(vdbPath, fn))
@@ -527,10 +997,12 @@ func readVDBMetadata(vdbPath string) (map[string]string, error) {
 
 	pf := meta["PF"]
 	if pf != "" && meta["VERSION"] == "" {
-		if dash := strings.LastIndexByte(pf, '-'); dash >= 0 {
-			meta["PACKAGE"] = pf[:dash]
-			meta["VERSION"] = pf[dash+1:]
+		parsed, err := atom.Parse(meta["CATEGORY"] + "/" + pf)
+		if err != nil || parsed.Version == nil {
+			return nil, fmt.Errorf("binpkg: invalid installed PF %q", pf)
 		}
+		meta["PACKAGE"] = parsed.Package
+		meta["VERSION"] = parsed.Version.Raw
 	}
 
 	return meta, nil
@@ -552,24 +1024,26 @@ func parseContents(path string) ([]contentEntry, error) {
 
 	var entries []contentEntry
 	scanner := bufio.NewScanner(bytes.NewReader(data))
+	lineNumber := 0
 	for scanner.Scan() {
+		lineNumber++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
-		entry := parseContentsLine(line)
-		if entry == nil {
-			continue
+		entry, err := parseContentsLine(line)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", lineNumber, err)
 		}
 		entries = append(entries, *entry)
 	}
 	return entries, scanner.Err()
 }
 
-func parseContentsLine(line string) *contentEntry {
+func parseContentsLine(line string) (*contentEntry, error) {
 	fields := strings.Fields(line)
 	if len(fields) < 2 {
-		return nil
+		return nil, fmt.Errorf("malformed CONTENTS entry")
 	}
 
 	entry := &contentEntry{
@@ -579,25 +1053,39 @@ func parseContentsLine(line string) *contentEntry {
 
 	switch entry.Type {
 	case "obj":
-		if len(fields) > 2 {
-			entry.Size, _ = strconv.ParseInt(fields[2], 10, 64)
+		if len(fields) != 4 {
+			return nil, fmt.Errorf("malformed obj entry for %s", entry.Path)
 		}
-		if len(fields) > 3 {
-			entry.Mtime, _ = strconv.ParseInt(fields[3], 10, 64)
+		entry.Size, _ = strconv.ParseInt(fields[2], 10, 64)
+		var err error
+		entry.Mtime, err = strconv.ParseInt(fields[3], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid obj timestamp for %s: %w", entry.Path, err)
 		}
 	case "sym":
 		idx := strings.Index(line, "->")
-		if idx >= 0 {
-			entry.Target = strings.TrimSpace(line[idx+2:])
-			s := strings.Fields(entry.Target)
-			if len(s) > 1 {
-				entry.Target = s[0]
-			}
+		if idx < 0 {
+			return nil, fmt.Errorf("malformed sym entry for %s", entry.Path)
+		}
+		targetAndTime := strings.Fields(strings.TrimSpace(line[idx+2:]))
+		if len(targetAndTime) != 2 {
+			return nil, fmt.Errorf("malformed sym entry for %s", entry.Path)
+		}
+		entry.Target = targetAndTime[0]
+		var err error
+		entry.Mtime, err = strconv.ParseInt(targetAndTime[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid sym timestamp for %s: %w", entry.Path, err)
 		}
 	case "dir":
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("malformed dir entry for %s", entry.Path)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported CONTENTS entry type %q", entry.Type)
 	}
 
-	return entry
+	return entry, nil
 }
 
 func parseSlot(raw string) (slot, subslot string) {
@@ -631,32 +1119,27 @@ func ListAvailable(pkgDir string) ([]*BinPkgInfo, error) {
 		}
 
 		catPath := filepath.Join(pkgDir, catName)
-		pkgFiles, err := os.ReadDir(catPath)
-		if err != nil {
-			continue
-		}
-
-		for _, pkgEntry := range pkgFiles {
-			name := pkgEntry.Name()
-			if !strings.HasSuffix(name, ".tbz2") && !strings.HasSuffix(name, ".txz") && !strings.HasSuffix(name, ".xpak") {
-				continue
+		_ = filepath.WalkDir(catPath, func(pkgPath string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
 			}
-			info, err := pkgEntry.Info()
-			if err != nil {
-				continue
+			if entry.IsDir() {
+				if pkgPath != catPath && strings.HasPrefix(entry.Name(), ".") {
+					return filepath.SkipDir
+				}
+				return nil
 			}
-			if info.IsDir() {
-				continue
+			name := entry.Name()
+			if !strings.HasSuffix(name, ".tbz2") && !strings.HasSuffix(name, ".txz") &&
+				!strings.HasSuffix(name, ".xpak") && !IsGPKG(name) {
+				return nil
 			}
-
-			pkgPath := filepath.Join(catPath, name)
-
 			binInfo, err := ReadInfo(pkgPath)
-			if err != nil {
-				continue
+			if err == nil {
+				result = append(result, binInfo)
 			}
-			result = append(result, binInfo)
-		}
+			return nil
+		})
 	}
 
 	sort.Slice(result, func(i, j int) bool {
@@ -764,6 +1247,23 @@ func matchesTilde(cv, av *atom.Version) bool {
 // FindPackageMatchingUse finds a binary package that matches the atom AND
 // has USE flags compatible with the current USE configuration.
 func FindPackageMatchingUse(pkgDir string, atomStr string, useFlags map[string]bool, respectUse bool) (*BinPkgInfo, error) {
+	return FindCompatiblePackage(pkgDir, atomStr, CompatibilityPolicy{
+		UseFlags: useFlags, RespectUse: respectUse,
+	})
+}
+
+type CompatibilityPolicy struct {
+	UseFlags   map[string]bool
+	IUse       string
+	RespectUse bool
+	CHOST      string
+	ABI        string
+	Repository string
+	Slot       string
+	Subslot    string
+}
+
+func FindCompatiblePackage(pkgDir string, atomStr string, policy CompatibilityPolicy) (*BinPkgInfo, error) {
 	a, err := atom.Parse(atomStr)
 	if err != nil {
 		return nil, fmt.Errorf("binpkg: could not parse package name %q: %w", atomStr, err)
@@ -822,8 +1322,23 @@ func FindPackageMatchingUse(pkgDir string, atomStr string, useFlags map[string]b
 			continue
 		}
 
+		if policy.CHOST != "" && p.CHOST != "" && policy.CHOST != p.CHOST {
+			continue
+		}
+		if policy.ABI != "" && p.ABI != "" && policy.ABI != p.ABI {
+			continue
+		}
+		if policy.Repository != "" && p.Repository != "" && policy.Repository != p.Repository {
+			continue
+		}
+		if policy.Slot != "" && p.Slot != "" && policy.Slot != p.Slot {
+			continue
+		}
+		if policy.Subslot != "" && p.Subslot != "" && policy.Subslot != p.Subslot {
+			continue
+		}
 		binUse := parseUseFlags(p.Use)
-		useOk := useFlagsCompatible(binUse, useFlags)
+		useOk := useFlagsCompatibleInDomain(binUse, policy.UseFlags, policy.IUse)
 
 		candidates = append(candidates, candidate{
 			pkg:   p,
@@ -843,7 +1358,7 @@ func FindPackageMatchingUse(pkgDir string, atomStr string, useFlags map[string]b
 		return false
 	})
 
-	if respectUse {
+	if policy.RespectUse {
 		for _, c := range candidates {
 			if c.useOk {
 				return c.pkg, nil
@@ -853,6 +1368,23 @@ func FindPackageMatchingUse(pkgDir string, atomStr string, useFlags map[string]b
 	}
 
 	return candidates[0].pkg, nil
+}
+
+func useFlagsCompatibleInDomain(binary, selected map[string]bool, iuse string) bool {
+	domain := strings.Fields(iuse)
+	if len(domain) == 0 {
+		return useFlagsCompatible(binary, selected)
+	}
+	for _, token := range domain {
+		flag := strings.TrimLeft(token, "+-")
+		if flag == "" {
+			continue
+		}
+		if binary[flag] != selected[flag] {
+			return false
+		}
+	}
+	return true
 }
 
 func parseUseFlags(useStr string) map[string]bool {
@@ -889,6 +1421,197 @@ func DownloadFromBinhost(ctx context.Context, binhostURL string, atomStrs []stri
 }
 
 func downloadFromBinhost(ctx context.Context, httpClient *http.Client, binhostURL string, atomStrs []string, destDir string) ([]string, error) {
+	if len(atomStrs) == 0 {
+		return nil, nil
+	}
+	validTargets := make([]string, 0, len(atomStrs))
+	for _, atomText := range atomStrs {
+		if _, err := atom.Parse(atomText); err == nil {
+			validTargets = append(validTargets, atomText)
+		}
+	}
+	if len(validTargets) == 0 {
+		return nil, nil
+	}
+	indexRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(binhostURL, "/")+"/Packages", nil)
+	if err != nil {
+		return nil, fmt.Errorf("binpkg: prepare Packages request: %w", err)
+	}
+	indexResponse, err := httpClient.Do(indexRequest)
+	if err != nil {
+		return nil, fmt.Errorf("binpkg: download Packages index: %w", err)
+	}
+	if indexResponse.StatusCode == http.StatusNotFound {
+		_ = indexResponse.Body.Close()
+		return downloadLegacyBinhost(ctx, httpClient, binhostURL, validTargets, destDir)
+	}
+	if indexResponse.StatusCode < 200 || indexResponse.StatusCode >= 300 {
+		_ = indexResponse.Body.Close()
+		return nil, fmt.Errorf("binpkg: Packages index returned HTTP %d", indexResponse.StatusCode)
+	}
+	index, parseErr := ParsePackagesIndex(indexResponse.Body)
+	closeErr := indexResponse.Body.Close()
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("binpkg: close Packages response: %w", closeErr)
+	}
+	var selected []PackageIndexEntry
+	seenPaths := make(map[string]struct{})
+	for _, atomText := range validTargets {
+		requested, err := atom.Parse(atomText)
+		if err != nil {
+			return nil, fmt.Errorf("binpkg: invalid requested atom %q: %w", atomText, err)
+		}
+		var matches []PackageIndexEntry
+		var bestVersion *atom.Version
+		for _, entry := range index.Packages {
+			candidate, err := atom.Parse(entry["CPV"])
+			if err != nil || candidate.Version == nil || candidate.Category != requested.Category ||
+				candidate.Package != requested.Package || !atomVersionMatches(requested, candidate.Version) {
+				continue
+			}
+			if bestVersion == nil || candidate.Version.Compare(bestVersion) > 0 {
+				bestVersion = candidate.Version
+				matches = matches[:0]
+			}
+			if candidate.Version.Compare(bestVersion) == 0 {
+				matches = append(matches, entry)
+			}
+		}
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("binpkg: binhost has no candidate for %s", atomText)
+		}
+		entry, err := SelectPackageInstance(matches, matches[0]["CPV"], "")
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := seenPaths[entry["PATH"]]; !exists {
+			selected = append(selected, entry)
+			seenPaths[entry["PATH"]] = struct{}{}
+		}
+	}
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return nil, fmt.Errorf("binpkg: create binpkg destination: %w", err)
+	}
+	var downloaded []string
+	for _, entry := range selected {
+		path, err := downloadIndexedPackage(ctx, httpClient, binhostURL, destDir, entry)
+		if err != nil {
+			return downloaded, err
+		}
+		downloaded = append(downloaded, path)
+	}
+	return downloaded, nil
+}
+
+func atomVersionMatches(requested *atom.Atom, candidate *atom.Version) bool {
+	if requested.Version == nil {
+		return true
+	}
+	comparison := candidate.Compare(requested.Version)
+	switch requested.Op {
+	case atom.OpGt:
+		return comparison > 0
+	case atom.OpGtEq:
+		return comparison >= 0
+	case atom.OpLess:
+		return comparison < 0
+	case atom.OpLessEq:
+		return comparison <= 0
+	case atom.OpTilde:
+		return matchesTilde(candidate, requested.Version)
+	default:
+		return comparison == 0
+	}
+}
+
+func downloadIndexedPackage(ctx context.Context, client *http.Client, binhostURL, destinationRoot string, entry PackageIndexEntry) (string, error) {
+	relative := filepath.FromSlash(entry["PATH"])
+	destination := filepath.Join(destinationRoot, relative)
+	if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+		return "", err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(binhostURL, "/")+"/"+entry["PATH"], nil)
+	if err != nil {
+		return "", err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("binpkg: package %s returned HTTP %d", entry["PATH"], response.StatusCode)
+	}
+	expectedSize, sizeErr := strconv.ParseInt(entry["SIZE"], 10, 64)
+	if sizeErr != nil || expectedSize <= 0 {
+		return "", fmt.Errorf("binpkg: Packages entry for %s has invalid SIZE", entry["PATH"])
+	}
+	if entry["SHA512"] == "" && entry["BLAKE2B"] == "" {
+		return "", fmt.Errorf("binpkg: Packages entry for %s has no supported digest", entry["PATH"])
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(destination), "."+filepath.Base(destination)+".part-*")
+	if err != nil {
+		return "", err
+	}
+	temporaryPath := temporary.Name()
+	published := false
+	defer func() {
+		if !published {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	shaHash := sha512.New()
+	blakeHash, _ := blake2b.New512(nil)
+	written, copyErr := io.Copy(io.MultiWriter(temporary, shaHash, blakeHash), io.LimitReader(response.Body, maxGPKGContainerMember+1))
+	if copyErr != nil {
+		_ = temporary.Close()
+		return "", copyErr
+	}
+	if written != expectedSize {
+		_ = temporary.Close()
+		return "", fmt.Errorf("binpkg: downloaded size mismatch for %s", entry["PATH"])
+	}
+	if digest := entry["SHA512"]; digest != "" && !strings.EqualFold(digest, hex.EncodeToString(shaHash.Sum(nil))) {
+		_ = temporary.Close()
+		return "", fmt.Errorf("binpkg: downloaded SHA512 mismatch for %s", entry["PATH"])
+	}
+	if digest := entry["BLAKE2B"]; digest != "" && !strings.EqualFold(digest, hex.EncodeToString(blakeHash.Sum(nil))) {
+		_ = temporary.Close()
+		return "", fmt.Errorf("binpkg: downloaded BLAKE2B mismatch for %s", entry["PATH"])
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return "", err
+	}
+	if err := temporary.Close(); err != nil {
+		return "", err
+	}
+	var validateErr error
+	if IsGPKG(entry["PATH"]) {
+		_, validateErr = ReadGPKG(ctx, temporaryPath)
+	} else {
+		_, validateErr = ReadInfo(temporaryPath)
+	}
+	if validateErr != nil {
+		return "", fmt.Errorf("binpkg: downloaded package validation failed: %w", validateErr)
+	}
+	if err := os.Chmod(temporaryPath, 0644); err != nil {
+		return "", err
+	}
+	if err := os.Rename(temporaryPath, destination); err != nil {
+		return "", err
+	}
+	published = true
+	if err := syncBinpkgDirectory(filepath.Dir(destination)); err != nil {
+		return "", err
+	}
+	return destination, nil
+}
+
+func downloadLegacyBinhost(ctx context.Context, httpClient *http.Client, binhostURL string, atomStrs []string, destDir string) ([]string, error) {
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return nil, fmt.Errorf("binpkg: could not create download destination directory: %w", err)
 	}

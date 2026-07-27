@@ -210,7 +210,7 @@ Commands:
   install         Resolve package installation (execution gated)
   update          Resolve an @world update (execution gated)
   uninstall       Propose package removal (execution gated)
-  recover         Inspect or roll back durable package journals
+  recover         Inspect journals; inspect, restore, verify, or prune recovery sets
   depclean        Propose orphan removal (execution gated)
   prune           Propose old-version removal (execution gated)
   select          Add an installed package to @world
@@ -229,7 +229,7 @@ Commands:
   ldconfig        Update linker cache
   config          Run pkg_config phase
   news            Display Gentoo news (GLEP 42)
-  quickpkg        Create binary package
+  quickpkg        Create recovery binpkg or Portage-compatible GPKG
   bench           Run built-in microbenchmarks
 ```
 
@@ -339,7 +339,8 @@ the intended compatibility surface, not completed behavioral parity.
 
 - Dependency resolution with backtracking (`--backtrack`, `--deep`, `--complete-graph`)
 - USE, keyword, license, mask handling from `/etc/portage/`
-- Binary packages (XPAK format): create, install, remote binhosts
+- Binary packages: Portage-compatible XPAK/GPKG selection and transactional
+  install, deterministic GPKG creation, and verified Packages-indexed binhosts
 - `--resume`, `--skipfirst`, `--keep-going`, `--oneshot`, `--nodeps`
 - `@world`, `@system`, `@preserved-rebuild`, `@module-rebuild` sets
 - FEATURES engine: ccache, distcc, userpriv, split-log, nostrip, fail-clean
@@ -396,7 +397,7 @@ internal/
   atom/             Gentoo atom parser (>=cat/pkg-1.0:slot=[use])
   audit/            Python/Perl VDB auditor
   benchmark/        Live/reference comparison workloads
-  binpkg/           XPAK binary package read/write
+  binpkg/           XPAK/GPKG packages, Packages indexes, recovery capture
   color/            ANSI color output
   depstring/        DEPEND/RDEPEND string parser
   distfiles/        Manifest parsing and artifact verification

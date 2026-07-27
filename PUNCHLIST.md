@@ -1995,32 +1995,104 @@ specified and verified explicitly.
 
 ## P9 — modern binary package support
 
-- [ ] Implement current Gentoo GPKG reading and writing.
-- [ ] Parse and generate Packages indexes.
-- [ ] Support build IDs and multiple package instances.
-- [ ] Verify digests and signatures according to policy.
-- [ ] Implement local and remote candidate selection.
-- [ ] Implement binpkg USE/config compatibility.
-- [ ] Wire `-k`, `-K`, `-g`, `-G`, `-b`, and `-B` end to end.
-- [ ] Absorb `quickpkg`'s role: create a metadata-complete binary package from
+- [x] Implement current Gentoo GPKG reading and writing. Arise verifies the
+  GLEP 78 outer container and GLEP 74 Manifest before reading metadata or
+  streaming the image into the hardened extractor. It reads uncompressed,
+  gzip, bzip2, xz, zstd, lz4, lzip and lzop inner members and writes
+  deterministic zstd packages. Installed Portage and Arise cross-read each
+  other's generated packages in the permanent integration lane.
+- [x] Parse and generate Packages indexes. Parsing is bounded and rejects
+  malformed records, duplicate keys/instances, unsafe paths and count
+  mismatches; generation is canonical, atomic and directory-synced.
+- [x] Support build IDs and multiple package instances. GPKG quickpkg output
+  uses the Portage category/package/PF-BUILD_ID layout and Packages selection
+  supports exact or newest build instances.
+- [x] Verify digests and signatures according to policy. Recovery sets use
+  a store-local Ed25519 trust anchor and fail closed on missing, mismatched or
+  invalid signatures. GPKG verifies BLAKE2B/SHA512 Manifest coverage for every
+  member before extraction, supports mandatory clear-signed Manifests through
+  a caller-supplied verifier, and provides a trusted-keyring `gpgv` verifier.
+- [x] Implement local and remote candidate selection. Local XPAK/GPKG
+  candidates are selected by version/build identity, while remote selection
+  consumes bounded `Packages` indexes, fetches the complete resolved dependency
+  closure, verifies advertised size and BLAKE2B/SHA512 digests, validates the
+  package container and publishes it atomically.
+- [x] Implement binpkg USE/config compatibility. Selection checks the
+  resolver-selected IUSE domain and enabled USE state together with available
+  CHOST, ABI, repository, slot and subslot metadata.
+- [x] Wire `-k`, `-K`, `-g`, `-G`, `-b`, and `-B` end to end. Binary actions
+  extract into an isolated image and use the normal journaled merge path;
+  acquisition implies binary selection, and build-package modes publish
+  deterministic GPKG output before optional installation.
+- [~] Absorb `quickpkg`'s role: create a metadata-complete binary package from
   an installed VDB instance, with explicit handling for preserved libraries,
   config files, hardlinks, sparse files, ACLs, xattrs, capabilities and build
   IDs. Treat missing, locally modified, type-changed and foreign-owned paths as
   explicit evidence rather than silently normalizing the installed image.
-- [ ] Harden host-derived binpkgs before using them as recovery artifacts.
+  `arise quickpkg --gpkg` now writes a Portage-readable GPKG containing only
+  paths named by `CONTENTS` plus the complete flat VDB metadata set, while the
+  default recovery form retains its stronger machine-bound provenance.
+- [~] Harden host-derived binpkgs before using them as recovery artifacts.
   Record exact CPV/slot/subslot/repository/EAPI/USE/ABI/build identity, the
   complete source VDB entry and environment, per-entry types/hashes/ownership/
   modes/timestamps/linkage/extended metadata, ROOT/configuration/repository
   fingerprints, and recovery-set/operation provenance. Distinguish
   host-recovery artifacts from repository-built reusable packages in metadata,
-  policy and user-facing output.
-- [ ] Publish pre-update recovery sets atomically before live-root mutation.
+  policy and user-facing output. Archive capture and extraction now preserve
+  hardlinks, sparse extents, numeric ownership when privileged, special mode
+  bits, nanosecond timestamps, xattrs, POSIX ACL xattrs and file capabilities.
+  Extraction enforces entry, per-file, total expanded-byte, xattr and embedded
+  metadata limits.
+  The initial capture boundary now fails closed for malformed `CONTENTS`,
+  missing or type-changed paths, changed symlink targets, ROOT escapes and
+  symlinked source parents. Package identity cannot redirect publication, and
+  completed XPAK artifacts are file- and directory-synced before success.
+  Each artifact now embeds a versioned `host-recovery` manifest containing its
+  package identity, complete source VDB file contents (including the saved
+  environment), and canonical payload type/mode/UID/GID/size/mtime/link/hash
+  evidence with separate VDB and ROOT digests. Reading the manifest verifies
+  its digest, strict schema, evidence digests and agreement with ordinary
+  package metadata. A versioned capture context now binds operation kind/ID,
+  recovery-set ID, approved plan digest, Portage-configuration fingerprint and
+  repository fingerprint. Standalone `quickpkg` captures hash the complete
+  configuration tree but explicitly label their repository identity-marker
+  fingerprint as partial; transaction callers can supply a complete selected
+  source-closure fingerprint. Mutation-policy evidence and GPKG remain required
+  before these artifacts qualify for automatic recovery.
+- [~] Publish pre-update recovery sets atomically before live-root mutation.
   Every installed package that the approved plan may replace or remove must
   have a verified artifact, or the transaction must not begin. Retain the
   complete set through runtime/reboot verification; deduplicate by content
   digest while preventing collection of active, failed or pending-rollback
   sets. Restoration re-resolves the complete set against actual state, uses
   normal journaled transactions and requires separate approval for drift.
+  The live install/update executor now publishes resolver-identified replaced
+  instances through its locked pre-mutation gate. Artifacts are built and
+  verified in a private staging directory, bound to one operation/set/plan,
+  followed by a synced complete manifest and one directory rename. Capture,
+  verification, cancellation or publication failure prevents resume creation,
+  build workers and live-root mutation. Exact uninstall plans now publish the
+  same complete set while holding the VDB lock and before opening the first
+  installed lifecycle or unmerge journal. Immutable recovery objects separate
+  content provenance from per-operation set provenance, are keyed by artifact
+  SHA-256, and are hardlinked into every referencing set. Identical captures
+  therefore share storage across operations; verified-set pruning collects an
+  object only after no readable remaining set references it, and skips object
+  collection entirely when a preserved set cannot be verified. Published sets
+  now start
+  `active`, transition to `pending-verification` only after successful package
+  execution, and retain explicit `failed` and `pending-rollback` states.
+  Conservative pruning removes only explicitly `verified` sets beyond the
+  requested retention count; missing or malformed status and every other state
+  are preserved. `recover verify-set` requires a kernel boot identity different
+  from capture, and `recover prune-sets` exposes conservative retention.
+  Recovery-set
+  inspection verifies every artifact and constructs a reverse-capture-order
+  restore plan. Configuration or repository drift produces a canonical approval
+  digest; restore refuses mismatched, missing or unnecessary approval. Approved
+  restores hold the VDB lock and use the normal journaled merge path for every
+  artifact, leaving interrupted work `pending-rollback` and successful work
+  `pending-verification`.
 - [ ] Export and import a versioned tinderbox state bundle that pairs saved
   plans with the sanitized world file, profile/repository identities, complete
   Portage configuration layering (`make.conf`, `package.*`, profile parents and
@@ -2099,15 +2171,20 @@ specified and verified explicitly.
 
 ### Tests
 
-- [ ] Cross-read packages produced by Portage and Arise.
-- [ ] Cross-install into isolated roots.
+- [x] Cross-read packages produced by Portage and Arise.
+- [x] Cross-install into isolated roots. Portage-produced zstd images and
+  Arise-produced images are extracted through the same confined metadata-
+  preserving path.
 - [ ] Remote binhost fixture with Packages index updates.
 - [ ] Round-trip installed package -> quickpkg-equivalent GPKG -> isolated ROOT
   and compare files, metadata and VDB state.
-- [ ] Round-trip regular files, symlinks, hardlinks, sparse files, unusual path
+- [~] Round-trip regular files, symlinks, hardlinks, sparse files, unusual path
   names, numeric ownership, modes, timestamps, ACLs, xattrs and capabilities;
   compare the restored image and Portage-readable VDB byte-for-byte where the
-  format is canonical and semantically everywhere else.
+  format is canonical and semantically everywhere else. Recovery-artifact
+  coverage now exercises files, hardlinks, sparse allocation, modes,
+  nanosecond timestamps and xattrs; GPKG cross-read and privileged
+  ownership/ACL/capability lanes remain.
 - [ ] Adversarial installed-state capture for missing, locally modified,
   type-changed, config-protected, preserved-library and foreign-owned paths.
   Policy must fail closed or preserve explicit evidence; it must never package
@@ -2123,6 +2200,10 @@ specified and verified explicitly.
 - [ ] Adversarial archive tests for absolute/traversing paths, unsafe links,
   duplicate/conflicting members, device nodes, decompression/resource bombs,
   malformed metadata, digest/signature failures and hostile Packages indexes.
+  XPAK extraction now rejects the path/link/duplicate/device subset, including
+  pre-existing destination symlinks, and bounds entries, expanded bytes,
+  individual files, extended attributes and embedded metadata. Recovery-set
+  signatures are mandatory. Packages-index hardening remains open.
 - [ ] Concurrent capture, installation, repository publication, retention and
   garbage-collection tests; active or rollback-referenced artifacts must never
   be pruned.

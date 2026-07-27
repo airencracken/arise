@@ -225,6 +225,67 @@ func TestExecuteMarksPostCommitLifecycleFailureComplete(t *testing.T) {
 	}
 }
 
+func TestExecutePreparationGatePrecedesResumeAndRunnerMutation(t *testing.T) {
+	item := action(t, "cat/pkg-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{item}}
+	root, resume := filepath.Join(t.TempDir(), "root"), filepath.Join(t.TempDir(), "resume.json")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runnerCalled := false
+	err := Execute(context.Background(), result, Config{
+		ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: root},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		PrepareMutation: func(context.Context) error {
+			if _, statErr := os.Stat(resume); !os.IsNotExist(statErr) {
+				t.Fatalf("resume state exists before preparation: %v", statErr)
+			}
+			return fmt.Errorf("injected recovery publication failure")
+		},
+		Runner: func(context.Context, string, *rebuild.RebuildConfig) error {
+			runnerCalled = true
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "prepare mutation") {
+		t.Fatalf("Execute() preparation error = %v", err)
+	}
+	if runnerCalled {
+		t.Fatal("runner started after recovery preparation failed")
+	}
+	if _, statErr := os.Stat(resume); !os.IsNotExist(statErr) {
+		t.Fatalf("failed preparation created resume state: %v", statErr)
+	}
+}
+
+func TestLiveRootPreparationFaultStopsBeforeAnyRunnerBoundary(t *testing.T) {
+	result := &resolve.ResolveResult{
+		Verified: true, Verification: resolve.VerificationVerified,
+		Install: []resolve.PkgAction{action(t, "cat/first-1"), action(t, "cat/second-1")},
+	}
+	runs := 0
+	err := Execute(context.Background(), result, Config{
+		Rebuild: rebuild.RebuildConfig{
+			RootDir: "/", VdbDir: filepath.Join(t.TempDir(), "vdb"), AllowLiveRoot: true,
+		},
+		ValidateLocked: func() error { return nil },
+		Preflight:      func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		PrepareMutation: func(context.Context) error {
+			return fmt.Errorf("injected live recovery-set publication failure")
+		},
+		Runner: func(context.Context, string, *rebuild.RebuildConfig) error {
+			runs++
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "prepare mutation") {
+		t.Fatalf("Execute() live fault error = %v", err)
+	}
+	if runs != 0 {
+		t.Fatalf("live runners started = %d", runs)
+	}
+}
+
 func TestExecuteConcurrentContinuesAfterPostCommitLifecycleFailure(t *testing.T) {
 	first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
 	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{first, second}}

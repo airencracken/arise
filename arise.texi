@@ -208,6 +208,24 @@ List durable package journals and their state.
 @item recover rollback @var{id}
 Roll back one active journal while holding the VDB mutation lock. Use
 @option{--all-active} in place of @var{id} to recover every active journal.
+
+@item recover inspect-set @var{path}
+Verify a complete recovery set, display reverse capture order, and report the
+exact approval digest required when configuration or repository state drifted.
+
+@item recover restore-set @var{path}
+Restore every verified artifact through journaled package merges while holding
+the VDB lock. Drift requires
+@option{--approve-recovery-drift-sha256} with the digest reported by
+@code{inspect-set}.
+
+@item recover verify-set @var{path}
+Mark a pending recovery set verified only after the kernel reports a different
+boot identity from the one recorded when the set was captured.
+
+@item recover prune-sets @var{keep}
+Retain the newest requested number of verified recovery sets. Every non-verified
+or unreadable set is preserved.
 @end table
 
 @node Query and Information
@@ -311,8 +329,10 @@ Display Gentoo news items (GLEP 42).
 @section Binary Packages
 
 @table @command
-@item quickpkg @var{atom}
-Create a binary package (@file{.tbz2}) from an installed package.
+@item quickpkg [@option{--gpkg}] @var{atom}
+Create a machine-bound recovery artifact by default. @option{--gpkg} writes a
+zstd-compressed GLEP 78 package readable by current Portage, containing the
+installed paths recorded by CONTENTS and complete VDB metadata.
 @end table
 
 @node Search Filters
@@ -429,9 +449,9 @@ Use binary packages.
 @item -K, --usepkgonly
 Only binary packages.
 @item -b, --buildpkg
-Build binary packages.
+Build deterministic GPKG binary packages in PKGDIR and install them normally.
 @item -B, --buildpkgonly
-Only build binaries.
+Build deterministic GPKG binary packages in PKGDIR without modifying ROOT.
 @item -f, --fetchonly
 Only fetch sources.
 @item --backtrack @var{N}
@@ -489,9 +509,11 @@ Unsorted display.
 @item --load-average @var{LOAD}
 Pause above load threshold.
 @item --getbinpkg
-Download binpkgs from binhost.
+Download the resolved dependency closure from configured Packages-indexed
+binhosts and use compatible binaries with source fallback.
 @item --getbinpkgonly
-Only downloaded binpkgs.
+Download the resolved dependency closure from configured Packages-indexed
+binhosts and require compatible binaries for the complete plan.
 @item --binpkg-respect-use
 USE-aware binpkg selection.
 @item --with-bdeps y|n|auto

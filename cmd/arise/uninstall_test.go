@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/airencracken/arise/internal/recoveryset"
 )
 
 func writeUninstallNeeded(t *testing.T, vdb, cpv, metadata string) {
@@ -34,6 +38,33 @@ func TestValidateELFRemovalOrder(t *testing.T) {
 	}
 	if err := validateELFRemovalOrder(vdb, []string{"cat/consumer-1", "cat/consumer-1"}); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate error=%v", err)
+	}
+}
+
+func TestPublishUninstallRecoverySetIncludesEveryRemovalBeforeReturning(t *testing.T) {
+	paths := []string{"/vdb/cat/first-1", "/vdb/cat/second-2"}
+	var captured recoveryset.Request
+	wantErr := errors.New("injected publication failure")
+	path, err := publishUninstallRecoverySet(context.Background(), paths, recoveryset.Request{SetID: "set"}, func(_ context.Context, request recoveryset.Request) (string, error) {
+		captured = request
+		return "", wantErr
+	})
+	if !errors.Is(err, wantErr) || path != "" {
+		t.Fatalf("publishUninstallRecoverySet() = %q, %v", path, err)
+	}
+	if len(captured.Packages) != len(paths) {
+		t.Fatalf("captured packages = %+v", captured.Packages)
+	}
+	for index, pkg := range captured.Packages {
+		if pkg.VDBEntryPath != paths[index] {
+			t.Fatalf("package %d = %q, want %q", index, pkg.VDBEntryPath, paths[index])
+		}
+	}
+}
+
+func TestPublishUninstallRecoverySetRejectsMissingPublisher(t *testing.T) {
+	if _, err := publishUninstallRecoverySet(context.Background(), []string{"/vdb/cat/pkg-1"}, recoveryset.Request{}, nil); err == nil {
+		t.Fatal("publishUninstallRecoverySet() accepted a missing publisher")
 	}
 }
 

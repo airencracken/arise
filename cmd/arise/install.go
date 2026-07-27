@@ -27,6 +27,7 @@ import (
 	"github.com/airencracken/arise/internal/phaseproto"
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/rebuild"
+	"github.com/airencracken/arise/internal/recoveryset"
 	"github.com/airencracken/arise/internal/resolve"
 	"github.com/airencracken/arise/internal/world"
 )
@@ -37,6 +38,23 @@ func runInstall(args []string, dbPath, repoDir string) {
 		os.Exit(1)
 	}
 	runResolveAndRebuild(args, dbPath, repoDir, *updateMode, false)
+}
+
+func recoveryPackagesForActions(vdbRoot string, actions []resolve.PkgAction) []recoveryset.Package {
+	seen := make(map[string]struct{})
+	var packages []recoveryset.Package
+	for _, action := range actions {
+		if action.Atom == nil || action.InstalledVersion == "" {
+			continue
+		}
+		path := filepath.Join(vdbRoot, action.Atom.Category, action.Atom.Package+"-"+action.InstalledVersion)
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		packages = append(packages, recoveryset.Package{VDBEntryPath: path})
+	}
+	return packages
 }
 
 func installWorldSelections(targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult) []string {
@@ -155,6 +173,9 @@ func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phase
 		PortageConfig: portageCfg,
 		ConfigRoot:    *portageConfigRoot,
 		JournalDir:    *journalDir,
+		PackageDir:    *binpkgDir,
+		BuildPackage:  *buildPkg || *buildPkgOnly,
+		BuildOnly:     *buildPkgOnly,
 	}
 	if repositories, err := portage.RepositoryPolicyOrder(filepath.Join(*portageConfigRoot, "repos.conf")); err == nil {
 		cfg.Repositories = repositories
@@ -258,6 +279,14 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	if jsonMode {
 		cfg.Quiet = true
 	}
+	// Fetching binary packages also selects them. Portage treats -g as -k plus
+	// acquisition and -G as -K plus acquisition.
+	if cfg.GetBinPkg {
+		cfg.UsePkg = true
+	}
+	if cfg.GetBinPkgOnly {
+		cfg.UsePkgOnly = true
+	}
 	if *pretend && !jsonMode {
 		fmt.Println("(pretend mode: no actions will be performed)")
 	}
@@ -298,18 +327,9 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			if cfg.GetBinPkgOnly {
 				os.Exit(1)
 			}
-		} else {
-			for _, url := range cfg.BinhostURLs {
-				downloaded, err := binpkg.DownloadFromBinhost(context.Background(), url, targets, cfg.BinpkgDir)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "--getbinpkg: download from %s: %v\n", url, err)
-					if cfg.GetBinPkgOnly {
-						os.Exit(1)
-					}
-				} else if !cfg.Quiet {
-					fmt.Printf("Downloaded %d binary packages from %s\n", len(downloaded), url)
-				}
-			}
+		} else if err := downloadBinpkgTargets(context.Background(), cfg.BinhostURLs, targets, cfg.BinpkgDir, cfg.GetBinPkgOnly, cfg.Quiet); err != nil {
+			fmt.Fprintf(os.Stderr, "--getbinpkg: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
@@ -410,7 +430,34 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		resolveCtx, cancelResolve = context.WithTimeout(resolveCtx, *resolverTimeout)
 	}
 	defer cancelResolve()
-	result, err := resolve.ResolveContext(resolveCtx, rg, targets, cfg)
+	// Resolve once with source fallback to discover the complete dependency
+	// closure that a remote binhost must satisfy. Downloading only the command
+	// line targets misses binary dependencies and makes -g/-G non-transitive.
+	if (cfg.GetBinPkg || cfg.GetBinPkgOnly) && len(cfg.BinhostURLs) != 0 {
+		probeCfg := cfg
+		probeCfg.GetBinPkg = false
+		probeCfg.GetBinPkgOnly = false
+		probeCfg.UsePkgOnly = false
+		probeCfg.UsePkg = true
+		probe, probeErr := resolve.ResolveContext(resolveCtx, rg, targets, probeCfg)
+		if probeErr == nil && probe != nil {
+			closure := make([]string, 0, len(probe.Install))
+			for _, action := range probe.Install {
+				if action.Atom != nil {
+					closure = append(closure, action.Atom.String())
+				}
+			}
+			if downloadErr := downloadBinpkgTargets(resolveCtx, cfg.BinhostURLs, closure, cfg.BinpkgDir, cfg.GetBinPkgOnly, cfg.Quiet); downloadErr != nil {
+				err = fmt.Errorf("--getbinpkg: download dependency closure: %w", downloadErr)
+			}
+		} else if cfg.GetBinPkgOnly {
+			err = fmt.Errorf("--getbinpkgonly: discover dependency closure: %w", probeErr)
+		}
+	}
+	var result *resolve.ResolveResult
+	if err == nil {
+		result, err = resolve.ResolveContext(resolveCtx, rg, targets, cfg)
+	}
 	solverDuration := time.Since(stageStarted)
 	if closeErr := db.Close(); closeErr != nil {
 		progress.stop()
@@ -770,8 +817,60 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			initialStatus += "    Load avg: " + load
 		}
 		executionProgress.setStatus(initialStatus)
+		var prepareMutation func(context.Context) error
+		var publishedRecoverySet string
+		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
+			recoveryPackages := recoveryPackagesForActions(*vdbDir, result.Install)
+			if len(recoveryPackages) > 0 {
+				recoverySetID, idErr := recoveryset.NewID()
+				if idErr != nil {
+					fmt.Fprintf(os.Stderr, "arise: initialize recovery set: %v\n", idErr)
+					os.Exit(1)
+				}
+				planSHA256 := canonicalPlanSHA256(targets, cfg, result, stateSHA256)
+				prepareMutation = func(ctx context.Context) error {
+					configurationFingerprint, err := binpkg.FingerprintConfiguration(*portageConfigRoot)
+					if err != nil {
+						return fmt.Errorf("fingerprint Portage configuration: %w", err)
+					}
+					var sourceInputs []binpkg.FingerprintInput
+					for _, action := range result.Install {
+						if action.Atom == nil || action.RepositoryPath == "" {
+							continue
+						}
+						sourceInputs = append(sourceInputs,
+							binpkg.FingerprintInput{
+								Label: "package:" + action.Repository + ":" + action.Atom.CP(),
+								Path:  filepath.Join(action.RepositoryPath, action.Atom.Category, action.Atom.Package),
+							},
+							binpkg.FingerprintInput{
+								Label: "eclasses:" + action.Repository,
+								Path:  filepath.Join(action.RepositoryPath, "eclass"),
+							},
+						)
+					}
+					repositoryFingerprint, err := binpkg.FingerprintSelectedSourceClosure(sourceInputs)
+					if err != nil {
+						return fmt.Errorf("fingerprint selected repository sources: %w", err)
+					}
+					path, err := recoveryset.Publish(ctx, recoveryset.Request{
+						Directory: filepath.Join(*binpkgDir, ".arise-recovery"),
+						SetID:     recoverySetID, OperationID: recoverySetID, PlanSHA256: planSHA256,
+						RootDir: rebuildCfg.RootDir, Packages: recoveryPackages,
+						ConfigurationFingerprint: configurationFingerprint,
+						RepositoryFingerprint:    repositoryFingerprint,
+					})
+					if err != nil {
+						return err
+					}
+					publishedRecoverySet = path
+					executionProgress.message(fmt.Sprintf(">>> Published complete pre-update recovery set %s", path))
+					return nil
+				}
+			}
+		}
 		executionErr := executor.Execute(execCtx, result, executor.Config{
-			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation,
+			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation, PrepareMutation: prepareMutation,
 			OnSpaceWait: func(path string, available, required uint64) {
 				executionProgress.message(fmt.Sprintf(">>> %s has insufficient free space; package parallelism reduced (free: %s, required: %s)", path, formatSize(int64(available)), formatSize(int64(required))))
 			},
@@ -841,6 +940,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if logErr := compatLog.close(); executionErr == nil && logErr != nil {
 			executionErr = fmt.Errorf("Portage-compatible merge log: %w", logErr)
 		}
+		if publishedRecoverySet != "" {
+			if statusErr := markRecoverySetOutcome(publishedRecoverySet, executionErr); statusErr != nil {
+				executionProgress.message(" * warning: recovery set remains conservatively active: " + statusErr.Error())
+			}
+		}
 		if executionErr != nil {
 			if errors.Is(executionErr, context.Canceled) {
 				printExecutionInterrupted(os.Stderr)
@@ -863,6 +967,42 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		return
 	}
 
+}
+
+func downloadBinpkgTargets(ctx context.Context, binhosts, targets []string, destination string, required, quiet bool) error {
+	for _, target := range targets {
+		parsed, parseErr := atom.Parse(target)
+		if parseErr != nil || parsed.Category == "" || parsed.Package == "" {
+			continue
+		}
+		var failures []error
+		acquired := false
+		for _, host := range binhosts {
+			downloaded, err := binpkg.DownloadFromBinhost(ctx, host, []string{target}, destination)
+			if err != nil {
+				failures = append(failures, fmt.Errorf("%s: %w", host, err))
+				continue
+			}
+			if len(downloaded) != 0 {
+				acquired = true
+				if !quiet {
+					fmt.Printf("Downloaded %d binary package from %s\n", len(downloaded), host)
+				}
+				break
+			}
+		}
+		if required && !acquired {
+			return fmt.Errorf("no configured binhost supplied %s: %w", target, errors.Join(failures...))
+		}
+	}
+	return nil
+}
+
+func markRecoverySetOutcome(path string, operationErr error) error {
+	if operationErr != nil {
+		return recoveryset.MarkStatus(path, recoveryset.StatusFailed, operationErr.Error())
+	}
+	return recoveryset.MarkStatus(path, recoveryset.StatusPendingVerification, "")
 }
 
 func targetsNeedCompleteGraph(targets []string) bool {

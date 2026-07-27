@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/binpkg"
 	"github.com/airencracken/arise/internal/graph"
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/merge"
@@ -17,6 +18,7 @@ import (
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/preserved"
 	"github.com/airencracken/arise/internal/rebuild"
+	"github.com/airencracken/arise/internal/recoveryset"
 	"github.com/airencracken/arise/internal/resolve"
 )
 
@@ -159,11 +161,41 @@ func runUninstall(args []string, dbPath, repoDir string) {
 		fmt.Fprintln(os.Stderr, "uninstall: package state or policy changed after approval")
 		os.Exit(1)
 	}
+	recoverySetID, err := recoveryset.NewID()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: initialize recovery set: %v\n", err)
+		os.Exit(1)
+	}
+	configurationFingerprint, err := binpkg.FingerprintConfiguration(*portageConfigRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: fingerprint Portage configuration: %v\n", err)
+		os.Exit(1)
+	}
+	repositoryFingerprint, err := binpkg.FingerprintRepositoryIdentity(repoDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: fingerprint repository identity: %v\n", err)
+		os.Exit(1)
+	}
+	recoveryPath, err := publishUninstallRecoverySet(context.Background(), vdbPaths, recoveryset.Request{
+		Directory: filepath.Join(*binpkgDir, ".arise-recovery"),
+		SetID:     recoverySetID, OperationID: recoverySetID, PlanSHA256: planSHA256,
+		RootDir:                  commandEnv("ROOT", "/"),
+		ConfigurationFingerprint: configurationFingerprint,
+		RepositoryFingerprint:    repositoryFingerprint,
+	}, recoveryset.Publish)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: publish pre-removal recovery set: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Published complete pre-removal recovery set %s\n", recoveryPath)
 	for index, path := range vdbPaths {
 		rebuildCfg := buildRebuildConfig(repoDir, 0, nil, nil)
 		rebuildCfg.AllowLiveRoot = true
 		lifecycle, err := rebuild.OpenInstalledLifecycle(path, rebuildCfg)
 		if err != nil {
+			if statusErr := markRecoverySetOutcome(recoveryPath, err); statusErr != nil {
+				fmt.Fprintf(os.Stderr, "uninstall: recovery set remains active: %v\n", statusErr)
+			}
 			fmt.Fprintf(os.Stderr, "uninstall: prepare installed lifecycle for %s: %v\n", atoms[index], err)
 			os.Exit(1)
 		}
@@ -195,14 +227,36 @@ func runUninstall(args []string, dbPath, repoDir string) {
 			}
 			var committed *merge.PostCommitError
 			if errors.As(err, &committed) {
+				if statusErr := markRecoverySetOutcome(recoveryPath, committed); statusErr != nil {
+					fmt.Fprintf(os.Stderr, "uninstall: recovery set remains active: %v\n", statusErr)
+				}
 				fmt.Fprintf(os.Stderr, "Removed %s with a committed package journal, but lifecycle finalization failed: %v\n", atoms[index], committed)
 				os.Exit(1)
+			}
+			if statusErr := markRecoverySetOutcome(recoveryPath, err); statusErr != nil {
+				fmt.Fprintf(os.Stderr, "uninstall: recovery set remains active: %v\n", statusErr)
 			}
 			fmt.Fprintf(os.Stderr, "uninstall: after %d/%d committed removals: %v\n", index, len(vdbPaths), err)
 			os.Exit(1)
 		}
 		fmt.Printf("Removed %s with a committed package journal.\n", atoms[index])
 	}
+	if err := markRecoverySetOutcome(recoveryPath, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: recovery set remains active pending explicit verification: %v\n", err)
+	}
+}
+
+type recoverySetPublisher func(context.Context, recoveryset.Request) (string, error)
+
+func publishUninstallRecoverySet(ctx context.Context, vdbPaths []string, request recoveryset.Request, publish recoverySetPublisher) (string, error) {
+	if publish == nil {
+		return "", fmt.Errorf("uninstall: recovery-set publisher is required")
+	}
+	request.Packages = make([]recoveryset.Package, 0, len(vdbPaths))
+	for _, path := range vdbPaths {
+		request.Packages = append(request.Packages, recoveryset.Package{VDBEntryPath: path})
+	}
+	return publish(ctx, request)
 }
 
 func validateUninstallVDB(vdbPath string) error {
