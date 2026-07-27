@@ -199,7 +199,7 @@ docs: man info
 #   5. On the Gentoo host: emerge --sync arise-overlay && emerge -av arise
 #
 
-VERSION ?= 0.0.2
+VERSION ?= 0.0.3
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
 release: download static test
 	@echo "Tagging arise v$(VERSION)..."

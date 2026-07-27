@@ -122,7 +122,7 @@ An existing Arise installation updates itself and its overlay directly:
 
 ```sh
 arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.2
+arise -1 --reinstall =sys-apps/arise-0.0.3
 ```
 
 To synchronize only selected configured repositories, name them explicitly:
