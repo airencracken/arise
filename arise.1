@@ -424,10 +424,12 @@ List installed packages matching a pattern.
 .SS Maintenance
 
 .TP
-\fBsync\fR
-Synchronize the Gentoo repository. Uses \fBgit\fR(1) as primary method with
-\fBrsync\fR(1) fallback, then atomically publish the refreshed resolver index.
-Success means both stages completed. Requires \fB\-\-repo-url\fR to be set.
+\fBsync\fR [\fIrepository\fR ...]
+Synchronize all configured repositories, or only the repositories named as
+arguments. Uses \fBgit\fR(1) as primary method with \fBrsync\fR(1) fallback,
+then atomically publishes the refreshed resolver index. Git repositories whose
+fetched branch has not changed are left untouched. Success means both stages
+completed.
 
 .TP
 \fBindex\fR

@@ -259,10 +259,11 @@ List installed packages matching a pattern.
 @section System Maintenance
 
 @table @command
-@item sync
-Synchronize the Gentoo repository via git (primary) or rsync (fallback), then
-atomically publish the refreshed resolver index. Success means both stages
-completed.
+@item sync [@var{repository}...]
+Synchronize all configured repositories, or only the repositories named as
+arguments, via git (primary) or rsync (fallback), then atomically publish the
+refreshed resolver index. Git repositories whose fetched branch has not
+changed are left untouched. Success means both stages completed.
 
 @item index
 Rebuild the BadgerDB metadata database from the ebuild tree.

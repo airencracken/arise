@@ -181,9 +181,17 @@ func updateGitRepoCommand(ctx context.Context, cfg SyncConfig) error {
 	if err := runGit(ctx, cfg.Output, "-C", cfg.TargetDir, "fetch", "--progress", "--depth", strconv.Itoa(cfg.Depth), "origin", branch); err != nil {
 		return err
 	}
+	remoteRevision, err := gitOutput(ctx, "-C", cfg.TargetDir, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return err
+	}
+	if oldRevision == remoteRevision {
+		cfg.progress("unchanged", "Already up to date")
+		return nil
+	}
 
 	cfg.progress("update", "Updating working tree")
-	if err := runGit(ctx, cfg.Output, "-C", cfg.TargetDir, "reset", "--hard", "origin/"+branch); err != nil {
+	if err := runGit(ctx, cfg.Output, "-C", cfg.TargetDir, "reset", "--hard", remoteRevision); err != nil {
 		return err
 	}
 	newRevision, err := gitOutput(ctx, "-C", cfg.TargetDir, "rev-parse", "HEAD")

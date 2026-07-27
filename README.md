@@ -125,6 +125,12 @@ arise sync
 arise -1 --reinstall =sys-apps/arise-0.0.2
 ```
 
+To synchronize only selected configured repositories, name them explicitly:
+
+```sh
+arise sync arise-overlay
+```
+
 For source development:
 
 ```sh
@@ -208,7 +214,7 @@ boundaries join the same transaction model.
 arise [global-flags] <command> [args...]
 
 Commands:
-  sync            Sync the Gentoo repository
+  sync [repo...]  Sync all or selected configured repositories
   index           Rebuild metadata database from ebuild tree
   install         Resolve package installation (execution gated)
   update          Resolve an @world update (execution gated)

@@ -248,7 +248,7 @@ func main() {
 
 	switch cmd {
 	case "sync":
-		runSync(*dbPath, *repoPath, *repoURL)
+		runSync(cmdArgs, *dbPath, *repoPath, *repoURL)
 	case "index":
 		runIndex(*dbPath, *repoPath)
 	case "query":

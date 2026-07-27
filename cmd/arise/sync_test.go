@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/airencracken/arise/internal/portage"
@@ -38,5 +39,30 @@ func TestConfiguredSyncTargetsOverrideAppliesOnlyToPrimary(t *testing.T) {
 	}
 	if got[0].URL != "new-primary" || got[1].URL != "overlay-uri" {
 		t.Fatalf("override leaked across repositories: %#v", got)
+	}
+}
+
+func TestSelectSyncTargetsByConfiguredName(t *testing.T) {
+	targets := []repositorySyncTarget{
+		{Name: "gentoo", Location: "/repos/gentoo"},
+		{Name: "arise-overlay", Location: "/repos/arise"},
+		{Name: "guru", Location: "/repos/guru"},
+	}
+	got, err := selectSyncTargets(targets, []string{"arise-overlay", "guru", "arise-overlay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []repositorySyncTarget{targets[1], targets[2]}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("selected targets = %#v, want %#v", got, want)
+	}
+}
+
+func TestSelectSyncTargetsRejectsUnknownName(t *testing.T) {
+	targets := []repositorySyncTarget{{Name: "gentoo"}, {Name: "guru"}}
+	_, err := selectSyncTargets(targets, []string{"missing"})
+	if err == nil || !strings.Contains(err.Error(), `unknown repository "missing"`) ||
+		!strings.Contains(err.Error(), "configured: gentoo, guru") {
+		t.Fatalf("unknown target error = %v", err)
 	}
 }

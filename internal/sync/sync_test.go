@@ -811,6 +811,25 @@ func TestSyncCommandReportsExactEbuildChangesAndProgress(t *testing.T) {
 	}
 }
 
+func TestSyncCommandDoesNotResetUnchangedRepository(t *testing.T) {
+	remote := initSyncRemote(t)
+	target := filepath.Join(t.TempDir(), "target")
+	cfg := SyncConfig{RepoURL: remote, TargetDir: target, Depth: 2}
+	if err := Sync(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	var stages []string
+	cfg.Progress = func(stage, _ string) { stages = append(stages, stage) }
+	cfg.Changes = func(ChangeSummary) { t.Fatal("unchanged repository reported package changes") }
+	if err := Sync(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stages, []string{"check", "fetch", "unchanged"}) {
+		t.Fatalf("progress stages = %v", stages)
+	}
+}
+
 func initSyncRemote(t *testing.T) string {
 	t.Helper()
 	remote := t.TempDir()

@@ -14,7 +14,7 @@ import (
 	"github.com/airencracken/arise/internal/sync"
 )
 
-func runSync(dbPath, repoPath, repoURL string) {
+func runSync(requested []string, dbPath, repoPath, repoURL string) {
 	if err := syncPrivilegeError(os.Geteuid(), repoPath); err != nil {
 		fmt.Fprintf(os.Stderr, "sync: %v\n", err)
 		os.Exit(1)
@@ -25,6 +25,11 @@ func runSync(dbPath, repoPath, repoURL string) {
 		os.Exit(1)
 	}
 	targets := configuredSyncTargets(repoPath, repoURL, repositories)
+	targets, err = selectSyncTargets(targets, requested)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "sync: %v\n", err)
+		os.Exit(2)
+	}
 	if len(targets) == 0 {
 		fmt.Fprintln(os.Stderr, "sync: no repositories are configured")
 		os.Exit(1)
@@ -48,7 +53,7 @@ func runSync(dbPath, repoPath, repoURL string) {
 			SyncType:  target.SyncType,
 			Output:    os.Stdout,
 			Progress: func(stage, detail string) {
-				icons := map[string]string{"check": "1/4", "fetch": "2/4", "update": "3/4", "changes": "4/4", "clone": "1/1", "rsync": "1/1"}
+				icons := map[string]string{"check": "1/4", "fetch": "2/4", "update": "3/4", "changes": "4/4", "unchanged": "3/3", "clone": "1/1", "rsync": "1/1"}
 				fmt.Printf("  %s %s\n", color.Cyan("["+icons[stage]+"]"), detail)
 			},
 			Changes: func(changes sync.ChangeSummary) {
@@ -65,6 +70,35 @@ func runSync(dbPath, repoPath, repoURL string) {
 	fmt.Printf("\n%s\n", color.Bold("Refreshing resolver index"))
 	runIndex(dbPath, repoPath)
 	fmt.Printf("\n%s Repository and resolver index synchronized in %s\n", color.Green("Done."), time.Since(started).Round(time.Millisecond))
+}
+
+func selectSyncTargets(targets []repositorySyncTarget, requested []string) ([]repositorySyncTarget, error) {
+	if len(requested) == 0 {
+		return targets, nil
+	}
+	byName := make(map[string]repositorySyncTarget, len(targets))
+	for _, target := range targets {
+		byName[target.Name] = target
+	}
+	selected := make([]repositorySyncTarget, 0, len(requested))
+	seen := make(map[string]bool, len(requested))
+	for _, name := range requested {
+		if seen[name] {
+			continue
+		}
+		target, ok := byName[name]
+		if !ok {
+			available := make([]string, 0, len(byName))
+			for candidate := range byName {
+				available = append(available, candidate)
+			}
+			sort.Strings(available)
+			return nil, fmt.Errorf("unknown repository %q (configured: %s)", name, strings.Join(available, ", "))
+		}
+		selected = append(selected, target)
+		seen[name] = true
+	}
+	return selected, nil
 }
 
 type repositorySyncTarget struct {
