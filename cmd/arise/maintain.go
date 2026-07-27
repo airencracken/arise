@@ -112,15 +112,17 @@ func runMaintain(args []string) int {
 		}
 		return 0
 	}
-	approved, err := approvedPlanDigest(*approvePlanSHA256, *approvePlan, *planDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "maintain world: refusing repair: %v\n", err)
-		return 1
-	}
-	if err := validatePlanAuthorization(approved, document.PlanSHA256); err != nil {
-		fmt.Fprintf(os.Stderr, "maintain world: refusing repair: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Generate a reviewable plan with --pretend --save-plan NAME.\n")
-		return 1
+	if strings.TrimSpace(*approvePlanSHA256) != "" || strings.TrimSpace(*approvePlan) != "" {
+		approved, err := approvedPlanDigest(*approvePlanSHA256, *approvePlan, *planDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "maintain world: refusing repair: %v\n", err)
+			return 1
+		}
+		if err := validatePlanAuthorization(approved, document.PlanSHA256); err != nil {
+			fmt.Fprintf(os.Stderr, "maintain world: refusing repair: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Generate a reviewable plan with --pretend --save-plan NAME.\n")
+			return 1
+		}
 	}
 	lock, err := oplock.TryAcquirePath(*worldFile)
 	if err != nil {
