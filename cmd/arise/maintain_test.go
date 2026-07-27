@@ -62,7 +62,47 @@ func TestMaintainCommandExists(t *testing.T) {
 	}
 }
 
-func TestMaintainWorldFixRequiresFreshApprovedPlanAndIsIdempotent(t *testing.T) {
+func TestMaintainWorldFixRepairsDirectlyAndIsIdempotent(t *testing.T) {
+	root := t.TempDir()
+	worldPath := filepath.Join(root, "world")
+	vdbRoot := filepath.Join(root, "vdb")
+	repoRoot := filepath.Join(root, "repo")
+	configRoot := filepath.Join(root, "etc", "portage")
+	plans := filepath.Join(root, "plans")
+	for _, directory := range []string{vdbRoot, filepath.Join(repoRoot, "metadata", "md5-cache"), configRoot, plans} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(worldPath, []byte("cat/missing\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	restore := setMaintainGlobals(t, worldPath, vdbRoot, repoRoot, configRoot, plans)
+	defer restore()
+
+	if code := runMaintain([]string{"world", "--fix"}); code != 0 {
+		t.Fatalf("direct repair exit=%d", code)
+	}
+	data, err := os.ReadFile(worldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("world after repair=%q", data)
+	}
+	info, err := os.Stat(worldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("world mode=%#o, want 0640", info.Mode().Perm())
+	}
+	if code := runMaintain([]string{"world", "--check"}); code != 0 {
+		t.Fatalf("clean second check exit=%d", code)
+	}
+}
+
+func TestMaintainWorldFixAcceptsFreshApprovedPlan(t *testing.T) {
 	root := t.TempDir()
 	worldPath := filepath.Join(root, "world")
 	vdbRoot := filepath.Join(root, "vdb")
@@ -102,17 +142,6 @@ func TestMaintainWorldFixRequiresFreshApprovedPlanAndIsIdempotent(t *testing.T) 
 	}
 	if len(data) != 0 {
 		t.Fatalf("world after repair=%q", data)
-	}
-	info, err := os.Stat(worldPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("world mode=%#o, want 0640", info.Mode().Perm())
-	}
-	*approvePlan = ""
-	if code := runMaintain([]string{"world", "--check"}); code != 0 {
-		t.Fatalf("clean second check exit=%d", code)
 	}
 }
 

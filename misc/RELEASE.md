@@ -199,7 +199,13 @@ arise search --installed portage
 arise info
 arise equery list '*/*'
 arise env-update
+arise maintain world --check
 ```
+
+For a release intended to correct a command regression, reproduce the exact
+reported invocation in an isolated root before publishing. Do not substitute a
+direct function-level test or a nearby command mode for the operator-facing
+CLI path.
 
 ---
 
@@ -225,6 +231,7 @@ If a bad release goes out:
 - [ ] All tests pass (`make test && make vet`)
 - [ ] Dependencies verified (`go mod verify`)
 - [ ] Static binary builds (`make static` → `static build: OK`)
+- [ ] Exact operator-reported command regression passes through the built CLI
 - [ ] Git tag pushed (`git tag -a v$V -m "arise v$V" && git push --tags`)
 - [ ] Versioned ebuild created (`cp arise-9999.ebuild arise-$V.ebuild`)
 - [ ] Manifest regenerated (`make manifest VERSION=$V`)

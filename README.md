@@ -194,6 +194,9 @@ arise info
 arise depclean --pretend
 arise prune --pretend
 arise maintain world --check
+# Repair immediately; --fix is explicit mutation authorization
+arise maintain world --fix
+# Optionally review and bind the repair to a saved state snapshot
 arise --pretend --save-plan world-repair maintain world --fix
 arise --approve-plan world-repair maintain world --fix
 # Read-only maintenance proposals

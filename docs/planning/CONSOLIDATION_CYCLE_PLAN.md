@@ -168,7 +168,8 @@ does not treat its implemented recursive review workflow as future work.
 
 - Produce an exact state-bound repair plan before mutation.
 - Explain every removal, replacement, or normalization.
-- Require saved-plan approval and revalidate beneath the Portage world lock.
+- Treat explicit `--fix` as mutation authorization; when saved-plan approval is
+  supplied, validate it before revalidating beneath the Portage world lock.
 - Preserve mode/ownership, publish by atomic rename and directory fsync, and
   retain reversible before/after evidence.
 - Fail cleanly on concurrent edits, interruption, ambiguous moves, or a changed
