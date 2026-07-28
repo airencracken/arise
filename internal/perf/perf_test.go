@@ -15,6 +15,14 @@ func TestParseSmapsRollupComputesRSSPSSAndUSS(t *testing.T) {
 	}
 }
 
+func TestParseProcessIOReportsStorageBytesAndRejectsMalformedValues(t *testing.T) {
+	data := []byte("rchar: 999\nread_bytes: 4096\nwrite_bytes: 8192\ncancelled_write_bytes: 2048\nread_bytes: hostile\n")
+	readBytes, writeBytes := parseProcessIO(data)
+	if readBytes != 4096 || writeBytes != 8192 {
+		t.Fatalf("process I/O = read %d write %d", readBytes, writeBytes)
+	}
+}
+
 func TestColdCacheBenchmarkRequiresRoot(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("test requires a non-root runner")
@@ -43,6 +51,9 @@ func TestRunRequiresEquivalentOutput(t *testing.T) {
 	}
 	if r.Results[0].Arise[0].MemorySampleCount == 0 {
 		t.Fatal("process-tree memory samples missing")
+	}
+	if r.Results[0].Arise[0].PeakProcessCount == 0 {
+		t.Fatal("process-tree process count missing")
 	}
 }
 

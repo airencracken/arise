@@ -64,6 +64,9 @@ type Sample struct {
 	PeakTreeUSSBytes    int64 `json:"peak_tree_uss_bytes,omitempty"`
 	MemorySampleCount   int64 `json:"memory_sample_count,omitempty"`
 	MemorySampleEveryNS int64 `json:"memory_sample_every_ns,omitempty"`
+	PeakProcessCount    int64 `json:"peak_process_count,omitempty"`
+	PeakTreeReadBytes   int64 `json:"peak_tree_read_bytes,omitempty"`
+	PeakTreeWriteBytes  int64 `json:"peak_tree_write_bytes,omitempty"`
 	InputBlocks         int64 `json:"input_blocks"`
 	OutputBlocks        int64 `json:"output_blocks"`
 }
@@ -363,6 +366,9 @@ func execute(ctx context.Context, spec Command) (commandResult, error) {
 	result.sample.PeakTreeUSSBytes = memory.USSBytes
 	result.sample.MemorySampleCount = memory.Samples
 	result.sample.MemorySampleEveryNS = int64(memoryInterval)
+	result.sample.PeakProcessCount = memory.Processes
+	result.sample.PeakTreeReadBytes = memory.ReadBytes
+	result.sample.PeakTreeWriteBytes = memory.WriteBytes
 	if cmd.ProcessState != nil {
 		result.sample.UserNS = cmd.ProcessState.UserTime().Nanoseconds()
 		result.sample.SystemNS = cmd.ProcessState.SystemTime().Nanoseconds()
@@ -383,10 +389,13 @@ func execute(ctx context.Context, spec Command) (commandResult, error) {
 }
 
 type processTreeMemory struct {
-	RSSBytes int64
-	PSSBytes int64
-	USSBytes int64
-	Samples  int64
+	RSSBytes   int64
+	PSSBytes   int64
+	USSBytes   int64
+	Samples    int64
+	Processes  int64
+	ReadBytes  int64
+	WriteBytes int64
 }
 
 func sampleProcessTreeMemory(rootPID int, interval time.Duration, stop <-chan struct{}, done chan<- processTreeMemory) {
@@ -396,6 +405,9 @@ func sampleProcessTreeMemory(rootPID int, interval time.Duration, stop <-chan st
 		peak.RSSBytes = max(peak.RSSBytes, current.RSSBytes)
 		peak.PSSBytes = max(peak.PSSBytes, current.PSSBytes)
 		peak.USSBytes = max(peak.USSBytes, current.USSBytes)
+		peak.Processes = max(peak.Processes, current.Processes)
+		peak.ReadBytes = max(peak.ReadBytes, current.ReadBytes)
+		peak.WriteBytes = max(peak.WriteBytes, current.WriteBytes)
 		peak.Samples++
 	}
 	sample()
@@ -424,12 +436,19 @@ func readProcessTreeMemory(rootPID int) processTreeMemory {
 			continue
 		}
 		seen[pid] = true
+		result.Processes++
 		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/smaps_rollup", pid))
 		if err == nil {
 			memory := parseSmapsRollup(data)
 			result.RSSBytes += memory.RSSBytes
 			result.PSSBytes += memory.PSSBytes
 			result.USSBytes += memory.USSBytes
+		}
+		ioData, err := os.ReadFile(fmt.Sprintf("/proc/%d/io", pid))
+		if err == nil {
+			readBytes, writeBytes := parseProcessIO(ioData)
+			result.ReadBytes += readBytes
+			result.WriteBytes += writeBytes
 		}
 		children, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", pid, pid))
 		if err != nil {
@@ -443,6 +462,26 @@ func readProcessTreeMemory(rootPID int) processTreeMemory {
 		}
 	}
 	return result
+}
+
+func parseProcessIO(data []byte) (readBytes, writeBytes int64) {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		value, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || value < 0 {
+			continue
+		}
+		switch fields[0] {
+		case "read_bytes:":
+			readBytes = value
+		case "write_bytes:":
+			writeBytes = value
+		}
+	}
+	return readBytes, writeBytes
 }
 
 func parseSmapsRollup(data []byte) processTreeMemory {
