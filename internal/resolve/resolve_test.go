@@ -3643,6 +3643,48 @@ func TestCandidateUseFlagsIncludeImplicitUseExpandFlags(t *testing.T) {
 	}
 }
 
+func TestNormalizedImplicitUsePrefixesCanonicalizesConfigurationOnce(t *testing.T) {
+	cfg := &portage.Config{UseExpandImplicit: []string{" ABI_X86 ", "", "ArCh"}}
+	got := normalizedImplicitUsePrefixes(cfg)
+	want := []string{"abi_x86_", "arch_"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("implicit prefixes = %#v, want %#v", got, want)
+	}
+}
+
+func TestPropertyCachedImplicitUseExpansionMatchesConfigurationSemantics(t *testing.T) {
+	variables := []string{"ABI_X86", " ARCH ", "ELIBC", "", "   "}
+	flags := []string{"abi_x86_64", "abi_x86_", "ABI_X86_64", "arch_amd64", "elibc_glibc", "unrelated", "_hostile"}
+	cfg := &portage.Config{UseExpandImplicit: variables}
+	r := &resolver{portageConfig: cfg, implicitUsePrefixes: normalizedImplicitUsePrefixes(cfg)}
+	for _, flag := range flags {
+		want := false
+		for _, variable := range variables {
+			prefix := strings.ToLower(strings.TrimSpace(variable)) + "_"
+			if prefix != "_" && strings.HasPrefix(flag, prefix) && len(flag) > len(prefix) {
+				want = true
+			}
+		}
+		if got := r.implicitUseExpandFlag(flag); got != want {
+			t.Fatalf("implicitUseExpandFlag(%q) = %t, want %t", flag, got, want)
+		}
+	}
+}
+
+func TestMutationImplicitUsePrefixRequiresValueAfterSeparator(t *testing.T) {
+	cfg := &portage.Config{UseExpandImplicit: []string{"ABI_X86"}}
+	r := &resolver{portageConfig: cfg}
+	if r.implicitUseExpandFlag("abi_x86_") {
+		t.Fatal("empty implicit USE_EXPAND value was accepted")
+	}
+	if !r.implicitUseExpandFlag("abi_x86_64") {
+		t.Fatal("valid implicit USE_EXPAND value was rejected")
+	}
+	if r.implicitUseExpandFlag("xabi_x86_64") {
+		t.Fatal("non-prefix USE_EXPAND fragment was accepted")
+	}
+}
+
 func TestCandidateUseFlagsApplyStablePolicyOnlyToStableVersion(t *testing.T) {
 	g := makeGraph()
 	stable := pkgKeywords(g, "dev-lang/python", "3.12", "3.12", "3.12", false,

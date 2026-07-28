@@ -942,6 +942,7 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 		maskCache:             make(map[string]portage.MaskStatus),
 		keywordCache:          make(map[string]bool),
 		candidateCache:        make(map[string]candidateCacheEntry),
+		implicitUsePrefixes:   normalizedImplicitUsePrefixes(config.PortageConfig),
 		portageConfig:         config.PortageConfig,
 		choiceOverrides:       choiceOverrides,
 		chargedDecisions:      chargedDecisions,
@@ -1204,29 +1205,30 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 		return nil, fmt.Errorf("resolve: no dependency graph provided (internal error)")
 	}
 	r := &resolver{
-		graph:            g,
-		config:           config,
-		installed:        make(map[string]*PkgAction),
-		toInstall:        make(map[string]*PkgAction),
-		actionOwners:     make(map[string]map[string]bool),
-		rootActionKeys:   make(map[string]bool),
-		toUninstall:      make(map[string]*PkgAction),
-		seenDeps:         make(map[string]bool),
-		activeDeps:       make(map[string]int),
-		cycleSeen:        make(map[string]bool),
-		selectedCPs:      make(map[string]bool),
-		explicitTargets:  make(map[string]bool),
-		worldTargets:     make(map[string]bool),
-		constraints:      make(map[string][]*atom.Atom),
-		constraintCauses: make(map[string][]ConflictRequirement),
-		useOverrides:     make(map[string]map[string]bool),
-		useChangeSeen:    make(map[string]bool),
-		maskCache:        make(map[string]portage.MaskStatus),
-		keywordCache:     make(map[string]bool),
-		portageConfig:    config.PortageConfig,
-		worldSet:         config.WorldSet,
-		systemSet:        config.SystemSet,
-		strictWholeState: true,
+		graph:               g,
+		config:              config,
+		installed:           make(map[string]*PkgAction),
+		toInstall:           make(map[string]*PkgAction),
+		actionOwners:        make(map[string]map[string]bool),
+		rootActionKeys:      make(map[string]bool),
+		toUninstall:         make(map[string]*PkgAction),
+		seenDeps:            make(map[string]bool),
+		activeDeps:          make(map[string]int),
+		cycleSeen:           make(map[string]bool),
+		selectedCPs:         make(map[string]bool),
+		explicitTargets:     make(map[string]bool),
+		worldTargets:        make(map[string]bool),
+		constraints:         make(map[string][]*atom.Atom),
+		constraintCauses:    make(map[string][]ConflictRequirement),
+		useOverrides:        make(map[string]map[string]bool),
+		useChangeSeen:       make(map[string]bool),
+		maskCache:           make(map[string]portage.MaskStatus),
+		keywordCache:        make(map[string]bool),
+		implicitUsePrefixes: normalizedImplicitUsePrefixes(config.PortageConfig),
+		portageConfig:       config.PortageConfig,
+		worldSet:            config.WorldSet,
+		systemSet:           config.SystemSet,
+		strictWholeState:    true,
 	}
 	for i := range installs {
 		action := installs[i]
@@ -1334,6 +1336,7 @@ type resolver struct {
 	maskCache             map[string]portage.MaskStatus
 	keywordCache          map[string]bool
 	candidateCache        map[string]candidateCacheEntry
+	implicitUsePrefixes   []string
 	useOverrideGeneration uint64
 	pendingConstraint     *atom.Atom // unpinned dependency behind an internally pinned candidate
 	pendingReason         string
@@ -5422,7 +5425,7 @@ func (r *resolver) newUseChanged(node *PkgNode, installed, candidate *VersionInf
 		// installed VDB IUSE normally contains only the ebuild-declared domain.
 		// Those implicit values belong in effective USE, not in --newuse's
 		// added/removed-IUSE comparison.
-		if _, existed := oldDomain[flag]; !existed && implicitUseExpandFlag(r.portageConfig, flag) {
+		if _, existed := oldDomain[flag]; !existed && r.implicitUseExpandFlag(flag) {
 			delete(filtered.UseFlags, flag)
 			continue
 		}
@@ -5779,7 +5782,7 @@ func (r *resolver) candidateUseFlags(node *PkgNode, vi *VersionInfo) map[string]
 				// graphs whose conditional flags are not backed by metadata.
 				if vi.UseFlags == nil {
 					base[name] = enabled
-				} else if iuseDefault, declared := vi.UseFlags[name]; declared || implicitUseExpandFlag(r.portageConfig, name) {
+				} else if iuseDefault, declared := vi.UseFlags[name]; declared || r.implicitUseExpandFlag(name) {
 					// A merged profile `-flag` must not erase an enabled IUSE
 					// default. Only higher-precedence user/command/package policy
 					// or mask/force layers may do that.
@@ -5807,13 +5810,29 @@ func (r *resolver) candidateUseFlags(node *PkgNode, vi *VersionInfo) map[string]
 	return flags
 }
 
-func implicitUseExpandFlag(config *portage.Config, flag string) bool {
+func normalizedImplicitUsePrefixes(config *portage.Config) []string {
 	if config == nil {
-		return false
+		return nil
 	}
+	prefixes := make([]string, 0, len(config.UseExpandImplicit))
 	for _, variable := range config.UseExpandImplicit {
 		prefix := strings.ToLower(strings.TrimSpace(variable)) + "_"
-		if prefix != "_" && strings.HasPrefix(flag, prefix) && len(flag) > len(prefix) {
+		if prefix != "_" {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	return prefixes
+}
+
+func (r *resolver) implicitUseExpandFlag(flag string) bool {
+	if r == nil || r.portageConfig == nil {
+		return false
+	}
+	if r.implicitUsePrefixes == nil && len(r.portageConfig.UseExpandImplicit) != 0 {
+		r.implicitUsePrefixes = normalizedImplicitUsePrefixes(r.portageConfig)
+	}
+	for _, prefix := range r.implicitUsePrefixes {
+		if strings.HasPrefix(flag, prefix) && len(flag) > len(prefix) {
 			return true
 		}
 	}
