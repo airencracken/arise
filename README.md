@@ -105,15 +105,29 @@ whose work made Gentoo and this project possible. Compatibility claims should
 be supported by differential tests, and performance claims by equivalent
 same-snapshot workloads.
 
-## Quick Start
+## Install from the Arise overlay
 
-Gentoo users can install the latest packaged release from the maintained
-[Arise overlay](https://github.com/airencracken/arise-overlay):
+The maintained [Arise overlay](https://github.com/airencracken/arise-overlay)
+is the recommended way to install a packaged release on Gentoo; no manual Go
+build is required. Add and synchronize it with Portage:
 
 ```sh
 eselect repository add arise-overlay git \
   https://github.com/airencracken/arise-overlay.git
 emaint sync -r arise-overlay
+```
+
+Stable releases remain testing-keyworded while Arise is experimental. Add this
+package-specific acceptance:
+
+```text
+# /etc/portage/package.accept_keywords/arise
+sys-apps/arise ~amd64
+```
+
+Then install Arise normally:
+
+```sh
 emerge --ask sys-apps/arise
 ```
 
@@ -262,6 +276,28 @@ choices, not to diminish mature tools with broader responsibilities. Arise's
 own benchmark gate rejects correctness-equivalent regressions and requires a
 material measured benefit before making a performance claim.
 
+### 0.0.5 resolver tuning
+
+The 0.0.5 C2 tuning cycle attacked allocation and garbage-collection pressure
+in the large resolver path. On the same warm, read-only, deep/newuse,
+complete-graph `@world` workload, with exact plan and whole-state digests
+preserved:
+
+| Metric | Initial C2 baseline | Arise 0.0.5 | Improvement |
+|---|---:|---:|---:|
+| Median wall time | 3.45 s | 2.48 s | **28.1% faster** |
+| Median CPU time | 7.72 s | 4.63 s | **40.0% lower** |
+| Median peak RSS | 812,612 KiB | 568,604 KiB | **30.0% lower** |
+| Profiled allocation | 2,645.55 MiB | 733.20 MiB | **72.3% lower** |
+
+Those gains come from buffer reuse, cached implicit USE expansion prefixes, a
+resolver-specific VDB projection, streaming dependency metadata, and direct
+handoff of already parsed dependency atoms. Candidates that regressed speed or
+memory were removed. The detailed methodology and immutable result digests are
+in the [0.0.5 release notes](docs/releases/0.0.5.md).
+
+### Gentoo tool comparisons
+
 Same-snapshot, correctness-gated checkpoint results through 2026-07-25:
 
 | Task | Reference | Equivalent | Arise median | Reference median | Speedup |
@@ -293,10 +329,10 @@ row above.
 | Cold | 12.00 s / 20.87 s | 939.07 MiB / 239.51 MiB (**3.92x**) | 939.07 MiB / 237.90 MiB (**3.95x**) |
 
 Cold runs call `sync` and drop Linux page, dentry and inode caches before each
-individual command, and alternate command order between repetitions. The early
-result is compelling but also identifies the principal resolver optimization
-target: retain the latency win while eliminating duplicated immutable
-snapshot/graph state and reducing the roughly 0.9 GiB private allocation peak.
+individual command, and alternate command order between repetitions. Those
+measurements identified duplicated immutable snapshot/graph state and the
+roughly 0.9 GiB private allocation peak subsequently reduced by the 0.0.5 C2
+tuning cycle above.
 Commands, samples, binary digest, repository commits and correctness result are preserved in
 [`WORLD_PRETEND_PERFORMANCE_2026-07-25.json`](docs/evidence/WORLD_PRETEND_PERFORMANCE_2026-07-25.json).
 
