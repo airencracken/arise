@@ -157,7 +157,7 @@ An existing Arise installation updates itself and its overlay directly:
 
 ```sh
 arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.5
+arise -1 --reinstall =sys-apps/arise-0.0.6
 ```
 
 To synchronize only selected configured repositories, name them explicitly:
@@ -287,6 +287,17 @@ Commands:
 ```
 
 ## Features
+
+### 0.0.6 repository synchronization
+
+Arise 0.0.6 makes its in-process go-git implementation the primary repository
+transport. System Git remains a compatibility fallback for remotes the
+built-in transport cannot handle. Clone publication is atomic, safety and
+policy failures cannot bypass validation through the fallback, and rsync is
+used only when explicitly configured. See the
+[0.0.6 release notes](docs/releases/0.0.6.md) and the
+[transport architecture decision](docs/adr/0002-use-go-git-as-primary-transport.md)
+for the measured rationale and contract boundaries.
 
 ### Performance comparisons with Gentoo tools
 

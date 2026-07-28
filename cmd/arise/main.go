@@ -24,7 +24,7 @@ import (
 )
 
 // version is replaced by release builds with -ldflags "-X main.version=...".
-var version = "0.0.5"
+var version = "0.0.6"
 var commandContext = context.Background()
 
 func versionLine() string {

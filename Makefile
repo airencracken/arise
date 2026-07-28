@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke deps release
+.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke check-release-version deps release
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -199,9 +199,16 @@ docs: man info
 #   5. On the Gentoo host: emerge --sync arise-overlay && emerge -av arise
 #
 
-VERSION ?= 0.0.5
+PROJECT_VERSION := 0.0.6
+VERSION ?= $(PROJECT_VERSION)
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
-release: download static test
+check-release-version:
+	@test "$(VERSION)" = "$(PROJECT_VERSION)" || { \
+		echo "VERSION=$(VERSION) does not match source release version $(PROJECT_VERSION)" >&2; \
+		exit 1; \
+	}
+
+release: check-release-version download static test
 	@echo "Tagging arise v$(VERSION)..."
 	git tag -a "v$(VERSION)" -m "arise v$(VERSION)"
 	git push origin master --tags
@@ -238,7 +245,7 @@ vendor:
 	@echo "Arise does not commit vendored dependencies; use 'make deps VERSION=x.y.z'."
 	@exit 1
 
-deps:
+deps: check-release-version
 	@test -n "$(VERSION)" || { echo "VERSION is required"; exit 1; }
 	@test -n "$(SOURCE_DATE_EPOCH)" || { echo "SOURCE_DATE_EPOCH is required"; exit 1; }
 	mkdir -p dist

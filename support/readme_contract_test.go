@@ -21,7 +21,8 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"Parallel scheduling, fetch policy,\n  lifecycle coverage, failure recovery",
 	)
 	assertPresent(t, readme,
-		"arise sync\narise -1 --reinstall =sys-apps/arise-0.0.5",
+		"arise sync\narise -1 --reinstall =sys-apps/arise-0.0.6",
+		"[0.0.6 release notes](docs/releases/0.0.6.md)",
 		"sys-apps/arise ~amd64",
 		"Median wall time | 3.45 s | 2.48 s | **28.1% faster**",
 		"Profiled allocation | 2,645.55 MiB | 733.20 MiB | **72.3% lower**",

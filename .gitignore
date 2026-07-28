@@ -47,3 +47,6 @@ arise-*.tar.gz
 # Go dependencies are packaged as a release-time module-cache archive.
 vendor/
 dist/
+
+# Linked worktrees kept inside the primary checkout.
+/.worktrees/
