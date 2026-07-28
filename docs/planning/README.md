@@ -18,6 +18,9 @@ to `../archive/planning/` with a dated archival note.
   retention and boot-safe provider promotion.
 - [`JOURNAL_RECOVERY_UX_PLAN.md`](JOURNAL_RECOVERY_UX_PLAN.md) — actionable
   recovery status, inspection, retention, and corruption handling.
+- [`INDEPENDENT_PLAN_VALIDATION_PLAN.md`](INDEPENDENT_PLAN_VALIDATION_PLAN.md)
+  — independent final-state validation, bounded decision explanations, and
+  classified Portage differentials without action-for-action parity.
 - [`LIFECYCLE_TRANSACTION_PLAN.md`](LIFECYCLE_TRANSACTION_PLAN.md) — optional
   pre-commit lifecycle mutation capture.
 - [`PACKAGE_OUTPUT_UX_PLAN.md`](PACKAGE_OUTPUT_UX_PLAN.md) — Portage-compatible
