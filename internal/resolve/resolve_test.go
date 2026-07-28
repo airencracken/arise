@@ -2100,13 +2100,12 @@ func TestResolve_AdversarialCircularDeps(t *testing.T) {
 	if err != nil {
 		t.Logf("circular deps resolution error (may be expected): %v", err)
 	}
-	if result == nil || len(result.Warnings) != 1 {
-		t.Fatalf("expected one circular dependency diagnostic, result=%#v", result)
+	if result == nil {
+		t.Fatal("expected a resolver result")
 	}
-	warning := result.Warnings[0]
-	for _, cp := range []string{"pkg/a", "pkg/b", "pkg/c"} {
-		if !strings.Contains(warning, cp) {
-			t.Fatalf("cycle diagnostic %q omits %s", warning, cp)
+	for _, warning := range result.Warnings {
+		if strings.HasPrefix(warning, "circular dependency: ") {
+			t.Fatalf("internal traversal cycle leaked as a user warning: %q", warning)
 		}
 	}
 }
@@ -6133,6 +6132,34 @@ func TestResolve_DependencyUseConstraintUpgradesToNewerCandidate(t *testing.T) {
 	t.Fatalf("newer USE-compatible dependency was not selected: install=%v conflicts=%v", result.Install, result.Conflicts)
 }
 
+func TestResolve_WarnsWhenDependencyConstraintSkipsVisibleUpdate(t *testing.T) {
+	g := makeGraph()
+	installed := pkg(g, "dev-python/docutils", "0.22", "0", "0", true, map[string]bool{"python_targets_python3_14": true})
+	installed.InstalledUseFlags = map[string]bool{"python_targets_python3_14": true}
+	pkg(g, "dev-python/docutils", "0.23", "0", "0", false, map[string]bool{"python_targets_python3_14": true})
+	constraint, err := atom.Parse("<dev-python/docutils-0.23[python_targets_python3_14(-)]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &resolver{
+		graph: g,
+		constraints: map[string][]*atom.Atom{
+			"dev-python/docutils|0": {constraint},
+		},
+		constraintCauses: map[string][]ConflictRequirement{
+			"dev-python/docutils|0": {{Atom: constraint.String(), Reason: "dependency of dev-python/sphinx"}},
+		},
+	}
+	r.warnSkippedUpdatesDueToConstraints()
+	for _, warning := range r.warnings {
+		if strings.Contains(warning, "skipped update dev-python/docutils-0.23") &&
+			strings.Contains(warning, "<dev-python/docutils-0.23[python_targets_python3_14(-)]") {
+			return
+		}
+	}
+	t.Fatalf("missing skipped-update constraint diagnostic: warnings=%v", r.warnings)
+}
+
 func TestResolve_CompleteGraphRebuildsReverseDependencyForUseTransition(t *testing.T) {
 	g := makeGraph()
 	oldLibrary := pkg(g, "dev-python/library", "1", "0", "0", true, map[string]bool{"python_targets_python3_13": true})
@@ -7299,7 +7326,7 @@ func TestRefreshCommittedDirectUpdatesRestoresRolledBackChildUpdate(t *testing.T
 		installed: make(map[string]*PkgAction), toInstall: make(map[string]*PkgAction),
 		actionOwners: make(map[string]map[string]bool), rootActionKeys: make(map[string]bool),
 		toUninstall: make(map[string]*PkgAction), seenDeps: make(map[string]bool),
-		activeDeps: make(map[string]int), cycleSeen: make(map[string]bool), selectedCPs: make(map[string]bool),
+		activeDeps: make(map[string]int), selectedCPs: make(map[string]bool),
 		explicitTargets: make(map[string]bool), constraints: make(map[string][]*atom.Atom),
 		constraintCauses: make(map[string][]ConflictRequirement), useOverrides: make(map[string]map[string]bool),
 		useChangeSeen: make(map[string]bool), baseUseCache: make(map[string]map[string]bool),
