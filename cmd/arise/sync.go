@@ -139,33 +139,46 @@ func printPackageChanges(w io.Writer, changes sync.ChangeSummary) {
 		return
 	}
 	for _, change := range changes.Packages {
-		tag := "[C]"
-		versions := formatVersionSet(change.After)
+		tag := color.BoldYellow("[C]")
+		cp := color.BoldYellow(change.CP)
+		versions := color.Yellow(formatVersionSet(change.After))
 		switch change.Kind {
 		case "new":
-			tag = "[N]"
+			tag = color.BoldGreen("[N]")
+			cp = color.BoldGreen(change.CP)
+			versions = color.Green(formatVersionSet(change.After))
 		case "removed":
-			tag = "[D]"
-			versions = formatVersionSet(change.Before)
+			tag = color.BoldRed("[D]")
+			cp = color.BoldRed(change.CP)
+			versions = color.Red(formatVersionSet(change.Before))
 		case "upgrade":
-			tag = "[U]"
-			versions = formatVersionSet(change.Before) + " -> " + formatVersionSet(change.After)
+			tag = color.BoldYellow("[U]")
+			versions = formatVersionTransition(change.Before, change.After, color.Green)
 		case "better":
-			tag = "[>]"
-			versions = formatVersionSet(change.Before) + " -> " + formatVersionSet(change.After)
+			tag = color.BoldGreen("[>]")
+			cp = color.BoldGreen(change.CP)
+			versions = formatVersionTransition(change.Before, change.After, color.Green)
 		case "downgrade":
-			tag = "[<]"
-			versions = formatVersionSet(change.Before) + " -> " + formatVersionSet(change.After)
+			tag = color.BoldRed("[<]")
+			cp = color.BoldRed(change.CP)
+			versions = formatVersionTransition(change.Before, change.After, color.Red)
 		case "worse":
-			tag = "[<]"
-			versions = formatVersionSet(change.Before) + " -> " + formatVersionSet(change.After)
+			tag = color.BoldRed("[<]")
+			cp = color.BoldRed(change.CP)
+			versions = formatVersionTransition(change.Before, change.After, color.Red)
 		case "changed":
 			if strings.Join(change.Before, "\x00") != strings.Join(change.After, "\x00") {
-				versions = formatVersionSet(change.Before) + " -> " + formatVersionSet(change.After)
+				versions = formatVersionTransition(change.Before, change.After, color.Yellow)
 			}
 		}
-		fmt.Fprintf(w, "    %-3s %s %s\n", tag, change.CP, versions)
+		fmt.Fprintf(w, "    %s %s %s\n", tag, cp, versions)
 	}
+}
+
+func formatVersionTransition(before, after []string, styleAfter func(string) string) string {
+	return color.Yellow(formatVersionSet(before)) +
+		" " + color.Bold("->") + " " +
+		styleAfter(formatVersionSet(after))
 }
 
 func formatVersionSet(versions []string) string {

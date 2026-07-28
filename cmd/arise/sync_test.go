@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -105,5 +106,46 @@ func TestPrintSyncTargetReportKeepsUnchangedOutputToOneLine(t *testing.T) {
 	printSyncTargetReport(&output, "gentoo", syncTargetReport{Stage: "unchanged"}, 1706*time.Millisecond)
 	if got, want := output.String(), "  gentoo               unchanged    1.706s\n"; got != want {
 		t.Fatalf("unchanged report = %q, want %q", got, want)
+	}
+}
+
+func TestPrintPackageChangesColorizesEixStyleChangeKinds(t *testing.T) {
+	previousColor := color.UseColor
+	color.UseColor = true
+	t.Cleanup(func() { color.UseColor = previousColor })
+
+	changes := internalsync.ChangeSummary{Packages: []internalsync.PackageChange{
+		{CP: "app-misc/new", Kind: "new", After: []string{"1"}},
+		{CP: "app-misc/removed", Kind: "removed", Before: []string{"1"}},
+		{CP: "app-misc/upgrade", Kind: "upgrade", Before: []string{"1"}, After: []string{"2"}},
+		{CP: "app-misc/better", Kind: "better", Before: []string{"1"}, After: []string{"1", "2"}},
+		{CP: "app-misc/worse", Kind: "worse", Before: []string{"1", "2"}, After: []string{"2"}},
+		{CP: "app-misc/changed", Kind: "changed", Before: []string{"1"}, After: []string{"1"}},
+	}}
+	var output bytes.Buffer
+	printPackageChanges(&output, changes)
+	got := output.String()
+
+	for _, sequence := range []string{
+		"\x1b[1m\x1b[32m[N]\x1b[0m",
+		"\x1b[1m\x1b[31m[D]\x1b[0m",
+		"\x1b[1m\x1b[33m[U]\x1b[0m",
+		"\x1b[1m\x1b[32m[>]\x1b[0m",
+		"\x1b[1m\x1b[31m[<]\x1b[0m",
+		"\x1b[1m\x1b[33m[C]\x1b[0m",
+		"\x1b[33m1\x1b[0m \x1b[1m->\x1b[0m \x1b[32m2\x1b[0m",
+	} {
+		if !strings.Contains(got, sequence) {
+			t.Errorf("colored sync changes do not contain %q:\n%q", sequence, got)
+		}
+	}
+
+	color.UseColor = false
+	output.Reset()
+	printPackageChanges(&output, changes)
+	plain := output.String()
+	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	if stripped := ansi.ReplaceAllString(got, ""); stripped != plain {
+		t.Fatalf("stripped colored output differs from plain output:\ncolored: %q\nplain:   %q", stripped, plain)
 	}
 }
