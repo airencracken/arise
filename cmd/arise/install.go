@@ -1222,7 +1222,7 @@ func warningsForDisplay(warnings []string, verbose bool) []string {
 	visible := make([]string, 0, len(warnings))
 	seen := make(map[string]bool, len(warnings))
 	for _, warning := range warnings {
-		if !verbose && strings.HasPrefix(warning, "circular dependency: ") {
+		if strings.HasPrefix(warning, "circular dependency: ") {
 			continue
 		}
 		if seen[warning] {

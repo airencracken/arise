@@ -1170,6 +1170,46 @@ func TestWalkUncachedEbuildRootsMarksStaticMetadataIncomplete(t *testing.T) {
 	}
 }
 
+func TestWalkUncachedEbuildRootsUsesEvaluatedPortageCache(t *testing.T) {
+	repo := t.TempDir()
+	cacheRoot := filepath.Join(repo, "metadata", "md5-cache")
+	if err := os.MkdirAll(filepath.Join(repo, "profiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "profiles", "repo_name"), []byte("overlay\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ebuildDir := filepath.Join(repo, "gui-libs", "display-manager-init")
+	if err := os.MkdirAll(ebuildDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ebuildDir, "display-manager-init-1.1.2-r4.ebuild"), []byte("EAPI=8\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	portageCache := t.TempDir()
+	evaluated := filepath.Join(portageCache, strings.TrimPrefix(repo, string(filepath.Separator)), "gui-libs")
+	if err := os.MkdirAll(evaluated, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := "EAPI=8\nSLOT=0\nKEYWORDS=amd64\nRDEPEND=sys-apps/gentoo-functions\n"
+	if err := os.WriteFile(filepath.Join(evaluated, "display-manager-init-1.1.2-r4"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results, errs := WalkUncachedEbuildRootsWithPortageCache([]string{cacheRoot}, portageCache)
+	var records []*metadata.PackageMetadata
+	for record := range results {
+		records = append(records, record)
+	}
+	for err := range errs {
+		t.Fatalf("unexpected walk error: %v", err)
+	}
+	if len(records) != 1 || !records[0].Complete() || records[0].Repository != "overlay" ||
+		records[0].RDEPEND != "sys-apps/gentoo-functions" {
+		t.Fatalf("evaluated cache record = %#v", records)
+	}
+}
+
 func TestWalkUncachedEbuildRootsNormalizesQuotedMultilineMetadata(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(repo, "profiles"), 0755); err != nil {

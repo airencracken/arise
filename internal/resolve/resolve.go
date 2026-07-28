@@ -943,7 +943,6 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 		conflicts:             []string{},
 		seenDeps:              make(map[string]bool),
 		activeDeps:            make(map[string]int),
-		cycleSeen:             make(map[string]bool),
 		selectedCPs:           make(map[string]bool),
 		explicitTargets:       make(map[string]bool),
 		worldTargets:          make(map[string]bool),
@@ -1093,6 +1092,7 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 		}
 		r.metrics.DirectUpdateRefresh = time.Since(phaseStarted)
 	}
+	r.warnSkippedUpdatesDueToConstraints()
 	if config.OnlyDeps {
 		for key, action := range r.toInstall {
 			if action != nil && action.Atom != nil && targetCPs[action.Atom.CP()] {
@@ -1165,6 +1165,66 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 	}, nil
 }
 
+// warnSkippedUpdatesDueToConstraints reports repository updates which were
+// considered inside the committed dependency closure but could not replace an
+// installed package because an accumulated dependency atom rejected them.
+// These are non-fatal, but silently omitting them makes an apparently complete
+// update plan misleading.
+func (r *resolver) warnSkippedUpdatesDueToConstraints() {
+	keys := make([]string, 0, len(r.constraints))
+	for key := range r.constraints {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		cp, slot, ok := strings.Cut(key, "|")
+		if !ok {
+			continue
+		}
+		node := r.graph.Packages[cp]
+		if node == nil {
+			continue
+		}
+		installed := node.GetInstalledVersionForSlot(slot)
+		if installed == nil || installed.Version == nil {
+			continue
+		}
+		var best *VersionInfo
+		for _, candidate := range node.Versions {
+			if candidate == nil || !candidate.Available || candidate.Version == nil || candidate.Slot != slot ||
+				r.versionMaskStatus(node, candidate).Masked || !r.versionKeywordAccepted(node, candidate) {
+				continue
+			}
+			if betterVersionCandidate(candidate, best) {
+				best = candidate
+			}
+		}
+		if best == nil || best.Version.Compare(installed.Version) <= 0 {
+			continue
+		}
+		var rejected []string
+		flags := r.candidateUseFlags(node, best)
+		for index, constraint := range r.constraints[key] {
+			if versionAtomMatches(node.Atom, constraint, best, flags) {
+				continue
+			}
+			text := constraint.String()
+			if index < len(r.constraintCauses[key]) && r.constraintCauses[key][index].Reason != "" {
+				text += " required by " + r.constraintCauses[key][index].Reason
+			}
+			rejected = append(rejected, text)
+		}
+		if len(rejected) == 0 {
+			continue
+		}
+		sort.Strings(rejected)
+		r.warnings = append(r.warnings, fmt.Sprintf(
+			"skipped update %s-%s::%s: conflicts with %s",
+			cp, best.Version.Raw, best.Repository, strings.Join(rejected, "; "),
+		))
+	}
+}
+
 func (r *resolver) checkContext() error {
 	r.metrics.CancellationChecks++
 	if r.ctx == nil {
@@ -1229,7 +1289,6 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 		toUninstall:         make(map[string]*PkgAction),
 		seenDeps:            make(map[string]bool),
 		activeDeps:          make(map[string]int),
-		cycleSeen:           make(map[string]bool),
 		selectedCPs:         make(map[string]bool),
 		explicitTargets:     make(map[string]bool),
 		worldTargets:        make(map[string]bool),
@@ -1329,7 +1388,6 @@ type resolver struct {
 	seenDeps              map[string]bool
 	activeDeps            map[string]int
 	dependencyPath        []string
-	cycleSeen             map[string]bool
 	selectedCPs           map[string]bool // final target/dependency closure
 	explicitTargets       map[string]bool // atoms named directly, excluding expanded sets
 	worldTargets          map[string]bool // atoms selected by the user world set
@@ -2165,6 +2223,27 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			msg = fmt.Sprintf("package masked: all matching versions of %s are masked (%s)", cp, strings.Join(masked, "; "))
 		}
 		r.conflicts = append(r.conflicts, msg)
+		slots := make(map[string]bool)
+		for _, candidate := range node.Versions {
+			if candidate != nil {
+				slots[candidate.Slot] = true
+			}
+		}
+		var candidates []ConflictCandidate
+		for slot := range slots {
+			candidates = append(candidates, r.slotConflictCandidates(node, slot, []*atom.Atom{matchTarget})...)
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].CPV != candidates[j].CPV {
+				return candidates[i].CPV < candidates[j].CPV
+			}
+			return candidates[i].State < candidates[j].State
+		})
+		r.conflictDetails = append(r.conflictDetails, ConflictDetail{
+			Kind: "no-installable-candidate", Package: cp, Message: msg,
+			Requirements: []ConflictRequirement{{Atom: matchTarget.String(), Reason: reason}},
+			Candidates:   candidates,
+		})
 		if r.config.KeepGoing {
 			return nil
 		}
@@ -2609,9 +2688,6 @@ func (r *resolver) processDeps(node *PkgNode, vi *VersionInfo, parent string, de
 	if r.activeDeps == nil {
 		r.activeDeps = make(map[string]int)
 	}
-	if r.cycleSeen == nil {
-		r.cycleSeen = make(map[string]bool)
-	}
 	// Dependency traversal describes the final overlaid state, not an
 	// intermediate installed state. A parent may be reached through a second
 	// path after its replacement was already scheduled; in that case expanding
@@ -2626,14 +2702,12 @@ func (r *resolver) processDeps(node *PkgNode, vi *VersionInfo, parent string, de
 	if vi != nil && vi.Version != nil {
 		depKey += "-" + vi.Version.Raw + ":" + vi.Slot + "::" + vi.Repository
 	}
-	if start, active := r.activeDeps[depKey]; active {
-		cycle := append([]string(nil), r.dependencyPath[start:]...)
-		cycle = append(cycle, depKey)
-		message := "circular dependency: " + strings.Join(cycle, " -> ")
-		if !r.cycleSeen[message] {
-			r.cycleSeen[message] = true
-			r.warnings = append(r.warnings, message)
-		}
+	if _, active := r.activeDeps[depKey]; active {
+		// Cycles are normal in a Portage dependency graph and are handled by
+		// stopping expansion at the active node.  The traversal path is an
+		// internal implementation detail, not an actionable user warning.
+		// Materializing every path also makes verbose and JSON plans grow
+		// quadratically for large world graphs.
 		return nil
 	}
 	if r.seenDeps[depKey] {

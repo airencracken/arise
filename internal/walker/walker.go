@@ -73,6 +73,13 @@ func WalkCacheRoots(roots []string) (<-chan *metadata.PackageMetadata, <-chan er
 // Static metadata is deliberately marked incomplete; it is suitable for
 // discovery/state parity but not authoritative execution decisions.
 func WalkUncachedEbuildRoots(cacheRoots []string) (<-chan *metadata.PackageMetadata, <-chan error) {
+	return WalkUncachedEbuildRootsWithPortageCache(cacheRoots, "/var/cache/edb/dep")
+}
+
+// WalkUncachedEbuildRootsWithPortageCache discovers ebuilds absent from the
+// repository md5-cache and prefers Portage's evaluated metadata cache when it
+// is available. Static parsing remains a discovery-only fallback.
+func WalkUncachedEbuildRootsWithPortageCache(cacheRoots []string, portageCacheRoot string) (<-chan *metadata.PackageMetadata, <-chan error) {
 	results := make(chan *metadata.PackageMetadata)
 	errs := make(chan error, errBufSize)
 	go func() {
@@ -110,6 +117,21 @@ func WalkUncachedEbuildRoots(cacheRoots []string) (<-chan *metadata.PackageMetad
 				category := filepath.Base(filepath.Dir(filepath.Dir(path)))
 				pf := strings.TrimSuffix(filepath.Base(path), ".ebuild")
 				if _, err := os.Stat(filepath.Join(cacheRoot, category, pf)); err == nil {
+					continue
+				}
+				repositoryRelative := strings.TrimPrefix(filepath.Clean(repo), string(filepath.Separator))
+				portageCachePath := filepath.Join(portageCacheRoot, repositoryRelative, category, pf)
+				if data, err := os.ReadFile(portageCachePath); err == nil {
+					m, parseErr := metadata.ParseCacheEntry(category+"/"+pf, data)
+					if parseErr != nil {
+						errs <- parseErr
+						continue
+					}
+					m.Repository, m.RepositoryPath, m.RepositoryPriority, m.OverlayIndex = repoName, repo, priority, priority
+					m.RepositoryMasters = readRepositoryMasters(repo)
+					m.EAPIBanned = banned[m.EAPI]
+					m.EAPIDeprecated = deprecated[m.EAPI]
+					results <- m
 					continue
 				}
 				parsed, err := ebuild.ParseEbuild(path)
