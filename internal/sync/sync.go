@@ -61,10 +61,11 @@ type ChangeSummary struct {
 }
 
 type PackageChange struct {
-	CP     string
-	Kind   string
-	Before []string
-	After  []string
+	CP          string
+	Kind        string
+	Before      []string
+	After       []string
+	Description string
 }
 
 // RemoteURL returns the first URL configured for the origin remote in an
@@ -332,11 +333,74 @@ func gitEbuildChanges(ctx context.Context, dir, oldRevision, newRevision string)
 			return ChangeSummary{}, versionErr
 		}
 		summary.Packages = append(summary.Packages, PackageChange{
-			CP: cp, Kind: packageChangeKind(before, after), Before: before, After: after,
+			CP:          cp,
+			Kind:        packageChangeKind(before, after),
+			Before:      before,
+			After:       after,
+			Description: treePackageDescription(newTree, oldTree, cp, before, after),
 		})
 	}
 	sort.Slice(summary.Packages, func(i, j int) bool { return summary.Packages[i].CP < summary.Packages[j].CP })
 	return summary, nil
+}
+
+func treePackageDescription(newTree, oldTree *object.Tree, cp string, before, after []string) string {
+	tree := newTree
+	versions := after
+	if len(versions) == 0 {
+		tree = oldTree
+		versions = before
+	}
+	if tree == nil || len(versions) == 0 {
+		return ""
+	}
+	version := preferredDisplayVersion(versions)
+	for _, path := range []string{
+		"metadata/md5-cache/" + cp + "-" + version,
+		packageEbuildPath(cp, version),
+	} {
+		file, err := tree.File(path)
+		if err != nil {
+			continue
+		}
+		content, err := file.Contents()
+		if err != nil {
+			continue
+		}
+		if description := descriptionFromMetadata(content); description != "" {
+			return description
+		}
+	}
+	return ""
+}
+
+func packageEbuildPath(cp, version string) string {
+	category, packageName, ok := strings.Cut(cp, "/")
+	if !ok {
+		return ""
+	}
+	return category + "/" + packageName + "/" + packageName + "-" + version + ".ebuild"
+}
+
+func descriptionFromMetadata(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || key != "DESCRIPTION" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
+			(value[0] == '\'' && value[len(value)-1] == '\'')) {
+			if value[0] == '"' {
+				if unquoted, err := strconv.Unquote(value); err == nil {
+					return unquoted
+				}
+			}
+			return value[1 : len(value)-1]
+		}
+		return value
+	}
+	return ""
 }
 
 func cpFromCPV(cpv string) (string, bool) {
@@ -601,6 +665,14 @@ func updateGitRepo(ctx context.Context, cfg SyncConfig) error {
 }
 
 func syncRsync(ctx context.Context, cfg SyncConfig) error {
+	var before repositoryEbuildSnapshot
+	var err error
+	if cfg.Changes != nil {
+		before, err = snapshotRepositoryEbuilds(cfg.TargetDir)
+		if err != nil {
+			return fmt.Errorf("could not snapshot repository before rsync: %w", err)
+		}
+	}
 	cmd := exec.CommandContext(ctx, cfg.RsyncPath, "-av", "--delete", cfg.RepoURL+"/", cfg.TargetDir)
 	cfg.progress("rsync", "Synchronizing repository")
 	cmd.Stdout = cfg.Output
@@ -611,5 +683,139 @@ func syncRsync(ctx context.Context, cfg SyncConfig) error {
 		}
 		return err
 	}
+	if cfg.Changes != nil {
+		cfg.progress("changes", "Calculating package changes")
+		after, snapshotErr := snapshotRepositoryEbuilds(cfg.TargetDir)
+		if snapshotErr != nil {
+			return fmt.Errorf("could not snapshot repository after rsync: %w", snapshotErr)
+		}
+		cfg.Changes(compareRepositoryEbuildSnapshots(before, after))
+	}
 	return nil
+}
+
+type repositoryEbuildSnapshot struct {
+	Files       map[string]string
+	Versions    map[string][]string
+	Description map[string]string
+}
+
+func snapshotRepositoryEbuilds(root string) (repositoryEbuildSnapshot, error) {
+	snapshot := repositoryEbuildSnapshot{
+		Files:       make(map[string]string),
+		Versions:    make(map[string][]string),
+		Description: make(map[string]string),
+	}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) && path == root {
+				return nil
+			}
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".ebuild") {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		cpv, ok := ebuildCPV(filepath.ToSlash(relative))
+		if !ok {
+			return nil
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		snapshot.Files[cpv] = string(content)
+		cp, ok := cpFromCPV(cpv)
+		if !ok {
+			return nil
+		}
+		version := strings.TrimPrefix(cpv, cp+"-")
+		snapshot.Versions[cp] = append(snapshot.Versions[cp], version)
+		if description := descriptionFromMetadata(string(content)); description != "" {
+			snapshot.Description[cpv] = description
+		}
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return repositoryEbuildSnapshot{}, err
+	}
+	for cp := range snapshot.Versions {
+		sortVersions(snapshot.Versions[cp])
+	}
+	return snapshot, nil
+}
+
+func compareRepositoryEbuildSnapshots(before, after repositoryEbuildSnapshot) ChangeSummary {
+	var summary ChangeSummary
+	affected := make(map[string]struct{})
+	for cpv, oldContent := range before.Files {
+		newContent, exists := after.Files[cpv]
+		switch {
+		case !exists:
+			summary.Removed = append(summary.Removed, cpv)
+		case newContent != oldContent:
+			summary.Modified = append(summary.Modified, cpv)
+		}
+	}
+	for cpv := range after.Files {
+		if _, exists := before.Files[cpv]; !exists {
+			summary.Added = append(summary.Added, cpv)
+		}
+	}
+	for _, cpv := range append(append(append([]string{}, summary.Added...), summary.Removed...), summary.Modified...) {
+		if cp, ok := cpFromCPV(cpv); ok {
+			affected[cp] = struct{}{}
+		}
+	}
+	sort.Strings(summary.Added)
+	sort.Strings(summary.Removed)
+	sort.Strings(summary.Modified)
+	for cp := range affected {
+		oldVersions := before.Versions[cp]
+		newVersions := after.Versions[cp]
+		description := snapshotPackageDescription(after, cp, newVersions)
+		if len(newVersions) == 0 {
+			description = snapshotPackageDescription(before, cp, oldVersions)
+		}
+		summary.Packages = append(summary.Packages, PackageChange{
+			CP: cp, Kind: packageChangeKind(oldVersions, newVersions),
+			Before: oldVersions, After: newVersions, Description: description,
+		})
+	}
+	sort.Slice(summary.Packages, func(i, j int) bool { return summary.Packages[i].CP < summary.Packages[j].CP })
+	return summary
+}
+
+func snapshotPackageDescription(snapshot repositoryEbuildSnapshot, cp string, versions []string) string {
+	if len(versions) == 0 {
+		return ""
+	}
+	return snapshot.Description[cp+"-"+preferredDisplayVersion(versions)]
+}
+
+func preferredDisplayVersion(versions []string) string {
+	for index := len(versions) - 1; index >= 0; index-- {
+		if versions[index] != "9999" {
+			return versions[index]
+		}
+	}
+	if len(versions) == 0 {
+		return ""
+	}
+	return versions[len(versions)-1]
+}
+
+func sortVersions(versions []string) {
+	sort.Slice(versions, func(i, j int) bool {
+		left, leftErr := atom.ParseVersion(versions[i])
+		right, rightErr := atom.ParseVersion(versions[j])
+		if leftErr != nil || rightErr != nil {
+			return versions[i] < versions[j]
+		}
+		return left.Compare(right) < 0
+	})
 }
