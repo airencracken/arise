@@ -28,6 +28,8 @@ Maintained reader guides extracted from the project overview:
   methodology, evidence, and claim boundaries.
 - [`development.md`](development.md) — build/test commands, architecture,
   environment variables, and configuration boundaries.
+- [`adr/`](adr/README.md) — accepted architecture decisions, their evidence,
+  consequences, and explicit revisit conditions.
 
 ## Audits
 

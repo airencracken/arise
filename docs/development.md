@@ -50,6 +50,14 @@ The remaining internal packages provide focused query, recovery, configuration,
 audit, and compatibility primitives. Package documentation and tests are the
 authoritative implementation-level reference.
 
+## Architecture decisions
+
+Durable architectural choices and their tradeoffs are maintained as
+[architecture decision records](adr/README.md). Add an ADR when a decision is
+likely to be questioned later, crosses package boundaries, establishes a
+project-wide engineering priority, or deliberately accepts a significant cost.
+Implementation details that are obvious from one package do not need an ADR.
+
 ## Environment
 
 | Variable | Purpose |

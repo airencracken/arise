@@ -7,12 +7,22 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/utils/merkletrie"
+)
+
+var (
+	errDirtyWorktree = errors.New("repository has local changes; refusing to overwrite them")
+	errDetachedHead  = errors.New("repository has a detached HEAD; select a branch before syncing")
+	errCloneTarget   = errors.New("clone target already exists")
 )
 
 // SyncConfig holds configuration for syncing a repository.
@@ -111,8 +121,9 @@ func (c SyncConfig) progress(stage, detail string) {
 	}
 }
 
-// Sync clones a fresh repository or updates an existing one.
-// If go-git is unavailable or fails, it falls back to rsync.
+// Sync clones a fresh repository or updates an existing one. The in-process
+// Git transport is primary; the system Git executable is a compatibility
+// fallback. Rsync is used only when explicitly configured.
 func Sync(ctx context.Context, cfg SyncConfig) error {
 	cfg.defaults()
 
@@ -131,28 +142,42 @@ func Sync(ctx context.Context, cfg SyncConfig) error {
 	}
 
 	if isGitRepo(cfg.TargetDir) {
-		if GitAvailable() {
-			return updateGitRepoCommand(ctx, cfg)
+		primaryErr := updateGitRepo(ctx, cfg)
+		if primaryErr == nil || errors.Is(primaryErr, errDirtyWorktree) ||
+			errors.Is(primaryErr, errDetachedHead) || !GitAvailable() {
+			return primaryErr
 		}
-		return updateGitRepo(ctx, cfg)
-	}
-
-	if GitAvailable() {
-		if err := cloneGitRepoCommand(ctx, cfg); err == nil {
+		fallbackErr := updateGitRepoCommand(ctx, cfg)
+		if fallbackErr == nil {
 			return nil
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
+		return errors.Join(
+			fmt.Errorf("sync: built-in Git failed: %w", primaryErr),
+			fmt.Errorf("sync: system Git fallback failed: %w", fallbackErr),
+		)
 	}
-	if err := cloneGitRepo(ctx, cfg); err == nil {
+
+	primaryErr := cloneGitRepo(ctx, cfg)
+	if primaryErr == nil {
 		return nil
+	}
+	if errors.Is(primaryErr, errCloneTarget) {
+		return primaryErr
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-
-	return syncRsync(ctx, cfg)
+	if GitAvailable() {
+		if fallbackErr := cloneGitRepoCommand(ctx, cfg); fallbackErr == nil {
+			return nil
+		} else {
+			return errors.Join(
+				fmt.Errorf("sync: built-in Git failed: %w", primaryErr),
+				fmt.Errorf("sync: system Git fallback failed: %w", fallbackErr),
+			)
+		}
+	}
+	return primaryErr
 }
 
 func runGit(ctx context.Context, output io.Writer, args ...string) error {
@@ -238,45 +263,59 @@ func updateGitRepoCommand(ctx context.Context, cfg SyncConfig) error {
 }
 
 func gitEbuildChanges(ctx context.Context, dir, oldRevision, newRevision string) (ChangeSummary, error) {
-	out, err := gitOutput(ctx, "-C", dir, "diff", "--name-status", oldRevision, newRevision, "--", "*.ebuild")
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return ChangeSummary{}, err
 	}
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return ChangeSummary{}, fmt.Errorf("could not open repository for change calculation: %w", err)
+	}
+	oldCommit, err := repo.CommitObject(plumbing.NewHash(oldRevision))
+	if err != nil {
+		return ChangeSummary{}, fmt.Errorf("could not load old commit %s: %w", oldRevision, err)
+	}
+	newCommit, err := repo.CommitObject(plumbing.NewHash(newRevision))
+	if err != nil {
+		return ChangeSummary{}, fmt.Errorf("could not load new commit %s: %w", newRevision, err)
+	}
+	oldTree, err := oldCommit.Tree()
+	if err != nil {
+		return ChangeSummary{}, fmt.Errorf("could not load old tree: %w", err)
+	}
+	newTree, err := newCommit.Tree()
+	if err != nil {
+		return ChangeSummary{}, fmt.Errorf("could not load new tree: %w", err)
+	}
+	changes, err := object.DiffTreeContext(ctx, oldTree, newTree)
+	if err != nil {
+		return ChangeSummary{}, fmt.Errorf("could not compare repository trees: %w", err)
+	}
 	var summary ChangeSummary
-	for _, line := range strings.Split(out, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
+	for _, change := range changes {
+		action, actionErr := change.Action()
+		if actionErr != nil {
+			return ChangeSummary{}, actionErr
 		}
-		status := fields[0][0]
-		if status == 'R' && len(fields) >= 3 {
-			if cpv, ok := ebuildCPV(fields[1]); ok {
-				summary.Removed = append(summary.Removed, cpv)
-			}
-			if cpv, ok := ebuildCPV(fields[2]); ok {
-				summary.Added = append(summary.Added, cpv)
-			}
-			continue
+		path := change.To.Name
+		if action == merkletrie.Delete {
+			path = change.From.Name
 		}
-		if status == 'C' && len(fields) >= 3 {
-			if cpv, ok := ebuildCPV(fields[2]); ok {
-				summary.Added = append(summary.Added, cpv)
-			}
-			continue
-		}
-		cpv, ok := ebuildCPV(fields[len(fields)-1])
+		cpv, ok := ebuildCPV(path)
 		if !ok {
 			continue
 		}
-		switch status {
-		case 'A':
+		switch action {
+		case merkletrie.Insert:
 			summary.Added = append(summary.Added, cpv)
-		case 'D':
+		case merkletrie.Delete:
 			summary.Removed = append(summary.Removed, cpv)
-		default:
+		case merkletrie.Modify:
 			summary.Modified = append(summary.Modified, cpv)
 		}
 	}
+	sort.Strings(summary.Added)
+	sort.Strings(summary.Removed)
+	sort.Strings(summary.Modified)
 	affected := make(map[string]struct{})
 	for _, cpv := range append(append(append([]string{}, summary.Added...), summary.Removed...), summary.Modified...) {
 		if cp, ok := cpFromCPV(cpv); ok {
@@ -284,11 +323,11 @@ func gitEbuildChanges(ctx context.Context, dir, oldRevision, newRevision string)
 		}
 	}
 	for cp := range affected {
-		before, versionErr := gitPackageVersions(ctx, dir, oldRevision, cp)
+		before, versionErr := treePackageVersions(oldTree, cp)
 		if versionErr != nil {
 			return ChangeSummary{}, versionErr
 		}
-		after, versionErr := gitPackageVersions(ctx, dir, newRevision, cp)
+		after, versionErr := treePackageVersions(newTree, cp)
 		if versionErr != nil {
 			return ChangeSummary{}, versionErr
 		}
@@ -314,23 +353,43 @@ func cpFromCPV(cpv string) (string, bool) {
 }
 
 func gitPackageVersions(ctx context.Context, dir, revision, cp string) ([]string, error) {
-	category, packageName, ok := strings.Cut(cp, "/")
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return nil, err
+	}
+	commit, err := repo.CommitObject(plumbing.NewHash(revision))
+	if err != nil {
+		return nil, err
+	}
+	tree, err := commit.Tree()
+	if err != nil {
+		return nil, err
+	}
+	return treePackageVersions(tree, cp)
+}
+
+func treePackageVersions(tree *object.Tree, cp string) ([]string, error) {
+	_, packageName, ok := strings.Cut(cp, "/")
 	if !ok {
 		return nil, fmt.Errorf("sync: invalid package key %q", cp)
 	}
-	out, err := gitOutput(ctx, "-C", dir, "ls-tree", "-r", "--name-only", revision, "--", cp)
+	packageTree, err := tree.Tree(cp)
+	if errors.Is(err, object.ErrDirectoryNotFound) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 	var versions []string
 	prefix := packageName + "-"
-	for _, path := range strings.Split(out, "\n") {
-		parts := strings.Split(path, "/")
-		if len(parts) != 3 || parts[0] != category || parts[1] != packageName ||
-			!strings.HasPrefix(parts[2], prefix) || !strings.HasSuffix(parts[2], ".ebuild") {
+	for _, entry := range packageTree.Entries {
+		if !strings.HasPrefix(entry.Name, prefix) || !strings.HasSuffix(entry.Name, ".ebuild") {
 			continue
 		}
-		versions = append(versions, strings.TrimSuffix(strings.TrimPrefix(parts[2], prefix), ".ebuild"))
+		versions = append(versions, strings.TrimSuffix(strings.TrimPrefix(entry.Name, prefix), ".ebuild"))
 	}
 	sort.Slice(versions, func(i, j int) bool {
 		left, leftErr := atom.ParseVersion(versions[i])
@@ -392,8 +451,10 @@ func ebuildCPV(path string) (string, bool) {
 }
 
 func cloneGitRepoCommand(ctx context.Context, cfg SyncConfig) error {
-	cfg.progress("clone", "Cloning repository with git")
-	return runGit(ctx, cfg.Output, "clone", "--progress", "--depth", strconv.Itoa(cfg.Depth), cfg.RepoURL, cfg.TargetDir)
+	return cloneGitRepoAtomically(ctx, cfg, func(staging string) error {
+		cfg.progress("clone", "Cloning repository with system Git fallback")
+		return runGit(ctx, cfg.Output, "clone", "--progress", "--depth", strconv.Itoa(cfg.Depth), cfg.RepoURL, staging)
+	})
 }
 
 // GitAvailable reports whether git is in PATH.
@@ -413,48 +474,129 @@ func isGitRepo(dir string) bool {
 }
 
 func cloneGitRepo(ctx context.Context, cfg SyncConfig) error {
-	cfg.progress("clone", "Cloning repository with built-in transport")
-	_, err := git.PlainCloneContext(ctx, cfg.TargetDir, false, &git.CloneOptions{
-		URL:   cfg.RepoURL,
-		Depth: cfg.Depth,
+	return cloneGitRepoAtomically(ctx, cfg, func(staging string) error {
+		cfg.progress("clone", "Cloning repository with built-in transport")
+		_, err := git.PlainCloneContext(ctx, staging, false, &git.CloneOptions{
+			URL:      cfg.RepoURL,
+			Depth:    cfg.Depth,
+			Progress: cfg.Output,
+		})
+		if err != nil {
+			return fmt.Errorf("could not clone the repository: %w", err)
+		}
+		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("could not clone the repository: %w", err)
+}
+
+func cloneGitRepoAtomically(ctx context.Context, cfg SyncConfig, clone func(string) error) error {
+	if _, err := os.Lstat(cfg.TargetDir); err == nil {
+		return fmt.Errorf("sync: %w: %s", errCloneTarget, cfg.TargetDir)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("sync: inspect clone target: %w", err)
 	}
+	parent := filepath.Dir(cfg.TargetDir)
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("sync: inspect clone target parent: %w", err)
+	}
+	if !parentInfo.IsDir() {
+		return fmt.Errorf("sync: clone target parent is not a directory: %s", parent)
+	}
+	staging, err := os.MkdirTemp(parent, "."+filepath.Base(cfg.TargetDir)+".clone-")
+	if err != nil {
+		return fmt.Errorf("sync: create clone staging directory: %w", err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+	if err := clone(staging); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !isGitRepo(staging) {
+		return errors.New("sync: clone transport completed without producing a Git repository")
+	}
+	if err := os.Rename(staging, cfg.TargetDir); err != nil {
+		return fmt.Errorf("sync: publish cloned repository: %w", err)
+	}
+	published = true
 	return nil
 }
 
 func updateGitRepo(ctx context.Context, cfg SyncConfig) error {
+	cfg.progress("check", "Checking repository state")
 	repo, err := git.PlainOpen(cfg.TargetDir)
 	if err != nil {
 		return fmt.Errorf("could not open the local repository: %w", err)
 	}
 
-	rem, err := repo.Remote("origin")
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("could not check repository working tree status: %w", err)
+	}
+	status, err := worktree.Status()
+	if err != nil {
+		return fmt.Errorf("could not check repository working tree status: %w", err)
+	}
+	if !status.IsClean() {
+		return errDirtyWorktree
+	}
+
+	head, err := repo.Reference(plumbing.HEAD, false)
+	if err != nil {
+		return fmt.Errorf("could not inspect repository HEAD: %w", err)
+	}
+	if head.Type() != plumbing.SymbolicReference ||
+		!head.Target().IsBranch() {
+		return errDetachedHead
+	}
+	branch := head.Target()
+	oldRevision, err := repo.ResolveRevision(plumbing.Revision(branch.String()))
+	if err != nil {
+		return fmt.Errorf("could not resolve local branch %s: %w", branch.Short(), err)
+	}
+
+	remote, err := repo.Remote("origin")
 	if err != nil {
 		return fmt.Errorf("could not contact the remote repository: %w", err)
 	}
-
-	err = rem.FetchContext(ctx, &git.FetchOptions{
-		Depth: cfg.Depth,
+	cfg.progress("fetch", "Fetching "+branch.Short()+" from origin")
+	err = remote.FetchContext(ctx, &git.FetchOptions{
+		RemoteName: "origin",
+		Depth:      cfg.Depth,
+		Progress:   cfg.Output,
 	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) && !strings.Contains(err.Error(), "already up-to-date") {
 		return fmt.Errorf("could not fetch updates from the remote: %w", err)
 	}
 
-	w, err := repo.Worktree()
+	remoteBranch := plumbing.NewRemoteReferenceName("origin", branch.Short())
+	newRevision, err := repo.ResolveRevision(plumbing.Revision(remoteBranch.String()))
 	if err != nil {
-		return fmt.Errorf("could not check repository working tree status: %w", err)
+		return fmt.Errorf("could not resolve origin/%s after fetch: %w", branch.Short(), err)
+	}
+	if *oldRevision == *newRevision {
+		cfg.progress("unchanged", "Already up to date")
+		return nil
 	}
 
-	err = w.PullContext(ctx, &git.PullOptions{
-		RemoteName: "origin",
-		Depth:      cfg.Depth,
-	})
-	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) && !strings.Contains(err.Error(), "already up-to-date") {
-		return fmt.Errorf("could not pull updates into the local repository: %w", err)
+	cfg.progress("update", "Updating working tree")
+	if err := worktree.Reset(&git.ResetOptions{Commit: *newRevision, Mode: git.HardReset}); err != nil {
+		return fmt.Errorf("could not update the working tree: %w", err)
 	}
-
+	if cfg.Changes != nil {
+		cfg.progress("changes", "Calculating package changes")
+		changes, changeErr := gitEbuildChanges(ctx, cfg.TargetDir, oldRevision.String(), newRevision.String())
+		if changeErr != nil {
+			return changeErr
+		}
+		cfg.Changes(changes)
+	}
 	return nil
 }
 

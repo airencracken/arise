@@ -353,6 +353,10 @@ func TestCloneGitRepo_ContextCancelled(t *testing.T) {
 	if err == nil {
 		t.Error("cloneGitRepo with cancelled context should return error")
 	}
+	if _, statErr := os.Lstat(dstDir); !os.IsNotExist(statErr) {
+		t.Fatalf("cancelled clone published target: %v", statErr)
+	}
+	assertNoCloneStagingDirectories(t, filepath.Dir(dstDir), filepath.Base(dstDir))
 }
 
 func TestUpdateGitRepo_Success(t *testing.T) {
@@ -922,7 +926,7 @@ func TestSyncCanceledContextDoesNotStartFallbackTransport(t *testing.T) {
 	}
 }
 
-func initSyncRemote(t *testing.T) string {
+func initSyncRemote(t testing.TB) string {
 	t.Helper()
 	remote := t.TempDir()
 	testGit(t, "init", "-b", "master", remote)
@@ -932,7 +936,7 @@ func initSyncRemote(t *testing.T) string {
 	return remote
 }
 
-func writeSyncFile(t *testing.T, root, relative, content string) {
+func writeSyncFile(t testing.TB, root, relative, content string) {
 	t.Helper()
 	path := filepath.Join(root, filepath.FromSlash(relative))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -943,13 +947,13 @@ func writeSyncFile(t *testing.T, root, relative, content string) {
 	}
 }
 
-func commitSyncRemote(t *testing.T, remote, message string) {
+func commitSyncRemote(t testing.TB, remote, message string) {
 	t.Helper()
 	testGit(t, "-C", remote, "add", "-A")
 	testGit(t, "-C", remote, "-c", "user.name=Arise Test", "-c", "user.email=arise@example.invalid", "commit", "-m", message)
 }
 
-func testGit(t *testing.T, args ...string) {
+func testGit(t testing.TB, args ...string) {
 	t.Helper()
 	command := exec.Command("git", args...)
 	if output, err := command.CombinedOutput(); err != nil {
@@ -957,7 +961,7 @@ func testGit(t *testing.T, args ...string) {
 	}
 }
 
-func testGitOutput(t *testing.T, args ...string) string {
+func testGitOutput(t testing.TB, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	output, err := command.CombinedOutput()

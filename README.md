@@ -131,6 +131,27 @@ Then install Arise normally:
 emerge --ask sys-apps/arise
 ```
 
+### Why the offline dependency archive is large
+
+Release ebuilds build without network access, so each release includes a
+checksum-locked Go module cache. Most of its bytes are already-compressed
+upstream module ZIPs, leaving little for the outer xz layer to compress.
+
+The two largest modules in the current graph are
+`github.com/klauspost/compress`, used by GPKG/zstd support and BadgerDB, and
+`github.com/cloudflare/circl`, reached through go-git's OpenPGP dependency.
+Their ZIPs contain large upstream compression corpora, fuzz inputs, and
+cryptographic test vectors. These files are not linked into the Arise binary,
+but Go authenticates the complete module ZIP against `go.sum`. Removing or
+repacking them would break standard module verification.
+
+Arise keeps go-git because repository synchronization is latency-sensitive.
+In-process clone and update benchmarks are retained beside the transport
+contract tests; on the current small Git-protocol fixture they avoid roughly
+85–90% of the latency of the multi-process system Git path. The system Git
+executable remains a compatibility fallback when the built-in transport cannot
+handle a remote.
+
 That Portage bootstrap is only for systems where Arise is not installed yet.
 An existing Arise installation updates itself and its overlay directly:
 
