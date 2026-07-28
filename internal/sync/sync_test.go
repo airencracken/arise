@@ -618,6 +618,56 @@ func TestSyncRsync_LocalCopy(t *testing.T) {
 	}
 }
 
+func TestSyncRsyncReportsPackageVersionTransition(t *testing.T) {
+	if _, err := exec.LookPath("rsync"); err != nil {
+		t.Skip("rsync not available")
+	}
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	for _, fixture := range []struct {
+		root        string
+		relative    string
+		description string
+	}{
+		{dstDir, "app-containers/lxc-templates/lxc-templates-3.0.4_p20240917.ebuild", "Old templates"},
+		{dstDir, "app-containers/lxc-templates/lxc-templates-9999.ebuild", "Live templates"},
+		{srcDir, "app-containers/lxc-templates/lxc-templates-3.0.4_p20240917.ebuild", "Old templates"},
+		{srcDir, "app-containers/lxc-templates/lxc-templates-3.0.4_p20260719.ebuild", "Old style template scripts for LXC"},
+		{srcDir, "app-containers/lxc-templates/lxc-templates-9999.ebuild", "Live templates"},
+	} {
+		writeSyncFile(t, fixture.root, fixture.relative, "EAPI=8\nDESCRIPTION=\""+fixture.description+"\"\n")
+	}
+
+	var stages []string
+	var got ChangeSummary
+	cfg := SyncConfig{
+		RepoURL: srcDir, TargetDir: dstDir, RsyncPath: "rsync",
+		Progress: func(stage, _ string) { stages = append(stages, stage) },
+		Changes:  func(summary ChangeSummary) { got = summary },
+	}
+	if err := syncRsync(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	want := ChangeSummary{
+		Added: []string{"app-containers/lxc-templates-3.0.4_p20260719"},
+		Packages: []PackageChange{{
+			CP:          "app-containers/lxc-templates",
+			Kind:        "better",
+			Before:      []string{"3.0.4_p20240917", "9999"},
+			After:       []string{"3.0.4_p20240917", "3.0.4_p20260719", "9999"},
+			Description: "Old style template scripts for LXC",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("rsync change summary = %#v, want %#v", got, want)
+	}
+	if !reflect.DeepEqual(stages, []string{"rsync", "changes"}) {
+		t.Fatalf("rsync stages = %v, want [rsync changes]", stages)
+	}
+}
+
 func TestSyncRsync_ContextCancelled(t *testing.T) {
 	if _, err := exec.LookPath("rsync"); err != nil {
 		t.Skip("rsync not available")
@@ -800,7 +850,7 @@ func TestSyncCommandReportsExactEbuildChangesAndProgress(t *testing.T) {
 		Modified: []string{"app-misc/modified-1"},
 		Packages: []PackageChange{
 			{CP: "app-misc/added", Kind: "new", After: []string{"2"}},
-			{CP: "app-misc/modified", Kind: "changed", Before: []string{"1"}, After: []string{"1"}},
+			{CP: "app-misc/modified", Kind: "changed", Before: []string{"1"}, After: []string{"1"}, Description: "changed"},
 			{CP: "app-misc/old", Kind: "removed", Before: []string{"1"}},
 		},
 	}
@@ -827,7 +877,7 @@ func TestGitEbuildChangesReportsPackageVersionTransition(t *testing.T) {
 	if err := os.Remove(filepath.Join(repository, "app-misc", "modified", "modified-1.ebuild")); err != nil {
 		t.Fatal(err)
 	}
-	writeSyncFile(t, repository, "app-misc/modified/modified-2-r1.ebuild", "EAPI=8\n")
+	writeSyncFile(t, repository, "app-misc/modified/modified-2-r1.ebuild", "EAPI=8\nDESCRIPTION=\"Improved package\"\n")
 	commitSyncRemote(t, repository, "upgrade package")
 	newRevision := testGitOutput(t, "-C", repository, "rev-parse", "HEAD")
 
@@ -837,9 +887,75 @@ func TestGitEbuildChangesReportsPackageVersionTransition(t *testing.T) {
 	}
 	want := []PackageChange{{
 		CP: "app-misc/modified", Kind: "upgrade", Before: []string{"1"}, After: []string{"2-r1"},
+		Description: "Improved package",
 	}}
 	if !reflect.DeepEqual(changes.Packages, want) {
 		t.Fatalf("package changes = %#v, want %#v", changes.Packages, want)
+	}
+}
+
+func TestCompareRepositoryEbuildSnapshotsReportsBestVersionAndDescription(t *testing.T) {
+	before := repositoryEbuildSnapshot{
+		Files: map[string]string{
+			"app-containers/lxc-templates-3.0.4_p20240917": "old",
+			"app-containers/lxc-templates-9999":            "live",
+		},
+		Versions: map[string][]string{
+			"app-containers/lxc-templates": {"3.0.4_p20240917", "9999"},
+		},
+		Description: map[string]string{
+			"app-containers/lxc-templates-9999": "Live templates",
+		},
+	}
+	after := repositoryEbuildSnapshot{
+		Files: map[string]string{
+			"app-containers/lxc-templates-3.0.4_p20240917": "old",
+			"app-containers/lxc-templates-3.0.4_p20260719": "new",
+			"app-containers/lxc-templates-9999":            "live",
+		},
+		Versions: map[string][]string{
+			"app-containers/lxc-templates": {"3.0.4_p20240917", "3.0.4_p20260719", "9999"},
+		},
+		Description: map[string]string{
+			"app-containers/lxc-templates-3.0.4_p20260719": "Old style template scripts for LXC",
+		},
+	}
+
+	got := compareRepositoryEbuildSnapshots(before, after)
+	want := ChangeSummary{
+		Added: []string{"app-containers/lxc-templates-3.0.4_p20260719"},
+		Packages: []PackageChange{{
+			CP:          "app-containers/lxc-templates",
+			Kind:        "better",
+			Before:      []string{"3.0.4_p20240917", "9999"},
+			After:       []string{"3.0.4_p20240917", "3.0.4_p20260719", "9999"},
+			Description: "Old style template scripts for LXC",
+		}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("snapshot change = %#v, want %#v", got, want)
+	}
+}
+
+func TestDescriptionFromMetadataHandlesQuotedAndAdversarialValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{name: "cache", content: "EAPI=8\nDESCRIPTION=Old style template scripts for LXC\n", want: "Old style template scripts for LXC"},
+		{name: "double quoted", content: "DESCRIPTION=\"A package with spaces\"\n", want: "A package with spaces"},
+		{name: "single quoted", content: "DESCRIPTION='literal package'\n", want: "literal package"},
+		{name: "escaped", content: "DESCRIPTION=\"quoted \\\"package\\\"\"\n", want: `quoted "package"`},
+		{name: "comment only", content: "# DESCRIPTION=not metadata\n", want: ""},
+		{name: "similarly named", content: "LONG_DESCRIPTION=wrong\n", want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := descriptionFromMetadata(test.content); got != test.want {
+				t.Fatalf("description = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

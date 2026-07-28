@@ -81,17 +81,22 @@ func TestPrintSyncTargetReportUsesEixStylePackageChanges(t *testing.T) {
 	printSyncTargetReport(&output, "arise-overlay", syncTargetReport{
 		Stage: "changes", HasChanges: true,
 		Changes: internalsync.ChangeSummary{Packages: []internalsync.PackageChange{
-			{CP: "app-misc/new", Kind: "new", After: []string{"1"}},
-			{CP: "sys-apps/arise", Kind: "better", Before: []string{"0.0.2"}, After: []string{"0.0.2", "0.0.3"}},
-			{CP: "x11-apps/old", Kind: "removed", Before: []string{"1", "2"}},
+			{CP: "app-misc/new", Kind: "new", After: []string{"1"}, Description: "A new package"},
+			{
+				CP: "app-containers/lxc-templates", Kind: "better",
+				Before:      []string{"3.0.4_p20240917", "9999"},
+				After:       []string{"3.0.4_p20240917", "3.0.4_p20260719", "9999"},
+				Description: "Old style template scripts for LXC",
+			},
+			{CP: "x11-apps/old", Kind: "removed", Before: []string{"1", "2"}, Description: "An obsolete package"},
 		}},
 	}, 541*time.Millisecond)
 
 	want := "" +
 		"  arise-overlay        updated      541ms\n" +
-		"    [N] app-misc/new 1\n" +
-		"    [>] sys-apps/arise 0.0.2 -> [0.0.2 0.0.3]\n" +
-		"    [D] x11-apps/old [1 2]\n"
+		"    [N]   ** app-misc/new (1): A new package\n" +
+		"    [>]   == app-containers/lxc-templates (3.0.4_p20240917 -> 3.0.4_p20260719): Old style template scripts for LXC\n" +
+		"    [D]   !! x11-apps/old (2): An obsolete package\n"
 	if output.String() != want {
 		t.Fatalf("sync report = %q, want %q", output.String(), want)
 	}

@@ -141,51 +141,66 @@ func printPackageChanges(w io.Writer, changes sync.ChangeSummary) {
 	for _, change := range changes.Packages {
 		tag := color.BoldYellow("[C]")
 		cp := color.BoldYellow(change.CP)
-		versions := color.Yellow(formatVersionSet(change.After))
+		relation := color.BoldYellow("==")
+		versions := color.Yellow(bestVersion(change.After))
 		switch change.Kind {
 		case "new":
 			tag = color.BoldGreen("[N]")
 			cp = color.BoldGreen(change.CP)
-			versions = color.Green(formatVersionSet(change.After))
+			relation = color.BoldGreen("**")
+			versions = color.Green(bestVersion(change.After))
 		case "removed":
 			tag = color.BoldRed("[D]")
 			cp = color.BoldRed(change.CP)
-			versions = color.Red(formatVersionSet(change.Before))
+			relation = color.BoldRed("!!")
+			versions = color.Red(bestVersion(change.Before))
 		case "upgrade":
 			tag = color.BoldYellow("[U]")
-			versions = formatVersionTransition(change.Before, change.After, color.Green)
+			versions = formatBestVersionTransition(change.Before, change.After, color.Green)
 		case "better":
 			tag = color.BoldGreen("[>]")
 			cp = color.BoldGreen(change.CP)
-			versions = formatVersionTransition(change.Before, change.After, color.Green)
+			relation = color.BoldGreen("==")
+			versions = formatBestVersionTransition(change.Before, change.After, color.Green)
 		case "downgrade":
 			tag = color.BoldRed("[<]")
 			cp = color.BoldRed(change.CP)
-			versions = formatVersionTransition(change.Before, change.After, color.Red)
+			relation = color.BoldRed("==")
+			versions = formatBestVersionTransition(change.Before, change.After, color.Red)
 		case "worse":
 			tag = color.BoldRed("[<]")
 			cp = color.BoldRed(change.CP)
-			versions = formatVersionTransition(change.Before, change.After, color.Red)
+			relation = color.BoldRed("==")
+			versions = formatBestVersionTransition(change.Before, change.After, color.Red)
 		case "changed":
 			if strings.Join(change.Before, "\x00") != strings.Join(change.After, "\x00") {
-				versions = formatVersionTransition(change.Before, change.After, color.Yellow)
+				versions = formatBestVersionTransition(change.Before, change.After, color.Yellow)
 			}
 		}
-		fmt.Fprintf(w, "    %s %s %s\n", tag, cp, versions)
+		description := ""
+		if change.Description != "" {
+			description = ": " + change.Description
+		}
+		fmt.Fprintf(w, "    %s   %s %s (%s)%s\n", tag, relation, cp, versions, description)
 	}
 }
 
-func formatVersionTransition(before, after []string, styleAfter func(string) string) string {
-	return color.Yellow(formatVersionSet(before)) +
+func formatBestVersionTransition(before, after []string, styleAfter func(string) string) string {
+	return color.Yellow(bestVersion(before)) +
 		" " + color.Bold("->") + " " +
-		styleAfter(formatVersionSet(after))
+		styleAfter(bestVersion(after))
 }
 
-func formatVersionSet(versions []string) string {
-	if len(versions) == 1 {
-		return versions[0]
+func bestVersion(versions []string) string {
+	for index := len(versions) - 1; index >= 0; index-- {
+		if versions[index] != "9999" {
+			return versions[index]
+		}
 	}
-	return "[" + strings.Join(versions, " ") + "]"
+	if len(versions) == 0 {
+		return ""
+	}
+	return versions[len(versions)-1]
 }
 
 func selectSyncTargets(targets []repositorySyncTarget, requested []string) ([]repositorySyncTarget, error) {
