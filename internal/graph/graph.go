@@ -552,7 +552,6 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 		}
 
 		for _, edge := range node.Depends {
-			depAtomStr := edge.Atom.String()
 			var depType resolve.DepType
 			switch edge.Type {
 			case DepDEPEND:
@@ -572,7 +571,7 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 			targetCP := edge.Atom.CP()
 			block := edge.Atom.Op == "!" || edge.Atom.Op == "!!"
 
-			rg.AddDep(cp, targetCP, depAtomStr, depType, edge.Conditional, block)
+			rg.AddParsedDep(cp, targetCP, edge.Atom, depType, edge.Conditional, block)
 		}
 	}
 

@@ -500,12 +500,27 @@ func actionVersionKey(action *PkgAction) string {
 
 // AddDep adds a dependency edge between packages.
 func (g *DepGraph) AddDep(fromCP, toCP, depAtomStr string, depType DepType, useCond string, block bool) {
-	from := g.AddPackage(fromCP)
 	to := g.AddPackage(toCP)
 	depAtom, err := atom.Parse(depAtomStr)
 	if err != nil {
 		// best-effort parse
 		depAtom = &atom.Atom{Category: to.Atom.Category, Package: to.Atom.Package}
+	}
+	g.AddParsedDep(fromCP, toCP, depAtom, depType, useCond, block)
+}
+
+// AddParsedDep adds an edge from an atom already parsed by the immutable graph
+// construction stage. The top-level value is copied so callers and individual
+// edges retain independent mutable fields; parsed Version data is immutable.
+func (g *DepGraph) AddParsedDep(fromCP, toCP string, parsed *atom.Atom, depType DepType, useCond string, block bool) {
+	from := g.AddPackage(fromCP)
+	to := g.AddPackage(toCP)
+	depAtom := parsed
+	if parsed == nil {
+		depAtom = &atom.Atom{Category: to.Atom.Category, Package: to.Atom.Package}
+	} else {
+		copied := *parsed
+		depAtom = &copied
 	}
 	edge := &DepEdge{
 		From:    from,

@@ -2373,6 +2373,37 @@ func TestDepGraph_AddDep(t *testing.T) {
 	}
 }
 
+func TestAddParsedDepCopiesMutableAtomFieldsPerEdge(t *testing.T) {
+	parsed, err := atom.Parse(">=pkg/b-1.0:0/1=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := makeGraph()
+	g.AddParsedDep("pkg/a", "pkg/b", parsed, DepTypeRuntime, "ssl", false)
+	g.AddParsedDep("pkg/c", "pkg/b", parsed, DepTypeBuild, "", false)
+	first := g.Packages["pkg/a"].Deps[0].DepAtom
+	second := g.Packages["pkg/c"].Deps[0].DepAtom
+	if first == parsed || second == parsed || first == second {
+		t.Fatal("parsed dependency atoms share mutable top-level storage")
+	}
+	first.Slot = "mutated"
+	if parsed.Slot != "0" || second.Slot != "0" {
+		t.Fatalf("edge mutation escaped its copy: parsed=%q second=%q", parsed.Slot, second.Slot)
+	}
+	if first.Version != parsed.Version || second.Version != parsed.Version {
+		t.Fatal("immutable parsed version was unnecessarily duplicated")
+	}
+}
+
+func TestAdversarialAddParsedDepNilFallsBackToTargetIdentity(t *testing.T) {
+	g := makeGraph()
+	g.AddParsedDep("pkg/a", "pkg/b", nil, DepTypeRuntime, "", false)
+	edge := g.Packages["pkg/a"].Deps[0]
+	if edge.DepAtom == nil || edge.DepAtom.CP() != "pkg/b" {
+		t.Fatalf("nil parsed dependency fallback = %#v", edge.DepAtom)
+	}
+}
+
 func TestDepGraph_AddAnyOfDep(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "pkg/a", "1.0", "0", "0", false, nil)

@@ -920,6 +920,25 @@ func BenchmarkBuildFromState(b *testing.B) {
 	}
 }
 
+func BenchmarkToResolveGraphParsedEdges(b *testing.B) {
+	const packages = 5000
+	entries := make([]*metadata.PackageMetadata, 0, packages)
+	for i := 0; i < packages; i++ {
+		dependency := ""
+		if i+1 < packages {
+			dependency = fmt.Sprintf(">=app-bench/pkg-%d-1.0", i+1)
+		}
+		entries = append(entries, makeMeta("app-bench", fmt.Sprintf("pkg-%d", i), "1.0", dependency, "", ""))
+	}
+	g := NewFromInstalled(entries)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = g.ToResolveGraph()
+	}
+}
+
 func openBenchmarkDB(b *testing.B) *badger.DB {
 	b.Helper()
 	db, err := badger.Open(badger.DefaultOptions("").WithInMemory(true).WithLogger(nil))
