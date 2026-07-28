@@ -24,8 +24,12 @@ import (
 )
 
 // version is replaced by release builds with -ldflags "-X main.version=...".
-var version = "devel"
+var version = "0.0.5"
 var commandContext = context.Background()
+
+func versionLine() string {
+	return "arise " + version
+}
 
 func commandEnv(name, fallback string) string {
 	if value, ok := os.LookupEnv(name); ok {

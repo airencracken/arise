@@ -21,7 +21,7 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"Parallel scheduling, fetch policy,\n  lifecycle coverage, failure recovery",
 	)
 	assertPresent(t, readme,
-		"arise sync\narise -1 --reinstall =sys-apps/arise-0.0.3",
+		"arise sync\narise -1 --reinstall =sys-apps/arise-0.0.5",
 		"Dependency-aware parallel preparation with serialized commits",
 		"installed lifecycle execution, durable journals",
 		"General Portage execution parity is still not claimed.",
