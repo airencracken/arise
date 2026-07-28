@@ -22,6 +22,13 @@ The maintained
 tracks man-page-derived CLI options, environment variables, and Portage
 configuration files together with their enforcement status.
 
+Maintained reader guides extracted from the project overview:
+
+- [`performance-results.md`](performance-results.md) — comparison tables,
+  methodology, evidence, and claim boundaries.
+- [`development.md`](development.md) — build/test commands, architecture,
+  environment variables, and configuration boundaries.
+
 ## Audits
 
 [`audits/`](audits/) contains dated and scoped codebase reviews; its

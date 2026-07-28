@@ -25,10 +25,16 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"sys-apps/arise ~amd64",
 		"Median wall time | 3.45 s | 2.48 s | **28.1% faster**",
 		"Profiled allocation | 2,645.55 MiB | 733.20 MiB | **72.3% lower**",
+		"[the performance results](docs/performance-results.md)",
+		"[the development guide](docs/development.md)",
+		"recover         Inspect journals; inspect, restore, verify, or prune recovery sets",
+	)
+
+	performance := read("../docs/performance-results.md")
+	assertPresent(t, performance,
 		"Dependency-aware parallel preparation with serialized commits",
 		"installed lifecycle execution, durable journals",
 		"General Portage execution parity is still not claimed.",
-		"recover         Inspect journals; inspect, restore, verify, or prune recovery sets",
 	)
 
 	punchlist := read("../PUNCHLIST.md")
