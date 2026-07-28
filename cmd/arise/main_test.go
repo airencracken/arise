@@ -354,11 +354,57 @@ func TestFormatIndexProgress(t *testing.T) {
 }
 
 func TestSearchUpgradeAvailable(t *testing.T) {
-	if !searchUpgradeAvailable("140.10.2", "152.0.6") {
+	if !searchUpgradeAvailable(search.SearchResult{
+		InstalledVer: "140.10.2",
+		VersionInfo:  []search.VersionInfo{{Version: "152.0.6", Stable: true}},
+	}) {
 		t.Fatal("expected upgrade to be detected")
 	}
-	if searchUpgradeAvailable("152.0.6", "152.0.6") {
+	if searchUpgradeAvailable(search.SearchResult{
+		InstalledVer: "152.0.6",
+		VersionInfo:  []search.VersionInfo{{Version: "152.0.6", Stable: true}},
+	}) {
 		t.Fatal("equal versions are not an upgrade")
+	}
+}
+
+func TestSearchUpgradeAvailableIgnoresTestingAndMaskedVersions(t *testing.T) {
+	result := search.SearchResult{
+		InstalledVer: "3.22.0",
+		VersionInfo: []search.VersionInfo{
+			{Version: "3.22.0", Stable: true},
+			{Version: "3.22.0-r1", Testing: true},
+			{Version: "9999", Masked: true},
+		},
+	}
+	if searchUpgradeAvailable(result) {
+		t.Fatal("testing and masked versions produced a false update marker")
+	}
+}
+
+func TestSearchUpgradeAvailableMatchesInstalledSlot(t *testing.T) {
+	result := search.SearchResult{
+		InstalledVersions: []search.InstalledVersion{
+			{Version: "2", Slot: "1"},
+			{Version: "4", Slot: "2"},
+		},
+		VersionInfo: []search.VersionInfo{
+			{Version: "3", Slot: "1", Stable: true},
+			{Version: "3", Slot: "2", Stable: true},
+		},
+	}
+	if !searchUpgradeAvailable(result) {
+		t.Fatal("same-slot stable upgrade was not detected")
+	}
+}
+
+func TestAdversarialSearchUpgradeAvailableRejectsInvalidVersions(t *testing.T) {
+	result := search.SearchResult{
+		InstalledVer: "not-a-version",
+		VersionInfo:  []search.VersionInfo{{Version: "9999", Stable: true}},
+	}
+	if searchUpgradeAvailable(result) {
+		t.Fatal("invalid installed version produced an update marker")
 	}
 }
 

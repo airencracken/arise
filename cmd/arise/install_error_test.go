@@ -76,6 +76,29 @@ func TestPrintExecutionErrorIndentsMultilineLeaf(t *testing.T) {
 	}
 }
 
+func TestPrintExecutionErrorExplainsTemporaryStorageExhaustion(t *testing.T) {
+	err := fmt.Errorf(
+		"executor: sys-apps/arise-0.0.5: %w",
+		errors.New("compile: mkdir /var/tmp/arise/build/temp/go-build/b444: no space left on device"),
+	)
+	var output bytes.Buffer
+
+	printExecutionError(&output, err)
+
+	got := output.String()
+	if !strings.Contains(got, "Temporary build storage is full.") ||
+		!strings.Contains(got, "PORTAGE_TMPDIR (normally /var/tmp/arise)") ||
+		!strings.Contains(got, "no space left on device") {
+		t.Fatalf("storage exhaustion was not actionable:\n%s", got)
+	}
+}
+
+func TestExecutionStorageHintIgnoresUnrelatedFailures(t *testing.T) {
+	if got := executionStorageHint(errors.New("compiler error")); got != "" {
+		t.Fatalf("unrelated failure produced storage hint %q", got)
+	}
+}
+
 func TestRecoveryPackagesForActionsIncludesOnlyReplacedInstalledInstances(t *testing.T) {
 	updated, err := atom.Parse("sys-devel/gcc-15")
 	if err != nil {

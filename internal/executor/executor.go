@@ -265,9 +265,12 @@ func tmpdirRequiredBytes(gib, running int) uint64 {
 	return required
 }
 
+const minimumSerialTmpdirBytes = uint64(1 << 30)
+
 // admitTmpdirJob follows emerge's decaying reserve calculation. A serial job
-// is allowed below the configured reserve for forward progress, but never when
-// the filesystem reports zero available bytes.
+// may start below the full configured reserve for forward progress, but not
+// below a bounded safety floor. Setting the reserve to zero explicitly disables
+// the floor.
 func admitTmpdirJob(cfg Config, running int) (bool, error) {
 	path := cfg.Rebuild.WorkDirBase
 	if path == "" {
@@ -281,6 +284,15 @@ func admitTmpdirJob(cfg Config, running int) (bool, error) {
 		return false, fmt.Errorf("executor: temporary work filesystem for %s has no free space (0 bytes available); free space before retrying", path)
 	}
 	required := tmpdirRequiredBytes(cfg.TmpdirRequireFreeGB, running)
+	if running == 0 && required > 0 {
+		floor := min(required, minimumSerialTmpdirBytes)
+		if available < floor {
+			return false, fmt.Errorf(
+				"executor: temporary work filesystem for %s has %d bytes available; at least %d bytes are required before starting a serial build",
+				path, available, floor,
+			)
+		}
+	}
 	if running > 0 && required > 0 && available < required {
 		if cfg.OnSpaceWait != nil {
 			cfg.OnSpaceWait(path, available, required)

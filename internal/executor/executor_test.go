@@ -188,7 +188,30 @@ func TestAdmitTmpdirJobReducesParallelism(t *testing.T) {
 	}
 	admitted, err = admitTmpdirJob(cfg, 0)
 	if err != nil || !admitted {
-		t.Fatalf("serial forward progress admitted=%v err=%v", admitted, err)
+		t.Fatalf("serial job with safety floor admitted=%v err=%v", admitted, err)
+	}
+}
+
+func TestAdmitTmpdirJobRejectsSerialBuildBelowSafetyFloor(t *testing.T) {
+	cfg := Config{
+		Rebuild:             rebuild.RebuildConfig{WorkDirBase: "/work"},
+		TmpdirRequireFreeGB: 18,
+		FreeSpace:           func(string) (uint64, error) { return 84 << 20, nil },
+	}
+	admitted, err := admitTmpdirJob(cfg, 0)
+	if admitted || err == nil || !strings.Contains(err.Error(), "at least 1073741824 bytes") {
+		t.Fatalf("admitted=%v err=%v", admitted, err)
+	}
+}
+
+func TestAdmitTmpdirJobAllowsExplicitlyDisabledSerialFloor(t *testing.T) {
+	cfg := Config{
+		Rebuild:   rebuild.RebuildConfig{WorkDirBase: "/work"},
+		FreeSpace: func(string) (uint64, error) { return 84 << 20, nil },
+	}
+	admitted, err := admitTmpdirJob(cfg, 0)
+	if !admitted || err != nil {
+		t.Fatalf("disabled floor admitted=%v err=%v", admitted, err)
 	}
 }
 

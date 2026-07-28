@@ -1237,6 +1237,9 @@ func warningsForDisplay(warnings []string, verbose bool) []string {
 func printExecutionError(w io.Writer, err error) {
 	fmt.Fprintln(w, "arise: package transaction failed")
 	fmt.Fprintln(w)
+	if hint := executionStorageHint(err); hint != "" {
+		fmt.Fprintf(w, "  %s\n", hint)
+	}
 	const maxDetails = 10
 	details := make([]string, 0, maxDetails)
 	durableLog := ""
@@ -1280,6 +1283,16 @@ func printExecutionError(w io.Writer, err error) {
 	fmt.Fprintln(w)
 }
 
+func executionStorageHint(err error) string {
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		message := strings.ToLower(current.Error())
+		if strings.Contains(message, "no space left on device") || strings.Contains(message, "disk quota exceeded") {
+			return "Temporary build storage is full. Free space in PORTAGE_TMPDIR (normally /var/tmp/arise), then retry."
+		}
+	}
+	return ""
+}
+
 func executionDiagnosticLines(lines []string) []string {
 	if len(lines) <= 4 {
 		return lines
@@ -1287,7 +1300,8 @@ func executionDiagnosticLines(lines []string) []string {
 	signals := []string{
 		"error:", " error ", "failed", "failure", "cannot ", "can't ",
 		"permission denied", "undefined reference", "no rule to make target",
-		"not found", "no such file", "fatal:", "segmentation fault",
+		"not found", "no such file", "no space left on device",
+		"disk quota exceeded", "fatal:", "segmentation fault",
 	}
 	selected := make(map[int]bool)
 	for index, line := range lines {

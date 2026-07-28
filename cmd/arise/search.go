@@ -158,7 +158,7 @@ func runSearch(args []string, dbPath string) int {
 		marker := color.Green("*")
 		if r.Installed {
 			marker = color.Green("[I]")
-			if searchUpgradeAvailable(r.InstalledVer, r.BestVersion) {
+			if searchUpgradeAvailable(r) {
 				marker = "[" + color.ReverseBoldCyan("U") + "]"
 			}
 		}
@@ -296,11 +296,42 @@ func restrictionSuffix(restrict string) string {
 	return "^" + suffix.String()
 }
 
-func searchUpgradeAvailable(installed, available string) bool {
-	if installed == "" || available == "" {
-		return false
+func searchUpgradeAvailable(result search.SearchResult) bool {
+	installedBySlot := make(map[string]string, len(result.InstalledVersions))
+	for _, installed := range result.InstalledVersions {
+		slot := installed.Slot
+		if slot == "" {
+			slot = "0"
+		}
+		current := installedBySlot[slot]
+		if current == "" || compareSearchVersions(installed.Version, current) > 0 {
+			installedBySlot[slot] = installed.Version
+		}
 	}
-	iv, _ := atom.ParseVersion(installed)
-	av, _ := atom.ParseVersion(available)
-	return iv != nil && av != nil && av.Compare(iv) > 0
+	for _, available := range result.VersionInfo {
+		if available.Masked || !available.Stable {
+			continue
+		}
+		slot := available.Slot
+		if slot == "" {
+			slot = "0"
+		}
+		installed := installedBySlot[slot]
+		if installed == "" && len(installedBySlot) == 0 {
+			installed = result.InstalledVer
+		}
+		if installed != "" && compareSearchVersions(available.Version, installed) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func compareSearchVersions(left, right string) int {
+	leftVersion, _ := atom.ParseVersion(left)
+	rightVersion, _ := atom.ParseVersion(right)
+	if leftVersion == nil || rightVersion == nil {
+		return 0
+	}
+	return leftVersion.Compare(rightVersion)
 }
