@@ -51,6 +51,17 @@ func (p Package) Metadata() *metadata.PackageMetadata {
 
 // Scan returns every valid installed CPV in deterministic CPV order.
 func Scan(root string) ([]Package, error) {
+	return scan(root, true)
+}
+
+// ScanResolverState returns installed package identity and dependency policy
+// without retaining CONTENTS payloads. It still requires a regular CONTENTS
+// file as part of the minimum committed VDB record.
+func ScanResolverState(root string) ([]Package, error) {
+	return scan(root, false)
+}
+
+func scan(root string, includeContents bool) ([]Package, error) {
 	categories, err := os.ReadDir(root)
 	if err != nil {
 		return nil, fmt.Errorf("vdb: read root: %w", err)
@@ -98,6 +109,10 @@ func Scan(root string) ([]Package, error) {
 				continue
 			}
 			slot, subslot := splitSlot(slotValue)
+			contents := ""
+			if includeContents {
+				contents = read("CONTENTS")
+			}
 			packages = append(packages, Package{
 				Category: cat, Package: pn, Version: version, Slot: slot, Subslot: subslot,
 				Repository: repository, Use: strings.Fields(read("USE")), IUse: strings.Fields(read("IUSE")),
@@ -105,7 +120,7 @@ func Scan(root string) ([]Package, error) {
 				IDepend: read("IDEPEND"), PDepend: read("PDEPEND"), EAPI: eapi,
 				BuildTime: parseInt(read("BUILD_TIME")), BuildID: read("BUILD_ID"),
 				PhaseEnvABI: read("ARISE_PHASE_ENV_ABI"), Counter: parseInt(read("COUNTER")),
-				Contents: read("CONTENTS"),
+				Contents: contents,
 			})
 		}
 	}

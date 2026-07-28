@@ -171,8 +171,22 @@ type AtomMeta struct {
 }
 
 func CollectMeta(node DepNode) []AtomMeta {
+	var result []AtomMeta
+	VisitMeta(node, func(meta AtomMeta) {
+		result = append(result, meta)
+	})
+	return result
+}
+
+// VisitMeta walks dependency atoms in the same deterministic order and with
+// the same annotations as CollectMeta without constructing an intermediate
+// result slice.
+func VisitMeta(node DepNode, visit func(AtomMeta)) {
+	if visit == nil {
+		return
+	}
 	nextID := 0
-	return collectMeta(node, "", false, 0, 0, "", &nextID, make(map[int]int))
+	visitMeta(node, "", false, 0, 0, "", &nextID, make(map[int]int), visit)
 }
 
 // ValidatePackageDependencies rejects syntax that the shared parser accepts
@@ -258,23 +272,21 @@ func ValidatePackageDependenciesEAPI(node DepNode, rawEAPI string) error {
 	return validate(node)
 }
 
-func collectMeta(node DepNode, condition string, anyOf bool, anyOfID, anyOfOption int, anyOfCondition string, nextID *int, nextOption map[int]int) []AtomMeta {
+func visitMeta(node DepNode, condition string, anyOf bool, anyOfID, anyOfOption int, anyOfCondition string, nextID *int, nextOption map[int]int, visit func(AtomMeta)) {
 	if node == nil {
-		return nil
+		return
 	}
 	switch n := node.(type) {
 	case *AtomDep:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfCondition: anyOfCondition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption}}
+		visit(AtomMeta{Atom: n.Atom, Condition: condition, AnyOfCondition: anyOfCondition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption})
 	case *Block:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfCondition: anyOfCondition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, Block: true}}
+		visit(AtomMeta{Atom: n.Atom, Condition: condition, AnyOfCondition: anyOfCondition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, Block: true})
 	case *WeakBlock:
-		return []AtomMeta{{Atom: n.Atom, Condition: condition, AnyOfCondition: anyOfCondition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, WeakBlock: true}}
+		visit(AtomMeta{Atom: n.Atom, Condition: condition, AnyOfCondition: anyOfCondition, AnyOfGroup: anyOf, AnyOfID: anyOfID, AnyOfOption: anyOfOption, WeakBlock: true})
 	case *AllOfGroup:
-		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption)...)
+			visitMeta(child, condition, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption, visit)
 		}
-		return result
 	case *AnyOfGroup:
 		groupID := anyOfID
 		if !anyOf {
@@ -282,36 +294,26 @@ func collectMeta(node DepNode, condition string, anyOf bool, anyOfID, anyOfOptio
 			groupID = *nextID
 			anyOfCondition = condition
 		}
-		var result []AtomMeta
 		for _, child := range n.Children {
 			nextOption[groupID]++
-			result = append(result, collectMeta(child, condition, true, groupID, nextOption[groupID], anyOfCondition, nextID, nextOption)...)
+			visitMeta(child, condition, true, groupID, nextOption[groupID], anyOfCondition, nextID, nextOption, visit)
 		}
-		return result
 	case *XorOfGroup:
-		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption)...)
+			visitMeta(child, condition, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption, visit)
 		}
-		return result
 	case *AtMostOneOfGroup:
-		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, condition, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption)...)
+			visitMeta(child, condition, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption, visit)
 		}
-		return result
 	case *UseConditional:
 		nextCond := n.Flag
 		if condition != "" {
 			nextCond = condition + "," + n.Flag
 		}
-		var result []AtomMeta
 		for _, child := range n.Children {
-			result = append(result, collectMeta(child, nextCond, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption)...)
+			visitMeta(child, nextCond, anyOf, anyOfID, anyOfOption, anyOfCondition, nextID, nextOption, visit)
 		}
-		return result
-	default:
-		return nil
 	}
 }
 

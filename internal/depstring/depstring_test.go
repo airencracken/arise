@@ -376,6 +376,39 @@ func TestCollectMetaNestedAnyOfReusesOuterGroup(t *testing.T) {
 	}
 }
 
+func TestPropertyVisitMetaMatchesCollectedMetadata(t *testing.T) {
+	dependencies := []string{
+		"dev-libs/libpcre2",
+		"ssl? ( dev-libs/openssl ) !sys-libs/blocker",
+		"|| ( dev-lang/python:3.12 dev-lang/python:3.13 )",
+		"outer? ( || ( first? ( app-misc/one app-misc/two ) app-misc/three ) )",
+		"^^ ( app-misc/one app-misc/two ) ?? ( app-misc/three app-misc/four )",
+	}
+	for _, dependency := range dependencies {
+		node, err := Parse(dependency)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := CollectMeta(node)
+		var got []AtomMeta
+		VisitMeta(node, func(meta AtomMeta) {
+			got = append(got, meta)
+		})
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("VisitMeta(%q) = %#v, want %#v", dependency, got, want)
+		}
+	}
+}
+
+func TestAdversarialVisitMetaAcceptsNilInputsWithoutCallingVisitor(t *testing.T) {
+	called := false
+	VisitMeta(nil, func(AtomMeta) { called = true })
+	VisitMeta(&AtomDep{Atom: "app-misc/example"}, nil)
+	if called {
+		t.Fatal("nil dependency invoked visitor")
+	}
+}
+
 func TestAllOfGroupExplicit(t *testing.T) {
 	input := "( dev-libs/foo dev-libs/bar )"
 

@@ -238,12 +238,7 @@ func (g *DepGraph) addEdgesFromMeta(node *PkgNode, m *metadata.PackageMetadata) 
 		{m.PDEPEND, DepPDEPEND},
 	}
 
-	type edgePair struct {
-		meta depstring.AtomMeta
-		kind DepType
-	}
-
-	var edges []edgePair
+	seen := make(map[string]bool)
 	for _, d := range deps {
 		if d.raw == "" {
 			continue
@@ -252,37 +247,26 @@ func (g *DepGraph) addEdgesFromMeta(node *PkgNode, m *metadata.PackageMetadata) 
 		if err != nil || depNode == nil {
 			continue
 		}
-		for _, meta := range depstring.CollectMeta(depNode) {
+		depstring.VisitMeta(depNode, func(meta depstring.AtomMeta) {
 			if meta.Block || meta.WeakBlock {
-				continue
+				return
 			}
-			edges = append(edges, edgePair{meta: meta, kind: d.kind})
-		}
-	}
-
-	seen := make(map[string]bool)
-	for _, e := range edges {
-		parsed, err := atom.Parse(e.meta.Atom)
-		if err != nil {
-			continue
-		}
-		cp := parsed.CP()
-		key := parsed.String() + "|" + e.kind.String()
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-
-		edge := DepEdge{
-			Atom:        parsed,
-			Type:        e.kind,
-			Conditional: e.meta.Condition,
-			AnyOfGroup:  e.meta.AnyOfGroup,
-		}
-		node.Depends = append(node.Depends, edge)
-
-		target := g.getOrCreate(cp, nil)
-		target.Atom = parsed
+			parsed, err := atom.Parse(meta.Atom)
+			if err != nil {
+				return
+			}
+			cp := parsed.CP()
+			key := parsed.String() + "|" + d.kind.String()
+			if seen[key] {
+				return
+			}
+			seen[key] = true
+			node.Depends = append(node.Depends, DepEdge{
+				Atom: parsed, Type: d.kind, Conditional: meta.Condition, AnyOfGroup: meta.AnyOfGroup,
+			})
+			target := g.getOrCreate(cp, nil)
+			target.Atom = parsed
+		})
 	}
 }
 
@@ -807,7 +791,7 @@ func BuildFromState(db *badger.DB, vdbPath string, workers int) (*DepGraph, erro
 		availableCh <- availableResult{packages: selected, err: err}
 	}()
 	go func() {
-		packages, err := vdb.Scan(vdbPath)
+		packages, err := vdb.ScanResolverState(vdbPath)
 		installedCh <- installedResult{packages: packages, err: err}
 	}()
 

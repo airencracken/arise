@@ -47,6 +47,71 @@ func TestScanPreservesInstalledVersionsSlotsAndState(t *testing.T) {
 	}
 }
 
+func TestScanResolverStateOmitsContentsButPreservesResolutionMetadata(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "dev-lang", "python-3.13.1")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"CONTENTS":   "obj /usr/bin/python3.13 digest 1\n",
+		"EAPI":       "8\n",
+		"SLOT":       "3.13/3.13\n",
+		"repository": "gentoo\n",
+		"USE":        "ssl\n",
+		"IUSE":       "ssl test\n",
+		"DEPEND":     "dev-libs/libffi\n",
+		"RDEPEND":    "sys-libs/zlib\n",
+	}
+	for name, value := range files {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	packages, err := ScanResolverState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 1 {
+		t.Fatalf("resolver packages = %d", len(packages))
+	}
+	got := packages[0]
+	if got.Contents != "" {
+		t.Fatalf("resolver scan retained CONTENTS: %q", got.Contents)
+	}
+	if got.CPV() != "dev-lang/python-3.13.1" || got.Slot != "3.13" || got.Subslot != "3.13" ||
+		got.Repository != "gentoo" || got.Depend != "dev-libs/libffi" || got.RDepend != "sys-libs/zlib" {
+		t.Fatalf("resolver metadata lost: %+v", got)
+	}
+	full, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full) != 1 || full[0].Contents == "" {
+		t.Fatal("full VDB scan no longer retains CONTENTS")
+	}
+}
+
+func TestMutationScanResolverStateStillRequiresCommittedContents(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "app-misc", "example-1")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{"EAPI": "8\n", "SLOT": "0\n", "repository": "gentoo\n"} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	packages, err := ScanResolverState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 0 {
+		t.Fatalf("uncommitted record entered resolver state: %+v", packages)
+	}
+}
+
 func TestScanIgnoresInterruptedPartialRecord(t *testing.T) {
 	root := t.TempDir()
 	directory := filepath.Join(root, "sys-kernel", "gentoo-sources-7.1.3")
