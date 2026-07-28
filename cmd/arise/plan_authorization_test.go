@@ -1,13 +1,77 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/airencracken/arise/internal/resolve"
 )
+
+func TestHashStatePathMatchesCanonicalEntryStream(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "nested"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "nested", "value"), []byte("payload"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	hash := sha256.New()
+	if err := hashStatePath(hash, "fixture", root); err != nil {
+		t.Fatal(err)
+	}
+
+	expected := sha256.New()
+	for _, entry := range []struct {
+		relative string
+		path     string
+	}{
+		{".", root},
+		{"nested", filepath.Join(root, "nested")},
+		{filepath.Join("nested", "value"), filepath.Join(root, "nested", "value")},
+	} {
+		info, err := os.Lstat(entry.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expected.Write([]byte("fixture\x00" + filepath.ToSlash(entry.relative) + "\x00" +
+			strconv.FormatUint(uint64(info.Mode()), 10) + "\x00"))
+		if info.Mode().IsRegular() {
+			expected.Write([]byte("payload"))
+		}
+	}
+	if got, want := hex.EncodeToString(hash.Sum(nil)), hex.EncodeToString(expected.Sum(nil)); got != want {
+		t.Fatalf("fingerprint = %s, want canonical stream %s", got, want)
+	}
+}
+
+func TestHashStatePathPropagatesWriterFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large")
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 256*1024), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := hashStatePath(failingFingerprintWriter{remaining: 64}, "fixture", path)
+	if err == nil || !strings.Contains(err.Error(), "injected fingerprint write failure") {
+		t.Fatalf("writer failure = %v", err)
+	}
+}
+
+type failingFingerprintWriter struct {
+	remaining int
+}
+
+func (w failingFingerprintWriter) Write(data []byte) (int, error) {
+	if len(data) <= w.remaining {
+		return len(data), nil
+	}
+	return 0, fmt.Errorf("injected fingerprint write failure")
+}
 
 func TestCanonicalPlanSHA256IgnoresTimingAndMapOrder(t *testing.T) {
 	first := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{{

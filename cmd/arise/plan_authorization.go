@@ -139,6 +139,12 @@ func mutationStateSHA256(vdbDir, worldPath, configRoot string, actions []resolve
 
 func hashStatePath(dst io.Writer, label, path string) error {
 	root := filepath.Clean(path)
+	// Hide os.File's WriterTo method and reuse one buffer across the complete
+	// tree. io.Copy's generic file path otherwise allocates a fresh 32 KiB
+	// buffer for every VDB and policy file, creating gigabytes of short-lived
+	// garbage on large installed states.
+	var buffer []byte
+	type readerOnly struct{ io.Reader }
 	info, err := os.Lstat(root)
 	if os.IsNotExist(err) {
 		_, err = io.WriteString(dst, label+"\x00missing\x00")
@@ -153,11 +159,14 @@ func hashStatePath(dst io.Writer, label, path string) error {
 		}
 		switch {
 		case info.Mode().IsRegular():
+			if buffer == nil {
+				buffer = make([]byte, 128*1024)
+			}
 			file, err := os.Open(current)
 			if err != nil {
 				return err
 			}
-			_, copyErr := io.Copy(dst, file)
+			_, copyErr := io.CopyBuffer(dst, readerOnly{file}, buffer)
 			closeErr := file.Close()
 			if copyErr != nil {
 				return copyErr
