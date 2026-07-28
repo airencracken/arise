@@ -129,9 +129,10 @@ decision history while both consume one actual backtrack.
 - [~] Separate cold-cache, warm-cache and incremental-operation measurements.
   The live deep/newuse world workload now has alternating warm and root-only
   cold-cache lanes; incremental-operation coverage remains.
-- [~] Measure wall time, CPU time, process-tree peak RSS/PSS/USS, bytes
-  read/written and process count. Wall and process-tree memory sampling are
-  implemented; I/O and process-count summaries remain.
+- [x] Measure wall time, CPU time, process-tree peak RSS/PSS/USS, bytes
+  read/written and process count. The harness records process-tree memory,
+  peak descendant count, Linux storage read/write bytes, block I/O, and
+  command CPU/wall time in every sample.
 - [x] Store machine-readable benchmark results and equivalence verdicts.
 - [~] Establish representative small, medium and full-world workloads.
 - [x] Publish a full emerge/eix comparison matrix covering current and planned tasks.
@@ -141,7 +142,19 @@ decision history while both consume one actual backtrack.
   correctness or the latency lead. The 2026-07-25 baseline is 912.02 MiB warm
   and 939.07 MiB cold USS, versus emerge at 237.88 and 237.90 MiB. Profile
   allocation ownership, then remove duplicated immutable snapshot, candidate
-  and graph state before considering persistent caches.
+  and graph state before considering persistent caches. The first accepted C2
+  optimization reuses the state-fingerprint copy buffer: on the 2026-07-27
+  live workload it reduced profiled allocation by 53.3%, combined CPU time by
+  33.9%, median wall time by 8.4%, and median peak RSS by 2.3%. Retained graph
+  and decoded-snapshot state remains the next-cycle memory target. A separately
+  authorized follow-up cached normalized implicit USE_EXPAND prefixes, improving
+  median wall time another 8.5% and CPU time 10.2%; allocation profiles fell
+  17.2% total and 27.5% retained, although noisy process peak RSS rose 8.7%.
+  Aggressive follow-up tuning stopped loading VDB `CONTENTS` payloads into the
+  resolver graph and streamed dependency metadata into graph edges. Interleaved
+  evidence reduced median wall time to 2.73 seconds and median peak RSS to
+  610.5 MiB. A final package-policy match cache was rejected after doubling CPU
+  and regressing wall time to 5.26 seconds.
 - [ ] Fail performance CI on material regressions beyond the agreed noise band.
 - [ ] Keep microbenchmarks, but gate releases on end-to-end workloads.
 - [~] Track test coverage in separate deterministic-core, network/integration
@@ -175,6 +188,21 @@ decision history while both consume one actual backtrack.
   live 185-action/4-conflict/backtrack-1 plan. A faster experimental CP/slot
   index reached 28.6 ms but changed Docutils constraint semantics and was
   rejected; canonical indexed slot state remains future work.
+
+- [x] Cache normalized `USE_EXPAND_IMPLICIT` prefixes once per resolver instead
+  of lowercasing and allocating them for every effective candidate flag.
+  Same-state live deep/newuse evidence preserves exact plan/state digests while
+  reducing median wall time from 3.16 to 2.89 seconds and median CPU time from
+  5.10 to 4.58 seconds.
+- [x] Keep VDB `CONTENTS` out of resolver-only installed-state snapshots while
+  still requiring it as committed-record evidence. Full VDB/ownership callers
+  retain payload access. Interleaved live runs reduced median wall time from
+  2.91 to 2.82 seconds and peak RSS from 933.6 to 607.2 MiB; aggregate CPU rose
+  10.0%, an explicitly accepted speed-first tradeoff.
+- [x] Stream dependency metadata directly into graph edges rather than
+  recursively allocating metadata slices and a second edge-pair list. Exact
+  plan/state digests are unchanged; interleaved median wall time improved from
+  2.80 to 2.73 seconds and CPU from 5.06 to 4.94 seconds.
 
 Initial benchmark operations:
 
@@ -1721,7 +1749,14 @@ the complete selected plan has passed the applicable whole-plan checks below.
   weaken an explicitly approved experimental guarantee. This host is ext4 on `/dev/dm-1`, has no
   overlayfs kernel support, fuse-overlayfs or Btrfs, and requires privileged
   LVM inspection before snapshot eligibility is known.
-- [ ] Implement each rollback provider behind an independent Gentoo USE gate.
+- [~] Implement each rollback provider behind an independent Gentoo USE gate.
+  A command-free prototype now defines the fail-closed provider interface,
+  longest-boundary mount coverage evaluation, explicit nested-mount
+  exclusions, capacity/activation validation, and a versioned, digested,
+  atomically published recovery record. It intentionally cannot execute a
+  snapshot or rollback. Native Btrfs, OpenZFS, LVM, kernel OverlayFS and
+  fuse-overlayfs implementations, packaging gates, privileged integration and
+  boot recovery tests remain.
   Btrfs, OpenZFS, LVM, kernel OverlayFS and fuse-overlayfs must have separate
   dependency mappings plus enabled/disabled build and runtime tests. Enabling
   one provider must not pull in or authorize another; the static journal and
@@ -2268,22 +2303,20 @@ Acceptance gate:
   traps/signals and nested sourcing on every supported Bash version.
 
 - [ ] Implement accurate `emerge --info`-equivalent output.
-- [ ] Implement `arise maintain world --check` and `--fix` as the
+- [~] Implement `arise maintain world --check` and `--fix` as the
   Portage-compatible counterpart to `emaint --check world` and
-  `emaint --fix world`. The check must classify malformed atoms, unavailable
-  or fully masked packages, package moves, duplicates, redundant version/slot
-  constraints, and installed-versus-uninstalled world entries against one
-  immutable repository/profile/VDB/world snapshot. Text output and exit status
-  must match the operational meaning of emaint, with versioned JSON for
-  automation. Fix mode must never edit opportunistically: emit an exact
-  state-bound repair plan, show every remove/replace/normalize decision, require
-  explicit saved-plan approval, take the Portage world lock, revalidate the
-  snapshot fingerprint, publish by mode-preserving atomic rename and fsync, and
-  retain reversible before/after evidence. Add differential fixtures for the
-  current stale `sys-fs/udev`, `sys-power/powernowd`, and
-  `x11-base/xorg-x11` entries, package moves, masks, malformed lines, concurrent
-  world changes, interrupted repair, alternate ROOT/PORTAGE_CONFIGROOT, and a
-  clean idempotent second check.
+  `emaint --fix world`. Deterministic check and repair, versioned state-bound
+  plans, direct explicit `--fix`, optional saved-plan approval, lock-time
+  revalidation, mode/ownership-preserving atomic publication, idempotence, and
+  captured live unavailable-entry parity are implemented. Check mode classifies
+  malformed atoms, unavailable packages, duplicates, and installed-versus-
+  uninstalled entries against one immutable repository/profile/VDB/world
+  snapshot. Fix mode emits an exact state-bound repair plan, explains each
+  action, takes the Portage world lock, revalidates the snapshot fingerprint,
+  and publishes by mode-preserving atomic rename and fsync. Wider differential
+  fixtures for package moves, masks, redundant version/slot constraints,
+  concurrent world changes, interrupted repair, and alternate
+  ROOT/PORTAGE_CONFIGROOT remain before this item is complete.
 - [ ] Before public testing, implement a built-in, strictly read-only
   `arise bug-report` command backed by an isolated `internal/bugreport`
   collector and a versioned report schema. Generate a reviewable `report.md`

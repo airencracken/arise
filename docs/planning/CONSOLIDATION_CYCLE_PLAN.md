@@ -133,6 +133,35 @@ than a full rebuild, but the profile decides. Require:
 Stop after one accepted optimization. Put further findings into the punch list
 rather than extending this cycle.
 
+The first 2026-07-27 synthetic target-map preallocation experiment was
+rejected: it increased both allocations and latency. Its reproducible negative
+result is retained in
+[`../evidence/C2_TARGET_MAP_PREALLOCATION_2026-07-27.md`](../evidence/C2_TARGET_MAP_PREALLOCATION_2026-07-27.md).
+It does not satisfy the one-accepted-optimization exit gate.
+
+The accepted 2026-07-27 optimization instead followed the live allocation
+profile: state fingerprinting allocated one `io.Copy` buffer per file, causing
+921 MiB of short-lived allocation and dominating garbage-collection CPU. One
+reused buffer reduced profiled allocation by 53.3% and improved median live
+deep/newuse wall time by 8.4% with identical plan and state digests. See
+[`../evidence/C2_FINGERPRINT_BUFFER_2026-07-27.md`](../evidence/C2_FINGERPRINT_BUFFER_2026-07-27.md).
+This is the cycle's one accepted optimization; further hot paths remain
+explicitly deferred.
+
+After that consolidation boundary was reached, an explicitly authorized
+follow-up cycle accepted one additional resolver-policy optimization. Normalized
+implicit USE_EXPAND prefixes are now cached once per resolver rather than
+rebuilt for every candidate flag. The live workload improved another 8.5% in
+median wall time and 10.2% in median CPU time with exact digest equivalence.
+See
+[`../evidence/C2_IMPLICIT_USE_PREFIX_CACHE_2026-07-27.md`](../evidence/C2_IMPLICIT_USE_PREFIX_CACHE_2026-07-27.md).
+
+A later explicitly authorized aggressive cycle accepted resolver-only VDB
+projection and streaming dependency metadata, while rejecting an unbounded
+final policy-match cache. The combined live workload reached a 2.73-second
+median from the original 3.45-second baseline. See
+[`../evidence/C2_AGGRESSIVE_GRAPH_TUNING_2026-07-27.md`](../evidence/C2_AGGRESSIVE_GRAPH_TUNING_2026-07-27.md).
+
 An incremental installed-linkage index in Badger is a deferred candidate, not
 an assumed deliverable. A 2026-07-24 warm comparison found Arise already faster
 than Portage for both an empty preserved-rebuild plan (1.477 versus 6.133
