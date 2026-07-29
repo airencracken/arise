@@ -72,9 +72,10 @@ arise sync
 arise -1 --reinstall =sys-apps/arise-0.0.7
 ```
 
-Release ebuilds build without network access. Their checksum-locked Go module
-archive is attached to the corresponding GitHub release and recorded in the
-overlay Manifest.
+Release ebuilds build without network access. New releases use a small,
+deterministic vendor archive whose checksum is recorded in the overlay
+Manifest. The archive carries a machine-verifiable provenance manifest and is
+tested with empty Go caches and `GOPROXY=off`.
 
 ## Build from source
 

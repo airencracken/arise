@@ -44,18 +44,21 @@ go mod verify
 make deps VERSION=$V
 ```
 
-> `make deps` creates `dist/arise-$V-deps.tar.xz`, a locked Go module-cache
-> archive with normalized ordering, timestamps, ownership, and single-threaded
-> xz output. Attach it to the GitHub release so Portage can build without
-> network access while the source repository remains unvendored. Generation
-> stops if downloading the complete graph changes `go.mod` or `go.sum`; review
-> and commit that dependency metadata before rerunning it.
+> `make deps` creates `dist/arise-$V-vendor.tar.xz`. It contains `vendor/` and
+> a canonical provenance manifest binding the tree to the source commit,
+> `go.mod`, `go.sum`, module list, and source timestamp. Ordering, timestamps,
+> ownership, and xz settings are normalized. The source repository remains
+> unvendored.
 
-This archive is the current offline mechanism. The roadmap replaces it with
-generated, individually versioned Go module source packages maintained in the
-Arise overlay. Keep the archive path working until the overlay-managed module
-graph has reproducibility, license, security-update, and empty-cache/no-network
-coverage equivalent to or better than this fallback.
+Prove that two builds are byte-identical and that the result passes the entire
+Go test suite with empty caches and networking disabled:
+
+```sh
+make test-vendor-artifact VERSION=$V
+```
+
+The old `deps-cache` target exists only to reproduce previously published
+module-cache archives. Do not use it for a new release.
 
 ### 2.3. Run the full test suite
 
@@ -87,8 +90,8 @@ This prints `static build: OK` if the binary is statically linked.
 make release VERSION=$V
 ```
 
-This runs `download` (module download and verification), `static`, and `test`
-again, then:
+This runs dependency verification, static and regular tests, and the
+reproducible offline vendor-artifact test again, then:
 
 ```
 git tag -a "v$V" -m "arise v$V"
@@ -105,12 +108,17 @@ git push origin master --tags
 Verify the tag appears on GitHub:
 https://github.com/airencracken/arise/releases
 
-Create the GitHub release and attach the dependency archive before generating
-the overlay Manifest:
+Create the GitHub source release. Publish the vendor archive in the matching
+release of `airencracken/arise-overlay-assets` before generating the overlay
+Manifest:
 
 ```sh
-gh release create "v$V" "dist/arise-$V-deps.tar.xz" \
+gh release create "v$V" \
   --title "arise v$V" --generate-notes
+gh release create "v$V" "dist/arise-$V-vendor.tar.xz" \
+  --repo airencracken/arise-overlay-assets \
+  --title "arise v$V vendor sources" \
+  --notes "Offline, reproducible vendor sources for arise v$V."
 ```
 
 ---
@@ -230,6 +238,7 @@ If a bad release goes out:
 
 - [ ] All tests pass (`make test && make vet`)
 - [ ] Dependencies verified (`go mod verify`)
+- [ ] Vendor artifact is reproducible and offline (`make test-vendor-artifact VERSION=$V`)
 - [ ] Static binary builds (`make static` → `static build: OK`)
 - [ ] Exact operator-reported command regression passes through the built CLI
 - [ ] Git tag pushed (`git tag -a v$V -m "arise v$V" && git push --tags`)

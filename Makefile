@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke check-release-version deps release
+.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark test-vendor-artifact audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke check-release-version deps deps-cache release
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -208,7 +208,7 @@ check-release-version:
 		exit 1; \
 	}
 
-release: check-release-version download static test
+release: check-release-version download static test test-vendor-artifact
 	@echo "Tagging arise v$(VERSION)..."
 	git tag -a "v$(VERSION)" -m "arise v$(VERSION)"
 	git push origin master --tags
@@ -227,8 +227,8 @@ release: check-release-version download static test
 	@echo "  emerge -av arise"
 
 #
-# Go module management. Release builds use a module-cache archive so the
-# repository stays unvendored while Portage builds remain network-free.
+# Go module management. Release builds use a deterministic vendor archive so
+# the repository stays unvendored while Portage builds remain network-free.
 #
 # For emerge builds, publish the archive produced by `make deps VERSION=x.y.z`.
 #
@@ -241,11 +241,14 @@ download:
 	$(GO) mod verify
 	@echo "All module dependencies downloaded and verified."
 
-vendor:
-	@echo "Arise does not commit vendored dependencies; use 'make deps VERSION=x.y.z'."
-	@exit 1
-
 deps: check-release-version
+	VERSION="$(VERSION)" SOURCE_DATE_EPOCH="$(SOURCE_DATE_EPOCH)" bash scripts/build-vendor-artifact.sh
+
+test-vendor-artifact: check-release-version
+	VERSION="$(VERSION)" SOURCE_DATE_EPOCH="$(SOURCE_DATE_EPOCH)" bash scripts/test-vendor-artifact.sh
+
+# Retained only to reproduce already-published releases. New releases use deps.
+deps-cache: check-release-version
 	@test -n "$(VERSION)" || { echo "VERSION is required"; exit 1; }
 	@test -n "$(SOURCE_DATE_EPOCH)" || { echo "SOURCE_DATE_EPOCH is required"; exit 1; }
 	mkdir -p dist
