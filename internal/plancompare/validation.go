@@ -8,7 +8,7 @@ func AssessmentFromValidation(validation planvalidate.ValidationResult, state pl
 		packages[index] = StatePackage{
 			CP: cpFromCPV(pkg.CPV), Version: versionFromCPV(pkg.CPV),
 			Slot: pkg.Slot, Subslot: pkg.Subslot, Repository: pkg.Repository,
-			EffectiveUse: cloneUse(pkg.Use),
+			EffectiveUse: declaredUse(pkg),
 		}
 	}
 	return StateAssessment{
@@ -40,6 +40,25 @@ func versionFromCPV(cpv string) string {
 		return ""
 	}
 	return parsed.Version
+}
+
+func declaredUse(pkg planvalidate.Package) map[string]bool {
+	if pkg.Use == nil {
+		return nil
+	}
+	if pkg.IUse == nil {
+		return cloneUse(pkg.Use)
+	}
+	result := make(map[string]bool, len(pkg.IUse))
+	for flag := range pkg.IUse {
+		if enabled, exists := pkg.Use[flag]; exists {
+			result[flag] = enabled
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func cloneUse(source map[string]bool) map[string]bool {

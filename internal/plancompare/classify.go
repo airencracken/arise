@@ -219,18 +219,12 @@ func packagePointer(pkg StatePackage) *StatePackage {
 }
 
 func stateUseMismatches(left, right map[string]bool) []string {
-	keys := make(map[string]bool, len(left)+len(right))
-	for key := range left {
-		keys[key] = true
-	}
-	for key := range right {
-		keys[key] = true
-	}
 	var result []string
-	for key := range keys {
-		leftValue, leftOK := left[key]
-		rightValue, rightOK := right[key]
-		if leftOK != rightOK || leftValue != rightValue {
+	// VDB and evaluated repository metadata can expose different implicit IUSE
+	// domains (for example architecture versus elibc expansion flags). Only a
+	// flag declared by both frozen package views has comparable semantics.
+	for key, leftValue := range left {
+		if rightValue, comparable := right[key]; comparable && leftValue != rightValue {
 			result = append(result, key)
 		}
 	}

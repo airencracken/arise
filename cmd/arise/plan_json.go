@@ -6,24 +6,33 @@ import (
 	"sort"
 	"time"
 
+	"github.com/airencracken/arise/internal/planvalidate"
 	"github.com/airencracken/arise/internal/resolve"
 )
 
 type jsonPlan struct {
-	Schema      int                      `json:"schema"`
-	Operation   string                   `json:"operation"`
-	Targets     []string                 `json:"targets"`
-	Options     planOptions              `json:"options"`
-	Complete    bool                     `json:"complete"`
-	Resolution  jsonResolution           `json:"resolution"`
-	Actions     []jsonAction             `json:"actions"`
-	Uninstall   []jsonAction             `json:"uninstall,omitempty"`
-	Conflicts   []string                 `json:"conflicts"`
-	Details     []resolve.ConflictDetail `json:"conflict_details,omitempty"`
-	Warnings    []string                 `json:"warnings"`
-	Error       string                   `json:"error,omitempty"`
-	PlanSHA256  string                   `json:"plan_sha256,omitempty"`
-	StateSHA256 string                   `json:"state_sha256,omitempty"`
+	Schema                int                        `json:"schema"`
+	Operation             string                     `json:"operation"`
+	Targets               []string                   `json:"targets"`
+	Options               planOptions                `json:"options"`
+	Complete              bool                       `json:"complete"`
+	Resolution            jsonResolution             `json:"resolution"`
+	Actions               []jsonAction               `json:"actions"`
+	Uninstall             []jsonAction               `json:"uninstall,omitempty"`
+	Conflicts             []string                   `json:"conflicts"`
+	Details               []resolve.ConflictDetail   `json:"conflict_details,omitempty"`
+	Warnings              []string                   `json:"warnings"`
+	Error                 string                     `json:"error,omitempty"`
+	PlanSHA256            string                     `json:"plan_sha256,omitempty"`
+	StateSHA256           string                     `json:"state_sha256,omitempty"`
+	IndependentValidation *jsonIndependentValidation `json:"independent_validation,omitempty"`
+}
+
+type jsonIndependentValidation struct {
+	Schema  int                           `json:"schema"`
+	Fixture planvalidate.Fixture          `json:"fixture"`
+	Plan    planvalidate.Plan             `json:"plan"`
+	Result  planvalidate.ValidationResult `json:"result"`
 }
 
 type jsonResolution struct {
@@ -80,6 +89,8 @@ type planTimings struct {
 	StateFingerprint                   time.Duration
 	StateSHA256                        string
 	Operation                          string
+	Validation                         *independentPlanAudit
+	ValidationResult                   *planvalidate.ValidationResult
 }
 
 func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult, resolveErr error, timings planTimings) error {
@@ -95,8 +106,9 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 	}
 	document := jsonPlan{
 		Schema: 1, Operation: operation, Targets: append([]string(nil), targets...),
-		Options:  optionsForPlan(cfg),
-		Complete: resolveErr == nil && result.Verified && len(result.Conflicts) == 0,
+		Options: optionsForPlan(cfg),
+		Complete: resolveErr == nil && result.Verified && len(result.Conflicts) == 0 &&
+			(timings.ValidationResult == nil || timings.ValidationResult.Valid),
 		Resolution: jsonResolution{
 			Verified: result.Verified, Verification: result.Verification,
 			DurationNS: timings.Total.Nanoseconds(), BacktrackUsed: result.BacktrackLevel, BacktrackLimit: cfg.Backtrack,
@@ -126,6 +138,16 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 		Warnings: append([]string(nil), result.Warnings...),
 	}
 	document.StateSHA256 = timings.StateSHA256
+	if timings.Validation != nil {
+		document.IndependentValidation = &jsonIndependentValidation{
+			Schema:  planvalidate.SchemaVersion,
+			Fixture: timings.Validation.fixture,
+			Plan:    timings.Validation.plan,
+		}
+		if timings.ValidationResult != nil {
+			document.IndependentValidation.Result = *timings.ValidationResult
+		}
+	}
 	if document.Complete && timings.StateSHA256 != "" {
 		document.PlanSHA256 = canonicalPlanSHA256(targets, cfg, result, timings.StateSHA256)
 	}

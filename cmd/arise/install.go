@@ -25,6 +25,7 @@ import (
 	"github.com/airencracken/arise/internal/graph"
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/phaseproto"
+	"github.com/airencracken/arise/internal/planvalidate"
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/rebuild"
 	"github.com/airencracken/arise/internal/recoveryset"
@@ -492,11 +493,31 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 	}
 	stateFingerprintDuration := time.Since(stateFingerprintStarted)
+	var planAudit *independentPlanAudit
+	var planAuditResult *planvalidate.ValidationResult
+	if err == nil {
+		var auditErr error
+		planAudit, auditErr = prepareIndependentPlanAudit(rg, result, targets, cfg)
+		if auditErr != nil {
+			fmt.Fprintf(os.Stderr, "arise: independent plan validation could not freeze the executable plan: %v\n", auditErr)
+			exitAfterRuntimeProfiles(1)
+		} else if planAudit != nil {
+			validation := planAudit.validate()
+			planAuditResult = &validation
+		}
+	}
 	if jsonMode || *savePlan != "" {
 		var encoded bytes.Buffer
 		if jsonErr := writePlanJSON(&encoded, targets, cfg, result, err, planTimings{
 			Total: resolutionDuration, Index: openDuration, State: stateDuration, Graph: graphDuration, Solver: solverDuration,
 			StateFingerprint: stateFingerprintDuration, StateSHA256: stateSHA256,
+			Validation: func() *independentPlanAudit {
+				if *includeValidationFixture {
+					return planAudit
+				}
+				return nil
+			}(),
+			ValidationResult: planAuditResult,
 		}); jsonErr != nil {
 			fmt.Fprintf(os.Stderr, "encode JSON plan: %v\n", jsonErr)
 			exitAfterRuntimeProfiles(1)
@@ -549,16 +570,12 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 		exitAfterRuntimeProfiles(1)
 	}
-	planAudit, auditErr := prepareIndependentPlanAudit(rg, result, targets, cfg)
-	if auditErr != nil {
-		fmt.Fprintf(os.Stderr, "arise: independent plan validation could not freeze the executable plan: %v\n", auditErr)
-		exitAfterRuntimeProfiles(1)
-	} else if planAudit != nil {
-		if err := enforceIndependentPlanAudit(os.Stderr, "post-resolution", planAudit); err != nil {
+	if planAudit != nil {
+		reportIndependentPlanAudit(os.Stderr, "post-resolution", *planAuditResult)
+		if !planAuditResult.Valid {
 			exitAfterRuntimeProfiles(1)
 		}
 	}
-
 	if len(result.Conflicts) > 0 && !cfg.Quiet {
 		fmt.Println("\nConflicts:")
 		for _, c := range result.Conflicts {

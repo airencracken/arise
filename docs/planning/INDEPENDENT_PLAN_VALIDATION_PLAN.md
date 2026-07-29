@@ -370,9 +370,22 @@ valid Portage-only plan fails with an actionable Arise deficiency.
 
 - [ ] Execute selected fixtures in disposable roots.
 - [ ] Compare predicted and actual final state.
-- [ ] Promote reviewed live differences into minimized fixtures.
+- [x] Capture live differences as atomic, replayable frozen documents and
+  reduce their available-package corpus to the candidates selected by each
+  plan.
+- [ ] Promote reviewed live differences into fully minimized hermetic fixtures.
 - [ ] Track corpus coverage by semantic feature rather than package count.
 - [ ] Archive superseded host-specific evidence once portable gates replace it.
+
+`arise-plan-compare --capture-dir DIR` now asks Arise for the exact fixture and
+plan used by its independent validation, translates emerge's displayed actions
+against that same frozen package authority, validates both plan impacts, and
+atomically publishes both state documents, the classification policy, and
+capture metadata. Existing destinations are never overwritten. The stored
+fixtures retain the complete installed baseline and final-state domains while
+discarding unrelated repository candidates; further dependency-closure
+reduction remains required before a host discovery becomes a hermetic corpus
+fixture.
 
 Exit gate: at least one classified `arise-valid-portage-fails` case passes
 independent validation, mutation gates and disposable-root execution before any

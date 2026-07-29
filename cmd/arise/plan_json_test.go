@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/planvalidate"
 	"github.com/airencracken/arise/internal/resolve"
 )
 
@@ -126,5 +127,33 @@ func TestSortedUseFlags(t *testing.T) {
 	enabled, disabled := sortedUseFlags(map[string]bool{"z": true, "a": true, "m": false})
 	if !reflect.DeepEqual(enabled, []string{"+a", "+z"}) || !reflect.DeepEqual(disabled, []string{"-m"}) {
 		t.Fatalf("enabled=%v disabled=%v", enabled, disabled)
+	}
+}
+
+func TestWritePlanJSONIncludesIndependentValidationWhenProvided(t *testing.T) {
+	audit := &independentPlanAudit{
+		fixture: planvalidate.Fixture{
+			Schema:    planvalidate.SchemaVersion,
+			Request:   planvalidate.Request{Operation: "install", Targets: []string{}},
+			Installed: []planvalidate.Package{}, Available: []planvalidate.Package{},
+		},
+		plan: planvalidate.Plan{
+			Schema: planvalidate.SchemaVersion, Actions: []planvalidate.Action{},
+			Decisions: planvalidate.DecisionLedger{Records: []planvalidate.DecisionRecord{}},
+		},
+	}
+	var output bytes.Buffer
+	if err := writePlanJSON(&output, nil, resolve.DefaultResolveConfig(), &resolve.ResolveResult{}, nil, planTimings{Validation: audit}); err != nil {
+		t.Fatal(err)
+	}
+	var document jsonPlan
+	if err := json.Unmarshal(output.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.IndependentValidation == nil ||
+		document.IndependentValidation.Schema != planvalidate.SchemaVersion ||
+		!reflect.DeepEqual(document.IndependentValidation.Fixture, audit.fixture) ||
+		!reflect.DeepEqual(document.IndependentValidation.Plan, audit.plan) {
+		t.Fatalf("independent validation JSON = %#v", document.IndependentValidation)
 	}
 }

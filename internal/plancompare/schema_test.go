@@ -33,3 +33,23 @@ func TestStateAndPolicySchemaContracts(t *testing.T) {
 		})
 	}
 }
+
+func TestStateDocumentWaivesUnchangedBaselineDefects(t *testing.T) {
+	state, err := DecodeStateDocument(strings.NewReader(`{
+		"schema": 1,
+		"fixture": {
+			"schema": 1,
+			"request": {"operation": "install", "targets": []},
+			"installed": [{"cpv":"dev-libs/broken-1","slot":"0","repository":"gentoo","metadata_authority":"vdb","dependencies":{"RDEPEND":"dev-libs/missing"}}],
+			"available": [],
+			"domains": {
+				"sysroot": [{"cpv":"dev-libs/broken-1","slot":"0","repository":"gentoo","metadata_authority":"vdb","dependencies":{"RDEPEND":"dev-libs/missing"}}],
+				"broot": [{"cpv":"dev-libs/broken-1","slot":"0","repository":"gentoo","metadata_authority":"vdb","dependencies":{"RDEPEND":"dev-libs/missing"}}]
+			}
+		},
+		"plan": {"schema": 1, "actions": [], "decisions": {"records": [], "truncated": false, "omitted_records": 0, "encoded_bytes": 0}}
+	}`))
+	if err != nil || !state.Valid {
+		t.Fatalf("unchanged baseline defect was treated as introduced: %#v, %v", state, err)
+	}
+}

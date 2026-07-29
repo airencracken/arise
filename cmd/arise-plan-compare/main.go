@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/airencracken/arise/internal/plancompare"
+	"github.com/airencracken/arise/internal/planvalidate"
 )
 
 type report struct {
@@ -52,12 +53,13 @@ func main() {
 	ariseStatePath := flag.String("arise-state", "", "versioned frozen Arise fixture and plan for independent final-state validation")
 	portageStatePath := flag.String("portage-state", "", "versioned frozen Portage fixture and plan for independent final-state validation")
 	policyPath := flag.String("classification-policy", "", "versioned required/optional/policy-equivalent classification policy")
+	captureDir := flag.String("capture-dir", "", "write deterministic frozen comparison documents to this directory")
 	flag.Parse()
 	if *withBdeps != "auto" && *withBdeps != "y" && *withBdeps != "n" {
 		fatal(fmt.Errorf("--with-bdeps must be auto, y, or n"))
 	}
 
-	ariseArgs := []string{"--json", "--pretend", fmt.Sprintf("--backtrack=%d", *backtrack)}
+	ariseArgs := []string{"--json", "--include-validation-fixture", "--pretend", fmt.Sprintf("--backtrack=%d", *backtrack)}
 	if *ariseDB != "" {
 		ariseArgs = append(ariseArgs, "--db", *ariseDB)
 	}
@@ -117,7 +119,34 @@ func main() {
 	differences := plancompare.Compare(arisePlan, emergePlan)
 	ariseVerified := parseAriseVerified(ariseResult.stdout)
 	portageResolved := emergeResult.err == nil && !looksUnresolved(emergeResult.stderr)
-	classified, err := classifyPlans(ariseVerified, portageResolved, differences, *ariseStatePath, *portageStatePath, *policyPath)
+	fixture, ariseValidationPlan, captured, captureErr := plancompare.ParseAriseValidation(ariseResult.stdout)
+	if captureErr != nil {
+		fatal(captureErr)
+	}
+	var portageValidationPlan planvalidate.Plan
+	var portageValidationFixture planvalidate.Fixture
+	var classified plancompare.ClassifiedComparison
+	if *ariseStatePath == "" && *portageStatePath == "" && captured {
+		ariseAssessment := plancompare.AssessmentFromValidation(
+			planvalidate.ValidatePlanImpact(fixture, ariseValidationPlan),
+			planvalidate.ApplyPlan(fixture.Installed, ariseValidationPlan).State,
+		)
+		portageAssessment, externalFixture, externalPlan, externalErr := plancompare.AssessmentFromExternalActions(fixture, emergePlan)
+		if externalErr != nil {
+			fatal(externalErr)
+		}
+		portageValidationPlan = externalPlan
+		portageValidationFixture = externalFixture
+		policy := plancompare.ClassificationPolicyForRequest(fixture.Request, ariseAssessment, portageAssessment)
+		classified, err = plancompare.ClassifyFinalStates(ariseAssessment, portageAssessment, policy, differences)
+		if err == nil && *captureDir != "" {
+			err = writeComparisonCapture(*captureDir, *target, *operation, classified,
+				plancompare.CaptureDocument(fixture, ariseValidationPlan),
+				plancompare.CaptureDocument(portageValidationFixture, portageValidationPlan), policy)
+		}
+	} else {
+		classified, err = classifyPlans(ariseVerified, portageResolved, differences, *ariseStatePath, *portageStatePath, *policyPath)
+	}
 	if err != nil {
 		fatal(err)
 	}

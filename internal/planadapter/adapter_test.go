@@ -100,6 +100,38 @@ func TestFreezeIsDeterministicAndDoesNotMutateResolverData(t *testing.T) {
 	}
 }
 
+func TestFreezeInfersReinstallReplacementFromFrozenInstalledState(t *testing.T) {
+	graph := resolve.NewDepGraph()
+	version := graph.AddVersionFromRepository("dev-perl/Example", "1.0.0", "0", "0", true, nil, "amd64", "gentoo")
+	version.Available = true
+	version.DependencyMetadataKnown = true
+	version.EAPI = "8"
+	version.InstalledEAPI = "8"
+	selected, err := atom.Parse("dev-perl/Example-1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := &resolve.ResolveResult{
+		Verified: true, Verification: resolve.VerificationVerified,
+		Install: []resolve.PkgAction{{
+			Atom: selected, Action: "reinstall", Slot: "0", Subslot: "0", Repository: "gentoo",
+		}},
+	}
+	fixture, plan, err := Freeze(graph, result, Options{
+		Operation: "update", Targets: []string{"dev-perl/Example"},
+		DomainsAliasToRoot: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Actions) != 1 || plan.Actions[0].Replaces != "dev-perl/Example-1.0.0" {
+		t.Fatalf("reinstall replacement = %#v", plan.Actions)
+	}
+	if validation := planvalidate.ValidateFinalState(fixture, plan); !validation.Valid {
+		t.Fatalf("inferred reinstall rejected: %#v", validation)
+	}
+}
+
 func upgradeGraph(t *testing.T) (*resolve.DepGraph, *resolve.ResolveResult) {
 	t.Helper()
 	graph := resolve.NewDepGraph()

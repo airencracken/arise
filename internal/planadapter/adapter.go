@@ -64,7 +64,7 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 		pkg := packageFromVersion(action.Atom.CP(), version, false, &action, opts.PackagePolicy)
 		plan.Actions = append(plan.Actions, planvalidate.Action{
 			ID: resolve.ActionIdentity(action), Kind: planvalidate.ActionInstall,
-			Package: pkg, Replaces: replacedCPV(action),
+			Package: pkg, Replaces: replacedCPV(graph, action),
 			Prerequisites: append([]string(nil), action.Prerequisites...),
 		})
 	}
@@ -156,11 +156,28 @@ func freezeDecisionLedger(source resolve.DecisionLedger) planvalidate.DecisionLe
 	}
 }
 
-func replacedCPV(action resolve.PkgAction) string {
-	if action.Atom == nil || action.InstalledVersion == "" {
+func replacedCPV(graph *resolve.DepGraph, action resolve.PkgAction) string {
+	if action.Atom == nil {
 		return ""
 	}
-	return action.Atom.CP() + "-" + action.InstalledVersion
+	if action.InstalledVersion != "" {
+		return action.Atom.CP() + "-" + action.InstalledVersion
+	}
+	if action.Action != "update" && action.Action != "reinstall" {
+		return ""
+	}
+	node := graph.Packages[action.Atom.CP()]
+	if node == nil {
+		return ""
+	}
+	for _, version := range node.Versions {
+		if version == nil || !version.Installed || version.Version == nil ||
+			action.Slot != "" && version.Slot != action.Slot {
+			continue
+		}
+		return action.Atom.CP() + "-" + version.Version.Raw
+	}
+	return ""
 }
 
 func packageFromVersion(cp string, version *resolve.VersionInfo, installed bool, action *resolve.PkgAction, policy func(string, string, string) planvalidate.PackagePolicy) planvalidate.Package {

@@ -55,3 +55,29 @@ func TestClassifiedHarnessUsesIndependentFinalStateValidation(t *testing.T) {
 		t.Fatalf("invalid Portage state classification = %#v", result)
 	}
 }
+
+func TestAssessmentComparesOnlyDeclaredUse(t *testing.T) {
+	pkg := planvalidate.Package{
+		CPV: "dev-libs/library-1", Slot: "0",
+		Use:  map[string]bool{"feature": true, "amd64": true},
+		IUse: map[string]bool{"feature": true},
+	}
+	assessment := AssessmentFromValidation(
+		planvalidate.ValidationResult{Valid: true},
+		planvalidate.State{Packages: []planvalidate.Package{pkg}},
+	)
+	got := assessment.Packages[0].EffectiveUse
+	if len(got) != 1 || !got["feature"] {
+		t.Fatalf("effective declared USE = %#v", got)
+	}
+}
+
+func TestStateUseComparisonIgnoresDifferentImplicitDomains(t *testing.T) {
+	got := stateUseMismatches(
+		map[string]bool{"feature": true, "elibc_glibc": true},
+		map[string]bool{"feature": false, "amd64": true},
+	)
+	if len(got) != 1 || got[0] != "feature" {
+		t.Fatalf("comparable USE mismatches = %v", got)
+	}
+}

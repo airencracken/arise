@@ -29,7 +29,7 @@ func DecodeStateDocument(reader io.Reader) (StateAssessment, error) {
 	if document.Schema != StateSchemaVersion {
 		return StateAssessment{}, fmt.Errorf("decode final-state assessment: unsupported schema %d", document.Schema)
 	}
-	validation := planvalidate.ValidateFinalState(document.Fixture, document.Plan)
+	validation := planvalidate.ValidatePlanImpact(document.Fixture, document.Plan)
 	applied := planvalidate.ApplyPlan(document.Fixture.Installed, document.Plan)
 	return AssessmentFromValidation(validation, applied.State), nil
 }
