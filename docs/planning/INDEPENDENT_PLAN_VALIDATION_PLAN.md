@@ -294,9 +294,11 @@ selection helpers. Verified full plans run impact validation after resolution
 and replay it under the operation lock. Both checkpoints now fail closed before
 package-state mutation. Identical inherited VDB defects are classified as
 pre-existing, but request and action violations remain non-waivable. Set
-expansion is frozen as explicit fixture data. `--nodeps` and `--onlydeps` remain
-outside this gate because they intentionally change the whole-plan or
-requested-target contract.
+expansion is frozen as explicit fixture data. `--nodeps` and `--onlydeps` now
+carry explicit partial-plan modes: `--nodeps` validates selected targets,
+metadata, policy, `REQUIRED_USE`, action ordering and decisions without claiming
+dependency closure; `--onlydeps` validates the dependency-only final state,
+metadata, policy, ordering and decisions without requiring the omitted target.
 
 ### Stage 1: contracts and regression capture
 
@@ -333,11 +335,13 @@ has no unexplained validity result.
 
 ### Stage 4: bounded decision ledger
 
-- [ ] Define candidate and decision records.
-- [ ] Emit selected, retained, rejected and skipped outcomes.
-- [ ] Deduplicate and deterministically order records.
-- [ ] Enforce count and byte limits with structured truncation.
-- [ ] Add human rendering without coupling it to the schema.
+- [x] Define candidate and decision records.
+- [x] Emit selected, retained, rejected and skipped outcomes for the committed
+  dependency closure.
+- [x] Deduplicate and deterministically order records.
+- [x] Enforce count and byte limits with structured truncation.
+- [x] Add JSON and bounded human rendering without coupling rendering to the
+  validation schema.
 
 Exit gate: every visible candidate omitted from a plan has an allowed structured
 outcome, and adversarial graphs cannot cause unbounded output.

@@ -24,47 +24,54 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 	if plan.Schema != SchemaVersion {
 		violations = append(violations, violation("unsupported-plan-schema", "", fmt.Sprint(plan.Schema), "", "plan schema is unsupported"))
 	}
+	if fixture.Request.PartialMode != "" && fixture.Request.PartialMode != "nodeps" &&
+		fixture.Request.PartialMode != "onlydeps" {
+		violations = append(violations, violation("unsupported-partial-mode", "", fixture.Request.PartialMode, "", "request partial-plan mode is unsupported"))
+	}
 	validateActionAuthority(fixture.Available, plan.Actions, &violations)
 	validateActionPolicy(fixture.Policy, plan.Actions, &violations)
 	validateActionOrder(plan.Actions, &violations)
+	validateDecisionLedger(plan, &violations)
 
 	for _, pkg := range applied.State.Packages {
 		if _, err := parseCPV(pkg.CPV); err != nil {
 			violations = append(violations, violation("invalid-package-identity", pkg.CPV, "", "", err.Error()))
 			continue
 		}
-		classes := make([]string, 0, len(pkg.Dependencies))
-		for class := range pkg.Dependencies {
-			classes = append(classes, class)
-		}
-		sort.Strings(classes)
-		for _, class := range classes {
-			expression := strings.TrimSpace(pkg.Dependencies[class])
-			if expression == "" {
-				continue
+		if fixture.Request.PartialMode != "nodeps" {
+			classes := make([]string, 0, len(pkg.Dependencies))
+			for class := range pkg.Dependencies {
+				classes = append(classes, class)
 			}
-			if !supportedDependencyClasses[class] {
-				violations = append(violations, violation("unsupported-dependency-class", pkg.CPV, class, pkg.CPV, "validator does not yet implement this dependency class"))
-				continue
+			sort.Strings(classes)
+			for _, class := range classes {
+				expression := strings.TrimSpace(pkg.Dependencies[class])
+				if expression == "" {
+					continue
+				}
+				if !supportedDependencyClasses[class] {
+					violations = append(violations, violation("unsupported-dependency-class", pkg.CPV, class, pkg.CPV, "validator does not yet implement this dependency class"))
+					continue
+				}
+				domainPackages, ok := dependencyDomainPackages(fixture, class, applied.State.Packages)
+				if !ok {
+					violations = append(violations, violation(
+						"missing-dependency-domain", pkg.CPV, class, pkg.CPV,
+						"fixture does not provide the required independent dependency domain",
+					))
+					continue
+				}
+				node, err := depstring.Parse(expression)
+				if err != nil {
+					violations = append(violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
+					continue
+				}
+				if err := depstring.ValidatePackageDependenciesEAPI(node, pkg.EAPI); err != nil {
+					violations = append(violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
+					continue
+				}
+				validateNode(node, pkg, domainPackages, &violations)
 			}
-			domainPackages, ok := dependencyDomainPackages(fixture, class, applied.State.Packages)
-			if !ok {
-				violations = append(violations, violation(
-					"missing-dependency-domain", pkg.CPV, class, pkg.CPV,
-					"fixture does not provide the required independent dependency domain",
-				))
-				continue
-			}
-			node, err := depstring.Parse(expression)
-			if err != nil {
-				violations = append(violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
-				continue
-			}
-			if err := depstring.ValidatePackageDependenciesEAPI(node, pkg.EAPI); err != nil {
-				violations = append(violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
-				continue
-			}
-			validateNode(node, pkg, domainPackages, &violations)
 		}
 		if strings.TrimSpace(pkg.RequiredUse) != "" {
 			node, err := depstring.Parse(pkg.RequiredUse)
@@ -75,8 +82,12 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 			}
 		}
 	}
-	validateTargets(fixture.Request, applied.State.Packages, &violations)
-	validateActionJustification(fixture, plan.Actions, &violations)
+	if fixture.Request.PartialMode != "onlydeps" {
+		validateTargets(fixture.Request, applied.State.Packages, &violations)
+	}
+	if fixture.Request.PartialMode != "onlydeps" {
+		validateActionJustification(fixture, plan, &violations)
+	}
 	sortViolations(violations)
 	violations, truncated, omitted := boundViolations(violations, applied.OmittedViolations)
 	if violations == nil {
@@ -88,15 +99,22 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 	}
 }
 
-func validateActionJustification(fixture Fixture, actions []Action, violations *[]Violation) {
-	byID := make(map[string]Action, len(actions))
-	required := make(map[string]bool, len(actions))
-	for _, action := range actions {
+func validateActionJustification(fixture Fixture, plan Plan, violations *[]Violation) {
+	byID := make(map[string]Action, len(plan.Actions))
+	required := make(map[string]bool, len(plan.Actions))
+	decisionRequirements := make(map[string][]string, len(plan.Decisions.Records))
+	for _, decision := range plan.Decisions.Records {
+		if decision.Outcome == "selected" {
+			decisionRequirements[decision.ActionID] = decision.Requirements
+		}
+	}
+	for _, action := range plan.Actions {
 		if action.ID != "" {
 			byID[action.ID] = action
 		}
 		if action.Kind == ActionInstall &&
-			(actionMatchesRequest(action, fixture.Request) || action.Replaces != "") {
+			(actionMatchesRequest(action, fixture.Request) ||
+				requirementsJustifyAction(action, decisionRequirements[action.ID])) {
 			required[action.ID] = true
 		}
 	}
@@ -116,7 +134,7 @@ func validateActionJustification(fixture Fixture, actions []Action, violations *
 	for id := range required {
 		visit(id)
 	}
-	for _, action := range actions {
+	for _, action := range plan.Actions {
 		if action.Kind == ActionInstall && action.ID != "" && !required[action.ID] {
 			*violations = append(*violations, violation(
 				"unjustified-action", action.Package.CPV, action.ID, "",
@@ -124,6 +142,16 @@ func validateActionJustification(fixture Fixture, actions []Action, violations *
 			))
 		}
 	}
+}
+
+func requirementsJustifyAction(action Action, requirements []string) bool {
+	for _, raw := range requirements {
+		constraint, err := atom.ParsePackageAtom(raw)
+		if err == nil && stateMatches([]Package{action.Package}, constraint, nil) {
+			return true
+		}
+	}
+	return false
 }
 
 func actionMatchesRequest(action Action, request Request) bool {
@@ -169,7 +197,10 @@ func validateActionOrder(actions []Action, violations *[]Violation) {
 // pre-existing. Request and application violations are never waived.
 func ValidatePlanImpact(fixture Fixture, plan Plan) ValidationResult {
 	baselineFixture := fixture
-	baselineFixture.Request = Request{Operation: "install", Targets: []string{}}
+	baselineFixture.Request = Request{
+		Operation: "install", Targets: []string{},
+		PartialMode: fixture.Request.PartialMode,
+	}
 	baseline := ValidateFinalState(baselineFixture, Plan{Schema: plan.Schema})
 	planned := ValidateFinalState(fixture, plan)
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -161,6 +162,53 @@ func TestResolve_SimpleInstall(t *testing.T) {
 	}
 	if len(result.Conflicts) != 0 {
 		t.Errorf("expected 0 conflicts, got %v", result.Conflicts)
+	}
+	if len(result.DecisionLedger.Records) != 1 ||
+		result.DecisionLedger.Records[0].Outcome != DecisionSelected ||
+		result.DecisionLedger.Records[0].ActionID != ActionIdentity(a) {
+		t.Fatalf("selected action ledger = %#v", result.DecisionLedger)
+	}
+}
+
+func TestResolveDecisionLedgerClassifiesCommittedCandidates(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-libs/library", "1", "0", "0", false, nil)
+	pkg(g, "dev-libs/library", "2", "0", "0", false, nil)
+	result, err := Resolve(g, []string{">=dev-libs/library-1"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified {
+		t.Fatalf("resolution failed: %#v", result.Conflicts)
+	}
+	var selected, skipped int
+	for _, record := range result.DecisionLedger.Records {
+		switch record.Outcome {
+		case DecisionSelected:
+			selected++
+		case DecisionSkipped:
+			skipped++
+		}
+	}
+	if selected != 1 || skipped != 1 {
+		t.Fatalf("candidate outcomes = %#v", result.DecisionLedger)
+	}
+}
+
+func TestDecisionLedgerBoundsAdversarialCandidateVolume(t *testing.T) {
+	records := make([]CandidateDecision, MaxDecisionRecords+100)
+	for index := range records {
+		records[index] = CandidateDecision{
+			ID:      fmt.Sprintf("app-misc/candidate-%06d|0|gentoo|available", index),
+			Outcome: DecisionSkipped, State: "available",
+			CPV: fmt.Sprintf("app-misc/candidate-%06d", index), Slot: "0",
+			Repository: "gentoo", Reasons: []string{"lower committed preference"},
+		}
+	}
+	ledger := boundDecisionLedger(records)
+	if !ledger.Truncated || ledger.OmittedRecords != 100 ||
+		len(ledger.Records) != MaxDecisionRecords || ledger.EncodedBytes > MaxDecisionBytes {
+		t.Fatalf("bounded ledger = %#v", ledger)
 	}
 }
 
@@ -1793,6 +1841,17 @@ func TestOnlyDepsRemovesTargetAndAppliesTargetScopedDependencyClasses(t *testing
 		if !present[cp] {
 			t.Errorf("--onlydeps omitted %s: %#v", cp, result.Install)
 		}
+	}
+	var targetDecision *CandidateDecision
+	for index := range result.DecisionLedger.Records {
+		if result.DecisionLedger.Records[index].CPV == "app-misc/target-1" {
+			targetDecision = &result.DecisionLedger.Records[index]
+			break
+		}
+	}
+	if targetDecision == nil || targetDecision.Outcome != DecisionSkipped ||
+		!slices.Contains(targetDecision.Reasons, "omitted by onlydeps partial-plan mode") {
+		t.Fatalf("--onlydeps target decision = %#v", targetDecision)
 	}
 }
 
@@ -4324,6 +4383,18 @@ func TestVirtualPackage_BacktracksWhenPreferredProviderDepsFail(t *testing.T) {
 		Kind: "provider", Key: "provider:app-shells/consumer->virtual/editor", From: "app-editors/broken", To: "app-editors/working",
 	}) {
 		t.Fatalf("provider decision history = %#v", result.DecisionHistory)
+	}
+	var ledgerWorking bool
+	for _, record := range result.DecisionLedger.Records {
+		if strings.HasPrefix(record.CPV, "app-editors/broken-") {
+			t.Fatalf("rolled-back provider leaked into committed decision ledger: %#v", record)
+		}
+		if strings.HasPrefix(record.CPV, "app-editors/working-") && record.Outcome == DecisionSelected {
+			ledgerWorking = true
+		}
+	}
+	if !ledgerWorking {
+		t.Fatalf("committed provider missing from decision ledger: %#v", result.DecisionLedger)
 	}
 }
 

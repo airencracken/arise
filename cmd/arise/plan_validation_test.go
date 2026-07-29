@@ -45,23 +45,32 @@ func TestIndependentPlanAuditRouteAndLockedReplay(t *testing.T) {
 	}
 }
 
-func TestIndependentPlanAuditSkipsPartialPlanModes(t *testing.T) {
+func TestIndependentPlanAuditFreezesPartialPlanModes(t *testing.T) {
 	graph := resolve.NewDepGraph()
-	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified}
 	for name, test := range map[string]struct {
-		targets []string
-		cfg     resolve.ResolveConfig
+		targets      []string
+		cfg          resolve.ResolveConfig
+		verification string
+		verified     bool
 	}{
-		"nodeps": {targets: []string{"app-misc/example"}, cfg: resolve.ResolveConfig{NoDeps: true}},
+		"nodeps": {
+			targets: []string{"app-misc/example"}, cfg: resolve.ResolveConfig{NoDeps: true},
+			verification: resolve.VerificationSkippedNoDeps,
+		},
 		"onlydeps": {
-			targets: []string{"app-misc/example"},
-			cfg:     resolve.ResolveConfig{OnlyDeps: true},
+			targets:      []string{"app-misc/example"},
+			cfg:          resolve.ResolveConfig{OnlyDeps: true},
+			verification: resolve.VerificationVerified, verified: true,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			result := &resolve.ResolveResult{Verified: test.verified, Verification: test.verification}
 			audit, err := prepareIndependentPlanAudit(graph, result, test.targets, test.cfg)
-			if err != nil || audit != nil {
-				t.Fatalf("unsupported route audit = %#v, %v", audit, err)
+			if err != nil || audit == nil {
+				t.Fatalf("partial route audit = %#v, %v", audit, err)
+			}
+			if audit.fixture.Request.PartialMode != name {
+				t.Fatalf("partial mode = %q, want %q", audit.fixture.Request.PartialMode, name)
 			}
 		})
 	}
@@ -150,5 +159,22 @@ func TestIndependentPlanAuditEnforcementFailsClosed(t *testing.T) {
 	output.Reset()
 	if err := enforceIndependentPlanAudit(&output, "post-resolution", nil); err != nil || output.Len() != 0 {
 		t.Fatalf("unsupported route enforcement = %v, %q", err, output.String())
+	}
+}
+
+func TestDecisionLedgerHumanRenderingIsBounded(t *testing.T) {
+	ledger := resolve.DecisionLedger{
+		Records: []resolve.CandidateDecision{
+			{Outcome: resolve.DecisionSelected, CPV: "app-misc/target-1", Reasons: []string{"explicit target"}},
+			{Outcome: resolve.DecisionRejected, CPV: "app-misc/target-2", Reasons: []string{"masked"}},
+			{Outcome: resolve.DecisionSkipped, CPV: "app-misc/target-3", Reasons: []string{"lower committed preference"}},
+		},
+		Truncated: true, OmittedRecords: 12,
+	}
+	lines := renderDecisionLedger(ledger, 1)
+	if len(lines) != 2 || !strings.Contains(lines[0], "1 selected") ||
+		!strings.Contains(lines[0], "12 omitted") ||
+		!strings.Contains(lines[1], "rejected app-misc/target-2") {
+		t.Fatalf("decision rendering = %#v", lines)
 	}
 }

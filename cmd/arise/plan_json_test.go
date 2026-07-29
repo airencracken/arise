@@ -34,6 +34,14 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 		Verified:        true,
 		Verification:    resolve.VerificationVerified,
 	}
+	result.DecisionLedger = resolve.DecisionLedger{
+		Records: []resolve.CandidateDecision{{
+			ID: "dev-libs/example-2|0|gentoo|available", Outcome: resolve.DecisionSelected,
+			State: "available", CPV: "dev-libs/example-2", Slot: "0", Repository: "gentoo",
+			ActionID: resolve.ActionIdentity(result.Install[0]), Reasons: []string{"world target"},
+		}},
+		EncodedBytes: 200,
+	}
 	cfg := resolve.DefaultResolveConfig()
 	cfg.Update = true
 	cfg.Backtrack = 20
@@ -66,6 +74,9 @@ func TestWritePlanJSONIsVersionedDeterministicAndComplete(t *testing.T) {
 	}
 	if !reflect.DeepEqual(document.Resolution.Decisions, result.DecisionHistory) {
 		t.Fatalf("decisions = %#v", document.Resolution.Decisions)
+	}
+	if !reflect.DeepEqual(document.Resolution.CandidateDecisions, result.DecisionLedger) {
+		t.Fatalf("candidate decisions = %#v", document.Resolution.CandidateDecisions)
 	}
 }
 

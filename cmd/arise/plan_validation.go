@@ -16,7 +16,14 @@ type independentPlanAudit struct {
 }
 
 func prepareIndependentPlanAudit(graph *resolve.DepGraph, result *resolve.ResolveResult, targets []string, cfg resolve.ResolveConfig) (*independentPlanAudit, error) {
-	if graph == nil || result == nil || !result.Verified || cfg.NoDeps || cfg.OnlyDeps {
+	if graph == nil || result == nil {
+		return nil, nil
+	}
+	if cfg.NoDeps {
+		if result.Verification != resolve.VerificationSkippedNoDeps {
+			return nil, nil
+		}
+	} else if !result.Verified {
 		return nil, nil
 	}
 	expandedTargets, err := expandIndependentAuditTargets(targets, cfg)
@@ -27,10 +34,17 @@ func prepareIndependentPlanAudit(graph *resolve.DepGraph, result *resolve.Resolv
 	if cfg.Update {
 		operation = "update"
 	}
+	partialMode := ""
+	if cfg.NoDeps {
+		partialMode = "nodeps"
+	} else if cfg.OnlyDeps {
+		partialMode = "onlydeps"
+	}
 	policy, packagePolicy := freezeIndependentPolicy(cfg)
 	fixture, plan, err := planadapter.Freeze(graph, result, planadapter.Options{
 		Operation: operation, Targets: expandedTargets, OriginalTargets: targets,
-		Policy: policy, PackagePolicy: packagePolicy,
+		PartialMode: partialMode,
+		Policy:      policy, PackagePolicy: packagePolicy,
 		// Current production scheduling uses the host root for all three
 		// domains. Cross-root execution must provide independent snapshots
 		// instead of enabling this alias.

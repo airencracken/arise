@@ -635,6 +635,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 		printActionTotals(result.Install, downloadSizes, cfg.FetchOnly)
+		if cfg.Verbose {
+			for _, line := range renderDecisionLedger(result.DecisionLedger, 10) {
+				fmt.Println(line)
+			}
+		}
 		if *showEstimates {
 			var total time.Duration
 			covered := 0
@@ -995,6 +1000,37 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		return
 	}
 
+}
+
+func renderDecisionLedger(ledger resolve.DecisionLedger, detailLimit int) []string {
+	counts := map[string]int{}
+	for _, record := range ledger.Records {
+		counts[record.Outcome]++
+	}
+	summary := fmt.Sprintf(
+		"Decision ledger: %d selected, %d retained, %d rejected, %d skipped",
+		counts[resolve.DecisionSelected], counts[resolve.DecisionRetained],
+		counts[resolve.DecisionRejected], counts[resolve.DecisionSkipped],
+	)
+	if ledger.OmittedRecords > 0 {
+		summary += fmt.Sprintf(", %d omitted by bounds", ledger.OmittedRecords)
+	}
+	lines := []string{summary}
+	if detailLimit <= 0 {
+		return lines
+	}
+	details := 0
+	for _, record := range ledger.Records {
+		if record.Outcome == resolve.DecisionSelected || record.Outcome == resolve.DecisionRetained {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  %s %s: %s", record.Outcome, record.CPV, strings.Join(record.Reasons, "; ")))
+		details++
+		if details == detailLimit {
+			break
+		}
+	}
+	return lines
 }
 
 func downloadBinpkgTargets(ctx context.Context, binhosts, targets []string, destination string, required, quiet bool) error {

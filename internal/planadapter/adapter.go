@@ -4,6 +4,7 @@
 package planadapter
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,6 +17,7 @@ type Options struct {
 	Operation          string
 	Targets            []string
 	OriginalTargets    []string
+	PartialMode        string
 	Policy             planvalidate.Policy
 	PackagePolicy      func(cpv, slot, repository string) planvalidate.PackagePolicy
 	DomainsAliasToRoot bool
@@ -77,6 +79,10 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 			Package: packageFromVersion(action.Atom.CP(), version, true, nil, opts.PackagePolicy),
 		})
 	}
+	plan.Decisions = freezeDecisionLedger(result.DecisionLedger)
+	if len(plan.Decisions.Records) == 0 && len(plan.Actions) != 0 {
+		plan.Decisions = selectedActionLedger(plan.Actions, result)
+	}
 
 	fixture := planvalidate.Fixture{
 		Schema: planvalidate.SchemaVersion,
@@ -84,6 +90,7 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 			Operation:       opts.Operation,
 			Targets:         append([]string(nil), opts.Targets...),
 			OriginalTargets: append([]string(nil), opts.OriginalTargets...),
+			PartialMode:     opts.PartialMode,
 		},
 		Installed: installed,
 		Available: available,
@@ -97,6 +104,56 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 		}
 	}
 	return fixture, plan, nil
+}
+
+func selectedActionLedger(actions []planvalidate.Action, result *resolve.ResolveResult) planvalidate.DecisionLedger {
+	reasons := make(map[string]string, len(result.Install)+len(result.Uninstall))
+	for _, action := range append(append([]resolve.PkgAction(nil), result.Install...), result.Uninstall...) {
+		reasons[resolve.ActionIdentity(action)] = action.Reason
+	}
+	ledger := planvalidate.DecisionLedger{Records: make([]planvalidate.DecisionRecord, 0, len(actions))}
+	for _, action := range actions {
+		state := "available"
+		if action.Kind == planvalidate.ActionRemove {
+			state = "installed"
+		}
+		reason := strings.TrimSpace(reasons[action.ID])
+		if reason == "" {
+			reason = "selected executable action"
+		}
+		record := planvalidate.DecisionRecord{
+			ID:      strings.Join([]string{action.Package.CPV, action.Package.Slot, action.Package.Repository, state}, "|"),
+			Outcome: "selected", State: state, CPV: action.Package.CPV,
+			Slot: action.Package.Slot, Subslot: action.Package.Subslot,
+			Repository: action.Package.Repository, ActionID: action.ID,
+			Reasons: []string{reason},
+		}
+		encoded, _ := json.Marshal(record)
+		ledger.EncodedBytes += len(encoded)
+		ledger.Records = append(ledger.Records, record)
+	}
+	sort.Slice(ledger.Records, func(i, j int) bool { return ledger.Records[i].ID < ledger.Records[j].ID })
+	return ledger
+}
+
+func freezeDecisionLedger(source resolve.DecisionLedger) planvalidate.DecisionLedger {
+	records := make([]planvalidate.DecisionRecord, len(source.Records))
+	for index, record := range source.Records {
+		records[index] = planvalidate.DecisionRecord{
+			ID: record.ID, Outcome: record.Outcome, State: record.State,
+			CPV: record.CPV, Slot: record.Slot, Subslot: record.Subslot,
+			Repository: record.Repository, ActionID: record.ActionID,
+			Reasons:      append([]string(nil), record.Reasons...),
+			Requirements: append([]string(nil), record.Requirements...),
+		}
+	}
+	if records == nil {
+		records = []planvalidate.DecisionRecord{}
+	}
+	return planvalidate.DecisionLedger{
+		Records: records, Truncated: source.Truncated,
+		OmittedRecords: source.OmittedRecords, EncodedBytes: source.EncodedBytes,
+	}
 }
 
 func replacedCPV(action resolve.PkgAction) string {

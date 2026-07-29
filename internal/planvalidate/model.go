@@ -42,6 +42,7 @@ type Request struct {
 	Operation       string   `json:"operation"`
 	Targets         []string `json:"targets"`
 	OriginalTargets []string `json:"original_targets,omitempty"`
+	PartialMode     string   `json:"partial_mode,omitempty"`
 }
 
 type Package struct {
@@ -71,8 +72,29 @@ type PackagePolicy struct {
 }
 
 type Plan struct {
-	Schema  int      `json:"schema"`
-	Actions []Action `json:"actions"`
+	Schema    int            `json:"schema"`
+	Actions   []Action       `json:"actions"`
+	Decisions DecisionLedger `json:"decisions"`
+}
+
+type DecisionLedger struct {
+	Records        []DecisionRecord `json:"records"`
+	Truncated      bool             `json:"truncated"`
+	OmittedRecords int              `json:"omitted_records"`
+	EncodedBytes   int              `json:"encoded_bytes"`
+}
+
+type DecisionRecord struct {
+	ID           string   `json:"id"`
+	Outcome      string   `json:"outcome"`
+	State        string   `json:"state"`
+	CPV          string   `json:"cpv"`
+	Slot         string   `json:"slot"`
+	Subslot      string   `json:"subslot,omitempty"`
+	Repository   string   `json:"repository,omitempty"`
+	ActionID     string   `json:"action_id,omitempty"`
+	Reasons      []string `json:"reasons"`
+	Requirements []string `json:"requirements,omitempty"`
 }
 
 type Action struct {

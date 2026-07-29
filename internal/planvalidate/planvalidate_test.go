@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -406,6 +407,7 @@ func TestTransactionOrderingAndProviderProof(t *testing.T) {
 		{ID: "library", Kind: ActionInstall, Package: dependency},
 		{ID: "client", Kind: ActionInstall, Package: target, Prerequisites: []string{"library"}},
 	}}
+	plan.Decisions = testDecisionLedger(t, plan.Actions)
 	if result := ValidateFinalState(fixture, plan); !result.Valid {
 		t.Fatalf("ordered provider plan rejected: %#v", result)
 	}
@@ -427,6 +429,45 @@ func TestTransactionOrderingAndProviderProof(t *testing.T) {
 	if result.Valid || !hasViolation(result, "unjustified-action") {
 		t.Fatalf("unjustified provider accepted: %#v", result)
 	}
+
+	oldOrphan := pkg("dev-libs/orphan-0", nil)
+	replacementPlan := cloneJSON(t, plan)
+	replacementPlan.Actions = append(replacementPlan.Actions, Action{
+		ID: "orphan-replacement", Kind: ActionInstall, Package: orphan, Replaces: oldOrphan.CPV,
+	})
+	replacementPlan.Decisions = testDecisionLedger(t, replacementPlan.Actions)
+	replacementFixture := cloneJSON(t, fixture)
+	replacementFixture.Installed = append(replacementFixture.Installed, oldOrphan)
+	replacementFixture.Available = append(replacementFixture.Available, orphan)
+	result = ValidateFinalState(replacementFixture, replacementPlan)
+	if result.Valid || !hasViolation(result, "unjustified-action") {
+		t.Fatalf("unjustified replacement accepted: %#v", result)
+	}
+}
+
+func testDecisionLedger(t *testing.T, actions []Action) DecisionLedger {
+	t.Helper()
+	ledger := DecisionLedger{Records: make([]DecisionRecord, 0, len(actions))}
+	for _, action := range actions {
+		state := "available"
+		if action.Kind == ActionRemove {
+			state = "installed"
+		}
+		record := DecisionRecord{
+			ID:      strings.Join([]string{action.Package.CPV, action.Package.Slot, action.Package.Repository, state}, "|"),
+			Outcome: "selected", State: state, CPV: action.Package.CPV,
+			Slot: action.Package.Slot, Repository: action.Package.Repository,
+			ActionID: action.ID, Reasons: []string{"test selection"},
+		}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ledger.EncodedBytes += len(encoded)
+		ledger.Records = append(ledger.Records, record)
+	}
+	sort.Slice(ledger.Records, func(i, j int) bool { return ledger.Records[i].ID < ledger.Records[j].ID })
+	return ledger
 }
 
 func TestTransactionOrderingRejectsMalformedProofs(t *testing.T) {
@@ -452,6 +493,82 @@ func TestTransactionOrderingRejectsMalformedProofs(t *testing.T) {
 				t.Fatalf("malformed ordering proof accepted: %#v", result)
 			}
 		})
+	}
+}
+
+func TestDecisionLedgerActionContract(t *testing.T) {
+	candidate := pkg("app-misc/client-1", nil)
+	candidate.Authority = AuthorityEvaluated
+	action := Action{ID: "root|app-misc/client-1|0||gentoo", Kind: ActionInstall, Package: candidate}
+	record := DecisionRecord{
+		ID: "app-misc/client-1|0|gentoo|available", Outcome: "selected",
+		State: "available", CPV: candidate.CPV, Slot: candidate.Slot,
+		Repository: candidate.Repository, ActionID: action.ID,
+		Reasons: []string{"explicit target"},
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := Fixture{
+		Schema: SchemaVersion, Request: Request{Operation: "install", Targets: []string{"app-misc/client"}},
+		Available: []Package{candidate},
+	}
+	plan := Plan{
+		Schema: SchemaVersion, Actions: []Action{action},
+		Decisions: DecisionLedger{Records: []DecisionRecord{record}, EncodedBytes: len(encoded)},
+	}
+	if result := ValidateFinalState(fixture, plan); !result.Valid {
+		t.Fatalf("valid decision ledger rejected: %#v", result)
+	}
+	for name, mutate := range map[string]func(*Plan){
+		"missing": func(plan *Plan) {
+			plan.Decisions = DecisionLedger{}
+		},
+		"fabricated action": func(plan *Plan) {
+			plan.Decisions.Records[0].ActionID = "fabricated"
+		},
+		"non-selected action": func(plan *Plan) {
+			plan.Decisions.Records[0].Outcome = "skipped"
+		},
+		"empty reason": func(plan *Plan) {
+			plan.Decisions.Records[0].Reasons = nil
+		},
+		"byte count": func(plan *Plan) {
+			plan.Decisions.EncodedBytes++
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := cloneJSON(t, plan)
+			mutate(&changed)
+			result := ValidateFinalState(fixture, changed)
+			if result.Valid {
+				t.Fatalf("decision mutation accepted: %#v", result)
+			}
+		})
+	}
+}
+
+func TestDecisionLedgerCanonicalOrderAndTruncationContract(t *testing.T) {
+	records := []DecisionRecord{
+		{ID: "b", Outcome: "skipped", State: "available", CPV: "cat/b-1", Slot: "0", Reasons: []string{"lower preference"}},
+		{ID: "a", Outcome: "rejected", State: "available", CPV: "cat/a-1", Slot: "0", Reasons: []string{"masked"}},
+	}
+	bytes := 0
+	for _, record := range records {
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bytes += len(encoded)
+	}
+	result := ValidateFinalState(
+		Fixture{Schema: SchemaVersion, Request: Request{Operation: "install"}},
+		Plan{Schema: SchemaVersion, Decisions: DecisionLedger{Records: records, EncodedBytes: bytes, Truncated: true}},
+	)
+	if result.Valid || !hasViolation(result, "noncanonical-decision-order") ||
+		!hasViolation(result, "invalid-decision-truncation") {
+		t.Fatalf("malformed canonical ledger accepted: %#v", result)
 	}
 }
 

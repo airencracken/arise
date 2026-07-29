@@ -103,10 +103,36 @@ type ResolveResult struct {
 	BranchEvaluations []BranchEvaluation
 	Metrics           ResolveMetrics
 	ConflictDetails   []ConflictDetail
+	DecisionLedger    DecisionLedger
 	Verified          bool             // final installed-state overlay passed whole-state verification
 	Verification      string           // verified, failed, skipped-nodeps, or incomplete
 	Incomplete        *IncompleteCause `json:"incomplete,omitempty"`
 	retryChoices      []replayDecision
+}
+
+const (
+	MaxDecisionRecords = 4096
+	MaxDecisionBytes   = 1 << 20
+)
+
+type DecisionLedger struct {
+	Records        []CandidateDecision `json:"records"`
+	Truncated      bool                `json:"truncated"`
+	OmittedRecords int                 `json:"omitted_records"`
+	EncodedBytes   int                 `json:"encoded_bytes"`
+}
+
+type CandidateDecision struct {
+	ID           string   `json:"id"`
+	Outcome      string   `json:"outcome"`
+	State        string   `json:"state"`
+	CPV          string   `json:"cpv"`
+	Slot         string   `json:"slot"`
+	Subslot      string   `json:"subslot,omitempty"`
+	Repository   string   `json:"repository,omitempty"`
+	ActionID     string   `json:"action_id,omitempty"`
+	Reasons      []string `json:"reasons"`
+	Requirements []string `json:"requirements,omitempty"`
 }
 
 // IncompleteCause explains why resolution stopped before it could produce an
@@ -1144,16 +1170,18 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 		return r.incompleteResult(ctx.Err()), nil
 	}
 	r.snapshotAllocations()
+	uninstall := mapToSlice(r.toUninstall)
 
 	return &ResolveResult{
 		Install:         install,
-		Uninstall:       mapToSlice(r.toUninstall),
+		Uninstall:       uninstall,
 		Conflicts:       r.conflicts,
 		Warnings:        r.warnings,
 		BacktrackLevel:  config.Backtrack - r.backtrackRemaining,
 		DecisionHistory: append([]BacktrackDecision(nil), r.decisionHistory...),
 		Metrics:         r.metrics,
 		ConflictDetails: r.conflictDetails,
+		DecisionLedger:  r.buildDecisionLedger(install, uninstall),
 		Verified:        len(r.conflicts) == 0,
 		Verification: func() string {
 			if len(r.conflicts) == 0 {
@@ -1327,7 +1355,8 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 		Install: installs, Uninstall: removals,
 		Conflicts: r.conflicts, Warnings: r.warnings,
 		ConflictDetails: r.conflictDetails, Metrics: r.metrics,
-		Verified: len(r.conflicts) == 0,
+		DecisionLedger: r.buildDecisionLedger(installs, removals),
+		Verified:       len(r.conflicts) == 0,
 		Verification: func() string {
 			if len(r.conflicts) == 0 {
 				return VerificationVerified
@@ -6099,19 +6128,21 @@ func (r *resolver) buildResult() (*ResolveResult, error) {
 	if !r.config.UnsortedDisplay {
 		install = SortByDeps(install, r.graph)
 	}
+	uninstall := mapToSlice(r.toUninstall)
 	verification := VerificationIncomplete
 	if r.config.NoDeps {
 		verification = VerificationSkippedNoDeps
 	}
 	return &ResolveResult{
 		Install:         install,
-		Uninstall:       mapToSlice(r.toUninstall),
+		Uninstall:       uninstall,
 		Conflicts:       r.conflicts,
 		Warnings:        r.warnings,
 		DecisionHistory: append([]BacktrackDecision(nil), r.decisionHistory...),
 		BacktrackLevel:  r.config.Backtrack - r.backtrackRemaining,
 		Metrics:         r.metrics,
 		ConflictDetails: r.conflictDetails,
+		DecisionLedger:  r.buildDecisionLedger(install, uninstall),
 		Verification:    verification,
 		retryChoices:    append([]replayDecision(nil), r.replayChoices...),
 	}, nil

@@ -34,6 +34,7 @@ type jsonResolution struct {
 	BacktrackLimit        int                         `json:"backtrack_limit"`
 	Decisions             []resolve.BacktrackDecision `json:"decisions"`
 	Branches              []resolve.BranchEvaluation  `json:"branches"`
+	CandidateDecisions    resolve.DecisionLedger      `json:"candidate_decisions"`
 	IndexNS               int64                       `json:"index_ns"`
 	StateNS               int64                       `json:"state_ns"`
 	GraphNS               int64                       `json:"graph_ns"`
@@ -99,9 +100,10 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 		Resolution: jsonResolution{
 			Verified: result.Verified, Verification: result.Verification,
 			DurationNS: timings.Total.Nanoseconds(), BacktrackUsed: result.BacktrackLevel, BacktrackLimit: cfg.Backtrack,
-			Decisions: append([]resolve.BacktrackDecision(nil), result.DecisionHistory...),
-			Branches:  append([]resolve.BranchEvaluation(nil), result.BranchEvaluations...),
-			IndexNS:   timings.Index.Nanoseconds(), StateNS: timings.State.Nanoseconds(), GraphNS: timings.Graph.Nanoseconds(), SolverNS: timings.Solver.Nanoseconds(),
+			Decisions:          append([]resolve.BacktrackDecision(nil), result.DecisionHistory...),
+			Branches:           append([]resolve.BranchEvaluation(nil), result.BranchEvaluations...),
+			CandidateDecisions: result.DecisionLedger,
+			IndexNS:            timings.Index.Nanoseconds(), StateNS: timings.State.Nanoseconds(), GraphNS: timings.Graph.Nanoseconds(), SolverNS: timings.Solver.Nanoseconds(),
 			StateFingerprintNS: timings.StateFingerprint.Nanoseconds(),
 			SearchNS:           result.Metrics.Search.Nanoseconds(), CompleteGraphNS: result.Metrics.CompleteGraph.Nanoseconds(),
 			DirectUpdateRefreshNS: result.Metrics.DirectUpdateRefresh.Nanoseconds(),
