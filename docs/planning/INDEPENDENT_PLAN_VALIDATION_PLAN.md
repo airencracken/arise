@@ -290,13 +290,13 @@ metadata authority. Unit, integration, property, schema, API-contract,
 atomicity, adversarial-input and source-mutation tests cover this boundary.
 
 A translation-only adapter freezes resolver graphs and plans without calling
-selection helpers. Verified direct-package plans run impact validation after
-resolution and replay it under the operation lock. This gate is audit-only
-while the corpus is expanded. Identical inherited VDB defects are classified as
-pre-existing, but request and action violations remain non-waivable. Set targets
-are skipped until their expansion is frozen as explicit fixture data;
-`--nodeps` and `--onlydeps` are skipped because they intentionally change the
-whole-plan or requested-target contract.
+selection helpers. Verified full plans run impact validation after resolution
+and replay it under the operation lock. Both checkpoints now fail closed before
+package-state mutation. Identical inherited VDB defects are classified as
+pre-existing, but request and action violations remain non-waivable. Set
+expansion is frozen as explicit fixture data. `--nodeps` and `--onlydeps` remain
+outside this gate because they intentionally change the whole-plan or
+requested-target contract.
 
 ### Stage 1: contracts and regression capture
 
@@ -322,10 +322,11 @@ Exit gate: deliberately missing and contradictory action mutations are rejected.
 
 - [x] Add all dependency classes and explicit root-domain rules.
 - [x] Add USE dependencies, conditionals and `REQUIRED_USE`.
-- [~] Add mask, keyword, license, EAPI and metadata-authority policy. Frozen
-  action policy is implemented; complete profile provenance remains.
-- [~] Validate slot operators, providers and transaction order. Slot/subslot
-  satisfaction is implemented; provider choice and action ordering remain.
+- [x] Add mask, keyword, license, EAPI and metadata-authority policy, including
+  package-specific keyword/license changes, license groups and mask provenance.
+- [x] Validate slot operators, provider justification and transaction order.
+  Stable action identities and prerequisite edges prove dependency ordering and
+  reject disconnected new provider actions.
 
 Exit gate: all validator-semantic mutations are killed and the frozen corpus
 has no unexplained validity result.

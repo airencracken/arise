@@ -32,14 +32,16 @@ const (
 )
 
 type Policy struct {
-	AcceptedKeywords []string `json:"accepted_keywords,omitempty"`
-	AcceptedLicenses []string `json:"accepted_licenses,omitempty"`
-	SupportedEAPIs   []string `json:"supported_eapis,omitempty"`
+	AcceptedKeywords []string            `json:"accepted_keywords,omitempty"`
+	AcceptedLicenses []string            `json:"accepted_licenses,omitempty"`
+	SupportedEAPIs   []string            `json:"supported_eapis,omitempty"`
+	LicenseGroups    map[string][]string `json:"license_groups,omitempty"`
 }
 
 type Request struct {
-	Operation string   `json:"operation"`
-	Targets   []string `json:"targets"`
+	Operation       string   `json:"operation"`
+	Targets         []string `json:"targets"`
+	OriginalTargets []string `json:"original_targets,omitempty"`
 }
 
 type Package struct {
@@ -56,6 +58,16 @@ type Package struct {
 	Keywords     []string          `json:"keywords,omitempty"`
 	License      string            `json:"license,omitempty"`
 	Masked       bool              `json:"masked,omitempty"`
+	Policy       PackagePolicy     `json:"policy,omitempty"`
+}
+
+type PackagePolicy struct {
+	BaseKeyword    string   `json:"base_keyword,omitempty"`
+	KeywordChanges []string `json:"keyword_changes,omitempty"`
+	LicenseChanges []string `json:"license_changes,omitempty"`
+	Masked         bool     `json:"masked,omitempty"`
+	MaskAtom       string   `json:"mask_atom,omitempty"`
+	MaskSource     string   `json:"mask_source,omitempty"`
 }
 
 type Plan struct {
@@ -64,9 +76,11 @@ type Plan struct {
 }
 
 type Action struct {
-	Kind     string  `json:"kind"`
-	Package  Package `json:"package"`
-	Replaces string  `json:"replaces,omitempty"`
+	ID            string   `json:"id,omitempty"`
+	Kind          string   `json:"kind"`
+	Package       Package  `json:"package"`
+	Replaces      string   `json:"replaces,omitempty"`
+	Prerequisites []string `json:"prerequisites,omitempty"`
 }
 
 type State struct {
@@ -121,6 +135,8 @@ func clonePackage(pkg Package) Package {
 		}
 	}
 	cloned.Keywords = append([]string(nil), pkg.Keywords...)
+	cloned.Policy.KeywordChanges = append([]string(nil), pkg.Policy.KeywordChanges...)
+	cloned.Policy.LicenseChanges = append([]string(nil), pkg.Policy.LicenseChanges...)
 	return cloned
 }
 

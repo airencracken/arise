@@ -22,19 +22,26 @@ func validateActionPolicy(policy Policy, actions []Action, violations *[]Violati
 				"unsupported-eapi", pkg.CPV, pkg.EAPI, "", "install target EAPI is not supported by frozen policy",
 			))
 		}
-		if len(policy.AcceptedKeywords) != 0 && !keywordAccepted(pkg.Keywords, policy.AcceptedKeywords) {
+		acceptedKeywords := append([]string(nil), policy.AcceptedKeywords...)
+		if pkg.Policy.BaseKeyword != "" {
+			acceptedKeywords = append([]string{pkg.Policy.BaseKeyword}, acceptedKeywords...)
+		}
+		acceptedKeywords = applyPolicyChanges(acceptedKeywords, pkg.Policy.KeywordChanges)
+		if len(acceptedKeywords) != 0 && !keywordAccepted(pkg.Keywords, acceptedKeywords) {
 			*violations = append(*violations, violation(
 				"keyword-policy-violation", pkg.CPV, strings.Join(pkg.Keywords, " "), "",
 				"install target has no keyword accepted by frozen policy",
 			))
 		}
-		if len(policy.AcceptedLicenses) != 0 {
+		acceptedLicenses := applyPolicyChanges(policy.AcceptedLicenses, pkg.Policy.LicenseChanges)
+		acceptedLicenses = expandLicenseGroups(acceptedLicenses, policy.LicenseGroups)
+		if len(acceptedLicenses) != 0 {
 			node, err := depstring.Parse(pkg.License)
 			if err != nil {
 				*violations = append(*violations, violation(
 					"invalid-license-expression", pkg.CPV, pkg.License, "", err.Error(),
 				))
-			} else if !licenseNodeAccepted(node, pkg.Use, acceptedLicenseSet(policy.AcceptedLicenses)) {
+			} else if !licenseNodeAccepted(node, pkg.Use, acceptedLicenseSet(acceptedLicenses)) {
 				*violations = append(*violations, violation(
 					"license-policy-violation", pkg.CPV, pkg.License, "",
 					"install target license is not accepted by frozen policy",
@@ -42,6 +49,51 @@ func validateActionPolicy(policy Policy, actions []Action, violations *[]Violati
 			}
 		}
 	}
+}
+
+func applyPolicyChanges(initial, changes []string) []string {
+	result := append([]string(nil), initial...)
+	for _, change := range changes {
+		switch {
+		case change == "-*":
+			result = result[:0]
+		case strings.HasPrefix(change, "-"):
+			remove := strings.TrimPrefix(change, "-")
+			filtered := result[:0]
+			for _, item := range result {
+				if item != remove {
+					filtered = append(filtered, item)
+				}
+			}
+			result = filtered
+		default:
+			if !contains(result, change) {
+				result = append(result, change)
+			}
+		}
+	}
+	return result
+}
+
+func expandLicenseGroups(changes []string, groups map[string][]string) []string {
+	var result []string
+	for _, change := range changes {
+		negative := strings.HasPrefix(change, "-")
+		name := strings.TrimPrefix(change, "-")
+		members, ok := groups[strings.TrimPrefix(name, "@")]
+		if !ok || !strings.HasPrefix(name, "@") {
+			result = append(result, change)
+			continue
+		}
+		for _, member := range members {
+			if negative {
+				result = append(result, "-"+member)
+			} else {
+				result = append(result, member)
+			}
+		}
+	}
+	return result
 }
 
 func contains(values []string, target string) bool {

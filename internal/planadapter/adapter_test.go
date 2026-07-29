@@ -14,6 +14,12 @@ func TestFreezeProducesIndependentlyValidUpgrade(t *testing.T) {
 	graph, result := upgradeGraph(t)
 	fixture, plan, err := Freeze(graph, result, Options{
 		Operation: "update", Targets: []string{">=dev-libs/library-2"},
+		PackagePolicy: func(cpv, slot, repository string) planvalidate.PackagePolicy {
+			return planvalidate.PackagePolicy{
+				BaseKeyword: "amd64", LicenseChanges: []string{"MIT"},
+				MaskAtom: "=" + cpv, MaskSource: "package.unmask",
+			}
+		},
 		DomainsAliasToRoot: true,
 	})
 	if err != nil {
@@ -25,6 +31,10 @@ func TestFreezeProducesIndependentlyValidUpgrade(t *testing.T) {
 	}
 	if len(plan.Actions) != 1 || plan.Actions[0].Replaces != "dev-libs/library-1" {
 		t.Fatalf("adapted actions = %#v", plan.Actions)
+	}
+	if plan.Actions[0].ID == "" || plan.Actions[0].Package.Policy.Masked ||
+		plan.Actions[0].Package.Policy.MaskSource != "package.unmask" {
+		t.Fatalf("action identity or policy provenance missing: %#v", plan.Actions[0])
 	}
 }
 

@@ -551,9 +551,12 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	}
 	planAudit, auditErr := prepareIndependentPlanAudit(rg, result, targets, cfg)
 	if auditErr != nil {
-		fmt.Fprintf(os.Stderr, "arise: independent plan validation adapter audit failed: %v\n", auditErr)
+		fmt.Fprintf(os.Stderr, "arise: independent plan validation could not freeze the executable plan: %v\n", auditErr)
+		exitAfterRuntimeProfiles(1)
 	} else if planAudit != nil {
-		reportIndependentPlanAudit(os.Stderr, "post-resolution", planAudit.validate())
+		if err := enforceIndependentPlanAudit(os.Stderr, "post-resolution", planAudit); err != nil {
+			exitAfterRuntimeProfiles(1)
+		}
 	}
 
 	if len(result.Conflicts) > 0 && !cfg.Quiet {
@@ -819,7 +822,9 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				return fmt.Errorf("package state or policy changed before the operation lock; resolve and approve the new plan")
 			}
 			if planAudit != nil {
-				reportIndependentPlanAudit(os.Stderr, "locked-pre-mutation", planAudit.validate())
+				if err := enforceIndependentPlanAudit(os.Stderr, "locked-pre-mutation", planAudit); err != nil {
+					return err
+				}
 			}
 			return nil
 		}

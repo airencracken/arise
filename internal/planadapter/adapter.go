@@ -15,7 +15,9 @@ import (
 type Options struct {
 	Operation          string
 	Targets            []string
+	OriginalTargets    []string
 	Policy             planvalidate.Policy
+	PackagePolicy      func(cpv, slot, repository string) planvalidate.PackagePolicy
 	DomainsAliasToRoot bool
 }
 
@@ -39,14 +41,14 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 		node := graph.Packages[cp]
 		for _, version := range sortedVersions(cp, node) {
 			if version.Installed {
-				installed = append(installed, packageFromVersion(cp, version, true, nil))
+				installed = append(installed, packageFromVersion(cp, version, true, nil, opts.PackagePolicy))
 			}
 			if version.Available {
 				var action *resolve.PkgAction
 				if selectedAction, ok := selected[actionKey(cpv(cp, version), version.Slot, version.Repository)]; ok {
 					action = &selectedAction
 				}
-				available = append(available, packageFromVersion(cp, version, false, action))
+				available = append(available, packageFromVersion(cp, version, false, action, opts.PackagePolicy))
 			}
 		}
 	}
@@ -57,9 +59,11 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 		if version == nil {
 			return planvalidate.Fixture{}, planvalidate.Plan{}, fmt.Errorf("plan adapter: selected package %s is absent from frozen graph", action.Atom)
 		}
-		pkg := packageFromVersion(action.Atom.CP(), version, false, &action)
+		pkg := packageFromVersion(action.Atom.CP(), version, false, &action, opts.PackagePolicy)
 		plan.Actions = append(plan.Actions, planvalidate.Action{
-			Kind: planvalidate.ActionInstall, Package: pkg, Replaces: replacedCPV(action),
+			ID: resolve.ActionIdentity(action), Kind: planvalidate.ActionInstall,
+			Package: pkg, Replaces: replacedCPV(action),
+			Prerequisites: append([]string(nil), action.Prerequisites...),
 		})
 	}
 	for _, action := range result.Uninstall {
@@ -68,16 +72,18 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 			return planvalidate.Fixture{}, planvalidate.Plan{}, fmt.Errorf("plan adapter: removal package %s is absent from frozen installed graph", action.Atom)
 		}
 		plan.Actions = append(plan.Actions, planvalidate.Action{
+			ID:      resolve.ActionIdentity(action),
 			Kind:    planvalidate.ActionRemove,
-			Package: packageFromVersion(action.Atom.CP(), version, true, nil),
+			Package: packageFromVersion(action.Atom.CP(), version, true, nil, opts.PackagePolicy),
 		})
 	}
 
 	fixture := planvalidate.Fixture{
 		Schema: planvalidate.SchemaVersion,
 		Request: planvalidate.Request{
-			Operation: opts.Operation,
-			Targets:   append([]string(nil), opts.Targets...),
+			Operation:       opts.Operation,
+			Targets:         append([]string(nil), opts.Targets...),
+			OriginalTargets: append([]string(nil), opts.OriginalTargets...),
 		},
 		Installed: installed,
 		Available: available,
@@ -100,7 +106,7 @@ func replacedCPV(action resolve.PkgAction) string {
 	return action.Atom.CP() + "-" + action.InstalledVersion
 }
 
-func packageFromVersion(cp string, version *resolve.VersionInfo, installed bool, action *resolve.PkgAction) planvalidate.Package {
+func packageFromVersion(cp string, version *resolve.VersionInfo, installed bool, action *resolve.PkgAction, policy func(string, string, string) planvalidate.PackagePolicy) planvalidate.Package {
 	use := version.UseFlags
 	iuse := parseIUse(version.IUse)
 	dependencies := map[string]string{
@@ -124,13 +130,18 @@ func packageFromVersion(cp string, version *resolve.VersionInfo, installed bool,
 	if action != nil {
 		use = action.UseFlags
 	}
-	return planvalidate.Package{
+	pkg := planvalidate.Package{
 		CPV: cpv(cp, version), Slot: version.Slot, Subslot: version.Subslot,
 		Repository: version.Repository, Authority: authority,
 		Use: cloneBoolMap(use), IUse: cloneBoolMap(iuse),
 		Dependencies: dependencies, RequiredUse: version.RequiredUse,
 		EAPI: eapi, Keywords: strings.Fields(version.Keywords), License: version.License,
 	}
+	if policy != nil {
+		pkg.Policy = policy(pkg.CPV, pkg.Slot, pkg.Repository)
+		pkg.Masked = pkg.Policy.Masked
+	}
+	return pkg
 }
 
 func findVersion(graph *resolve.DepGraph, action resolve.PkgAction) *resolve.VersionInfo {

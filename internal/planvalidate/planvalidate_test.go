@@ -347,6 +347,114 @@ func TestFrozenInstallPolicy(t *testing.T) {
 	}
 }
 
+func TestPackageSpecificPolicyProvenance(t *testing.T) {
+	candidate := pkg("app-misc/client-2", nil)
+	candidate.Authority = AuthorityMD5Cache
+	candidate.EAPI = "8"
+	candidate.Keywords = []string{"~amd64"}
+	candidate.License = "EULA"
+	candidate.Policy = PackagePolicy{
+		BaseKeyword:    "amd64",
+		KeywordChanges: []string{"~amd64"},
+		LicenseChanges: []string{"@BINARY"},
+	}
+	fixture := Fixture{
+		Schema: SchemaVersion, Request: Request{Operation: "install", Targets: []string{"app-misc/client"}},
+		Available: []Package{candidate},
+		Policy: Policy{
+			AcceptedLicenses: []string{"-*"},
+			SupportedEAPIs:   []string{"7", "8", "9"},
+			LicenseGroups:    map[string][]string{"BINARY": {"EULA"}},
+		},
+	}
+	plan := Plan{Schema: SchemaVersion, Actions: []Action{{Kind: ActionInstall, Package: candidate}}}
+	if result := ValidateFinalState(fixture, plan); !result.Valid {
+		t.Fatalf("package-specific policy rejected: %#v", result)
+	}
+	for name, mutate := range map[string]func(*Package){
+		"keyword removal": func(pkg *Package) { pkg.Policy.KeywordChanges = []string{"-~amd64"} },
+		"license removal": func(pkg *Package) { pkg.Policy.LicenseChanges = []string{"-@BINARY"} },
+		"mask": func(pkg *Package) {
+			pkg.Masked = true
+			pkg.Policy.Masked = true
+			pkg.Policy.MaskAtom = "=app-misc/client-2"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := cloneJSON(t, candidate)
+			mutate(&changed)
+			changedFixture := cloneJSON(t, fixture)
+			changedFixture.Available = []Package{changed}
+			result := ValidateFinalState(changedFixture, Plan{Schema: SchemaVersion, Actions: []Action{{Kind: ActionInstall, Package: changed}}})
+			if result.Valid {
+				t.Fatalf("policy mutation accepted: %#v", result)
+			}
+		})
+	}
+}
+
+func TestTransactionOrderingAndProviderProof(t *testing.T) {
+	dependency := pkg("dev-libs/library-2", nil)
+	dependency.Authority = AuthorityEvaluated
+	target := pkg("app-misc/client-2", map[string]string{"RDEPEND": "dev-libs/library"})
+	target.Authority = AuthorityEvaluated
+	fixture := Fixture{
+		Schema: SchemaVersion, Request: Request{Operation: "install", Targets: []string{"app-misc/client"}},
+		Available: []Package{dependency, target},
+	}
+	plan := Plan{Schema: SchemaVersion, Actions: []Action{
+		{ID: "library", Kind: ActionInstall, Package: dependency},
+		{ID: "client", Kind: ActionInstall, Package: target, Prerequisites: []string{"library"}},
+	}}
+	if result := ValidateFinalState(fixture, plan); !result.Valid {
+		t.Fatalf("ordered provider plan rejected: %#v", result)
+	}
+
+	reversed := cloneJSON(t, plan)
+	slices.Reverse(reversed.Actions)
+	result := ValidateFinalState(fixture, reversed)
+	if result.Valid || !hasViolation(result, "transaction-order-violation") {
+		t.Fatalf("reversed transaction accepted: %#v", result)
+	}
+
+	orphan := pkg("dev-libs/orphan-1", nil)
+	orphan.Authority = AuthorityEvaluated
+	orphanPlan := cloneJSON(t, plan)
+	orphanPlan.Actions = append(orphanPlan.Actions, Action{ID: "orphan", Kind: ActionInstall, Package: orphan})
+	orphanFixture := cloneJSON(t, fixture)
+	orphanFixture.Available = append(orphanFixture.Available, orphan)
+	result = ValidateFinalState(orphanFixture, orphanPlan)
+	if result.Valid || !hasViolation(result, "unjustified-action") {
+		t.Fatalf("unjustified provider accepted: %#v", result)
+	}
+}
+
+func TestTransactionOrderingRejectsMalformedProofs(t *testing.T) {
+	candidate := pkg("app-misc/client-1", nil)
+	candidate.Authority = AuthorityEvaluated
+	fixture := Fixture{
+		Schema: SchemaVersion, Request: Request{Operation: "install", Targets: []string{"app-misc/client"}},
+		Available: []Package{candidate},
+	}
+	cases := []struct {
+		name    string
+		actions []Action
+		kind    string
+	}{
+		{"missing id", []Action{{Kind: ActionInstall, Package: candidate, Prerequisites: []string{"missing"}}}, "missing-action-id"},
+		{"missing prerequisite", []Action{{ID: "client", Kind: ActionInstall, Package: candidate, Prerequisites: []string{"missing"}}}, "missing-prerequisite-action"},
+		{"duplicate id", []Action{{ID: "same", Kind: ActionInstall, Package: candidate}, {ID: "same", Kind: ActionRemove, Package: candidate}}, "duplicate-action-id"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion, Actions: test.actions})
+			if result.Valid || !hasViolation(result, test.kind) {
+				t.Fatalf("malformed ordering proof accepted: %#v", result)
+			}
+		})
+	}
+}
+
 func TestPlanImpactClassifiesLegacyDefectsWithoutWaivingRequests(t *testing.T) {
 	legacy := pkg("app-misc/legacy-1", map[string]string{"RDEPEND": "${RDEPEND}"})
 	target := pkg("dev-libs/library-1", nil)

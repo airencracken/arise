@@ -26,6 +26,7 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 	}
 	validateActionAuthority(fixture.Available, plan.Actions, &violations)
 	validateActionPolicy(fixture.Policy, plan.Actions, &violations)
+	validateActionOrder(plan.Actions, &violations)
 
 	for _, pkg := range applied.State.Packages {
 		if _, err := parseCPV(pkg.CPV); err != nil {
@@ -75,6 +76,7 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 		}
 	}
 	validateTargets(fixture.Request, applied.State.Packages, &violations)
+	validateActionJustification(fixture, plan.Actions, &violations)
 	sortViolations(violations)
 	violations, truncated, omitted := boundViolations(violations, applied.OmittedViolations)
 	if violations == nil {
@@ -83,6 +85,82 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 	return ValidationResult{
 		Valid:      len(violations) == 0 && omitted == 0,
 		Violations: violations, Truncated: truncated, OmittedViolations: omitted,
+	}
+}
+
+func validateActionJustification(fixture Fixture, actions []Action, violations *[]Violation) {
+	byID := make(map[string]Action, len(actions))
+	required := make(map[string]bool, len(actions))
+	for _, action := range actions {
+		if action.ID != "" {
+			byID[action.ID] = action
+		}
+		if action.Kind == ActionInstall &&
+			(actionMatchesRequest(action, fixture.Request) || action.Replaces != "") {
+			required[action.ID] = true
+		}
+	}
+	var visit func(string)
+	visit = func(id string) {
+		action, ok := byID[id]
+		if !ok {
+			return
+		}
+		for _, prerequisite := range action.Prerequisites {
+			if !required[prerequisite] {
+				required[prerequisite] = true
+				visit(prerequisite)
+			}
+		}
+	}
+	for id := range required {
+		visit(id)
+	}
+	for _, action := range actions {
+		if action.Kind == ActionInstall && action.ID != "" && !required[action.ID] {
+			*violations = append(*violations, violation(
+				"unjustified-action", action.Package.CPV, action.ID, "",
+				"install action has no independently proven path from a request or retained package requirement",
+			))
+		}
+	}
+}
+
+func actionMatchesRequest(action Action, request Request) bool {
+	for _, target := range request.Targets {
+		constraint, err := atom.ParsePackageAtom(target)
+		if err == nil && stateMatches([]Package{action.Package}, constraint, nil) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateActionOrder(actions []Action, violations *[]Violation) {
+	positions := make(map[string]int, len(actions))
+	for index, action := range actions {
+		if action.ID == "" {
+			if len(action.Prerequisites) != 0 {
+				*violations = append(*violations, violation("missing-action-id", action.Package.CPV, "", "", "action with prerequisites has no stable identity"))
+			}
+			continue
+		}
+		if _, exists := positions[action.ID]; exists {
+			*violations = append(*violations, violation("duplicate-action-id", action.Package.CPV, action.ID, "", "plan contains duplicate action identity"))
+			continue
+		}
+		positions[action.ID] = index
+	}
+	for index, action := range actions {
+		for _, prerequisite := range action.Prerequisites {
+			position, exists := positions[prerequisite]
+			switch {
+			case !exists:
+				*violations = append(*violations, violation("missing-prerequisite-action", action.Package.CPV, prerequisite, action.ID, "prerequisite is absent from plan"))
+			case position >= index:
+				*violations = append(*violations, violation("transaction-order-violation", action.Package.CPV, prerequisite, action.ID, "prerequisite does not precede dependent action"))
+			}
+		}
 	}
 }
 
