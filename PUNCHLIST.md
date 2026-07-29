@@ -819,6 +819,18 @@ validity and promotion criteria, in
   satisfaction, USE conditionals, visibility, effective USE, environment policy
   and package-mask reason provenance. Resolver action-plan differentials remain
   the separate corpus item above.
+- [~] Independently validate resolver plan impact without reusing candidate
+  selection. A translation-only adapter freezes installed/available packages,
+  effective USE, dependency metadata, ROOT/SYSROOT/BROOT state and actions.
+  Direct verified package plans are audited after resolution and replayed under
+  the operation lock. All dependency classes, USE dependencies/defaults,
+  conditionals, REQUIRED_USE cardinality, slot operators and frozen
+  mask/keyword/license/EAPI policy are covered. Identical inherited VDB defects
+  are classified as pre-existing while request and action violations remain
+  non-waivable. The live 11-action `games-misc/fortune-mod` pretend plan and the
+  installed `dev-util/pkgcheck` no-op plan pass silently. Enforcement remains
+  blocked on frozen set expansion, provider/action-order validation, complete
+  profile-policy provenance and a clean classified corpus.
 - [~] Differential plans now compare source versus binary merge intent from
   Arise JSON and Portage's `[ebuild]`/`[binary]` output. Expand the corpus across
   `-k`, `-K`, `--binpkg-respect-use`, source fallback and cross-root cases.

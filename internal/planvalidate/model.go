@@ -17,10 +17,24 @@ const (
 )
 
 type Fixture struct {
-	Schema    int       `json:"schema"`
-	Request   Request   `json:"request"`
-	Installed []Package `json:"installed"`
-	Available []Package `json:"available"`
+	Schema    int                  `json:"schema"`
+	Request   Request              `json:"request"`
+	Installed []Package            `json:"installed"`
+	Available []Package            `json:"available"`
+	Domains   map[string][]Package `json:"domains,omitempty"`
+	Policy    Policy               `json:"policy,omitempty"`
+}
+
+const (
+	DomainRoot    = "root"
+	DomainSysroot = "sysroot"
+	DomainBroot   = "broot"
+)
+
+type Policy struct {
+	AcceptedKeywords []string `json:"accepted_keywords,omitempty"`
+	AcceptedLicenses []string `json:"accepted_licenses,omitempty"`
+	SupportedEAPIs   []string `json:"supported_eapis,omitempty"`
 }
 
 type Request struct {
@@ -35,7 +49,13 @@ type Package struct {
 	Repository   string            `json:"repository"`
 	Authority    MetadataAuthority `json:"metadata_authority"`
 	Use          map[string]bool   `json:"use,omitempty"`
+	IUse         map[string]bool   `json:"iuse,omitempty"`
 	Dependencies map[string]string `json:"dependencies,omitempty"`
+	RequiredUse  string            `json:"required_use,omitempty"`
+	EAPI         string            `json:"eapi,omitempty"`
+	Keywords     []string          `json:"keywords,omitempty"`
+	License      string            `json:"license,omitempty"`
+	Masked       bool              `json:"masked,omitempty"`
 }
 
 type Plan struct {
@@ -73,6 +93,7 @@ type ValidationResult struct {
 	Violations        []Violation `json:"violations"`
 	Truncated         bool        `json:"truncated"`
 	OmittedViolations int         `json:"omitted_violations"`
+	PreExisting       int         `json:"pre_existing_violations,omitempty"`
 }
 
 func packageIdentity(pkg Package) string {
@@ -87,12 +108,19 @@ func clonePackage(pkg Package) Package {
 			cloned.Use[name] = enabled
 		}
 	}
+	if pkg.IUse != nil {
+		cloned.IUse = make(map[string]bool, len(pkg.IUse))
+		for name, declared := range pkg.IUse {
+			cloned.IUse[name] = declared
+		}
+	}
 	if pkg.Dependencies != nil {
 		cloned.Dependencies = make(map[string]string, len(pkg.Dependencies))
 		for class, expression := range pkg.Dependencies {
 			cloned.Dependencies[class] = expression
 		}
 	}
+	cloned.Keywords = append([]string(nil), pkg.Keywords...)
 	return cloned
 }
 

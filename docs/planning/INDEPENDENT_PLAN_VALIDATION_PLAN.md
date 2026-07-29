@@ -280,11 +280,23 @@ pure action application, deterministic structured violations, frozen available
 metadata checks, request-target checks, and independent validation of CPV,
 repository, slot, version, blocker, `RDEPEND` and `PDEPEND` semantics.
 Unsupported dependency classes, USE dependencies, slot operators and expression
-forms fail closed. Exact violations are deterministically deduplicated and
+forms originally failed closed. Stage 3 now validates every dependency class
+against explicit ROOT/SYSROOT/BROOT state, USE dependencies and defaults,
+conditionals, `REQUIRED_USE`, slot operators, masks, keywords, licenses and
+supported EAPIs. Exact violations are deterministically deduplicated and
 bounded to 256 records with a structured omitted count. The uncached-overlay
 and constrained-Docutils regression is captured with evaluated-versus-md5-cache
 metadata authority. Unit, integration, property, schema, API-contract,
 atomicity, adversarial-input and source-mutation tests cover this boundary.
+
+A translation-only adapter freezes resolver graphs and plans without calling
+selection helpers. Verified direct-package plans run impact validation after
+resolution and replay it under the operation lock. This gate is audit-only
+while the corpus is expanded. Identical inherited VDB defects are classified as
+pre-existing, but request and action violations remain non-waivable. Set targets
+are skipped until their expansion is frozen as explicit fixture data;
+`--nodeps` and `--onlydeps` are skipped because they intentionally change the
+whole-plan or requested-target contract.
 
 ### Stage 1: contracts and regression capture
 
@@ -299,7 +311,7 @@ is ignored, skipped-update explanation is removed, or cycle paths leak.
 ### Stage 2: pure plan application and core validation
 
 - [x] Implement pure plan application.
-- [~] Validate identity, slots, version atoms, repository qualifiers, blockers
+- [x] Validate identity, slots, version atoms, repository qualifiers, blockers
   and runtime dependencies.
 - [x] Add property tests for missing, duplicate and contradictory actions.
 - [x] Add deterministic structured violations.
@@ -308,10 +320,12 @@ Exit gate: deliberately missing and contradictory action mutations are rejected.
 
 ### Stage 3: full Gentoo semantics
 
-- [ ] Add all dependency classes and root-domain rules.
-- [ ] Add USE dependencies, conditionals and `REQUIRED_USE`.
-- [ ] Add mask, keyword, license, EAPI and metadata-authority policy.
-- [ ] Validate slot operators, providers and transaction order.
+- [x] Add all dependency classes and explicit root-domain rules.
+- [x] Add USE dependencies, conditionals and `REQUIRED_USE`.
+- [~] Add mask, keyword, license, EAPI and metadata-authority policy. Frozen
+  action policy is implemented; complete profile provenance remains.
+- [~] Validate slot operators, providers and transaction order. Slot/subslot
+  satisfaction is implemented; provider choice and action ordering remain.
 
 Exit gate: all validator-semantic mutations are killed and the frozen corpus
 has no unexplained validity result.

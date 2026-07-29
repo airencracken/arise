@@ -10,7 +10,10 @@ import (
 	"github.com/airencracken/arise/internal/depstring"
 )
 
-var supportedDependencyClasses = map[string]bool{"RDEPEND": true, "PDEPEND": true}
+var supportedDependencyClasses = map[string]bool{
+	"DEPEND": true, "RDEPEND": true, "BDEPEND": true,
+	"IDEPEND": true, "PDEPEND": true,
+}
 
 func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 	applied := ApplyPlan(fixture.Installed, plan)
@@ -22,6 +25,7 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 		violations = append(violations, violation("unsupported-plan-schema", "", fmt.Sprint(plan.Schema), "", "plan schema is unsupported"))
 	}
 	validateActionAuthority(fixture.Available, plan.Actions, &violations)
+	validateActionPolicy(fixture.Policy, plan.Actions, &violations)
 
 	for _, pkg := range applied.State.Packages {
 		if _, err := parseCPV(pkg.CPV); err != nil {
@@ -42,12 +46,32 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 				violations = append(violations, violation("unsupported-dependency-class", pkg.CPV, class, pkg.CPV, "validator does not yet implement this dependency class"))
 				continue
 			}
+			domainPackages, ok := dependencyDomainPackages(fixture, class, applied.State.Packages)
+			if !ok {
+				violations = append(violations, violation(
+					"missing-dependency-domain", pkg.CPV, class, pkg.CPV,
+					"fixture does not provide the required independent dependency domain",
+				))
+				continue
+			}
 			node, err := depstring.Parse(expression)
 			if err != nil {
 				violations = append(violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
 				continue
 			}
-			validateNode(node, pkg, applied.State.Packages, &violations)
+			if err := depstring.ValidatePackageDependenciesEAPI(node, pkg.EAPI); err != nil {
+				violations = append(violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
+				continue
+			}
+			validateNode(node, pkg, domainPackages, &violations)
+		}
+		if strings.TrimSpace(pkg.RequiredUse) != "" {
+			node, err := depstring.Parse(pkg.RequiredUse)
+			if err != nil {
+				violations = append(violations, violation("invalid-required-use", pkg.CPV, pkg.RequiredUse, pkg.CPV, err.Error()))
+			} else if !requiredUseSatisfied(node, pkg.Use) {
+				violations = append(violations, violation("required-use-violation", pkg.CPV, pkg.RequiredUse, pkg.CPV, "selected USE state does not satisfy REQUIRED_USE"))
+			}
 		}
 	}
 	validateTargets(fixture.Request, applied.State.Packages, &violations)
@@ -59,6 +83,79 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 	return ValidationResult{
 		Valid:      len(violations) == 0 && omitted == 0,
 		Violations: violations, Truncated: truncated, OmittedViolations: omitted,
+	}
+}
+
+// ValidatePlanImpact rejects violations introduced by a plan while classifying
+// identical defects already present in the frozen installed state as
+// pre-existing. Request and application violations are never waived.
+func ValidatePlanImpact(fixture Fixture, plan Plan) ValidationResult {
+	baselineFixture := fixture
+	baselineFixture.Request = Request{Operation: "install", Targets: []string{}}
+	baseline := ValidateFinalState(baselineFixture, Plan{Schema: plan.Schema})
+	planned := ValidateFinalState(fixture, plan)
+
+	// A full record set is required to prove absence of introduced violations.
+	// Exact duplicate omission is safe because membership is unchanged; reaching
+	// the record cap is not.
+	if len(baseline.Violations) == MaxViolationRecords || len(planned.Violations) == MaxViolationRecords {
+		inconclusive := violation(
+			"comparison-inconclusive", "", "", "",
+			"validation impact exceeds the bounded unique diagnostic comparison",
+		)
+		return ValidationResult{Valid: false, Violations: []Violation{inconclusive}, Truncated: true}
+	}
+
+	preExisting := make(map[Violation]bool, len(baseline.Violations))
+	for _, item := range baseline.Violations {
+		preExisting[item] = true
+	}
+	introduced := make([]Violation, 0, len(planned.Violations))
+	preExistingCount := 0
+	for _, item := range planned.Violations {
+		if !nonWaivableViolation(item.Kind) && preExisting[item] {
+			preExistingCount++
+			continue
+		}
+		introduced = append(introduced, item)
+	}
+	sortViolations(introduced)
+	introduced, truncated, omitted := boundViolations(introduced, 0)
+	if introduced == nil {
+		introduced = []Violation{}
+	}
+	return ValidationResult{
+		Valid: len(introduced) == 0, Violations: introduced,
+		Truncated: truncated, OmittedViolations: omitted, PreExisting: preExistingCount,
+	}
+}
+
+func nonWaivableViolation(kind string) bool {
+	switch kind {
+	case "unsupported-fixture-schema", "unsupported-plan-schema",
+		"invalid-request-target", "unsupported-atom-semantics",
+		"unsatisfied-request-target", "retained-removal-target",
+		"unsupported-operation":
+		return true
+	}
+	return strings.HasPrefix(kind, "duplicate-") ||
+		strings.HasPrefix(kind, "missing-removal") ||
+		strings.HasPrefix(kind, "invalid-replacement") ||
+		kind == "already-installed" || kind == "slot-collision" || kind == "unknown-action"
+}
+
+func dependencyDomainPackages(fixture Fixture, class string, finalRoot []Package) ([]Package, bool) {
+	switch class {
+	case "RDEPEND", "PDEPEND":
+		return finalRoot, true
+	case "DEPEND":
+		packages, ok := fixture.Domains[DomainSysroot]
+		return packages, ok
+	case "BDEPEND", "IDEPEND":
+		packages, ok := fixture.Domains[DomainBroot]
+		return packages, ok
+	default:
+		return nil, false
 	}
 }
 
@@ -122,7 +219,7 @@ func validateTargets(request Request, packages []Package, violations *[]Violatio
 				*violations = append(*violations, violation("unsupported-atom-semantics", "", target, "", unsupported))
 				continue
 			}
-			if !stateMatches(packages, constraint) {
+			if !stateMatches(packages, constraint, nil) {
 				*violations = append(*violations, violation("unsatisfied-request-target", "", target, "", "requested target is absent from final state"))
 			}
 		}
@@ -137,7 +234,7 @@ func validateTargets(request Request, packages []Package, violations *[]Violatio
 				*violations = append(*violations, violation("unsupported-atom-semantics", "", target, "", unsupported))
 				continue
 			}
-			if stateMatches(packages, constraint) {
+			if stateMatches(packages, constraint, nil) {
 				*violations = append(*violations, violation("retained-removal-target", "", target, "", "removed target remains in final state"))
 			}
 		}
@@ -158,7 +255,7 @@ func validateNode(node depstring.DepNode, owner Package, packages []Package, vio
 			*violations = append(*violations, violation("unsupported-atom-semantics", owner.CPV, item.Atom, owner.CPV, unsupported))
 			return false
 		}
-		if stateMatches(packages, constraint) {
+		if stateMatches(packages, constraint, &owner) {
 			return true
 		}
 		*violations = append(*violations, violation("unsatisfied-dependency", owner.CPV, item.Atom, owner.CPV, "final state does not satisfy dependency"))
@@ -216,7 +313,7 @@ func validateBlock(raw string, owner Package, packages []Package, violations *[]
 		*violations = append(*violations, violation("unsupported-atom-semantics", owner.CPV, raw, owner.CPV, unsupported))
 		return false
 	}
-	if !stateMatches(packages, constraint) {
+	if !stateMatches(packages, constraint, &owner) {
 		return true
 	}
 	*violations = append(*violations, violation("blocker-violation", owner.CPV, raw, owner.CPV, "blocked package remains in final state"))
@@ -224,23 +321,123 @@ func validateBlock(raw string, owner Package, packages []Package, violations *[]
 }
 
 func unsupportedAtomSemantics(constraint *atom.Atom) string {
-	if len(constraint.UseFlags) != 0 {
-		return "validator does not yet implement USE dependencies"
-	}
-	if constraint.SlotOp != atom.SlotOpNone {
-		return "validator does not yet implement slot operators"
-	}
 	return ""
 }
 
-func stateMatches(packages []Package, constraint *atom.Atom) bool {
+func stateMatches(packages []Package, constraint *atom.Atom, owner *Package) bool {
 	for _, pkg := range packages {
 		candidate, err := parseCPV(pkg.CPV)
-		if err == nil && matches(candidate, pkg, constraint) {
+		if err == nil && matches(candidate, pkg, constraint) && useDependenciesMatch(pkg, constraint.UseFlags, owner) {
 			return true
 		}
 	}
 	return false
+}
+
+func useDependenciesMatch(target Package, requirements []atom.UseFlag, owner *Package) bool {
+	for _, requirement := range requirements {
+		if requirement.Conditional {
+			if owner == nil {
+				return false
+			}
+			active := owner.Use[requirement.Name]
+			if requirement.Negated {
+				active = !active
+			}
+			if !active {
+				continue
+			}
+		}
+		targetEnabled, declared := target.Use[requirement.Name]
+		if _, inIUse := target.IUse[requirement.Name]; inIUse {
+			declared = true
+		} else if target.IUse != nil {
+			declared = false
+		}
+		if !declared {
+			if requirement.Default == nil {
+				return false
+			}
+			targetEnabled = *requirement.Default
+		}
+		if requirement.Equal {
+			if owner == nil {
+				return false
+			}
+			required := owner.Use[requirement.Name]
+			if requirement.Negated {
+				required = !required
+			}
+			if targetEnabled != required {
+				return false
+			}
+			continue
+		}
+		if requirement.Conditional {
+			if !targetEnabled {
+				return false
+			}
+			continue
+		}
+		if targetEnabled != requirement.Enabled {
+			return false
+		}
+	}
+	return true
+}
+
+func requiredUseSatisfied(node depstring.DepNode, use map[string]bool) bool {
+	switch item := node.(type) {
+	case *depstring.AtomDep:
+		return use[item.Atom]
+	case *depstring.AllOfGroup:
+		for _, child := range item.Children {
+			if !requiredUseSatisfied(child, use) {
+				return false
+			}
+		}
+		return true
+	case *depstring.AnyOfGroup:
+		for _, child := range item.Children {
+			if requiredUseSatisfied(child, use) {
+				return true
+			}
+		}
+		return false
+	case *depstring.XorOfGroup:
+		count := 0
+		for _, child := range item.Children {
+			if requiredUseSatisfied(child, use) {
+				count++
+			}
+		}
+		return count == 1
+	case *depstring.AtMostOneOfGroup:
+		count := 0
+		for _, child := range item.Children {
+			if requiredUseSatisfied(child, use) {
+				count++
+			}
+		}
+		return count <= 1
+	case *depstring.UseConditional:
+		flag := strings.TrimPrefix(item.Flag, "!")
+		active := use[flag]
+		if strings.HasPrefix(item.Flag, "!") {
+			active = !active
+		}
+		if !active {
+			return true
+		}
+		for _, child := range item.Children {
+			if !requiredUseSatisfied(child, use) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }
 
 func matches(candidate *atom.Atom, pkg Package, constraint *atom.Atom) bool {

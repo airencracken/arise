@@ -188,8 +188,9 @@ func TestDependencyAndBlockerContract(t *testing.T) {
 		{"any-of accepted", "|| ( dev-libs/missing dev-libs/library )", []Package{pkg("dev-libs/library-2.1", nil)}, true, ""},
 		{"enabled conditional rejected", "feature? ( dev-libs/missing )", nil, false, "unsatisfied-dependency"},
 		{"disabled conditional accepted", "feature? ( dev-libs/missing )", nil, true, ""},
-		{"use dependency fails closed", "dev-libs/library[ssl]", []Package{pkg("dev-libs/library-2.1", nil)}, false, "unsupported-atom-semantics"},
-		{"slot operator fails closed", "dev-libs/library:=", []Package{pkg("dev-libs/library-2.1", nil)}, false, "unsupported-atom-semantics"},
+		{"use dependency accepted", "dev-libs/library[ssl]", []Package{{CPV: "dev-libs/library-2.1", Slot: "0", Repository: "gentoo", Authority: AuthorityVDB, Use: map[string]bool{"ssl": true}, IUse: map[string]bool{"ssl": true}}}, true, ""},
+		{"use dependency rejected", "dev-libs/library[ssl]", []Package{pkg("dev-libs/library-2.1", nil)}, false, "unsatisfied-dependency"},
+		{"slot operator accepted", "dev-libs/library:=", []Package{pkg("dev-libs/library-2.1", nil)}, true, ""},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -206,6 +207,182 @@ func TestDependencyAndBlockerContract(t *testing.T) {
 				t.Fatalf("missing %q violation: %#v", test.kind, result.Violations)
 			}
 		})
+	}
+}
+
+func TestDependencyDomainsAreExplicitAndIndependent(t *testing.T) {
+	owner := pkg("app-misc/client-1", map[string]string{
+		"DEPEND":  "dev-libs/target",
+		"BDEPEND": "dev-libs/host",
+		"IDEPEND": "dev-libs/installer",
+		"RDEPEND": "dev-libs/runtime",
+		"PDEPEND": "dev-libs/post",
+	})
+	fixture := Fixture{
+		Schema:  SchemaVersion,
+		Request: Request{Operation: "install", Targets: []string{"app-misc/client"}},
+		Installed: []Package{
+			owner, pkg("dev-libs/runtime-1", nil), pkg("dev-libs/post-1", nil),
+		},
+		Domains: map[string][]Package{
+			DomainSysroot: {pkg("dev-libs/target-1", nil)},
+			DomainBroot:   {pkg("dev-libs/host-1", nil), pkg("dev-libs/installer-1", nil)},
+		},
+	}
+	if result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion}); !result.Valid {
+		t.Fatalf("valid cross-domain dependencies rejected: %#v", result)
+	}
+	delete(fixture.Domains, DomainBroot)
+	result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion})
+	if result.Valid || !hasViolation(result, "missing-dependency-domain") {
+		t.Fatalf("missing BROOT domain accepted: %#v", result)
+	}
+}
+
+func TestUseDependencyConditionalsDefaultsAndEquality(t *testing.T) {
+	target := Package{
+		CPV: "dev-libs/library-1", Slot: "0", Repository: "gentoo",
+		Authority: AuthorityVDB,
+		Use:       map[string]bool{"ssl": true, "debug": false},
+		IUse:      map[string]bool{"ssl": true, "debug": true},
+	}
+	cases := []struct {
+		name       string
+		dependency string
+		ownerUse   map[string]bool
+		valid      bool
+	}{
+		{"positive", "dev-libs/library[ssl]", nil, true},
+		{"negative", "dev-libs/library[-debug]", nil, true},
+		{"conditional active", "dev-libs/library[ssl?]", map[string]bool{"ssl": true}, true},
+		{"conditional inactive", "dev-libs/library[debug?]", map[string]bool{"debug": false}, true},
+		{"conditional inactive missing target flag", "dev-libs/library[missing?]", map[string]bool{"missing": false}, true},
+		{"equal", "dev-libs/library[ssl=]", map[string]bool{"ssl": true}, true},
+		{"negated equal rejected", "dev-libs/library[!ssl=]", map[string]bool{"ssl": true}, false},
+		{"missing default enabled", "dev-libs/library[implicit(+)]", nil, true},
+		{"missing default disabled rejected", "dev-libs/library[implicit(-)]", nil, false},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			owner := pkg("app-misc/client-1", map[string]string{"RDEPEND": test.dependency})
+			owner.Use = test.ownerUse
+			fixture := Fixture{
+				Schema:    SchemaVersion,
+				Request:   Request{Operation: "install", Targets: []string{"app-misc/client"}},
+				Installed: []Package{owner, target},
+			}
+			result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion})
+			if result.Valid != test.valid {
+				t.Fatalf("Valid = %v, violations = %#v", result.Valid, result.Violations)
+			}
+		})
+	}
+}
+
+func TestRequiredUseCardinalityAndConditionals(t *testing.T) {
+	cases := []struct {
+		expression string
+		use        map[string]bool
+		valid      bool
+	}{
+		{"^^ ( a b )", map[string]bool{"a": true}, true},
+		{"^^ ( a b )", map[string]bool{"a": true, "b": true}, false},
+		{"?? ( a b )", map[string]bool{}, true},
+		{"?? ( a b )", map[string]bool{"a": true, "b": true}, false},
+		{"feature? ( child )", map[string]bool{"feature": false}, true},
+		{"feature? ( child )", map[string]bool{"feature": true, "child": false}, false},
+	}
+	for _, test := range cases {
+		owner := pkg("app-misc/client-1", nil)
+		owner.RequiredUse = test.expression
+		owner.Use = test.use
+		fixture := Fixture{
+			Schema:    SchemaVersion,
+			Request:   Request{Operation: "install", Targets: []string{"app-misc/client"}},
+			Installed: []Package{owner},
+		}
+		result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion})
+		if result.Valid != test.valid {
+			t.Fatalf("%q with %#v: Valid = %v, violations = %#v", test.expression, test.use, result.Valid, result.Violations)
+		}
+	}
+}
+
+func TestFrozenInstallPolicy(t *testing.T) {
+	candidate := pkg("app-misc/client-2", nil)
+	candidate.Authority = AuthorityMD5Cache
+	candidate.EAPI = "8"
+	candidate.Keywords = []string{"~amd64"}
+	candidate.License = "|| ( MIT GPL-3 )"
+	fixture := Fixture{
+		Schema:    SchemaVersion,
+		Request:   Request{Operation: "install", Targets: []string{"app-misc/client"}},
+		Available: []Package{candidate},
+		Policy: Policy{
+			AcceptedKeywords: []string{"~amd64"},
+			AcceptedLicenses: []string{"-*", "MIT"},
+			SupportedEAPIs:   []string{"8", "9"},
+		},
+	}
+	plan := Plan{Schema: SchemaVersion, Actions: []Action{{Kind: ActionInstall, Package: candidate}}}
+	if result := ValidateFinalState(fixture, plan); !result.Valid {
+		t.Fatalf("accepted frozen policy rejected: %#v", result)
+	}
+	for name, mutate := range map[string]func(*Package){
+		"mask":    func(pkg *Package) { pkg.Masked = true },
+		"keyword": func(pkg *Package) { pkg.Keywords = []string{"arm64"} },
+		"license": func(pkg *Package) { pkg.License = "EULA" },
+		"eapi":    func(pkg *Package) { pkg.EAPI = "10" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := cloneJSON(t, candidate)
+			mutate(&changed)
+			changedFixture := cloneJSON(t, fixture)
+			changedFixture.Available = []Package{changed}
+			result := ValidateFinalState(changedFixture, Plan{Schema: SchemaVersion, Actions: []Action{{Kind: ActionInstall, Package: changed}}})
+			if result.Valid {
+				t.Fatalf("policy mutation accepted: %#v", result)
+			}
+		})
+	}
+}
+
+func TestPlanImpactClassifiesLegacyDefectsWithoutWaivingRequests(t *testing.T) {
+	legacy := pkg("app-misc/legacy-1", map[string]string{"RDEPEND": "${RDEPEND}"})
+	target := pkg("dev-libs/library-1", nil)
+	fixture := Fixture{
+		Schema:    SchemaVersion,
+		Request:   Request{Operation: "install", Targets: []string{"dev-libs/library"}},
+		Installed: []Package{legacy, target},
+	}
+	result := ValidatePlanImpact(fixture, Plan{Schema: SchemaVersion})
+	if !result.Valid || result.PreExisting == 0 || len(result.Violations) != 0 {
+		t.Fatalf("unchanged legacy defect was not classified: %#v", result)
+	}
+
+	fixture.Request.Targets = []string{">=dev-libs/library-2"}
+	result = ValidatePlanImpact(fixture, Plan{Schema: SchemaVersion})
+	if result.Valid || !hasViolation(result, "unsatisfied-request-target") {
+		t.Fatalf("pre-existing comparison waived requested target: %#v", result)
+	}
+}
+
+func TestPlanImpactRejectsIntroducedSemanticDefect(t *testing.T) {
+	fixture, plan := validUpgradeFixture()
+	fixture.Installed = append(fixture.Installed, pkg("app-misc/legacy-1", map[string]string{"RDEPEND": "${RDEPEND}"}))
+	plan.Actions[1].Package.Dependencies = map[string]string{"RDEPEND": "dev-libs/missing"}
+	fixture.Available[1] = plan.Actions[1].Package
+	result := ValidatePlanImpact(fixture, plan)
+	if result.Valid || !hasViolation(result, "unsatisfied-dependency") {
+		t.Fatalf("introduced invalid dependency was waived: %#v", result)
+	}
+}
+
+func TestPlanImpactNeverWaivesSchemaViolations(t *testing.T) {
+	fixture := Fixture{Schema: SchemaVersion, Request: Request{Operation: "install"}}
+	result := ValidatePlanImpact(fixture, Plan{Schema: SchemaVersion + 1})
+	if result.Valid || !hasViolation(result, "unsupported-plan-schema") {
+		t.Fatalf("invalid plan schema was classified as pre-existing: %#v", result)
 	}
 }
 
@@ -284,9 +461,10 @@ func TestSchemaValidationRejectsUnknownFieldsVersionsAndTrailingValues(t *testin
 func TestPublicAPIContractAndRouteExistence(t *testing.T) {
 	var apply func([]Package, Plan) ApplicationResult = ApplyPlan
 	var validate func(Fixture, Plan) ValidationResult = ValidateFinalState
+	var validateImpact func(Fixture, Plan) ValidationResult = ValidatePlanImpact
 	var decodeFixture func(ioReader) (Fixture, error)
 	decodeFixture = func(reader ioReader) (Fixture, error) { return DecodeFixture(reader) }
-	if apply == nil || validate == nil || decodeFixture == nil {
+	if apply == nil || validate == nil || validateImpact == nil || decodeFixture == nil {
 		t.Fatal("plan validation API route is unavailable")
 	}
 }
@@ -303,7 +481,7 @@ func TestAdversarialInputIsBoundedAndFailClosed(t *testing.T) {
 	owner := pkg("app-misc/client-1", map[string]string{"RDEPEND": dependency.String(), "DEPEND": "dev-libs/build-only"})
 	fixture := Fixture{Schema: 1, Request: Request{Operation: "install", Targets: []string{"app-misc/client"}}, Installed: []Package{owner}}
 	result := ValidateFinalState(fixture, Plan{Schema: 1})
-	if result.Valid || !hasViolation(result, "unsupported-dependency-class") || !hasViolation(result, "unsatisfied-dependency") {
+	if result.Valid || !hasViolation(result, "missing-dependency-domain") || !hasViolation(result, "unsatisfied-dependency") {
 		t.Fatalf("adversarial fixture did not fail closed: %#v", result)
 	}
 	if len(result.Violations) > MaxViolationRecords || !result.Truncated || result.OmittedViolations == 0 {

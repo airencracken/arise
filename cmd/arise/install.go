@@ -549,6 +549,12 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 		exitAfterRuntimeProfiles(1)
 	}
+	planAudit, auditErr := prepareIndependentPlanAudit(rg, result, targets, cfg)
+	if auditErr != nil {
+		fmt.Fprintf(os.Stderr, "arise: independent plan validation adapter audit failed: %v\n", auditErr)
+	} else if planAudit != nil {
+		reportIndependentPlanAudit(os.Stderr, "post-resolution", planAudit.validate())
+	}
 
 	if len(result.Conflicts) > 0 && !cfg.Quiet {
 		fmt.Println("\nConflicts:")
@@ -811,6 +817,9 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 			if lockedStateSHA256 != stateSHA256 {
 				return fmt.Errorf("package state or policy changed before the operation lock; resolve and approve the new plan")
+			}
+			if planAudit != nil {
+				reportIndependentPlanAudit(os.Stderr, "locked-pre-mutation", planAudit.validate())
 			}
 			return nil
 		}
