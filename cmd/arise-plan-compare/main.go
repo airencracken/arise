@@ -15,13 +15,19 @@ import (
 )
 
 type report struct {
-	AriseCount      int                      `json:"arise_count"`
-	EmergeCount     int                      `json:"emerge_count"`
-	AriseVerified   bool                     `json:"arise_verified"`
-	PortageResolved bool                     `json:"portage_resolved"`
-	ComparisonClass string                   `json:"comparison_class"`
-	Equivalent      bool                     `json:"equivalent"`
-	Differences     []plancompare.Difference `json:"differences,omitempty"`
+	AriseCount                 int                           `json:"arise_count"`
+	EmergeCount                int                           `json:"emerge_count"`
+	AriseVerified              bool                          `json:"arise_verified"`
+	PortageResolved            bool                          `json:"portage_resolved"`
+	ComparisonClass            string                        `json:"comparison_class"`
+	Accepted                   bool                          `json:"accepted"`
+	Equivalent                 bool                          `json:"equivalent"`
+	Differences                []plancompare.Difference      `json:"differences,omitempty"`
+	ActionDiagnosticsTruncated bool                          `json:"action_diagnostics_truncated"`
+	OmittedActionDiagnostics   int                           `json:"omitted_action_diagnostics"`
+	StateDifferences           []plancompare.StateDifference `json:"state_differences,omitempty"`
+	StateComparisonTruncated   bool                          `json:"state_comparison_truncated"`
+	OmittedStateDifferences    int                           `json:"omitted_state_differences"`
 }
 
 type commandResult struct {
@@ -43,6 +49,9 @@ func main() {
 	withBdeps := flag.String("with-bdeps", "auto", "build dependency mode: y, n, or auto")
 	backtrack := flag.Int("backtrack", 20, "backtrack limit for both resolvers")
 	jsonOutput := flag.Bool("json", false, "emit JSON")
+	ariseStatePath := flag.String("arise-state", "", "versioned frozen Arise fixture and plan for independent final-state validation")
+	portageStatePath := flag.String("portage-state", "", "versioned frozen Portage fixture and plan for independent final-state validation")
+	policyPath := flag.String("classification-policy", "", "versioned required/optional/policy-equivalent classification policy")
 	flag.Parse()
 	if *withBdeps != "auto" && *withBdeps != "y" && *withBdeps != "n" {
 		fatal(fmt.Errorf("--with-bdeps must be auto, y, or n"))
@@ -108,8 +117,21 @@ func main() {
 	differences := plancompare.Compare(arisePlan, emergePlan)
 	ariseVerified := parseAriseVerified(ariseResult.stdout)
 	portageResolved := emergeResult.err == nil && !looksUnresolved(emergeResult.stderr)
-	comparisonClass := classifyComparison(ariseVerified, portageResolved, len(differences) == 0)
-	r := report{AriseCount: len(arisePlan), EmergeCount: len(emergePlan), AriseVerified: ariseVerified, PortageResolved: portageResolved, ComparisonClass: comparisonClass, Equivalent: comparisonClass == "equivalent-verified", Differences: differences}
+	classified, err := classifyPlans(ariseVerified, portageResolved, differences, *ariseStatePath, *portageStatePath, *policyPath)
+	if err != nil {
+		fatal(err)
+	}
+	r := report{
+		AriseCount: len(arisePlan), EmergeCount: len(emergePlan),
+		AriseVerified: ariseVerified, PortageResolved: portageResolved,
+		ComparisonClass: classified.Class, Equivalent: classified.Equivalent,
+		Accepted:    classificationAccepted(classified.Class),
+		Differences: classified.ActionDiagnostics, StateDifferences: classified.Differences,
+		ActionDiagnosticsTruncated: classified.ActionDiagnosticsTruncated,
+		OmittedActionDiagnostics:   classified.OmittedActionDiagnostics,
+		StateComparisonTruncated:   classified.Truncated,
+		OmittedStateDifferences:    classified.OmittedDifferences,
+	}
 	if *jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
@@ -117,8 +139,10 @@ func main() {
 			fatal(err)
 		}
 	} else {
-		fmt.Printf("Arise actions: %d (verified: %t)\nPortage actions: %d (resolved: %t)\nClass: %s\nDifferences: %d\n", r.AriseCount, r.AriseVerified, r.EmergeCount, r.PortageResolved, r.ComparisonClass, len(differences))
-		for _, difference := range differences {
+		fmt.Printf("Arise actions: %d (verified: %t)\nPortage actions: %d (resolved: %t)\nClass: %s\nAccepted: %t\nAction diagnostics: %d\nFinal-state differences: %d\n",
+			r.AriseCount, r.AriseVerified, r.EmergeCount, r.PortageResolved,
+			r.ComparisonClass, r.Accepted, len(r.Differences), len(r.StateDifferences))
+		for _, difference := range r.Differences {
 			fmt.Printf("  %-12s %s", difference.Kind, difference.Identity)
 			if difference.Arise != nil {
 				fmt.Printf("  arise=%s (%s)", difference.Arise.CPV(), difference.Arise.Kind)
@@ -131,10 +155,80 @@ func main() {
 			}
 			fmt.Println()
 		}
+		if r.OmittedActionDiagnostics > 0 {
+			fmt.Printf("  %d additional action diagnostics omitted by bounds\n", r.OmittedActionDiagnostics)
+		}
+		for _, difference := range r.StateDifferences {
+			fmt.Printf("  final-state %-12s %-24s class=%s\n",
+				difference.Kind, difference.Identity, difference.Classification)
+		}
 	}
-	if !r.Equivalent {
+	if !r.Accepted {
 		os.Exit(1)
 	}
+}
+
+func classificationAccepted(class string) bool {
+	switch class {
+	case plancompare.ClassEquivalentValid, plancompare.ClassValidDivergence,
+		plancompare.ClassAriseValidPortageInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+func classifyPlans(ariseVerified, portageResolved bool, actionDifferences []plancompare.Difference, ariseStatePath, portageStatePath, policyPath string) (plancompare.ClassifiedComparison, error) {
+	if (ariseStatePath == "") != (portageStatePath == "") {
+		return plancompare.ClassifiedComparison{}, fmt.Errorf("--arise-state and --portage-state must be provided together")
+	}
+	if ariseStatePath == "" {
+		if ariseVerified && portageResolved && len(actionDifferences) == 0 {
+			return plancompare.ClassifiedComparison{
+				Class: plancompare.ClassEquivalentValid, Equivalent: true,
+				Differences:       []plancompare.StateDifference{},
+				ActionDiagnostics: append([]plancompare.Difference(nil), actionDifferences...),
+			}, nil
+		}
+		return plancompare.ClassifiedComparison{
+			Class: plancompare.ClassInconclusive, Differences: []plancompare.StateDifference{},
+			ActionDiagnostics: append([]plancompare.Difference(nil), actionDifferences...),
+		}, nil
+	}
+	ariseState, err := readStateAssessment(ariseStatePath)
+	if err != nil {
+		return plancompare.ClassifiedComparison{}, err
+	}
+	portageState, err := readStateAssessment(portageStatePath)
+	if err != nil {
+		return plancompare.ClassifiedComparison{}, err
+	}
+	var policy plancompare.ClassificationPolicy
+	if policyPath != "" {
+		file, err := os.Open(policyPath)
+		if err != nil {
+			return plancompare.ClassifiedComparison{}, fmt.Errorf("open classification policy: %w", err)
+		}
+		defer file.Close()
+		policy, err = plancompare.DecodePolicyDocument(file)
+		if err != nil {
+			return plancompare.ClassifiedComparison{}, err
+		}
+	}
+	return plancompare.ClassifyFinalStates(ariseState, portageState, policy, actionDifferences)
+}
+
+func readStateAssessment(path string) (plancompare.StateAssessment, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return plancompare.StateAssessment{}, fmt.Errorf("open final-state assessment %s: %w", path, err)
+	}
+	defer file.Close()
+	state, err := plancompare.DecodeStateDocument(file)
+	if err != nil {
+		return plancompare.StateAssessment{}, fmt.Errorf("%s: %w", path, err)
+	}
+	return state, nil
 }
 
 func looksLikeEmergePlan(output string) bool {
@@ -167,19 +261,6 @@ func parseAriseVerified(output string) bool {
 
 func looksUnresolved(stderr string) bool {
 	return strings.Contains(stderr, "resulting in a slot conflict") || strings.Contains(stderr, "impossible to satisfy simultaneously") || strings.Contains(stderr, "unsatisfied")
-}
-
-func classifyComparison(ariseVerified, portageResolved, sameActions bool) string {
-	switch {
-	case ariseVerified && portageResolved && sameActions:
-		return "equivalent-verified"
-	case ariseVerified && !portageResolved:
-		return "verified-repair-vs-unresolved-partial"
-	case !ariseVerified && portageResolved:
-		return "arise-unverified-vs-portage-resolved"
-	default:
-		return "non-equivalent"
-	}
 }
 
 func withoutNews(environment []string) []string {

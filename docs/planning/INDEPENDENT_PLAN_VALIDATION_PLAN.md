@@ -348,11 +348,20 @@ outcome, and adversarial graphs cannot cause unbounded output.
 
 ### Stage 5: classified differential harness
 
-- [ ] Validate normalized Arise and Portage final states.
-- [ ] Implement the classification table.
-- [ ] Distinguish required, optional and policy-equivalent differences.
-- [ ] Replace raw action-count parity gates with validity and explanation gates.
-- [ ] Preserve action-level differences as diagnostics.
+- [x] Validate normalized Arise and Portage final states.
+- [x] Implement the classification table.
+- [x] Distinguish required, optional and policy-equivalent differences.
+- [x] Replace raw action-count parity gates with validity and explanation gates.
+- [x] Preserve action-level differences as diagnostics.
+
+The comparator accepts versioned `--arise-state` and `--portage-state`
+documents containing frozen validation fixtures and plans plus an optional
+`--classification-policy`. It executes independent validation itself; input
+cannot assert validity with a boolean. Differing actions without final-state
+evidence are inconclusive. Identical verified transactions retain a safe fast
+path because they apply the same mutation to the same starting state. Valid
+final-state divergence is accepted while exact equivalence remains separately
+reported.
 
 Exit gate: a valid Arise-only plan passes, an invalid Arise plan fails, and a
 valid Portage-only plan fails with an actionable Arise deficiency.
