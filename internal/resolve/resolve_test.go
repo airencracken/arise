@@ -8583,6 +8583,27 @@ func TestProcessCompleteGraph_RebuildsStaleInstalledSlotOperatorBinding(t *testi
 	}
 }
 
+func TestProcessCompleteGraph_StaleBindingUpgradeUsesReplacementLifecycle(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-lang/perl", "5.42.2", "0", "5.42", true, nil)
+	installed := pkgKeywords(g, "dev-perl/consumer", "1", "0", "0", true, nil, "amd64")
+	candidate := pkgKeywords(g, "dev-perl/consumer", "2", "0", "0", false, nil, "amd64")
+	installed.InstalledRdepend = "dev-lang/perl:0/5.40="
+	installed.InstalledEAPI, installed.DependencyMetadataKnown = "8", true
+	candidate.Rdepend, candidate.EAPI, candidate.DependencyMetadataKnown = "dev-lang/perl:=", "8", true
+
+	action := staleSlotRepairAction(g.Packages["dev-perl/consumer"], installed, candidate, nil)
+	if action.Action != "update" || action.Atom.CPV() != "dev-perl/consumer-2" ||
+		action.InstalledVersion != "1" || action.InstalledSlot != "0" ||
+		action.InstalledSubslot != "0" {
+		t.Fatalf("stale binding upgrade lifecycle = %#v", action)
+	}
+	same := staleSlotRepairAction(g.Packages["dev-perl/consumer"], installed, installed, nil)
+	if same.Action != "reinstall" {
+		t.Fatalf("same-version stale repair = %#v", same)
+	}
+}
+
 func TestProcessCompleteGraph_CurrentInstalledSlotOperatorBindingIsClean(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "dev-lang/go", "1.26.4", "0", "1.26.4", true, nil)

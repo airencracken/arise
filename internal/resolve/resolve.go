@@ -3796,14 +3796,8 @@ func (r *resolver) processCompleteGraph() {
 			if candidate == nil || !candidate.Available {
 				continue
 			}
-			depAtom := bestVersionAtom(dependent.Atom, candidate)
-			r.setInstall(versionActionKey(dependent.Atom.CP(), candidate), &PkgAction{
-				Atom: depAtom, Action: "reinstall", Reason: "slot operator rebuild (stale installed subslot binding)",
-				Slot: candidate.Slot, Subslot: candidate.Subslot, Repository: candidate.Repository,
-				RepositoryPath: candidate.RepositoryPath, SrcURI: candidate.SrcURI, Restrict: candidate.Restrict,
-				IUse:     candidate.IUse,
-				UseFlags: r.candidateUseFlags(dependent, candidate),
-			})
+			r.setInstall(versionActionKey(dependent.Atom.CP(), candidate),
+				staleSlotRepairAction(dependent, installed, candidate, r.candidateUseFlags(dependent, candidate)))
 		}
 	}
 
@@ -3885,6 +3879,23 @@ func (r *resolver) processCompleteGraph() {
 		if !found {
 			break
 		}
+	}
+}
+
+func staleSlotRepairAction(dependent *PkgNode, installed, candidate *VersionInfo, useFlags map[string]bool) *PkgAction {
+	action := "reinstall"
+	if candidate.Version != nil && installed.Version != nil &&
+		candidate.Version.Compare(installed.Version) != 0 {
+		action = "update"
+	}
+	return &PkgAction{
+		Atom: bestVersionAtom(dependent.Atom, candidate), Action: action,
+		Reason: "slot operator rebuild (stale installed subslot binding)",
+		Slot:   candidate.Slot, Subslot: candidate.Subslot, Repository: candidate.Repository,
+		RepositoryPath: candidate.RepositoryPath, SrcURI: candidate.SrcURI, Restrict: candidate.Restrict,
+		InstalledVersion: installed.Version.Raw, InstalledSlot: installed.Slot,
+		InstalledSubslot: installed.Subslot, InstalledRepository: installed.Repository,
+		IUse: candidate.IUse, UseFlags: useFlags,
 	}
 }
 
