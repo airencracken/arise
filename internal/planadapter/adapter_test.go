@@ -32,6 +32,9 @@ func TestFreezeProducesIndependentlyValidUpgrade(t *testing.T) {
 	if len(plan.Actions) != 1 || plan.Actions[0].Replaces != "dev-libs/library-1" {
 		t.Fatalf("adapted actions = %#v", plan.Actions)
 	}
+	if len(fixture.Available) != 1 || fixture.Available[0].CPV != "dev-libs/library-2" {
+		t.Fatalf("available authority snapshot = %#v", fixture.Available)
+	}
 	if plan.Actions[0].ID == "" || plan.Actions[0].Package.Policy.Masked ||
 		plan.Actions[0].Package.Policy.MaskSource != "package.unmask" {
 		t.Fatalf("action identity or policy provenance missing: %#v", plan.Actions[0])
@@ -129,6 +132,41 @@ func TestFreezeInfersReinstallReplacementFromFrozenInstalledState(t *testing.T) 
 	}
 	if validation := planvalidate.ValidateFinalState(fixture, plan); !validation.Valid {
 		t.Fatalf("inferred reinstall rejected: %#v", validation)
+	}
+}
+
+func TestFreezeEvaluatesPackagePolicyOnlyForSelectedActions(t *testing.T) {
+	graph, result := upgradeGraph(t)
+	extra := graph.AddVersionFromRepository("dev-libs/unused", "1", "0", "0", false, nil, "amd64", "gentoo")
+	extra.Available = true
+	extra.DependencyMetadataKnown = true
+	extra.EAPI = "8"
+
+	var evaluated []string
+	fixture, plan, err := Freeze(graph, result, Options{
+		Operation: "update", Targets: []string{">=dev-libs/library-2"},
+		PackagePolicy: func(cpv, slot, repository string) planvalidate.PackagePolicy {
+			evaluated = append(evaluated, cpv)
+			return planvalidate.PackagePolicy{BaseKeyword: "amd64", LicenseChanges: []string{"MIT"}}
+		},
+		DomainsAliasToRoot: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cpv := range evaluated {
+		if cpv != "dev-libs/library-2" {
+			t.Fatalf("policy evaluated unselected candidate %q in %v", cpv, evaluated)
+		}
+	}
+	if len(evaluated) == 0 {
+		t.Fatal("selected action policy was not frozen")
+	}
+	if len(fixture.Available) != 1 || fixture.Available[0].CPV != "dev-libs/library-2" {
+		t.Fatalf("unselected candidates leaked into authority snapshot: %#v", fixture.Available)
+	}
+	if validation := planvalidate.ValidateFinalState(fixture, plan); !validation.Valid {
+		t.Fatalf("selected policy snapshot is invalid: %#v", validation)
 	}
 }
 

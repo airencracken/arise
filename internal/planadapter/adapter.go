@@ -46,10 +46,11 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 				installed = append(installed, packageFromVersion(cp, version, true, nil, opts.PackagePolicy))
 			}
 			if version.Available {
-				var action *resolve.PkgAction
-				if selectedAction, ok := selected[actionKey(cpv(cp, version), version.Slot, version.Repository)]; ok {
-					action = &selectedAction
+				selectedAction, selectedForPlan := selected[actionKey(cpv(cp, version), version.Slot, version.Repository)]
+				if !selectedForPlan {
+					continue
 				}
+				action := &selectedAction
 				available = append(available, packageFromVersion(cp, version, false, action, opts.PackagePolicy))
 			}
 		}
@@ -207,7 +208,12 @@ func packageFromVersion(cp string, version *resolve.VersionInfo, installed bool,
 		Dependencies: dependencies, RequiredUse: version.RequiredUse,
 		EAPI: eapi, Keywords: strings.Fields(version.Keywords), License: version.License,
 	}
-	if policy != nil {
+	// Package policy is consumed only by validateActionPolicy, so freeze it
+	// only for selected install actions. Evaluating every package.mask,
+	// package.accept_keywords, and package.license rule for every repository
+	// candidate turns an independent audit into O(candidates * policy-rules)
+	// work without adding validation coverage.
+	if policy != nil && action != nil {
 		pkg.Policy = policy(pkg.CPV, pkg.Slot, pkg.Repository)
 		pkg.Masked = pkg.Policy.Masked
 	}

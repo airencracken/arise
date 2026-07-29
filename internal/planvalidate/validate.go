@@ -17,6 +17,7 @@ var supportedDependencyClasses = map[string]bool{
 
 func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 	applied := ApplyPlan(fixture.Installed, plan)
+	finalRoot := newPackageState(applied.State.Packages)
 	violations := append([]Violation(nil), applied.Violations...)
 	if fixture.Schema != SchemaVersion {
 		violations = append(violations, violation("unsupported-fixture-schema", "", fmt.Sprint(fixture.Schema), "", "fixture schema is unsupported"))
@@ -53,7 +54,7 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 					violations = append(violations, violation("unsupported-dependency-class", pkg.CPV, class, pkg.CPV, "validator does not yet implement this dependency class"))
 					continue
 				}
-				domainPackages, ok := dependencyDomainPackages(fixture, class, applied.State.Packages)
+				domainPackages, ok := dependencyDomainState(fixture, class, finalRoot)
 				if !ok {
 					violations = append(violations, violation(
 						"missing-dependency-domain", pkg.CPV, class, pkg.CPV,
@@ -83,7 +84,7 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 		}
 	}
 	if fixture.Request.PartialMode != "onlydeps" {
-		validateTargets(fixture.Request, applied.State.Packages, &violations)
+		validateTargets(fixture.Request, finalRoot, &violations)
 	}
 	if fixture.Request.PartialMode != "onlydeps" {
 		validateActionJustification(fixture, plan, applied.State.Packages, &violations)
@@ -164,6 +165,7 @@ func actionRepairsRuntimeDependency(installed, finalRoot []Package, action Actio
 }
 
 func runtimeDependenciesSatisfied(pkg Package, root []Package) bool {
+	state := newPackageState(root)
 	for _, class := range []string{"RDEPEND", "PDEPEND"} {
 		expression := strings.TrimSpace(pkg.Dependencies[class])
 		if expression == "" {
@@ -177,7 +179,7 @@ func runtimeDependenciesSatisfied(pkg Package, root []Package) bool {
 			return false
 		}
 		var violations []Violation
-		if !validateNode(node, pkg, root, &violations) {
+		if !validateNode(node, pkg, state, &violations) {
 			return false
 		}
 	}
@@ -250,6 +252,9 @@ func ValidatePlanImpact(fixture Fixture, plan Plan) ValidationResult {
 		PartialMode: fixture.Request.PartialMode,
 	}
 	baseline := ValidateFinalState(baselineFixture, Plan{Schema: plan.Schema})
+	if len(plan.Actions) == 0 {
+		return validateNoActionImpact(fixture, plan, baseline)
+	}
 	planned := ValidateFinalState(fixture, plan)
 
 	// A full record set is required to prove absence of introduced violations.
@@ -287,6 +292,43 @@ func ValidatePlanImpact(fixture Fixture, plan Plan) ValidationResult {
 	}
 }
 
+func validateNoActionImpact(fixture Fixture, plan Plan, baseline ValidationResult) ValidationResult {
+	// With no state transition, every package-state violation is necessarily
+	// pre-existing. Revalidating the identical installed state solely to add
+	// request and ledger diagnostics doubles the dominant dependency walk.
+	if len(baseline.Violations) == MaxViolationRecords {
+		inconclusive := violation(
+			"comparison-inconclusive", "", "", "",
+			"validation impact exceeds the bounded unique diagnostic comparison",
+		)
+		return ValidationResult{Valid: false, Violations: []Violation{inconclusive}, Truncated: true}
+	}
+	var introduced []Violation
+	for _, item := range baseline.Violations {
+		if nonWaivableViolation(item.Kind) {
+			introduced = append(introduced, item)
+		}
+	}
+	validateDecisionLedger(plan, &introduced)
+	if fixture.Request.PartialMode != "onlydeps" {
+		validateTargets(fixture.Request, newPackageState(baselineStatePackages(fixture)), &introduced)
+	}
+	sortViolations(introduced)
+	introduced, truncated, omitted := boundViolations(introduced, 0)
+	if introduced == nil {
+		introduced = []Violation{}
+	}
+	return ValidationResult{
+		Valid: len(introduced) == 0, Violations: introduced,
+		Truncated: truncated, OmittedViolations: omitted,
+		PreExisting: len(baseline.Violations),
+	}
+}
+
+func baselineStatePackages(fixture Fixture) []Package {
+	return canonicalState(fixture.Installed).Packages
+}
+
 func nonWaivableViolation(kind string) bool {
 	switch kind {
 	case "unsupported-fixture-schema", "unsupported-plan-schema",
@@ -301,7 +343,7 @@ func nonWaivableViolation(kind string) bool {
 		kind == "already-installed" || kind == "slot-collision" || kind == "unknown-action"
 }
 
-func dependencyDomainPackages(fixture Fixture, class string, finalRoot []Package) ([]Package, bool) {
+func dependencyDomainState(fixture Fixture, class string, finalRoot packageState) (packageState, bool) {
 	switch class {
 	case "RDEPEND", "PDEPEND":
 		return finalRoot, true
@@ -310,15 +352,15 @@ func dependencyDomainPackages(fixture Fixture, class string, finalRoot []Package
 			return finalRoot, true
 		}
 		packages, ok := fixture.Domains[DomainSysroot]
-		return packages, ok
+		return newPackageState(packages), ok
 	case "BDEPEND", "IDEPEND":
 		if fixture.DomainsAliasToRoot {
 			return finalRoot, true
 		}
 		packages, ok := fixture.Domains[DomainBroot]
-		return packages, ok
+		return newPackageState(packages), ok
 	default:
-		return nil, false
+		return packageState{}, false
 	}
 }
 
@@ -369,7 +411,7 @@ func boundViolations(violations []Violation, alreadyOmitted int) ([]Violation, b
 	return violations, omitted != 0, omitted
 }
 
-func validateTargets(request Request, packages []Package, violations *[]Violation) {
+func validateTargets(request Request, packages packageState, violations *[]Violation) {
 	switch request.Operation {
 	case "install", "update":
 		for _, target := range request.Targets {
@@ -382,7 +424,7 @@ func validateTargets(request Request, packages []Package, violations *[]Violatio
 				*violations = append(*violations, violation("unsupported-atom-semantics", "", target, "", unsupported))
 				continue
 			}
-			if !stateMatches(packages, constraint, nil) {
+			if !packages.matches(constraint, nil) {
 				*violations = append(*violations, violation("unsatisfied-request-target", "", target, "", "requested target is absent from final state"))
 			}
 		}
@@ -397,7 +439,7 @@ func validateTargets(request Request, packages []Package, violations *[]Violatio
 				*violations = append(*violations, violation("unsupported-atom-semantics", "", target, "", unsupported))
 				continue
 			}
-			if stateMatches(packages, constraint, nil) {
+			if packages.matches(constraint, nil) {
 				*violations = append(*violations, violation("retained-removal-target", "", target, "", "removed target remains in final state"))
 			}
 		}
@@ -406,7 +448,7 @@ func validateTargets(request Request, packages []Package, violations *[]Violatio
 	}
 }
 
-func validateNode(node depstring.DepNode, owner Package, packages []Package, violations *[]Violation) bool {
+func validateNode(node depstring.DepNode, owner Package, packages packageState, violations *[]Violation) bool {
 	switch item := node.(type) {
 	case *depstring.AtomDep:
 		constraint, err := atom.ParsePackageAtom(item.Atom)
@@ -418,7 +460,7 @@ func validateNode(node depstring.DepNode, owner Package, packages []Package, vio
 			*violations = append(*violations, violation("unsupported-atom-semantics", owner.CPV, item.Atom, owner.CPV, unsupported))
 			return false
 		}
-		if stateMatches(packages, constraint, &owner) {
+		if packages.matches(constraint, &owner) {
 			return true
 		}
 		*violations = append(*violations, violation("unsatisfied-dependency", owner.CPV, item.Atom, owner.CPV, "final state does not satisfy dependency"))
@@ -466,7 +508,7 @@ func validateNode(node depstring.DepNode, owner Package, packages []Package, vio
 	}
 }
 
-func validateBlock(raw string, owner Package, packages []Package, violations *[]Violation) bool {
+func validateBlock(raw string, owner Package, packages packageState, violations *[]Violation) bool {
 	constraint, err := atom.ParsePackageAtom(strings.TrimLeft(raw, "!"))
 	if err != nil {
 		*violations = append(*violations, violation("invalid-blocker-atom", owner.CPV, raw, owner.CPV, err.Error()))
@@ -476,7 +518,7 @@ func validateBlock(raw string, owner Package, packages []Package, violations *[]
 		*violations = append(*violations, violation("unsupported-atom-semantics", owner.CPV, raw, owner.CPV, unsupported))
 		return false
 	}
-	if !stateMatches(packages, constraint, &owner) {
+	if !packages.matches(constraint, &owner) {
 		return true
 	}
 	*violations = append(*violations, violation("blocker-violation", owner.CPV, raw, owner.CPV, "blocked package remains in final state"))
@@ -488,7 +530,26 @@ func unsupportedAtomSemantics(constraint *atom.Atom) string {
 }
 
 func stateMatches(packages []Package, constraint *atom.Atom, owner *Package) bool {
+	return newPackageState(packages).matches(constraint, owner)
+}
+
+type packageState struct {
+	byCP map[string][]Package
+}
+
+func newPackageState(packages []Package) packageState {
+	state := packageState{byCP: make(map[string][]Package)}
 	for _, pkg := range packages {
+		cp := cpFromPackage(pkg.CPV)
+		if cp != "" {
+			state.byCP[cp] = append(state.byCP[cp], pkg)
+		}
+	}
+	return state
+}
+
+func (state packageState) matches(constraint *atom.Atom, owner *Package) bool {
+	for _, pkg := range state.byCP[constraint.CP()] {
 		candidate, err := parseCPV(pkg.CPV)
 		if err == nil && matches(candidate, pkg, constraint) && useDependenciesMatch(pkg, constraint.UseFlags, owner) {
 			return true

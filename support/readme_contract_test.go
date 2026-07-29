@@ -19,23 +19,30 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 	assertAbsent(t, readme,
 		"Not yet claimed:",
 		"Parallel scheduling, fetch policy,\n  lifecycle coverage, failure recovery",
+		"Initial C2 baseline",
+		"0.0.5 resolver tuning",
+		"0.0.6 repository synchronization",
+		"phase protocol",
+		"acceptance gates",
 	)
 	assertPresent(t, readme,
-		"arise sync\narise -1 --reinstall =sys-apps/arise-0.0.6",
-		"[0.0.6 release notes](docs/releases/0.0.6.md)",
+		"arise sync\narise -1 --reinstall =sys-apps/arise-0.0.7",
 		"sys-apps/arise ~amd64",
-		"Median wall time | 3.45 s | 2.48 s | **28.1% faster**",
-		"Profiled allocation | 2,645.55 MiB | 733.20 MiB | **72.3% lower**",
-		"[the performance results](docs/performance-results.md)",
-		"[the development guide](docs/development.md)",
-		"recover         Inspect journals; inspect, restore, verify, or prune recovery sets",
+		"| Workload | Arise | Compared with | Other tool | Arise speedup |",
+		"| Plan a deep/newuse `@world` update | 3.25 s | `emerge` | 17.98 s | **5.54x** |",
+		"[performance results](docs/performance-results.md)",
+		"[development guide](docs/development.md)",
+		"[documentation index](docs/README.md)",
+		"make build",
+		"make static",
+		"Arise validates a proposed package plan against an independently constructed",
 	)
 
 	performance := read("../docs/performance-results.md")
 	assertPresent(t, performance,
 		"Dependency-aware parallel preparation with serialized commits",
 		"installed lifecycle execution, durable journals",
-		"General Portage execution parity is still not claimed.",
+		"General Portage execution parity is not claimed.",
 	)
 
 	punchlist := read("../PUNCHLIST.md")

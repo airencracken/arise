@@ -6,6 +6,7 @@
     {
       "name": "shallow-system-equivalent-plan",
       "normalize": "package-plan",
+      "min_speedup": 1.2,
       "arise": {
         "tool": "arise",
         "path": "./arise",

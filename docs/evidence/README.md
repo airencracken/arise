@@ -6,6 +6,9 @@ in `../../PUNCHLIST.md` and maintained documentation.
 
 ## Current milestone
 
+- [`RELEASE_0.0.7_PERFORMANCE_2026-07-29.json`](RELEASE_0.0.7_PERFORMANCE_2026-07-29.json)
+  records the refreshed correctness-equivalent Gentoo-tool comparisons, raw
+  wall samples, release performance floors, and frozen host snapshot.
 - [`PORTAGE_SELF_HOSTING_MILESTONE_2026-07-24.md`](PORTAGE_SELF_HOSTING_MILESTONE_2026-07-24.md)
   records Arise building and installing Portage 3.0.81.2 and defines the
   cumulative construction acceptance ladder.

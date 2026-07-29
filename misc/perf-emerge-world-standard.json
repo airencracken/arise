@@ -6,6 +6,7 @@
     {
       "name": "world-update-deep-newuse",
       "normalize": "package-plan",
+      "min_speedup": 1.2,
       "arise": {
         "tool": "arise",
         "path": "./arise",

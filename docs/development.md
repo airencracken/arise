@@ -17,7 +17,10 @@ Requirements: Go 1.26.3+ and Linux.
 The Gentoo ebuild produces a static recovery binary by default. The opt-in
 `pie` USE flag selects Gentoo's normal position-independent hardening tradeoff.
 The default test suite is hermetic; live comparisons are opt-in and
-timeout-bounded. See [`testing/TEST_LANES.md`](testing/TEST_LANES.md).
+timeout-bounded. It includes deterministic large-state performance guards for
+the independent validator; live correctness-equivalent comparisons against
+`emerge` remain release gates. See
+[`testing/TEST_LANES.md`](testing/TEST_LANES.md).
 
 ## Architecture
 

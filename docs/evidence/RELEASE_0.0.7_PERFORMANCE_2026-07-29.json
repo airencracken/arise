@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "captured_at": "2026-07-29",
+  "candidate": "arise-0.0.7-pretag",
+  "binary_sha256": "1eee28cb374336bf6873bd29d2fb20404357601c8d5ee5edfcb7d23b872c5bc9",
+  "host": {
+    "architecture": "amd64",
+    "go": "go1.26.5-X:nodwarf5",
+    "portage": "3.0.81.2",
+    "eix": "0.36.9"
+  },
+  "snapshot": {
+    "gentoo": "2532b3909879a7b6e0b5b46c2d4ad97f63afe527",
+    "guru": "d156f6093548a2132ccf745cbfdcc465ae765af8",
+    "arise_overlay": "5fb37414605d7f869753f714706c616e26e495af",
+    "installed_cpv_sha256": "3fc8920f32ceb7873052691bf37f770d56818506347b0e5cd0c68f27bfdb381a"
+  },
+  "all_equivalent": true,
+  "all_performance_gates_passed": true,
+  "results": [
+    {
+      "name": "all-installed-cpvs",
+      "reference": "eix-installed",
+      "arise_wall_ns": [9327685, 8002815, 8790045, 6987506, 6500431, 8100598, 10672613, 8535015, 8512453, 8905472, 9410741],
+      "reference_wall_ns": [40000077, 36588594, 37935295, 34699783, 38223557, 37304450, 39415148, 40679644, 37206565, 38401942, 38331080],
+      "arise_median_ns": 8535015,
+      "reference_median_ns": 38223557,
+      "speedup": 4.478440518265053
+    },
+    {
+      "name": "firefox-substring-eix",
+      "reference": "eix",
+      "arise_wall_ns": [14340129, 15646804, 13145983, 14803790, 17072495, 12971896, 14324348, 13019466, 15287029, 14596801, 15142957],
+      "reference_wall_ns": [35081680, 37218347, 36338644, 33496630, 35887385, 34670928, 35048549, 32459962, 35185716, 32966634, 33975782],
+      "arise_median_ns": 14596801,
+      "reference_median_ns": 35048549,
+      "speedup": 2.401111654533072
+    },
+    {
+      "name": "firefox-substring-emerge",
+      "reference": "emerge",
+      "arise_wall_ns": [13656604, 13589196, 15239629],
+      "reference_wall_ns": [973130174, 959549774, 960590530],
+      "arise_median_ns": 13656604,
+      "reference_median_ns": 960590530,
+      "speedup": 70.33890197006518
+    },
+    {
+      "name": "shallow-system-equivalent-plan",
+      "reference": "emerge",
+      "minimum_speedup": 1.2,
+      "arise_wall_ns": [1938022171, 1933635184, 1959027880, 1995583611, 2006077228],
+      "reference_wall_ns": [3743047739, 3779416188, 3779376384, 3903535893, 3651901522],
+      "arise_median_ns": 1959027880,
+      "reference_median_ns": 3779376384,
+      "speedup": 1.9292101059837903
+    },
+    {
+      "name": "world-update-deep-newuse",
+      "reference": "emerge",
+      "minimum_speedup": 1.2,
+      "arise_wall_ns": [3496455115, 3139454223, 3246333898, 3162014234, 3313457565],
+      "reference_wall_ns": [18582253925, 17975091279, 17963989859, 17989802946, 17861730671],
+      "arise_median_ns": 3246333898,
+      "reference_median_ns": 17975091279,
+      "speedup": 5.537043275207792
+    },
+    {
+      "name": "full-configured-repository-index",
+      "reference": "eix-update",
+      "arise_wall_ns": [8243574606, 7245951117, 7135323817, 6878633440, 7035511027],
+      "reference_wall_ns": [10856156593, 11311675871, 10258083936, 10554935743, 10548782576],
+      "arise_median_ns": 7135323817,
+      "reference_median_ns": 10554935743,
+      "speedup": 1.4792511193188922
+    },
+    {
+      "name": "no-change-configured-repository-index",
+      "reference": "eix-update",
+      "arise_wall_ns": [5580564147, 3794468366, 3750249398, 3305524772, 3331025482, 3880949142, 3788823674],
+      "reference_wall_ns": [11327413757, 10951851011, 10520168914, 10204265622, 10809791080, 10438454929, 9940144176],
+      "arise_median_ns": 3788823674,
+      "reference_median_ns": 10520168914,
+      "speedup": 2.7766319626306264
+    }
+  ]
+}
