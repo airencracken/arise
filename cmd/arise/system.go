@@ -21,6 +21,7 @@ import (
 	"github.com/airencracken/arise/internal/rebuild"
 	"github.com/airencracken/arise/internal/vdb"
 	"github.com/airencracken/arise/internal/world"
+	"golang.org/x/term"
 )
 
 func runDispatchConf(args []string) int {
@@ -39,6 +40,8 @@ func runDispatchConf(args []string) int {
 	opts := dispatchconf.DefaultOptions()
 	opts.Root = root
 	opts.HookDir = filepath.Join(root, "etc", "portage", "conf-update.d")
+	opts.ClearScreen = os.Getenv("TERM") != "dumb" && term.IsTerminal(int(os.Stdout.Fd()))
+	opts.Color = color.UseColor
 
 	cfg, err := portage.LoadEffectiveConfigWithEnvironment(*portageConfigRoot, os.Environ())
 	if err != nil {

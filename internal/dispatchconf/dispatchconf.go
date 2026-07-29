@@ -52,6 +52,8 @@ type Options struct {
 	ReplaceWSComments      bool
 	ReplaceUnmodified      bool
 	IgnorePreviouslyMerged bool
+	ClearScreen            bool
+	Color                  bool
 	Input                  io.Reader
 	Output                 io.Writer
 	Error                  io.Writer
@@ -86,7 +88,8 @@ type discovery struct {
 }
 
 // Discover recursively finds pending updates without mutating them and returns
-// one newest candidate per target in stable target order.
+// one newest candidate per target in Portage dispatch-conf's stable candidate
+// path order.
 func Discover(opts Options) ([]Candidate, error) {
 	found, err := discover(opts)
 	if err != nil {
@@ -160,7 +163,7 @@ func discover(opts Options) (discovery, error) {
 	for _, candidate := range byCurrent {
 		out = append(out, candidate)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Current < out[j].Current })
+	sort.Slice(out, func(i, j int) bool { return out[i].New < out[j].New })
 	return discovery{candidates: out, superseded: superseded}, nil
 }
 
@@ -233,6 +236,7 @@ func Run(ctx context.Context, opts Options) (result Result, runErr error) {
 			selected = merged
 		}
 		for {
+			clearScreen(opts)
 			if err := showDiff(ctx, opts, candidate.Current, selected); err != nil {
 				return result, fmt.Errorf("show diff: %w", err)
 			}
@@ -947,6 +951,7 @@ func showDiff(ctx context.Context, opts Options, oldPath, newPath string) error 
 	if err != nil {
 		return err
 	}
+	parts = colorDiffCommand(parts, opts.Color)
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Stdout, cmd.Stderr = opts.Output, opts.Error
 	err = cmd.Run()
@@ -955,6 +960,26 @@ func showDiff(ctx context.Context, opts Options, oldPath, newPath string) error 
 		return nil
 	}
 	return err
+}
+
+func clearScreen(opts Options) {
+	if opts.ClearScreen {
+		fmt.Fprint(opts.Output, "\033[H\033[2J")
+	}
+}
+
+func colorDiffCommand(parts []string, enabled bool) []string {
+	if !enabled || len(parts) == 0 || filepath.Base(parts[0]) != "diff" {
+		return parts
+	}
+	for _, part := range parts[1:] {
+		if part == "--color" || strings.HasPrefix(part, "--color=") {
+			return parts
+		}
+	}
+	colored := make([]string, 0, len(parts)+1)
+	colored = append(colored, parts[0], "--color=always")
+	return append(colored, parts[1:]...)
 }
 
 func mixedDiffOperands(left, right string) (string, string, func(), error) {

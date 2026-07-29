@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -199,9 +200,99 @@ func TestPropertyDiscoverOrderingIsDeterministic(t *testing.T) {
 		t.Fatalf("nondeterministic results: %#v != %#v", first, second)
 	}
 	for i := 1; i < len(first); i++ {
-		if first[i-1].Current > first[i].Current {
+		if first[i-1].New > first[i].New {
 			t.Fatalf("not sorted: %#v", first)
 		}
+	}
+}
+
+func TestDiscoverMatchesPortageCandidatePathOrdering(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	for _, fixture := range []struct {
+		name     string
+		sequence string
+	}{
+		{name: "alpha", sequence: "0009"},
+		{name: "zulu", sequence: "0000"},
+	} {
+		writeFixture(t, filepath.Join(root, "etc", fixture.name), "old", 0o644)
+		writeFixture(t, filepath.Join(root, "etc", "._cfg"+fixture.sequence+"_"+fixture.name), "new", 0o644)
+	}
+	got, err := Discover(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || filepath.Base(got[0].Current) != "zulu" || filepath.Base(got[1].Current) != "alpha" {
+		t.Fatalf("candidate order = %#v, want Portage path order zulu then alpha", got)
+	}
+}
+
+func TestRunClearsScreenBeforeEachInteractiveComparison(t *testing.T) {
+	root, opts := fixtureOptions(t)
+	writeFixture(t, filepath.Join(root, "etc/value"), "old", 0o644)
+	writeFixture(t, filepath.Join(root, "etc/._cfg0000_value"), "new", 0o644)
+	opts.ClearScreen = true
+	opts.Input = strings.NewReader("hn")
+
+	if _, err := Run(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	got := opts.Output.(*bytes.Buffer).String()
+	if count := strings.Count(got, "\033[H\033[2J"); count != 2 {
+		t.Fatalf("screen clear count = %d, want one before each comparison: %q", count, got)
+	}
+	if !strings.HasPrefix(got, "\033[H\033[2J") {
+		t.Fatalf("first comparison was not preceded by a clear: %q", got)
+	}
+}
+
+func TestColorDiffCommandOnlyEnhancesPlainDiff(t *testing.T) {
+	tests := []struct {
+		name    string
+		parts   []string
+		enabled bool
+		want    []string
+	}{
+		{name: "enabled", parts: []string{"diff", "-Nu", "old", "new"}, enabled: true, want: []string{"diff", "--color=always", "-Nu", "old", "new"}},
+		{name: "disabled", parts: []string{"diff", "-Nu"}, want: []string{"diff", "-Nu"}},
+		{name: "configured", parts: []string{"diff", "--color=auto", "-Nu"}, enabled: true, want: []string{"diff", "--color=auto", "-Nu"}},
+		{name: "custom", parts: []string{"colordiff", "-Nu"}, enabled: true, want: []string{"colordiff", "-Nu"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := colorDiffCommand(test.parts, test.enabled); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("colorDiffCommand() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestShowDiffColorizesGNUDiffOutputWhenEnabled(t *testing.T) {
+	diff, err := exec.LookPath("diff")
+	if err != nil {
+		t.Skip("diff is unavailable")
+	}
+	if output, err := exec.Command(diff, "--help").CombinedOutput(); err != nil ||
+		!strings.Contains(string(output), "--color") {
+		t.Skip("installed diff does not support color")
+	}
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old")
+	newPath := filepath.Join(dir, "new")
+	writeFixture(t, oldPath, "old\n", 0o644)
+	writeFixture(t, newPath, "new\n", 0o644)
+	var output bytes.Buffer
+	opts := Options{
+		DiffCommand: diff + " -Nu %s %s",
+		Color:       true,
+		Output:      &output,
+		Error:       &output,
+	}
+	if err := showDiff(context.Background(), opts, oldPath, newPath); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "\033[") {
+		t.Fatalf("color-enabled GNU diff output lacks ANSI styling: %q", output.String())
 	}
 }
 

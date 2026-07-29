@@ -2370,13 +2370,16 @@ Acceptance gate:
   automation, safe three-way premerge, atomic confined archives and rotation,
   mixed file-type/symlink diffs, configured session/update hooks, metadata
   preservation, cancellation, and ROOT/PORTAGE_CONFIGROOT-aware adversarial
-  tests. Installed-Portage differential tests cover archive, symlink, and
-  three-way-merge semantics. Remaining parity work includes explicit session
-  rollback/recovery and full command-level differentials against Portage's
-  dispatch-conf and etc-update in a disposable ROOT. Cover etc-update's preen
-  and automatic modes there. Run the reference dispatch-conf inside a chroot or
-  mount-isolated root because it has no root-selection CLI. Never use the live
-  host configuration as a behavioral fixture.
+  tests. Interactive review matches Portage's full candidate-path ordering,
+  clears the terminal before every comparison, and enables GNU diff color only
+  for color-enabled terminal output while preserving custom diff commands and
+  plain redirected output. Installed-Portage differential tests cover archive,
+  symlink, and three-way-merge semantics. Remaining parity work includes
+  explicit session rollback/recovery and full command-level differentials
+  against Portage's dispatch-conf and etc-update in a disposable ROOT. Cover
+  etc-update's preen and automatic modes there. Run the reference dispatch-conf
+  inside a chroot or mount-isolated root because it has no root-selection CLI.
+  Never use the live host configuration as a behavioral fixture.
 - [ ] Expose config-protection and dispatch decisions as a headless Go library
   with immutable candidate/diff records, explicit decision requests, validated
   apply plans, archive/rollback operations and event streams. Build a polished
