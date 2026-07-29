@@ -86,7 +86,7 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 		validateTargets(fixture.Request, applied.State.Packages, &violations)
 	}
 	if fixture.Request.PartialMode != "onlydeps" {
-		validateActionJustification(fixture, plan, &violations)
+		validateActionJustification(fixture, plan, applied.State.Packages, &violations)
 	}
 	sortViolations(violations)
 	violations, truncated, omitted := boundViolations(violations, applied.OmittedViolations)
@@ -99,7 +99,7 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 	}
 }
 
-func validateActionJustification(fixture Fixture, plan Plan, violations *[]Violation) {
+func validateActionJustification(fixture Fixture, plan Plan, finalRoot []Package, violations *[]Violation) {
 	byID := make(map[string]Action, len(plan.Actions))
 	required := make(map[string]bool, len(plan.Actions))
 	decisionRequirements := make(map[string][]string, len(plan.Decisions.Records))
@@ -114,7 +114,8 @@ func validateActionJustification(fixture Fixture, plan Plan, violations *[]Viola
 		}
 		if action.Kind == ActionInstall &&
 			(actionMatchesRequest(action, fixture.Request) ||
-				requirementsJustifyAction(action, decisionRequirements[action.ID])) {
+				requirementsJustifyAction(action, decisionRequirements[action.ID]) ||
+				actionRepairsRuntimeDependency(fixture.Installed, finalRoot, action)) {
 			required[action.ID] = true
 		}
 	}
@@ -142,6 +143,53 @@ func validateActionJustification(fixture Fixture, plan Plan, violations *[]Viola
 			))
 		}
 	}
+}
+
+func actionRepairsRuntimeDependency(installed, finalRoot []Package, action Action) bool {
+	if action.Replaces == "" {
+		return false
+	}
+	var replaced *Package
+	for index := range installed {
+		if installed[index].CPV == action.Replaces && installed[index].Slot == action.Package.Slot {
+			replaced = &installed[index]
+			break
+		}
+	}
+	if replaced == nil || cpFromPackage(replaced.CPV) != cpFromPackage(action.Package.CPV) {
+		return false
+	}
+	return !runtimeDependenciesSatisfied(*replaced, installed) &&
+		runtimeDependenciesSatisfied(action.Package, finalRoot)
+}
+
+func runtimeDependenciesSatisfied(pkg Package, root []Package) bool {
+	for _, class := range []string{"RDEPEND", "PDEPEND"} {
+		expression := strings.TrimSpace(pkg.Dependencies[class])
+		if expression == "" {
+			continue
+		}
+		node, err := depstring.Parse(expression)
+		if err != nil {
+			return false
+		}
+		if err := depstring.ValidatePackageDependenciesEAPI(node, pkg.EAPI); err != nil {
+			return false
+		}
+		var violations []Violation
+		if !validateNode(node, pkg, root, &violations) {
+			return false
+		}
+	}
+	return true
+}
+
+func cpFromPackage(cpv string) string {
+	parsed, err := parseCPV(cpv)
+	if err != nil {
+		return ""
+	}
+	return parsed.CP()
 }
 
 func requirementsJustifyAction(action Action, requirements []string) bool {

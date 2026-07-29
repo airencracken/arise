@@ -445,6 +445,57 @@ func TestTransactionOrderingAndProviderProof(t *testing.T) {
 	}
 }
 
+func TestReplacementIsJustifiedByRepairedRuntimeDependency(t *testing.T) {
+	perl := pkg("dev-lang/perl-5.42.2", nil)
+	perl.Slot, perl.Subslot = "0", "5.42"
+	old := pkg("dev-perl/consumer-1", map[string]string{
+		"RDEPEND": "dev-lang/perl:0/5.40=",
+	})
+	old.Authority = AuthorityVDB
+	replacement := pkg("dev-perl/consumer-2", map[string]string{
+		"RDEPEND": "dev-lang/perl:0=",
+	})
+	replacement.Authority = AuthorityEvaluated
+	action := Action{
+		ID: "consumer-rebuild", Kind: ActionInstall, Package: replacement,
+		Replaces: old.CPV,
+	}
+	fixture := Fixture{
+		Schema:    SchemaVersion,
+		Request:   Request{Operation: "install", Targets: []string{}},
+		Installed: []Package{old, perl}, Available: []Package{replacement},
+		Domains: map[string][]Package{
+			DomainSysroot: {replacement, perl},
+			DomainBroot:   {replacement, perl},
+		},
+	}
+	plan := Plan{
+		Schema: SchemaVersion, Actions: []Action{action},
+	}
+	plan.Decisions = testDecisionLedger(t, plan.Actions)
+
+	if result := ValidateFinalState(fixture, plan); !result.Valid {
+		t.Fatalf("runtime dependency repair rejected: %#v", result)
+	}
+
+	noDefect := cloneJSON(t, fixture)
+	noDefect.Installed[1].Subslot = "5.40"
+	result := ValidateFinalState(noDefect, plan)
+	if result.Valid || !hasViolation(result, "unjustified-action") {
+		t.Fatalf("replacement without baseline defect accepted: %#v", result)
+	}
+
+	unrepaired := cloneJSON(t, plan)
+	unrepaired.Actions[0].Package.Dependencies["RDEPEND"] = "dev-lang/perl:0/5.40="
+	unrepairedFixture := cloneJSON(t, fixture)
+	unrepairedFixture.Available[0] = unrepaired.Actions[0].Package
+	result = ValidateFinalState(unrepairedFixture, unrepaired)
+	if result.Valid || !hasViolation(result, "unsatisfied-dependency") ||
+		!hasViolation(result, "unjustified-action") {
+		t.Fatalf("replacement retaining broken dependency accepted: %#v", result)
+	}
+}
+
 func testDecisionLedger(t *testing.T, actions []Action) DecisionLedger {
 	t.Helper()
 	ledger := DecisionLedger{Records: make([]DecisionRecord, 0, len(actions))}
