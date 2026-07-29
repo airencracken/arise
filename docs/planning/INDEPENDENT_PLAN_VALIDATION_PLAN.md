@@ -368,8 +368,9 @@ valid Portage-only plan fails with an actionable Arise deficiency.
 
 ### Stage 6: execution and continuous expansion
 
-- [ ] Execute selected fixtures in disposable roots.
-- [ ] Compare predicted and actual final state.
+- [x] Execute a stale built-slot-operator repair fixture in a disposable root.
+- [x] Compare predicted and actual CPV, slot/subslot, repository, effective USE,
+  dependency metadata and built subslot bindings.
 - [x] Capture live differences as atomic, replayable frozen documents and
   reduce their available-package corpus to the candidates selected by each
   plan.
@@ -386,6 +387,13 @@ fixtures retain the complete installed baseline and final-state domains while
 discarding unrelated repository candidates; further dependency-closure
 reduction remains required before a host discovery becomes a hermetic corpus
 fixture.
+
+The first execution fixture installs a consumer bound to provider subslot 1,
+upgrades the provider to subslot 2, predicts the consumer repair's committed
+VDB state, executes that repair through the phase protocol and merge journal,
+then independently scans the disposable VDB. The gate requires the observed
+consumer dependency to be recorded as `dev-libs/provider:0/2=` and rejects
+missing packages, unexpected packages, identity, USE and dependency mutations.
 
 Exit gate: at least one classified `arise-valid-portage-fails` case passes
 independent validation, mutation gates and disposable-root execution before any

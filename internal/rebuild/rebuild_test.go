@@ -25,7 +25,10 @@ import (
 	"github.com/airencracken/arise/internal/journal"
 	mergepkg "github.com/airencracken/arise/internal/merge"
 	"github.com/airencracken/arise/internal/phaseproto"
+	"github.com/airencracken/arise/internal/planadapter"
+	"github.com/airencracken/arise/internal/planvalidate"
 	"github.com/airencracken/arise/internal/portage"
+	"github.com/airencracken/arise/internal/vdb"
 )
 
 type rebuildRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -1312,6 +1315,100 @@ pkg_postinst() { printf 'postinst\n' > "${ROOT}/postinst-marker"; }
 	compressed.Close()
 	if err != nil || !strings.Contains(string(environment), "export PF='protocol-test-1'") || !strings.Contains(string(environment), "export ROOT='") {
 		t.Fatalf("VDB environment=%q err=%v", environment, err)
+	}
+}
+
+func TestPredictedCommittedStateMatchesDisposableRootVDB(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	root := filepath.Join(base, "root")
+	vdbDir := filepath.Join(root, "var", "db", "pkg")
+	for _, directory := range []string{
+		filepath.Join(repo, "eclass"),
+		filepath.Join(repo, "dev-libs", "provider"),
+		filepath.Join(repo, "app-misc", "consumer"),
+		root, vdbDir, filepath.Join(base, "work"), filepath.Join(base, "distfiles"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeEbuild := func(relative, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, relative), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const body = `
+src_unpack() { mkdir -p "${S}"; }
+src_install() { :; }
+`
+	writeEbuild("dev-libs/provider/provider-1.ebuild", "EAPI=8\nSLOT=\"0/1\"\n"+body)
+	writeEbuild("dev-libs/provider/provider-2.ebuild", "EAPI=8\nSLOT=\"0/2\"\n"+body)
+	writeEbuild("app-misc/consumer/consumer-1.ebuild", "EAPI=8\nSLOT=\"0\"\nRDEPEND=\"dev-libs/provider:0/1=\"\n"+body)
+	writeEbuild("app-misc/consumer/consumer-2.ebuild", "EAPI=8\nSLOT=\"0\"\nRDEPEND=\"dev-libs/provider:=\"\n"+body)
+
+	cfg := &RebuildConfig{
+		RepoDir: repo, Repository: "test",
+		Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+		RootDir:      root, VdbDir: vdbDir, WorkDirBase: filepath.Join(base, "work"),
+		DistfilesDir: filepath.Join(base, "distfiles"), PhaseProtocol: true,
+	}
+	for _, cpv := range []string{"dev-libs/provider-1", "app-misc/consumer-1"} {
+		if err := RebuildPackage(context.Background(), cpv, cfg); err != nil {
+			t.Fatalf("prepare stale disposable state with %s: %v", cpv, err)
+		}
+	}
+	cfg.AllowLiveUpgrade = true
+	if err := RebuildPackage(context.Background(), "dev-libs/provider-2", cfg); err != nil {
+		t.Fatalf("prepare stale disposable state with provider upgrade: %v", err)
+	}
+	installed, err := vdb.ScanResolverState(vdbDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozen := planadapter.StateFromVDB(installed)
+	replacement := planvalidate.Package{
+		CPV: "app-misc/consumer-2", Slot: "0", Repository: "test",
+		Authority:    planvalidate.AuthorityEvaluated,
+		Dependencies: map[string]string{"RDEPEND": "dev-libs/provider:="},
+		EAPI:         "8",
+	}
+	plan := planvalidate.Plan{
+		Schema: planvalidate.SchemaVersion,
+		Actions: []planvalidate.Action{{
+			ID: "consumer-repair", Kind: planvalidate.ActionInstall,
+			Package: replacement, Replaces: "app-misc/consumer-1",
+		}},
+	}
+	planned := planvalidate.ApplyPlan(frozen.Packages, plan)
+	if len(planned.Violations) != 0 {
+		t.Fatalf("apply repair plan: %#v", planned.Violations)
+	}
+	predicted, err := planvalidate.PredictCommittedState(planned.State)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RebuildPackage(context.Background(), "app-misc/consumer-2", cfg); err != nil {
+		t.Fatalf("execute consumer repair: %v", err)
+	}
+	observedVDB, err := vdb.ScanResolverState(vdbDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := planadapter.StateFromVDB(observedVDB)
+	if result := planvalidate.ValidateCommittedState(predicted, observed); !result.Valid {
+		t.Fatalf("predicted/actual committed state mismatch: %#v", result)
+	}
+	for _, pkg := range observed.Packages {
+		if pkg.CPV == "app-misc/consumer-2" &&
+			pkg.Dependencies["RDEPEND"] != "dev-libs/provider:0/2=" {
+			t.Fatalf("consumer binding = %q", pkg.Dependencies["RDEPEND"])
+		}
 	}
 }
 
