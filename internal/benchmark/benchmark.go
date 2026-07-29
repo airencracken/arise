@@ -203,15 +203,22 @@ func CreateTempVDB() (string, []string, error) {
 		os.RemoveAll(vdbPath)
 		return "", nil, fmt.Errorf("mkdir vdb category: %w", err)
 	}
-	pvDir := filepath.Join(catDir, "pkg-0-1.0")
+	pvDir := filepath.Join(catDir, "pkg-1.0")
 	if err := os.MkdirAll(pvDir, 0755); err != nil {
 		os.RemoveAll(vdbPath)
 		return "", nil, fmt.Errorf("mkdir pv dir: %w", err)
 	}
 
-	refFiles := []string{"/bin/sh", "/bin/ls"}
-	if _, err := os.Stat("/bin/sh"); err != nil {
-		refFiles = []string{"/etc/hostname", "/etc/os-release"}
+	candidates := []string{"/bin/ls", "/etc/hostname", "/etc/os-release"}
+	refFiles := make([]string, 0, 2)
+	for _, candidate := range candidates {
+		info, statErr := os.Lstat(candidate)
+		if statErr == nil && info.Mode().IsRegular() {
+			refFiles = append(refFiles, candidate)
+		}
+		if len(refFiles) == 2 {
+			break
+		}
 	}
 
 	var contents []string
@@ -239,7 +246,7 @@ func CreateTempVDB() (string, []string, error) {
 		case "CATEGORY":
 			val = "app-admin"
 		case "PF":
-			val = "pkg-0-1.0"
+			val = "pkg-1.0"
 		case "USE":
 			val = "foo bar -baz"
 		case "EAPI":

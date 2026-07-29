@@ -101,10 +101,10 @@ test-coverage-html: test-coverage
 #
 
 bench:
-	$(GO) test ./internal/benchmark/ -bench=. -benchtime=1s -count=1
+	$(GO) test ./internal/benchmark/ -bench=. -benchtime=1s -count=1 -timeout 10m
 
 bench-quick:
-	$(GO) test ./internal/benchmark/ -bench=. -benchtime=100ms -count=1
+	$(GO) test ./internal/benchmark/ -bench=. -benchtime=100ms -count=1 -timeout 5m
 
 bench-compare:
 	$(GO) test -tags=live_portage ./internal/benchmark/ -run 'TestCompare' -v -count=1 -timeout 10m

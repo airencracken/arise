@@ -304,7 +304,7 @@ func BenchmarkEqueryFiles(b *testing.B) {
 		b.Fatalf("create temp vdb: %v", err)
 	}
 	defer os.RemoveAll(vdbPath)
-	atomStr := "app-admin/pkg-0-1.0"
+	atomStr := "app-admin/pkg-1.0"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = equery.Files(vdbPath, atomStr)
@@ -320,7 +320,7 @@ func BenchmarkEquerySize(b *testing.B) {
 	if len(refFiles) == 0 {
 		b.Skip("no reference files")
 	}
-	atomStr := "app-admin/pkg-0-1.0"
+	atomStr := "app-admin/pkg-1.0"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = equery.Size(vdbPath, atomStr)
@@ -336,7 +336,7 @@ func BenchmarkEqueryCheck(b *testing.B) {
 	if len(refFiles) == 0 {
 		b.Skip("no reference files")
 	}
-	atomStr := "app-admin/pkg-0-1.0"
+	atomStr := "app-admin/pkg-1.0"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = equery.Check(vdbPath, atomStr)
@@ -357,9 +357,8 @@ func BenchmarkBinpkgReadInfo(b *testing.B) {
 		b.Fatalf("create temp vdb: %v", err)
 	}
 	defer os.RemoveAll(vdbPath)
-	vdbEntry := filepath.Join(vdbPath, "app-admin", "pkg-0-1.0")
-	rootDir, _ := os.MkdirTemp("", "arise-bench-root-")
-	defer os.RemoveAll(rootDir)
+	vdbEntry := filepath.Join(vdbPath, "app-admin", "pkg-1.0")
+	rootDir := "/"
 
 	ctx := context.Background()
 	outPath, err := binpkg.Create(ctx, vdbEntry, rootDir, pkgDir)
@@ -385,9 +384,8 @@ func BenchmarkBinpkgExtract(b *testing.B) {
 		b.Fatalf("create temp vdb: %v", err)
 	}
 	defer os.RemoveAll(vdbPath)
-	vdbEntry := filepath.Join(vdbPath, "app-admin", "pkg-0-1.0")
-	rootDir, _ := os.MkdirTemp("", "arise-bench-root-")
-	defer os.RemoveAll(rootDir)
+	vdbEntry := filepath.Join(vdbPath, "app-admin", "pkg-1.0")
+	rootDir := "/"
 
 	ctx := context.Background()
 	outPath, err := binpkg.Create(ctx, vdbEntry, rootDir, pkgDir)
@@ -409,7 +407,7 @@ func BenchmarkBinpkgCreate(b *testing.B) {
 		b.Fatalf("create temp vdb: %v", err)
 	}
 	defer os.RemoveAll(vdbPath)
-	vdbEntry := filepath.Join(vdbPath, "app-admin", "pkg-0-1.0")
+	vdbEntry := filepath.Join(vdbPath, "app-admin", "pkg-1.0")
 	pkgDir, err := os.MkdirTemp("", "arise-bench-create-")
 	if err != nil {
 		b.Fatalf("mktemp: %v", err)
@@ -420,13 +418,48 @@ func BenchmarkBinpkgCreate(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
-		tmpDir, _ := os.MkdirTemp("", "arise-bench-create-run-")
-		outPath, err := binpkg.Create(ctx, vdbEntry, rootDir, tmpDir)
-		b.StartTimer()
-		if err == nil && outPath != "" {
-			_ = outPath
-			os.RemoveAll(tmpDir)
+		tmpDir, err := os.MkdirTemp("", "arise-bench-create-run-")
+		if err != nil {
+			b.Fatalf("mktemp: %v", err)
 		}
+		b.StartTimer()
+		outPath, err := binpkg.Create(ctx, vdbEntry, rootDir, tmpDir)
+		b.StopTimer()
+		if err != nil {
+			_ = os.RemoveAll(tmpDir)
+			b.Fatalf("binpkg.Create: %v", err)
+		}
+		if outPath == "" {
+			_ = os.RemoveAll(tmpDir)
+			b.Fatal("binpkg.Create returned an empty path")
+		}
+		if err := os.RemoveAll(tmpDir); err != nil {
+			b.Fatalf("cleanup: %v", err)
+		}
+	}
+}
+
+func TestBinpkgBenchmarkFixture(t *testing.T) {
+	vdbPath, _, err := CreateTempVDB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(vdbPath)
+	output := t.TempDir()
+	path, err := binpkg.Create(
+		context.Background(),
+		filepath.Join(vdbPath, "app-admin", "pkg-1.0"),
+		"/",
+		output,
+	)
+	if err != nil {
+		t.Fatalf("benchmark fixture cannot create a binary package: %v", err)
+	}
+	if path == "" {
+		t.Fatal("benchmark fixture returned an empty binary-package path")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("binary-package output is unavailable: %v", err)
 	}
 }
 
