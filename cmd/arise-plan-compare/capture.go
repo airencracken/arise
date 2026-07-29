@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/airencracken/arise/internal/plancompare"
+	"github.com/airencracken/arise/internal/planvalidate"
 )
 
 type captureManifest struct {
@@ -18,6 +20,7 @@ type captureManifest struct {
 	Files             []string `json:"files"`
 	StateDifferences  int      `json:"state_differences"`
 	ActionDiagnostics int      `json:"action_diagnostics"`
+	SemanticFeatures  []string `json:"semantic_features"`
 }
 
 func writeComparisonCapture(directory, target, operation string, comparison plancompare.ClassifiedComparison, arise, portage plancompare.StateDocument, policy plancompare.ClassificationPolicy) error {
@@ -50,6 +53,7 @@ func writeComparisonCapture(directory, target, operation string, comparison plan
 		ComparisonClass: comparison.Class, Equivalent: comparison.Equivalent,
 		Files: files, StateDifferences: len(comparison.Differences),
 		ActionDiagnostics: len(comparison.ActionDiagnostics),
+		SemanticFeatures:  combinedSemanticFeatures(arise, portage),
 	})
 	if err != nil {
 		return err
@@ -78,6 +82,21 @@ func writeComparisonCapture(directory, target, operation string, comparison plan
 	}
 	committed = true
 	return nil
+}
+
+func combinedSemanticFeatures(documents ...plancompare.StateDocument) []string {
+	seen := make(map[string]bool)
+	for _, document := range documents {
+		for _, feature := range planvalidate.SemanticFeatures(document.Fixture, document.Plan) {
+			seen[feature] = true
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for feature := range seen {
+		result = append(result, feature)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func encodeIndented(value any) ([]byte, error) {

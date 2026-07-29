@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,5 +57,12 @@ func TestWriteComparisonCaptureIsDeterministicAndAtomic(t *testing.T) {
 	after, err := os.ReadFile(filepath.Join(first, "capture.json"))
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatal("failed capture changed committed output")
+	}
+	var manifest captureManifest
+	if err := json.Unmarshal(before, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.SemanticFeatures) != 1 || manifest.SemanticFeatures[0] != "operation:install" {
+		t.Fatalf("capture semantic coverage = %v", manifest.SemanticFeatures)
 	}
 }

@@ -1,14 +1,27 @@
 package plancompare
 
-import "github.com/airencracken/arise/internal/planvalidate"
+import (
+	"strings"
+
+	"github.com/airencracken/arise/internal/planvalidate"
+)
 
 func AssessmentFromValidation(validation planvalidate.ValidationResult, state planvalidate.State) StateAssessment {
+	committed, err := planvalidate.PredictCommittedState(state)
+	if err != nil {
+		return StateAssessment{
+			Validated: true, Valid: false,
+			Violations: append(validationMessages(validation.Violations), "committed-state-prediction: "+err.Error()),
+			Packages:   []StatePackage{},
+		}
+	}
+	state = committed
 	packages := make([]StatePackage, len(state.Packages))
 	for index, pkg := range state.Packages {
 		packages[index] = StatePackage{
 			CP: cpFromCPV(pkg.CPV), Version: versionFromCPV(pkg.CPV),
 			Slot: pkg.Slot, Subslot: pkg.Subslot, Repository: pkg.Repository,
-			EffectiveUse: declaredUse(pkg),
+			EffectiveUse: declaredUse(pkg), Dependencies: normalizedStateDependencies(pkg.Dependencies),
 		}
 	}
 	return StateAssessment{
@@ -16,6 +29,19 @@ func AssessmentFromValidation(validation planvalidate.ValidationResult, state pl
 		Violations: validationMessages(validation.Violations),
 		Packages:   packages,
 	}
+}
+
+func normalizedStateDependencies(source map[string]string) map[string]string {
+	result := make(map[string]string, len(source))
+	for class, expression := range source {
+		if expression = strings.TrimSpace(expression); expression != "" {
+			result[class] = expression
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func validationMessages(violations []planvalidate.Violation) []string {

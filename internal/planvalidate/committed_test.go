@@ -29,14 +29,37 @@ func TestPredictCommittedStateBindsSelectedProviderSubslot(t *testing.T) {
 	}
 }
 
-func TestPredictCommittedStateFailsClosedOnAmbiguousProvider(t *testing.T) {
+func TestPredictCommittedStateSelectsBestProviderAndFailsClosedOnTie(t *testing.T) {
 	first := pkg("dev-libs/provider-1", nil)
 	first.Slot, first.Subslot = "0", "1"
 	second := pkg("dev-libs/provider-2", nil)
 	second.Slot, second.Subslot = "1", "2"
 	consumer := pkg("app-misc/consumer-1", map[string]string{"RDEPEND": "dev-libs/provider:="})
-	if _, err := PredictCommittedState(State{Packages: []Package{consumer, first, second}}); err == nil {
-		t.Fatal("ambiguous built slot provider accepted")
+	consumer.Authority = AuthorityEvaluated
+	predicted, err := PredictCommittedState(State{Packages: []Package{consumer, first, second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := predicted.Packages[0].Dependencies["RDEPEND"]; got != "dev-libs/provider:1/2=" {
+		t.Fatalf("best provider binding = %q", got)
+	}
+	tied := second
+	tied.CPV, tied.Repository = first.CPV, "other"
+	if _, err := PredictCommittedState(State{Packages: []Package{consumer, first, tied}}); err == nil {
+		t.Fatal("tied best built-slot provider accepted")
+	}
+}
+
+func TestPredictCommittedStatePreservesLegacyVDBExpressionsButRejectsEvaluatedOnes(t *testing.T) {
+	legacy := pkg("app-misc/legacy-1", map[string]string{"RDEPEND": "${DEPEND}"})
+	legacy.Authority = AuthorityVDB
+	predicted, err := PredictCommittedState(State{Packages: []Package{legacy}})
+	if err != nil || predicted.Packages[0].Dependencies["RDEPEND"] != "${DEPEND}" {
+		t.Fatalf("legacy VDB expression = %#v, %v", predicted, err)
+	}
+	legacy.Authority = AuthorityEvaluated
+	if _, err := PredictCommittedState(State{Packages: []Package{legacy}}); err == nil {
+		t.Fatal("malformed evaluated dependency expression accepted")
 	}
 }
 
@@ -47,6 +70,11 @@ func TestValidateCommittedStateDetectsIdentityUseDependencyAndAtomicityMutations
 	predicted := State{Packages: []Package{base}}
 	if result := ValidateCommittedState(predicted, predicted); !result.Valid {
 		t.Fatalf("identical committed state rejected: %#v", result)
+	}
+	emptyMetadata := cloneJSON(t, predicted)
+	emptyMetadata.Packages[0].Dependencies["DEPEND"] = "  "
+	if result := ValidateCommittedState(predicted, emptyMetadata); !result.Valid {
+		t.Fatalf("empty dependency metadata representation rejected: %#v", result)
 	}
 	tests := []struct {
 		name string

@@ -306,9 +306,15 @@ func dependencyDomainPackages(fixture Fixture, class string, finalRoot []Package
 	case "RDEPEND", "PDEPEND":
 		return finalRoot, true
 	case "DEPEND":
+		if fixture.DomainsAliasToRoot {
+			return finalRoot, true
+		}
 		packages, ok := fixture.Domains[DomainSysroot]
 		return packages, ok
 	case "BDEPEND", "IDEPEND":
+		if fixture.DomainsAliasToRoot {
+			return finalRoot, true
+		}
 		packages, ok := fixture.Domains[DomainBroot]
 		return packages, ok
 	default:

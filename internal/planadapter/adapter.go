@@ -97,11 +97,7 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 		Policy:    opts.Policy,
 	}
 	if opts.DomainsAliasToRoot {
-		final := planvalidate.ApplyPlan(installed, plan).State.Packages
-		fixture.Domains = map[string][]planvalidate.Package{
-			planvalidate.DomainSysroot: final,
-			planvalidate.DomainBroot:   final,
-		}
+		fixture.DomainsAliasToRoot = true
 	}
 	return fixture, plan, nil
 }

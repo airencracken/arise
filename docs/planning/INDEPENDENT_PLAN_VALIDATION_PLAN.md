@@ -374,8 +374,10 @@ valid Portage-only plan fails with an actionable Arise deficiency.
 - [x] Capture live differences as atomic, replayable frozen documents and
   reduce their available-package corpus to the candidates selected by each
   plan.
-- [ ] Promote reviewed live differences into fully minimized hermetic fixtures.
-- [ ] Track corpus coverage by semantic feature rather than package count.
+- [x] Promote the reviewed stale built-slot repair into a two-package hermetic
+  resolver-to-execution fixture.
+- [x] Track capture coverage by canonical semantic feature rather than package
+  count.
 - [ ] Archive superseded host-specific evidence once portable gates replace it.
 
 `arise-plan-compare --capture-dir DIR` now asks Arise for the exact fixture and
@@ -383,10 +385,12 @@ plan used by its independent validation, translates emerge's displayed actions
 against that same frozen package authority, validates both plan impacts, and
 atomically publishes both state documents, the classification policy, and
 capture metadata. Existing destinations are never overwritten. The stored
-fixtures retain the complete installed baseline and final-state domains while
-discarding unrelated repository candidates; further dependency-closure
-reduction remains required before a host discovery becomes a hermetic corpus
-fixture.
+fixtures retain the complete installed baseline while discarding unrelated
+repository candidates. When SYSROOT and BROOT equal the final ROOT state, a
+schema-level alias replaces two duplicate serialized package lists. Capture
+manifests report deterministic semantic features such as dependency classes,
+built-slot operators, partial modes, policy, replacements and transaction
+prerequisites.
 
 The first execution fixture installs a consumer bound to provider subslot 1,
 upgrades the provider to subslot 2, predicts the consumer repair's committed
@@ -394,6 +398,9 @@ VDB state, executes that repair through the phase protocol and merge journal,
 then independently scans the disposable VDB. The gate requires the observed
 consumer dependency to be recorded as `dev-libs/provider:0/2=` and rejects
 missing packages, unexpected packages, identity, USE and dependency mutations.
+The same gate now begins with the resolver's exact output, independently
+validates and classifies the committed binding divergence, executes that plan
+through the executor, and compares the observed VDB with the pure prediction.
 
 Exit gate: at least one classified `arise-valid-portage-fails` case passes
 independent validation, mutation gates and disposable-root execution before any

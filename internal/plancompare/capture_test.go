@@ -62,6 +62,9 @@ func TestParseAriseValidationAndExternalPlanCapture(t *testing.T) {
 		t.Fatalf("external assessment = %#v, %#v, %#v", assessment, externalFixture, externalPlan)
 	}
 	document := CaptureDocument(externalFixture, externalPlan)
+	if !document.Fixture.DomainsAliasToRoot || document.Fixture.Domains != nil {
+		t.Fatalf("capture retained duplicated root domains: %#v", document.Fixture)
+	}
 	first, err := EncodeStateDocument(document)
 	if err != nil {
 		t.Fatal(err)

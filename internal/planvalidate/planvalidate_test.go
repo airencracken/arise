@@ -240,6 +240,25 @@ func TestDependencyDomainsAreExplicitAndIndependent(t *testing.T) {
 	}
 }
 
+func TestDependencyDomainsCanExplicitlyAliasFinalRoot(t *testing.T) {
+	provider := pkg("dev-libs/provider-1", nil)
+	owner := pkg("app-misc/client-1", map[string]string{
+		"DEPEND": "dev-libs/provider", "BDEPEND": "dev-libs/provider",
+	})
+	fixture := Fixture{
+		Schema: SchemaVersion, Request: Request{Operation: "install", Targets: []string{"app-misc/client"}},
+		Installed: []Package{owner, provider}, DomainsAliasToRoot: true,
+	}
+	if result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion}); !result.Valid {
+		t.Fatalf("aliased dependency domains rejected: %#v", result)
+	}
+	fixture.DomainsAliasToRoot = false
+	result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion})
+	if result.Valid || !hasViolation(result, "missing-dependency-domain") {
+		t.Fatalf("implicit missing domains accepted: %#v", result)
+	}
+}
+
 func TestUseDependencyConditionalsDefaultsAndEquality(t *testing.T) {
 	target := Package{
 		CPV: "dev-libs/library-1", Slot: "0", Repository: "gentoo",

@@ -21,12 +21,13 @@ const (
 )
 
 type StatePackage struct {
-	CP           string          `json:"cp"`
-	Version      string          `json:"version"`
-	Slot         string          `json:"slot"`
-	Subslot      string          `json:"subslot,omitempty"`
-	Repository   string          `json:"repository,omitempty"`
-	EffectiveUse map[string]bool `json:"effective_use,omitempty"`
+	CP           string            `json:"cp"`
+	Version      string            `json:"version"`
+	Slot         string            `json:"slot"`
+	Subslot      string            `json:"subslot,omitempty"`
+	Repository   string            `json:"repository,omitempty"`
+	EffectiveUse map[string]bool   `json:"effective_use,omitempty"`
+	Dependencies map[string]string `json:"dependencies,omitempty"`
 }
 
 func (pkg StatePackage) Identity() string {
@@ -54,12 +55,13 @@ type ClassificationPolicy struct {
 }
 
 type StateDifference struct {
-	Identity       string        `json:"identity"`
-	Kind           string        `json:"kind"`
-	Classification string        `json:"classification"`
-	Arise          *StatePackage `json:"arise,omitempty"`
-	Portage        *StatePackage `json:"portage,omitempty"`
-	UseMismatch    []string      `json:"use_mismatch,omitempty"`
+	Identity           string        `json:"identity"`
+	Kind               string        `json:"kind"`
+	Classification     string        `json:"classification"`
+	Arise              *StatePackage `json:"arise,omitempty"`
+	Portage            *StatePackage `json:"portage,omitempty"`
+	UseMismatch        []string      `json:"use_mismatch,omitempty"`
+	DependencyMismatch []string      `json:"dependency_mismatch,omitempty"`
 }
 
 type ClassifiedComparison struct {
@@ -194,6 +196,11 @@ func compareStates(arise, portage map[string]StatePackage, policy Classification
 		case left.Repository != right.Repository:
 			difference.Kind, difference.Arise, difference.Portage = "location", packagePointer(left), packagePointer(right)
 		default:
+			difference.DependencyMismatch = stateDependencyMismatches(left.Dependencies, right.Dependencies)
+			if len(difference.DependencyMismatch) != 0 {
+				difference.Kind, difference.Arise, difference.Portage = "dependency", packagePointer(left), packagePointer(right)
+				break
+			}
 			difference.UseMismatch = stateUseMismatches(left.EffectiveUse, right.EffectiveUse)
 			if len(difference.UseMismatch) == 0 {
 				continue
@@ -210,6 +217,28 @@ func compareStates(arise, portage map[string]StatePackage, policy Classification
 		}
 		result = append(result, difference)
 	}
+	return result
+}
+
+func stateDependencyMismatches(left, right map[string]string) []string {
+	keys := make(map[string]bool, len(left)+len(right))
+	for key, expression := range left {
+		if strings.TrimSpace(expression) != "" {
+			keys[key] = true
+		}
+	}
+	for key, expression := range right {
+		if strings.TrimSpace(expression) != "" {
+			keys[key] = true
+		}
+	}
+	var result []string
+	for key := range keys {
+		if strings.TrimSpace(left[key]) != strings.TrimSpace(right[key]) {
+			result = append(result, key)
+		}
+	}
+	sort.Strings(result)
 	return result
 }
 

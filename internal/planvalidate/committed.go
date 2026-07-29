@@ -24,6 +24,9 @@ func PredictCommittedState(planned State) (State, error) {
 			}
 			tree, err := depstring.Parse(raw)
 			if err != nil {
+				if pkg.Authority == AuthorityVDB {
+					continue
+				}
 				return State{}, fmt.Errorf("%s %s: %w", pkg.CPV, class, err)
 			}
 			if err := bindBuiltSlotOperators(tree, *pkg, result.Packages); err != nil {
@@ -40,6 +43,9 @@ func bindBuiltSlotOperators(node depstring.DepNode, owner Package, packages []Pa
 	case *depstring.AtomDep:
 		constraint, err := atom.ParsePackageAtom(item.Atom)
 		if err != nil {
+			if owner.Authority == AuthorityVDB {
+				return nil
+			}
 			return err
 		}
 		if constraint.SlotOp != atom.SlotOpEq || constraint.Subslot != "" {
@@ -51,8 +57,30 @@ func bindBuiltSlotOperators(node depstring.DepNode, owner Package, packages []Pa
 				matches = append(matches, candidate)
 			}
 		}
-		if len(matches) != 1 {
-			return fmt.Errorf("built slot operator %s matched %d final providers", item.Atom, len(matches))
+		if len(matches) == 0 {
+			// Merge-time expansion retains an unbound operator when no installed
+			// provider exists; final-state dependency validation remains
+			// responsible for accepting or rejecting that state.
+			return nil
+		}
+		sort.Slice(matches, func(i, j int) bool {
+			left, leftErr := parseCPV(matches[i].CPV)
+			right, rightErr := parseCPV(matches[j].CPV)
+			if leftErr != nil || rightErr != nil || left.Version == nil || right.Version == nil {
+				return matches[i].CPV < matches[j].CPV
+			}
+			return left.Version.Compare(right.Version) > 0
+		})
+		if len(matches) > 1 {
+			left, leftErr := parseCPV(matches[0].CPV)
+			right, rightErr := parseCPV(matches[1].CPV)
+			if leftErr != nil || rightErr != nil || left.Version == nil || right.Version == nil ||
+				left.Version.Compare(right.Version) == 0 {
+				if owner.Authority == AuthorityVDB {
+					return nil
+				}
+				return fmt.Errorf("built slot operator %s has no unique best final provider", item.Atom)
+			}
 		}
 		constraint.Slot = matches[0].Slot
 		constraint.Subslot = matches[0].Subslot
@@ -118,7 +146,7 @@ func ValidateCommittedState(predicted, actual State) ValidationResult {
 			violations = append(violations, violation("actual-package-identity-mismatch", observed.CPV, key, expected.CPV, "committed identity differs from prediction"))
 		case !reflect.DeepEqual(normalizedEffectiveUse(expected), normalizedEffectiveUse(observed)):
 			violations = append(violations, violation("actual-use-mismatch", observed.CPV, key, expected.CPV, "committed USE differs from prediction"))
-		case !reflect.DeepEqual(expected.Dependencies, observed.Dependencies):
+		case !reflect.DeepEqual(normalizedDependencies(expected.Dependencies), normalizedDependencies(observed.Dependencies)):
 			violations = append(violations, violation("actual-dependency-mismatch", observed.CPV, key, expected.CPV, "committed dependency bindings differ from prediction"))
 		}
 	}
@@ -128,6 +156,19 @@ func ValidateCommittedState(predicted, actual State) ValidationResult {
 		violations = []Violation{}
 	}
 	return ValidationResult{Valid: len(violations) == 0, Violations: violations, Truncated: truncated, OmittedViolations: omitted}
+}
+
+func normalizedDependencies(source map[string]string) map[string]string {
+	result := make(map[string]string, len(source))
+	for class, expression := range source {
+		if trimmed := strings.TrimSpace(expression); trimmed != "" {
+			result[class] = trimmed
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func committedStateIndex(state State) (map[string]Package, error) {

@@ -22,7 +22,10 @@ type Fixture struct {
 	Installed []Package            `json:"installed"`
 	Available []Package            `json:"available"`
 	Domains   map[string][]Package `json:"domains,omitempty"`
-	Policy    Policy               `json:"policy,omitempty"`
+	// DomainsAliasToRoot compactly proves that SYSROOT and BROOT use the same
+	// frozen final package state as ROOT.
+	DomainsAliasToRoot bool   `json:"domains_alias_to_root,omitempty"`
+	Policy             Policy `json:"policy,omitempty"`
 }
 
 const (

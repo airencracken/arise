@@ -15,6 +15,9 @@ in `../../PUNCHLIST.md` and maintained documentation.
 
 ## Resolver and live-state evidence
 
+- [`INDEPENDENT_PLAN_EXECUTION_2026-07-29.md`](INDEPENDENT_PLAN_EXECUTION_2026-07-29.md)
+  records the portable stale built-slot repair reduction and the complete
+  resolver-to-execution validation chain.
 - `P3_BROKEN_WORLD_BASELINE_2026-07-18.json`
 - `P3_EXPLICIT_CORPUS_EXPANSION_2026-07-19.json`
 - `P3_LIVE_SYSTEM_COMPARATOR_2026-07-18.json`

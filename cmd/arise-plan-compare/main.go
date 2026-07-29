@@ -16,19 +16,21 @@ import (
 )
 
 type report struct {
-	AriseCount                 int                           `json:"arise_count"`
-	EmergeCount                int                           `json:"emerge_count"`
-	AriseVerified              bool                          `json:"arise_verified"`
-	PortageResolved            bool                          `json:"portage_resolved"`
-	ComparisonClass            string                        `json:"comparison_class"`
-	Accepted                   bool                          `json:"accepted"`
-	Equivalent                 bool                          `json:"equivalent"`
-	Differences                []plancompare.Difference      `json:"differences,omitempty"`
-	ActionDiagnosticsTruncated bool                          `json:"action_diagnostics_truncated"`
-	OmittedActionDiagnostics   int                           `json:"omitted_action_diagnostics"`
-	StateDifferences           []plancompare.StateDifference `json:"state_differences,omitempty"`
-	StateComparisonTruncated   bool                          `json:"state_comparison_truncated"`
-	OmittedStateDifferences    int                           `json:"omitted_state_differences"`
+	AriseCount                  int                           `json:"arise_count"`
+	EmergeCount                 int                           `json:"emerge_count"`
+	AriseVerified               bool                          `json:"arise_verified"`
+	PortageResolved             bool                          `json:"portage_resolved"`
+	ComparisonClass             string                        `json:"comparison_class"`
+	Accepted                    bool                          `json:"accepted"`
+	Equivalent                  bool                          `json:"equivalent"`
+	Differences                 []plancompare.Difference      `json:"differences,omitempty"`
+	ActionDiagnosticsTruncated  bool                          `json:"action_diagnostics_truncated"`
+	OmittedActionDiagnostics    int                           `json:"omitted_action_diagnostics"`
+	StateDifferences            []plancompare.StateDifference `json:"state_differences,omitempty"`
+	StateComparisonTruncated    bool                          `json:"state_comparison_truncated"`
+	OmittedStateDifferences     int                           `json:"omitted_state_differences"`
+	AriseValidationViolations   []string                      `json:"arise_validation_violations,omitempty"`
+	PortageValidationViolations []string                      `json:"portage_validation_violations,omitempty"`
 }
 
 type commandResult struct {
@@ -126,12 +128,16 @@ func main() {
 	var portageValidationPlan planvalidate.Plan
 	var portageValidationFixture planvalidate.Fixture
 	var classified plancompare.ClassifiedComparison
+	var ariseAssessment, portageAssessment plancompare.StateAssessment
 	if *ariseStatePath == "" && *portageStatePath == "" && captured {
-		ariseAssessment := plancompare.AssessmentFromValidation(
+		ariseAssessment = plancompare.AssessmentFromValidation(
 			planvalidate.ValidatePlanImpact(fixture, ariseValidationPlan),
 			planvalidate.ApplyPlan(fixture.Installed, ariseValidationPlan).State,
 		)
-		portageAssessment, externalFixture, externalPlan, externalErr := plancompare.AssessmentFromExternalActions(fixture, emergePlan)
+		var externalFixture planvalidate.Fixture
+		var externalPlan planvalidate.Plan
+		var externalErr error
+		portageAssessment, externalFixture, externalPlan, externalErr = plancompare.AssessmentFromExternalActions(fixture, emergePlan)
 		if externalErr != nil {
 			fatal(externalErr)
 		}
@@ -156,10 +162,12 @@ func main() {
 		ComparisonClass: classified.Class, Equivalent: classified.Equivalent,
 		Accepted:    classificationAccepted(classified.Class),
 		Differences: classified.ActionDiagnostics, StateDifferences: classified.Differences,
-		ActionDiagnosticsTruncated: classified.ActionDiagnosticsTruncated,
-		OmittedActionDiagnostics:   classified.OmittedActionDiagnostics,
-		StateComparisonTruncated:   classified.Truncated,
-		OmittedStateDifferences:    classified.OmittedDifferences,
+		ActionDiagnosticsTruncated:  classified.ActionDiagnosticsTruncated,
+		OmittedActionDiagnostics:    classified.OmittedActionDiagnostics,
+		StateComparisonTruncated:    classified.Truncated,
+		OmittedStateDifferences:     classified.OmittedDifferences,
+		AriseValidationViolations:   ariseAssessment.Violations,
+		PortageValidationViolations: portageAssessment.Violations,
 	}
 	if *jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)

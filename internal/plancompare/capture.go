@@ -3,6 +3,7 @@ package plancompare
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -54,10 +55,8 @@ func AssessmentFromExternalActions(fixture planvalidate.Fixture, actions []Actio
 			}
 		}
 	}
-	externalFixture.Domains = map[string][]planvalidate.Package{
-		planvalidate.DomainSysroot: final.Packages,
-		planvalidate.DomainBroot:   final.Packages,
-	}
+	externalFixture.Domains = nil
+	externalFixture.DomainsAliasToRoot = true
 	validation := planvalidate.ValidatePlanImpact(externalFixture, plan)
 	return AssessmentFromValidation(validation, final), externalFixture, plan, nil
 }
@@ -117,7 +116,14 @@ func matchAvailablePackage(available []planvalidate.Package, action Action) (pla
 }
 
 func CaptureDocument(fixture planvalidate.Fixture, plan planvalidate.Plan) StateDocument {
-	return StateDocument{Schema: StateSchemaVersion, Fixture: reduceAvailable(fixture, plan), Plan: plan}
+	fixture = reduceAvailable(fixture, plan)
+	final := planvalidate.ApplyPlan(fixture.Installed, plan).State.Packages
+	if reflect.DeepEqual(fixture.Domains[planvalidate.DomainSysroot], final) &&
+		reflect.DeepEqual(fixture.Domains[planvalidate.DomainBroot], final) {
+		fixture.Domains = nil
+		fixture.DomainsAliasToRoot = true
+	}
+	return StateDocument{Schema: StateSchemaVersion, Fixture: fixture, Plan: plan}
 }
 
 func reduceAvailable(fixture planvalidate.Fixture, plan planvalidate.Plan) planvalidate.Fixture {

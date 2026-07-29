@@ -81,3 +81,28 @@ func TestStateUseComparisonIgnoresDifferentImplicitDomains(t *testing.T) {
 		t.Fatalf("comparable USE mismatches = %v", got)
 	}
 }
+
+func TestClassifiedAssessmentComparesPredictedCommittedBindings(t *testing.T) {
+	provider := planvalidate.Package{
+		CPV: "dev-libs/provider-2", Slot: "0", Subslot: "2", Repository: "test",
+	}
+	repaired := planvalidate.Package{
+		CPV: "app-misc/consumer-1", Slot: "0", Repository: "test",
+		Dependencies: map[string]string{"RDEPEND": "dev-libs/provider:="},
+	}
+	stale := repaired
+	stale.Dependencies = map[string]string{"RDEPEND": "dev-libs/provider:0/1="}
+	validation := planvalidate.ValidationResult{Valid: true}
+	left := AssessmentFromValidation(validation, planvalidate.State{Packages: []planvalidate.Package{provider, repaired}})
+	right := AssessmentFromValidation(validation, planvalidate.State{Packages: []planvalidate.Package{provider, stale}})
+	result, err := ClassifyFinalStates(left, right, ClassificationPolicy{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Class != ClassValidDivergence || len(result.Differences) != 1 ||
+		result.Differences[0].Kind != "dependency" ||
+		len(result.Differences[0].DependencyMismatch) != 1 ||
+		result.Differences[0].DependencyMismatch[0] != "RDEPEND" {
+		t.Fatalf("committed binding classification = %#v", result)
+	}
+}
