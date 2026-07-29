@@ -791,6 +791,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		// MAKEOPTS. Serializing every compiler invocation made large canaries look
 		// stalled and diverged from the approved Portage configuration.
 		executionProgress := startTerminalProgressMode("Executing package transaction...", !cfg.Quiet && !jsonMode, cfg.Jobs <= 1)
+		executionProgress.setConcurrent(cfg.Jobs > 1)
 		rebuildCfg := buildRebuildConfig(repoDir, cfg.Jobs, nil, nil)
 		rebuildCfg.Fetcher = &fetch.Fetcher{}
 		fetchProgress := newFetchProgress(!cfg.Quiet, os.Stdout)

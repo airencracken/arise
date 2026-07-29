@@ -25,6 +25,7 @@ type terminalProgress struct {
 	status         string
 	transient      string
 	progressBucket int
+	concurrent     bool
 }
 
 var progressFrames = [...]string{"|", "/", "-", "\\"}
@@ -116,6 +117,15 @@ func (p *terminalProgress) setStatus(status string) {
 	p.mu.Unlock()
 }
 
+func (p *terminalProgress) setConcurrent(concurrent bool) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.concurrent = concurrent
+	p.mu.Unlock()
+}
+
 // setProgress updates one transient measurement in place on a terminal. For
 // redirected output it emits only ten-percent milestones and completion, so a
 // large merge does not turn one measurement into thousands of log records.
@@ -125,6 +135,23 @@ func (p *terminalProgress) setProgress(message string, current, total int) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.concurrent {
+		// Parallel packages cannot safely share one cursor-owned transient line
+		// or percentage bucket. Emit only each package's durable completion
+		// record; stage messages retain ownership of the live status line.
+		if current != total {
+			return
+		}
+		if p.terminal && p.displayed {
+			fmt.Fprint(p.writer, "\r\033[K")
+			p.displayed = false
+		}
+		fmt.Fprintln(p.writer, message)
+		if p.terminal && p.status != "" {
+			p.renderLocked(0)
+		}
+		return
+	}
 	p.transient = message
 	bucket := current * 10 / total
 	if bucket <= p.progressBucket {

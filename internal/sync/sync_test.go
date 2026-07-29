@@ -332,6 +332,93 @@ func TestCloneGitRepo_Success(t *testing.T) {
 	}
 }
 
+func TestCloneGitRepoPublishesTraversableRoot(t *testing.T) {
+	remote := initSyncRemote(t)
+	parent := filepath.Join(t.TempDir(), "repos")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "fixture")
+	if err := cloneGitRepo(context.Background(), SyncConfig{
+		RepoURL: remote, TargetDir: target, Depth: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o055 != 0o055 {
+		t.Fatalf("published repository mode = %04o, want group/other read and traverse", info.Mode().Perm())
+	}
+}
+
+func TestSyncRepairsCloneStagingModeOnExistingRepository(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "repos")
+	target := filepath.Join(parent, "fixture")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := repairExistingRepositoryAccess(target); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o055 != 0o055 {
+		t.Fatalf("repaired repository mode = %04o", info.Mode().Perm())
+	}
+}
+
+func TestSyncRepositoryIdentityFailsClosed(t *testing.T) {
+	target := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(target, "profiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "profiles", "repo_name"), []byte("actual\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := validateRepositoryIdentity(SyncConfig{TargetDir: target, RepositoryName: "expected"})
+	if err == nil || !strings.Contains(err.Error(), `identity is "actual", expected "expected"`) {
+		t.Fatalf("identity mismatch error = %v", err)
+	}
+	if err := validateRepositoryIdentity(SyncConfig{TargetDir: target, RepositoryName: "actual"}); err != nil {
+		t.Fatalf("matching identity rejected: %v", err)
+	}
+	if err := os.Remove(filepath.Join(target, "profiles", "repo_name")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRepositoryIdentity(SyncConfig{TargetDir: target, RepositoryName: "actual"}); err == nil {
+		t.Fatal("missing repository identity accepted")
+	}
+}
+
+func TestCloneRepositoryIdentityMismatchDoesNotPublish(t *testing.T) {
+	remote := initSyncRemote(t)
+	writeSyncFile(t, remote, "profiles/repo_name", "actual\n")
+	commitSyncRemote(t, remote, "add repository identity")
+	parent := t.TempDir()
+	target := filepath.Join(parent, "expected")
+
+	err := cloneGitRepo(context.Background(), SyncConfig{
+		RepoURL:        remote,
+		TargetDir:      target,
+		RepositoryName: "expected",
+		Depth:          1,
+	})
+	if err == nil || !strings.Contains(err.Error(), `identity is "actual", expected "expected"`) {
+		t.Fatalf("identity mismatch error = %v", err)
+	}
+	if _, statErr := os.Lstat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("identity mismatch published target: %v", statErr)
+	}
+	assertNoCloneStagingDirectories(t, parent, filepath.Base(target))
+}
+
 func TestCloneGitRepo_ContextCancelled(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := filepath.Join(t.TempDir(), "clone-target")

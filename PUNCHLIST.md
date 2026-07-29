@@ -264,6 +264,11 @@ tests, while incomplete maintenance mutations continue to fail explicitly.
 - [x] Add secondary indexes for CP, slot, repository and visibility inputs.
 - [x] Make concurrent ingestion deterministic regardless of goroutine ordering.
 - [x] Support incremental sync/index transactions and stale-record removal.
+- [x] Publish atomically cloned repositories with the parent repository
+  directory's read/traverse visibility, repair repositories created by older
+  arise versions before updating them, and require `profiles/repo_name` to
+  match the configured repository name before reporting sync success. Identity
+  mismatches never publish clone staging directories.
 - [x] Detect md5-cache changes using digest/mtime without trusting them as package state.
 - [x] Index repositories without a pre-generated metadata/md5-cache, marking
   statically discovered records incomplete and unsafe for resolution.
@@ -1105,6 +1110,10 @@ from the core execution ABI; they do not block P4 closure.
   through package policy and isolation, and phases distinguish Portage's
   `EBUILD_PHASE=compile` from `EBUILD_PHASE_FUNC=src_compile`. The normalized
   VDB environment snapshot retains the complete controlled path contract.
+  The userpriv launcher preserves this curated environment across `runuser`;
+  without that flag util-linux replaced the package-local HOME with
+  `/var/lib/portage/home`, causing ordinary builds that initialize `.local` or
+  `.cache` to fail for lack of permission.
   Remaining PMS variables outside the declared initial contract remain.
 - [~] Implement a minimum complete helper ABI for current supported EAPIs.
   Explicit-status eapply/eapply_user, emake, econf, dodoc and einstalldocs now
@@ -1570,6 +1579,9 @@ Acceptance gate:
   output remains isolated in durable per-package logs. Large image-install
   progress now rewrites one transient TTY line; redirected output records only
   ten-percent milestones and completion rather than one line per callback.
+  Parallel package merges no longer share that transient cursor or percentage
+  bucket: each package emits one durable merge-completion line before its next
+  stage message, preventing concurrent stage and progress text from colliding.
 - [ ] Make the package transaction the primary fetch display hierarchy, as
   emerge does: identify the owning package for each fetch, keep per-file
   percentages transient on a TTY, route concurrent detail to a durable fetch

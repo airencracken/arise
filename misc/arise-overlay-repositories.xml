@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE repositories SYSTEM "https://www.gentoo.org/dtd/repositories.dtd">
+<repositories xmlns="" version="1.0">
+  <repo quality="experimental" status="unofficial">
+    <name>arise-overlay</name>
+    <description lang="en">Gentoo packaging for the Arise high-performance, recovery-oriented package manager</description>
+    <homepage>https://github.com/airencracken/arise-overlay</homepage>
+    <owner type="person">
+      <email>marcus.hildum@gmail.com</email>
+      <name>Marcus Hildum</name>
+    </owner>
+    <source type="git">https://github.com/airencracken/arise-overlay.git</source>
+    <source type="git">git+ssh://git@github.com/airencracken/arise-overlay.git</source>
+    <feed>https://github.com/airencracken/arise-overlay/commits/master.atom</feed>
+  </repo>
+</repositories>

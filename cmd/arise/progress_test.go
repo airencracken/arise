@@ -116,6 +116,32 @@ func TestNonTerminalPackageProgressUsesMilestones(t *testing.T) {
 	}
 }
 
+func TestConcurrentTerminalPackageProgressUsesDurableCompletionLines(t *testing.T) {
+	var output bytes.Buffer
+	progress := &terminalProgress{
+		output: true, terminal: true, writer: &output, progressBucket: -1,
+		status: ">>> Jobs: 0 of 2 complete", displayed: true,
+	}
+	progress.setConcurrent(true)
+	progress.setProgress("first partial", 4, 10)
+	progress.setProgress("first complete", 10, 10)
+	progress.message(">>> Syncing package contents (1 of 2) cat/first-1")
+
+	got := output.String()
+	if strings.Contains(got, "first partial") {
+		t.Fatalf("concurrent partial progress was rendered: %q", got)
+	}
+	if strings.Count(got, "first complete\n") != 1 {
+		t.Fatalf("concurrent completion was not one durable line: %q", got)
+	}
+	if !strings.Contains(got, "\r\033[Kfirst complete\n") {
+		t.Fatalf("completion did not clear the shared terminal line first: %q", got)
+	}
+	if !strings.Contains(got, "\r\033[K>>> Syncing package contents (1 of 2) cat/first-1\n") {
+		t.Fatalf("next stage did not start on a clean durable line: %q", got)
+	}
+}
+
 func TestNonAnimatedTerminalProgressHasNoBackgroundRedraw(t *testing.T) {
 	var output bytes.Buffer
 	progress := startTerminalProgressWriter("package transaction", true, false, true, &output)

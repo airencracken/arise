@@ -274,11 +274,23 @@ filesystem ownership and the depclean closure with the validator's prediction.
 
 ## Delivery stages
 
+Implementation began with a deliberately narrow Stage 1/2 vertical slice.
+`internal/planvalidate` now defines strict version-1 fixture and plan decoders,
+pure action application, deterministic structured violations, frozen available
+metadata checks, request-target checks, and independent validation of CPV,
+repository, slot, version, blocker, `RDEPEND` and `PDEPEND` semantics.
+Unsupported dependency classes, USE dependencies, slot operators and expression
+forms fail closed. Exact violations are deterministically deduplicated and
+bounded to 256 records with a structured omitted count. The uncached-overlay
+and constrained-Docutils regression is captured with evaluated-versus-md5-cache
+metadata authority. Unit, integration, property, schema, API-contract,
+atomicity, adversarial-input and source-mutation tests cover this boundary.
+
 ### Stage 1: contracts and regression capture
 
 - [ ] Define versioned fixture, validation and decision-ledger schemas.
-- [ ] Capture and minimize the uncached-overlay/docutils regression.
-- [ ] Add metadata-authority and bounded-diagnostic contract tests.
+- [x] Capture and minimize the uncached-overlay/docutils regression.
+- [x] Add metadata-authority and bounded-diagnostic contract tests.
 - [ ] Document which parser components may be shared with the resolver.
 
 Exit gate: the regression fixture is hermetic and fails when evaluated metadata
@@ -286,11 +298,11 @@ is ignored, skipped-update explanation is removed, or cycle paths leak.
 
 ### Stage 2: pure plan application and core validation
 
-- [ ] Implement pure plan application.
-- [ ] Validate identity, slots, version atoms, repository qualifiers, blockers
+- [x] Implement pure plan application.
+- [~] Validate identity, slots, version atoms, repository qualifiers, blockers
   and runtime dependencies.
-- [ ] Add property tests for missing, duplicate and contradictory actions.
-- [ ] Add deterministic structured violations.
+- [x] Add property tests for missing, duplicate and contradictory actions.
+- [x] Add deterministic structured violations.
 
 Exit gate: deliberately missing and contradictory action mutations are rejected.
 

@@ -58,10 +58,11 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 		}
 		report := syncTargetReport{}
 		cfg := sync.SyncConfig{
-			RepoURL:   target.URL,
-			TargetDir: target.Location,
-			SyncType:  target.SyncType,
-			Output:    output,
+			RepoURL:        target.URL,
+			TargetDir:      target.Location,
+			RepositoryName: target.Name,
+			SyncType:       target.SyncType,
+			Output:         output,
 			Progress: func(stage, detail string) {
 				report.Stage = stage
 				if *verbose {

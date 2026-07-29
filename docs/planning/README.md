@@ -23,6 +23,9 @@ to `../archive/planning/` with a dated archival note.
   classified Portage differentials without action-for-action parity.
 - [`LIFECYCLE_TRANSACTION_PLAN.md`](LIFECYCLE_TRANSACTION_PLAN.md) — optional
   pre-commit lifecycle mutation capture.
+- [`OVERLAY_LISTING_READINESS.md`](OVERLAY_LISTING_READINESS.md) — audited
+  prerequisites and a prewritten record for eventual Gentoo repository-list
+  submission.
 - [`PACKAGE_OUTPUT_UX_PLAN.md`](PACKAGE_OUTPUT_UX_PLAN.md) — Portage-compatible
   plan records and Arise runtime progress.
 - [`PERFORMANCE_IMPROVEMENT_PLAN.md`](PERFORMANCE_IMPROVEMENT_PLAN.md) —

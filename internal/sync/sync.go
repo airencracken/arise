@@ -37,6 +37,10 @@ type SyncConfig struct {
 	// TargetDir is the local directory to sync into.
 	TargetDir string
 
+	// RepositoryName, when set, must match profiles/repo_name before sync can
+	// report success.
+	RepositoryName string
+
 	// Depth controls shallow clone depth. If <= 0, defaults to 1.
 	Depth int
 
@@ -134,23 +138,35 @@ func Sync(ctx context.Context, cfg SyncConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := repairExistingRepositoryAccess(cfg.TargetDir); err != nil {
+		return err
+	}
 	switch strings.ToLower(strings.TrimSpace(cfg.SyncType)) {
 	case "rsync":
-		return syncRsync(ctx, cfg)
+		if err := syncRsync(ctx, cfg); err != nil {
+			return err
+		}
+		return validateRepositoryIdentity(cfg)
 	case "", "git":
 	default:
 		return fmt.Errorf("sync: unsupported sync type %q", cfg.SyncType)
 	}
 
 	if isGitRepo(cfg.TargetDir) {
+		if err := validateRepositoryIdentity(cfg); err != nil {
+			return err
+		}
 		primaryErr := updateGitRepo(ctx, cfg)
 		if primaryErr == nil || errors.Is(primaryErr, errDirtyWorktree) ||
 			errors.Is(primaryErr, errDetachedHead) || !GitAvailable() {
-			return primaryErr
+			if primaryErr != nil {
+				return primaryErr
+			}
+			return validateRepositoryIdentity(cfg)
 		}
 		fallbackErr := updateGitRepoCommand(ctx, cfg)
 		if fallbackErr == nil {
-			return nil
+			return validateRepositoryIdentity(cfg)
 		}
 		return errors.Join(
 			fmt.Errorf("sync: built-in Git failed: %w", primaryErr),
@@ -160,7 +176,7 @@ func Sync(ctx context.Context, cfg SyncConfig) error {
 
 	primaryErr := cloneGitRepo(ctx, cfg)
 	if primaryErr == nil {
-		return nil
+		return validateRepositoryIdentity(cfg)
 	}
 	if errors.Is(primaryErr, errCloneTarget) {
 		return primaryErr
@@ -170,7 +186,7 @@ func Sync(ctx context.Context, cfg SyncConfig) error {
 	}
 	if GitAvailable() {
 		if fallbackErr := cloneGitRepoCommand(ctx, cfg); fallbackErr == nil {
-			return nil
+			return validateRepositoryIdentity(cfg)
 		} else {
 			return errors.Join(
 				fmt.Errorf("sync: built-in Git failed: %w", primaryErr),
@@ -179,6 +195,52 @@ func Sync(ctx context.Context, cfg SyncConfig) error {
 		}
 	}
 	return primaryErr
+}
+
+func repairExistingRepositoryAccess(target string) error {
+	info, err := os.Stat(target)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("sync: inspect repository access: %w", err)
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	parent, err := os.Stat(filepath.Dir(target))
+	if err != nil {
+		return fmt.Errorf("sync: inspect repository parent access: %w", err)
+	}
+	return addParentVisibility(target, info, parent)
+}
+
+func addParentVisibility(path string, info, parent os.FileInfo) error {
+	visibility := parent.Mode().Perm() & 0o055
+	mode := info.Mode().Perm() | visibility
+	if mode == info.Mode().Perm() {
+		return nil
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return fmt.Errorf("sync: make repository root traversable: %w", err)
+	}
+	return nil
+}
+
+func validateRepositoryIdentity(cfg SyncConfig) error {
+	if strings.TrimSpace(cfg.RepositoryName) == "" {
+		return nil
+	}
+	path := filepath.Join(cfg.TargetDir, "profiles", "repo_name")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("sync: validate repository identity %s: %w", path, err)
+	}
+	name := strings.TrimSpace(string(data))
+	if name != cfg.RepositoryName {
+		return fmt.Errorf("sync: repository identity is %q, expected %q", name, cfg.RepositoryName)
+	}
+	return nil
 }
 
 func runGit(ctx context.Context, output io.Writer, args ...string) error {
@@ -584,6 +646,18 @@ func cloneGitRepoAtomically(ctx context.Context, cfg SyncConfig, clone func(stri
 	}
 	if !isGitRepo(staging) {
 		return errors.New("sync: clone transport completed without producing a Git repository")
+	}
+	stagingInfo, err := os.Stat(staging)
+	if err != nil {
+		return fmt.Errorf("sync: inspect clone staging access: %w", err)
+	}
+	if err := addParentVisibility(staging, stagingInfo, parentInfo); err != nil {
+		return err
+	}
+	stagedCfg := cfg
+	stagedCfg.TargetDir = staging
+	if err := validateRepositoryIdentity(stagedCfg); err != nil {
+		return err
 	}
 	if err := os.Rename(staging, cfg.TargetDir); err != nil {
 		return fmt.Errorf("sync: publish cloned repository: %w", err)

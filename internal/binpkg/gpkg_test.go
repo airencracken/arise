@@ -274,6 +274,7 @@ func TestAriseGPKGIsReadableByInstalledPortage(t *testing.T) {
 	}
 	script := "import portage,sys\nfrom portage.gpkg import gpkg\np=gpkg(portage.settings,basename='fixture-1',gpkg_file=sys.argv[1],verify_signature=False)\nsys.stdout.buffer.write(p.get_metadata('CATEGORY'))\n"
 	command := exec.Command(python, "-c", script, path)
+	command.Env = append(os.Environ(), "PORTAGE_CONFIGROOT="+isolatedPortageConfigRoot(t))
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Portage rejected Arise GPKG: %v\n%s", err, output)
@@ -299,6 +300,7 @@ func TestPortageGPKGIsReadableByArise(t *testing.T) {
 	path := filepath.Join(base, "fixture-1.gpkg.tar")
 	script := "import portage,sys\nfrom portage.gpkg import gpkg\ns=portage.config(clone=portage.settings)\ns['BINPKG_COMPRESS']='zstd'\np=gpkg(s,basename='fixture-1',gpkg_file=sys.argv[1],verify_signature=False)\np.compress(sys.argv[2],{'CATEGORY':b'app-test\\n','PF':b'fixture-1\\n','SLOT':b'0\\n','EAPI':b'8\\n'})\n"
 	command := exec.Command(python, "-c", script, path, image)
+	command.Env = append(os.Environ(), "PORTAGE_CONFIGROOT="+isolatedPortageConfigRoot(t))
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("Portage fixture creation failed: %v\n%s", err, output)
 	}
@@ -317,4 +319,13 @@ func TestPortageGPKGIsReadableByArise(t *testing.T) {
 	if err != nil || string(data) != "portage" {
 		t.Fatalf("Portage payload = %q, %v", data, err)
 	}
+}
+
+func isolatedPortageConfigRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "etc", "portage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }

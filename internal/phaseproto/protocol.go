@@ -359,7 +359,12 @@ func namedExecutable(name, executable string, arguments []string) (string, []str
 // credentialCommand deliberately remains inside namespaceCommand. Namespace
 // creation requires root, while only the ebuild phase itself runs as portage.
 func credentialCommand(runuser, user, executable string, arguments []string) (string, []string) {
-	wrapped := []string{"-u", user, "--", executable}
+	// The worker receives a deliberately curated environment, including a
+	// package-local HOME beneath its prepared work directory. Without
+	// --preserve-environment, runuser replaces HOME with the passwd entry for
+	// the portage account (normally /var/lib/portage/home), which is not
+	// package-owned or necessarily writable.
+	wrapped := []string{"--preserve-environment", "-u", user, "--", executable}
 	wrapped = append(wrapped, arguments...)
 	return runuser, wrapped
 }

@@ -261,7 +261,7 @@ func TestEvaluateExecutionPolicySeparatesUserprivAndUsersandbox(t *testing.T) {
 func TestCredentialCommandRunsInsideNamespaceLauncher(t *testing.T) {
 	executable, arguments := credentialCommand("/sbin/runuser", "portage", "/usr/bin/sandbox", []string{"/bin/bash", "-c", "true"})
 	executable, arguments = namespaceCommand("/usr/bin/unshare", []string{"--net"}, executable, arguments)
-	want := []string{"--net", "--", "/sbin/runuser", "-u", "portage", "--", "/usr/bin/sandbox", "/bin/bash", "-c", "true"}
+	want := []string{"--net", "--", "/sbin/runuser", "--preserve-environment", "-u", "portage", "--", "/usr/bin/sandbox", "/bin/bash", "-c", "true"}
 	if executable != "/usr/bin/unshare" || !reflect.DeepEqual(arguments, want) {
 		t.Fatalf("launcher = %s %q, want /usr/bin/unshare %q", executable, arguments, want)
 	}

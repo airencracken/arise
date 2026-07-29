@@ -2091,7 +2091,8 @@ func TestPortageWorkerStartsOutsideInaccessibleCallerDirectory(t *testing.T) {
 		request := Request{
 			Protocol: Version, ID: "inaccessible-cwd", Command: "run_phase",
 			Phase: "src_unpack", EAPI: "8", Ebuild: ebuild, WorkDir: work,
-			Policy: ExecutionPolicy{Configured: true, Sandbox: true, DropPrivileges: true},
+			HomeDir: filepath.Join(work, "home"),
+			Policy:  ExecutionPolicy{Configured: true, Sandbox: true, DropPrivileges: true},
 		}
 		events, err := RunBashWorkerWithOptions(context.Background(), request, WorkerOptions{Isolation: IsolationPortage})
 		if err != nil {
@@ -2122,7 +2123,11 @@ func TestPortageWorkerStartsOutsideInaccessibleCallerDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	ebuild := filepath.Join(work, "pkg-1.ebuild")
-	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_unpack() { :; }\n"), 0o644); err != nil {
+	contents := "EAPI=8\nsrc_unpack() {\n" +
+		"  [[ ${HOME} == \"${WORKDIR}/home\" ]] || die \"unexpected HOME: ${HOME}\"\n" +
+		"  mkdir -p \"${HOME}/.local\" \"${HOME}/.cache\" || die \"HOME is not writable\"\n" +
+		"}\n"
+	if err := os.WriteFile(ebuild, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

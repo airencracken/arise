@@ -972,6 +972,7 @@ func TestVdbPathToAtoms(t *testing.T) {
 }
 
 func TestBuildRebuildConfig_Defaults(t *testing.T) {
+	useTestPortageConfigRoot(t, "")
 	t.Setenv("MAKEOPTS", "-j9")
 	var calls []string
 	phaseStart := func(phase string) { calls = append(calls, "start:"+phase) }
@@ -1048,16 +1049,11 @@ func TestBuildRebuildConfigLoadsOverlayMasterChain(t *testing.T) {
 }
 
 func TestBuildRebuildConfig_EnvOverrides(t *testing.T) {
-	os.Setenv("CFLAGS", "-O2 -pipe")
-	os.Setenv("CXXFLAGS", "-O2 -pipe")
-	os.Setenv("LDFLAGS", "-Wl,-O1")
-	os.Setenv("ARCH", "amd64")
-	defer func() {
-		os.Unsetenv("CFLAGS")
-		os.Unsetenv("CXXFLAGS")
-		os.Unsetenv("LDFLAGS")
-		os.Unsetenv("ARCH")
-	}()
+	useTestPortageConfigRoot(t, "")
+	t.Setenv("CFLAGS", "-O2 -pipe")
+	t.Setenv("CXXFLAGS", "-O2 -pipe")
+	t.Setenv("LDFLAGS", "-Wl,-O1")
+	t.Setenv("ARCH", "amd64")
 
 	cfg := buildRebuildConfig("/tmp/repo", 1, nil, nil)
 
@@ -1073,6 +1069,19 @@ func TestBuildRebuildConfig_EnvOverrides(t *testing.T) {
 	if cfg.Arch != "amd64" {
 		t.Errorf("Arch = %q", cfg.Arch)
 	}
+}
+
+func useTestPortageConfigRoot(t *testing.T, makeConf string) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "make.conf"), []byte(makeConf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previous := *portageConfigRoot
+	*portageConfigRoot = root
+	t.Cleanup(func() {
+		*portageConfigRoot = previous
+	})
 }
 
 func TestCommandEnvironmentPathSelectors(t *testing.T) {
