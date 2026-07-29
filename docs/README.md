@@ -83,7 +83,7 @@ pure-Go reusable solver boundary, the Gentoo semantic frontend, first-class
 explanations, and the ideas to study from libsolv without adding cgo or a
 runtime dependency.
 
-[`planning/INDEPENDENT_PLAN_VALIDATION_PLAN.md`](planning/INDEPENDENT_PLAN_VALIDATION_PLAN.md)
+[`archive/planning/INDEPENDENT_PLAN_VALIDATION_PLAN.md`](archive/planning/INDEPENDENT_PLAN_VALIDATION_PLAN.md)
 defines an independent final-state validator, bounded candidate decision
 ledger, immutable regression corpus, and classified Arise-versus-Portage
 differentials that do not require action-for-action parity.

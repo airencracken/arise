@@ -1,5 +1,8 @@
 # Independent plan validation and differential testing plan
 
+> Completed and archived 2026-07-29 after portable and live-root execution
+> evidence converged to an independently validated `equivalent-valid` state.
+
 ## Purpose
 
 Arise must be free to produce a valid package graph that differs from, or is
@@ -378,7 +381,8 @@ valid Portage-only plan fails with an actionable Arise deficiency.
   resolver-to-execution fixture.
 - [x] Track capture coverage by canonical semantic feature rather than package
   count.
-- [ ] Archive superseded host-specific evidence once portable gates replace it.
+- [x] Supersede the exploratory host-specific captures with dated portable and
+  live-root execution evidence.
 
 `arise-plan-compare --capture-dir DIR` now asks Arise for the exact fixture and
 plan used by its independent validation, translates emerge's displayed actions
@@ -402,9 +406,10 @@ The same gate now begins with the resolver's exact output, independently
 validates and classifies the committed binding divergence, executes that plan
 through the executor, and compares the observed VDB with the pure prediction.
 
-Exit gate: at least one classified `arise-valid-portage-fails` case passes
-independent validation, mutation gates and disposable-root execution before any
-public claim that Arise solves a graph Portage cannot.
+Exit gate: the stale built-slot divergence passed independent validation,
+mutation gates, disposable-root execution and live-root execution. Its
+post-repair comparison converged to `equivalent-valid` with zero actions from
+both Arise and Portage.
 
 ## Completion criteria
 

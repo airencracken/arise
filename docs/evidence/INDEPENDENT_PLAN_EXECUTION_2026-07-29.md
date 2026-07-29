@@ -40,3 +40,37 @@ subslot, USE and dependency-binding mutations fail the gate.
 
 The fixture runs without root privileges when Portage's `sandbox` executable
 is available. The full repository test suite includes it by default.
+
+## Live-root completion
+
+After the portable gates passed, the same host state was previewed with:
+
+```console
+arise --pretend --verbose --complete-graph update dev-util/pkgcheck
+```
+
+The first preview exposed a final safety defect: four version-changing repairs
+were labeled as reinstalls. Commit `d129ed6` corrected stale-binding repairs to
+use the update replacement lifecycle whenever the selected CPV differs and to
+retain reinstall only for exact-version repairs. The corrected preview
+contained seven reinstalls, four updates, zero removals and zero conflicts.
+
+All eleven live package transactions then committed successfully. The
+post-repair differential reported:
+
+```json
+{
+  "arise_count": 0,
+  "emerge_count": 0,
+  "arise_verified": true,
+  "portage_resolved": true,
+  "comparison_class": "equivalent-valid",
+  "accepted": true,
+  "equivalent": true
+}
+```
+
+No action or final-state diagnostics were truncated or omitted. This completes
+the chain from live discovery through frozen classification, hermetic
+reduction, mutation testing, disposable-root execution, live-root repair and
+post-execution convergence.
