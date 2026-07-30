@@ -12,20 +12,21 @@ import (
 )
 
 type terminalProgress struct {
-	output         bool
-	enabled        bool // animation is reserved for work with measured progress events
-	terminal       bool
-	animate        bool
-	displayed      bool
-	done           chan struct{}
-	wait           sync.WaitGroup
-	mu             sync.Mutex
-	writer         io.Writer
-	label          string
-	status         string
-	transient      string
-	progressBucket int
-	concurrent     bool
+	output            bool
+	enabled           bool // animation is reserved for work with measured progress events
+	terminal          bool
+	animate           bool
+	displayed         bool
+	done              chan struct{}
+	wait              sync.WaitGroup
+	mu                sync.Mutex
+	writer            io.Writer
+	label             string
+	status            string
+	transient         string
+	progressBucket    int
+	concurrent        bool
+	completedProgress map[string]bool
 }
 
 var progressFrames = [...]string{"|", "/", "-", "\\"}
@@ -123,6 +124,12 @@ func (p *terminalProgress) setConcurrent(concurrent bool) {
 	}
 	p.mu.Lock()
 	p.concurrent = concurrent
+	if concurrent && p.completedProgress == nil {
+		p.completedProgress = make(map[string]bool)
+	}
+	if !concurrent {
+		p.completedProgress = nil
+	}
 	p.mu.Unlock()
 }
 
@@ -142,6 +149,13 @@ func (p *terminalProgress) setProgress(message string, current, total int) {
 		if current != total {
 			return
 		}
+		if p.completedProgress == nil {
+			p.completedProgress = make(map[string]bool)
+		}
+		if p.completedProgress[message] {
+			return
+		}
+		p.completedProgress[message] = true
 		if p.terminal && p.displayed {
 			fmt.Fprint(p.writer, "\r\033[K")
 			p.displayed = false

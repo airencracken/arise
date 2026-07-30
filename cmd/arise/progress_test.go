@@ -125,6 +125,9 @@ func TestConcurrentTerminalPackageProgressUsesDurableCompletionLines(t *testing.
 	progress.setConcurrent(true)
 	progress.setProgress("first partial", 4, 10)
 	progress.setProgress("first complete", 10, 10)
+	for range 20 {
+		progress.setProgress("first complete", 10, 10)
+	}
 	progress.message(">>> Syncing package contents (1 of 2) cat/first-1")
 
 	got := output.String()
@@ -139,6 +142,20 @@ func TestConcurrentTerminalPackageProgressUsesDurableCompletionLines(t *testing.
 	}
 	if !strings.Contains(got, "\r\033[K>>> Syncing package contents (1 of 2) cat/first-1\n") {
 		t.Fatalf("next stage did not start on a clean durable line: %q", got)
+	}
+}
+
+func TestConcurrentNonTerminalPackageProgressDeduplicatesCompletionCallbacks(t *testing.T) {
+	var output bytes.Buffer
+	progress := &terminalProgress{output: true, writer: &output, progressBucket: -1}
+	progress.setConcurrent(true)
+	message := ">>> Installing package contents: 33/33 entries (100%) (1 of 3) dev-python/tomli-2.4.1:0"
+	for range 100 {
+		progress.setProgress(message, 33, 33)
+	}
+	progress.message(">>> Syncing package contents (1 of 3) dev-python/tomli-2.4.1:0::gentoo")
+	if got := output.String(); got != message+"\n>>> Syncing package contents (1 of 3) dev-python/tomli-2.4.1:0::gentoo\n" {
+		t.Fatalf("deduplicated progress = %q", got)
 	}
 }
 
