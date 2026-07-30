@@ -138,6 +138,15 @@ arise dispatch-conf
 arise news display
 ```
 
+Create a local, reviewable diagnostic report without uploading anything:
+
+```sh
+arise bug-report --output arise-bug-report
+```
+
+See the [bug-report guide](docs/bug-report.md) for the collection and redaction
+boundary.
+
 Use `arise help`, `man arise`, or the
 [documentation index](docs/README.md) for the complete command surface.
 

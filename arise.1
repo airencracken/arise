@@ -473,6 +473,14 @@ Portage world lock, and publishes atomically while preserving file mode and
 ownership.
 
 .TP
+\fBbug-report\fR [\fB\-\-output\fR \fIdirectory\fR]
+Create private, reviewable Markdown and versioned JSON diagnostics without
+uploading anything. Optional \fB\-\-archive\fR creates a deterministic
+\fI.tar.zst\fR export; \fB\-\-package\fR and repeatable \fB\-\-log\fR select
+failure evidence. Collection is bounded, default-deny, and redacts local
+identity, credentials, tokens, proxy values, and private URL components.
+
+.TP
 \fBpreserved-rebuild\fR [\fIflags\fR]
 Scan for broken shared library links and rebuild affected packages.
 Equivalent to \fBemerge @preserved-rebuild\fR.

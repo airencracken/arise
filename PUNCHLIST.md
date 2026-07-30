@@ -2344,7 +2344,7 @@ Acceptance gate:
   differential tests cover moves, masks, redundant constraints, concurrent
   changes, interrupted repair, idempotence and alternate
   ROOT/PORTAGE_CONFIGROOT isolation.
-- [ ] Before public testing, implement a built-in, strictly read-only
+- [~] Before public testing, implement a built-in, strictly read-only
   `arise bug-report` command backed by an isolated `internal/bugreport`
   collector and a versioned report schema. Generate a reviewable `report.md`
   plus structured JSON and selected durable logs; support latest-failure and
@@ -2361,7 +2361,15 @@ Acceptance gate:
   reports, partial/corrupt-state collection tests and schema compatibility
   tests. Ship an optional minimal shell collector under `libexec` only for
   catastrophic binary-startup failures; ordinary collection remains in Arise
-  so its reader always matches the state formats it diagnoses.
+  so its reader always matches the state formats it diagnoses. The initial
+  foundation now provides a versioned default-deny schema, identity/secret/URL
+  redaction, bounded explicit and latest-interrupted package-log capture,
+  strict resume/journal readers, filesystem capacity, deterministic private
+  Markdown/JSON output and deterministic `.tar.zst` export. Hostile-input,
+  corrupt-state, schema, archive, route, mode and non-overwrite tests enforce
+  that boundary. Repository/config/ownership/scheduler adapters, richer
+  latest-failure selection, golden reports and the catastrophic-startup shell
+  collector remain.
 - [ ] Ecosystem side quest: package the gawkextlib `gawk-json` extension in a
   local overlay, with an upstream-quality ebuild suitable for submission to
   Gentoo. Cover its gawk/RapidJSON requirements and test JSONL import, nested

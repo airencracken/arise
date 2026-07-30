@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/bug-report-v1.schema.json",
+  "title": "Arise bug report version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "complete",
+    "build",
+    "invocation",
+    "resume_atoms",
+    "journals",
+    "filesystems",
+    "logs",
+    "warnings"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "complete": {"type": "boolean"},
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "go", "os", "arch"],
+      "properties": {
+        "version": {"type": "string"},
+        "go": {"type": "string"},
+        "os": {"type": "string"},
+        "arch": {"type": "string"}
+      }
+    },
+    "invocation": {"type": "array", "items": {"type": "string"}},
+    "package": {"type": "string"},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "resume_atoms": {"type": "array", "items": {"type": "string"}},
+    "journals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "path", "status", "root", "entries"],
+        "properties": {
+          "id": {"type": "string"},
+          "path": {"type": "string"},
+          "status": {"type": "string"},
+          "root": {"type": "string"},
+          "entries": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "filesystems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "free_bytes", "free_inodes"],
+        "properties": {
+          "path": {"type": "string"},
+          "free_bytes": {"type": "integer", "minimum": 0},
+          "free_inodes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "logs": {"type": "object", "additionalProperties": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

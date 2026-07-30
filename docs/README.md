@@ -28,6 +28,8 @@ Maintained reader guides extracted from the project overview:
   methodology, evidence, and claim boundaries.
 - [`development.md`](development.md) — build/test commands, architecture,
   environment variables, and configuration boundaries.
+- [`bug-report.md`](bug-report.md) — local diagnostic collection, redaction,
+  review, and export.
 - [`adr/`](adr/README.md) — accepted architecture decisions, their evidence,
   consequences, and explicit revisit conditions.
 

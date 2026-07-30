@@ -278,6 +278,10 @@ func main() {
 		if code := runMaintain(cmdArgs); code != 0 {
 			os.Exit(code)
 		}
+	case "bug-report":
+		if code := runBugReport(cmdArgs); code != 0 {
+			os.Exit(code)
+		}
 	case "dispatch-conf":
 		if code := runDispatchConf(cmdArgs); code != 0 {
 			os.Exit(code)
@@ -333,7 +337,7 @@ func main() {
 
 func writeUsage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprintln(w, "Usage: arise [options] <command> [args...]")
-	fmt.Fprintln(w, "Commands: sync, index, install, update, uninstall, select, recover, query, state, search, installed, info, audit, maintain, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench")
+	fmt.Fprintln(w, "Commands: sync, index, install, update, uninstall, select, recover, query, state, search, installed, info, audit, maintain, bug-report, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench")
 	fmt.Fprintln(w, "Options:")
 	var rendered bytes.Buffer
 	original := fs.Output()
@@ -478,7 +482,7 @@ func selectCommand(args []string) (string, []string) {
 	}
 	commands := map[string]bool{
 		"sync": true, "index": true, "query": true, "state": true,
-		"install": true, "update": true, "uninstall": true, "select": true, "recover": true, "audit": true, "maintain": true,
+		"install": true, "update": true, "uninstall": true, "select": true, "recover": true, "audit": true, "maintain": true, "bug-report": true,
 		"dispatch-conf": true, "quickpkg": true, "depclean": true, "prune": true,
 		"search": true, "installed": true, "info": true, "preserved-rebuild": true,
 		"revdep-rebuild": true, "env-update": true, "ldconfig": true, "config": true,
