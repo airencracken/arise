@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark test-vendor-artifact audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke check-release-version deps deps-cache release
+.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark test-vendor-artifact audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke check-release-version deps deps-cache
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -186,19 +186,6 @@ arise.info: arise.texi
 docs: man info
 	@echo "Documentation built."
 
-#
-# Release
-#
-# See misc/RELEASE.md for the full release runbook.
-#
-# Quick summary:
-#   1. Export VERSION, run make download, make test, make vet
-#   2. make release VERSION=x.y.z  (tags and pushes)
-#   3. cd ../arise-overlay && cp arise-9999.ebuild arise-x.y.z.ebuild
-#   4. make manifest VERSION=x.y.z && git add . && git commit -m "release vx.y.z" && git push
-#   5. On the Gentoo host: emerge --sync arise-overlay && emerge -av arise
-#
-
 PROJECT_VERSION := 0.0.9
 VERSION ?= $(PROJECT_VERSION)
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
@@ -207,24 +194,6 @@ check-release-version:
 		echo "VERSION=$(VERSION) does not match source release version $(PROJECT_VERSION)" >&2; \
 		exit 1; \
 	}
-
-release: check-release-version download static test test-vendor-artifact
-	@echo "Tagging arise v$(VERSION)..."
-	git tag -a "v$(VERSION)" -m "arise v$(VERSION)"
-	git push origin master --tags
-	@echo ""
-	@echo "Tag pushed. Now update the overlay:"
-	@echo ""
-	@echo "  cd ../arise-overlay"
-	@echo "  cp sys-apps/arise/arise-9999.ebuild sys-apps/arise/arise-$(VERSION).ebuild"
-	@echo "  make manifest VERSION=$(VERSION)"
-	@echo "  git add sys-apps/arise/Manifest sys-apps/arise/arise-$(VERSION).ebuild"
-	@echo "  git commit -m 'release arise v$(VERSION)'"
-	@echo "  git push origin master"
-	@echo ""
-	@echo "On the Gentoo host:"
-	@echo "  emerge --sync arise-overlay"
-	@echo "  emerge -av arise"
 
 #
 # Go module management. Release builds use a deterministic vendor archive so
