@@ -6965,6 +6965,42 @@ func SkipFirstResume(path string) error {
 	return nil
 }
 
+// RemoveCompletedResume atomically retires an executor checkpoint only when
+// every recorded action is complete. Staged recovery drivers use this at the
+// boundary between package execution and their own validation stages.
+func RemoveCompletedResume(path string) error {
+	err := withResumeLock(path, func() error {
+		state, err := readResumeState(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, pkg := range state.Packages {
+			if !pkg.Completed {
+				return fmt.Errorf("saved build progress still contains incomplete package %s", pkg.Atom)
+			}
+		}
+		if err := systemResumeIO.remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		directory, err := systemResumeIO.openDir(filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		if err := directory.Sync(); err != nil {
+			directory.Close()
+			return err
+		}
+		return directory.Close()
+	})
+	if err != nil {
+		return fmt.Errorf("resolve: could not retire completed build progress: %w", err)
+	}
+	return nil
+}
+
 func writeResumeState(path string, state ResumeState) error {
 	return writeResumeStateWithIO(path, state, systemResumeIO)
 }

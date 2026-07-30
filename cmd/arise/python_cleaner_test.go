@@ -219,6 +219,60 @@ func TestPythonCleanerFixPublishesPreferenceOnlyAfterRuntimeValidation(t *testin
 	}
 }
 
+func TestPythonCleanerResumeRetiresOnlyCompletedExecutorCheckpoint(t *testing.T) {
+	_, preference, companion := pythonCleanerFixFixture(t, "# keep\npython3.13\n", "#!/bin/sh\nexit 0\n")
+	report, _, err := loadPythonCleanerState(preference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := pythoncleaner.NewResumeState(report.Policy, pythoncleaner.ResumeStageValidate, nil, nil)
+	if err := pythoncleaner.SaveResume(companion, state); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := atom.Parse("dev-python/completed-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolve.SaveResume(*resumeFile, &resolve.ResolveResult{Install: []resolve.PkgAction{{Atom: parsed}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := resolve.MarkResumeComplete(*resumeFile, parsed.String()); err != nil {
+		t.Fatal(err)
+	}
+	if code := runPythonCleaner([]string{"--resume"}); code != 0 {
+		t.Fatalf("resume exit = %d", code)
+	}
+	if _, err := os.Stat(*resumeFile); !os.IsNotExist(err) {
+		t.Fatalf("completed executor checkpoint remains: %v", err)
+	}
+}
+
+func TestPythonCleanerResumePreservesIncompleteExecutorCheckpoint(t *testing.T) {
+	_, preference, companion := pythonCleanerFixFixture(t, "# keep\npython3.13\n", "#!/bin/sh\nexit 0\n")
+	report, _, err := loadPythonCleanerState(preference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pythoncleaner.SaveResume(companion,
+		pythoncleaner.NewResumeState(report.Policy, pythoncleaner.ResumeStageValidate, nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := atom.Parse("dev-python/incomplete-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resolve.SaveResume(*resumeFile, &resolve.ResolveResult{Install: []resolve.PkgAction{{Atom: parsed}}}); err != nil {
+		t.Fatal(err)
+	}
+	if code := runPythonCleaner([]string{"--resume"}); code != 1 {
+		t.Fatalf("resume exit = %d", code)
+	}
+	remaining, err := resolve.LoadResume(*resumeFile)
+	if err != nil || !reflect.DeepEqual(remaining, []string{parsed.String()}) {
+		t.Fatalf("incomplete executor checkpoint changed: %v, %v", remaining, err)
+	}
+}
+
 func TestPythonCleanerRuntimeFailurePreservesPreferenceAndCheckpoint(t *testing.T) {
 	root, preference, companion := pythonCleanerFixFixture(t, "python3.13\n", "#!/bin/sh\necho broken >&2\nexit 7\n")
 	if code := runPythonCleaner([]string{"--fix"}); code != 1 {

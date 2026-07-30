@@ -164,10 +164,13 @@ func runPythonCleanerFix(options pythonCleanerOptions, preferencePath string, re
 		state = saved
 		if _, err := os.Stat(*resumeFile); err == nil {
 			if saved.Stage != pythoncleaner.ResumeStageCohort {
-				fmt.Fprintln(os.Stderr, "python-cleaner: executor progress exists outside a package cohort")
-				return 1
+				if err := resolve.RemoveCompletedResume(*resumeFile); err != nil {
+					fmt.Fprintf(os.Stderr, "python-cleaner: executor progress exists outside a package cohort: %v\n", err)
+					return 1
+				}
+			} else {
+				useExecutorResume = true
 			}
-			useExecutorResume = true
 		} else if !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "python-cleaner: inspect executor resume state: %v\n", err)
 			return 1

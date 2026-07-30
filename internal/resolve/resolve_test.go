@@ -5491,6 +5491,41 @@ func TestResumeWriteFormatIsStableAndReviewable(t *testing.T) {
 	}
 }
 
+func TestRemoveCompletedResumeIsAtomicAndRejectsIncompleteState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resume")
+	complete := ResumeState{Packages: []ResumePackage{
+		{Atom: "app-misc/one-1", Completed: true},
+		{Atom: "app-misc/two-1", Completed: true},
+	}}
+	if err := writeResumeState(path, complete); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveCompletedResume(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("completed checkpoint still exists: %v", err)
+	}
+	if err := RemoveCompletedResume(path); err != nil {
+		t.Fatalf("idempotent retirement failed: %v", err)
+	}
+
+	incomplete := ResumeState{Packages: []ResumePackage{
+		{Atom: "app-misc/one-1", Completed: true},
+		{Atom: "app-misc/two-1", Completed: false},
+	}}
+	if err := writeResumeState(path, incomplete); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveCompletedResume(path); err == nil || !strings.Contains(err.Error(), "app-misc/two-1") {
+		t.Fatalf("incomplete checkpoint error = %v", err)
+	}
+	remaining, err := LoadResume(path)
+	if err != nil || !reflect.DeepEqual(remaining, []string{"app-misc/two-1"}) {
+		t.Fatalf("incomplete checkpoint changed: %v, %v", remaining, err)
+	}
+}
+
 func TestResume_Schema_SaveLoadMatch(t *testing.T) {
 	g := makeGraph()
 	vi := pkg(g, "app-misc/roundtrip", "1.0", "0", "0", false, nil)
