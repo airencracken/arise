@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/pythoncleaner"
+	"github.com/airencracken/arise/internal/resolve"
 )
 
 func TestParsePythonCleanerOptions(t *testing.T) {
@@ -156,6 +158,36 @@ func TestPythonCleanerUnavailableIsCopied(t *testing.T) {
 	got[0] = "mutated"
 	if plan.Stages[0].Targets[0] != "dev-python/Gone-1" {
 		t.Fatal("unavailable result aliases plan")
+	}
+}
+
+func TestPythonCleanerSelectUnavailableRemovalsIsExactAtomicAndBounded(t *testing.T) {
+	action := func(raw string) resolve.PkgAction {
+		parsed, err := atom.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resolve.PkgAction{Atom: parsed, Action: "uninstall", Reason: "orphaned dependency"}
+	}
+	depclean := []resolve.PkgAction{
+		action("dev-python/nspektr-0.4.0"),
+		action("sys-kernel/kergen-0.1.5-r1"),
+		action("app-misc/unrelated-1"),
+		{},
+	}
+	got, err := pythonCleanerSelectUnavailableRemovals([]string{
+		"sys-kernel/kergen-0.1.5-r1", "dev-python/nspektr-0.4.0",
+	}, depclean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"=dev-python/nspektr-0.4.0", "=sys-kernel/kergen-0.1.5-r1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("removals = %v, want %v", got, want)
+	}
+	if _, err := pythonCleanerSelectUnavailableRemovals([]string{
+		"dev-python/nspektr-0.4.0", "dev-python/not-orphaned-1",
+	}, depclean); err == nil {
+		t.Fatal("partial unavailable-removal cohort was accepted")
 	}
 }
 

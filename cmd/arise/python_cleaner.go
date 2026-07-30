@@ -8,13 +8,17 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/graph"
+	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/pythoncleaner"
 	"github.com/airencracken/arise/internal/resolve"
+	"github.com/airencracken/arise/internal/world"
 )
 
 type pythonCleanerOptions struct {
@@ -97,7 +101,8 @@ func runPythonCleaner(args []string) int {
 		return runPythonCleanerFix(options, preferencePath, report, plan)
 	}
 	cohorts := pythonCleanerRepairCohorts(plan)
-	if len(cohorts) == 0 {
+	unavailable := pythonCleanerUnavailable(plan)
+	if len(cohorts) == 0 && len(unavailable) == 0 {
 		fmt.Fprintln(os.Stdout, "No bootstrap or consumer rebuild is required.")
 		return 0
 	}
@@ -106,6 +111,14 @@ func runPythonCleaner(args []string) int {
 	for index, cohort := range cohorts {
 		fmt.Fprintf(os.Stdout, "Checking repair cohort %d of %d: %s\n", index+1, len(cohorts), strings.Join(cohort, ", "))
 		runResolve(cohort, *dbPath, *repoPath, resolveCfg)
+	}
+	if len(unavailable) != 0 {
+		removals, err := pythonCleanerUnavailableRemovals(unavailable)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "python-cleaner: unavailable package recovery: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stdout, "Validated unavailable-removal cohort: %s\n", strings.Join(removals, ", "))
 	}
 	return 0
 }
@@ -214,8 +227,27 @@ func runPythonCleanerFix(options pythonCleanerOptions, preferencePath string, re
 		return 1
 	}
 	if unavailable := pythonCleanerUnavailable(plan); len(unavailable) != 0 {
-		fmt.Fprintf(os.Stderr, "python-cleaner: unavailable installed packages require replacement or removal before preference switching: %s\n", strings.Join(unavailable, ", "))
-		return 1
+		removals, err := pythonCleanerUnavailableRemovals(unavailable)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "python-cleaner: unavailable package recovery: %v\n", err)
+			return 1
+		}
+		state = pythoncleaner.NewResumeState(report.Policy, pythoncleaner.ResumeStageUnavailable, removals, completed)
+		if err := pythoncleaner.SaveResume(companionPath, state); err != nil {
+			fmt.Fprintf(os.Stderr, "python-cleaner: save unavailable-removal checkpoint: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stdout, "Removing unavailable orphaned Python consumers: %s\n", strings.Join(removals, ", "))
+		runUninstall(removals, *dbPath, *repoPath)
+		report, plan, err = loadPythonCleanerState(preferencePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "python-cleaner: post-removal inventory failed: %v\n", err)
+			return 1
+		}
+		if remaining := pythonCleanerUnavailable(plan); len(remaining) != 0 {
+			fmt.Fprintf(os.Stderr, "python-cleaner: unavailable package removal made no observable progress: %s\n", strings.Join(remaining, ", "))
+			return 1
+		}
 	}
 	repairedTargets := flattenStringCohorts(completed)
 	probes, err := pythoncleaner.BuildRuntimeProbes(*vdbDir, commandEnv("ROOT", "/"), report.Policy.Targets, repairedTargets)
@@ -267,6 +299,47 @@ func runPythonCleanerFix(options pythonCleanerOptions, preferencePath string, re
 	}
 	fmt.Fprintln(os.Stdout, "Python package repair and runtime validation completed; python-exec preference published.")
 	return 0
+}
+
+func pythonCleanerUnavailableRemovals(unavailable []string) ([]string, error) {
+	db, err := ingest.OpenReadOnlyDB(*dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("open metadata: %w", err)
+	}
+	defer db.Close()
+	state, err := graph.BuildFromState(db, *vdbDir, 0)
+	if err != nil {
+		return nil, fmt.Errorf("build installed-state graph: %w", err)
+	}
+	resolveGraph := state.ToResolveGraph()
+	worldState, err := world.LoadWorld(*worldFile)
+	if err != nil {
+		return nil, fmt.Errorf("load world set: %w", err)
+	}
+	depclean, err := resolve.Depclean(resolveGraph, &resolve.WorldSet{Entries: worldState.Atoms})
+	if err != nil {
+		return nil, fmt.Errorf("classify orphaned packages: %w", err)
+	}
+	return pythonCleanerSelectUnavailableRemovals(unavailable, depclean)
+}
+
+func pythonCleanerSelectUnavailableRemovals(unavailable []string, depclean []resolve.PkgAction) ([]string, error) {
+	orphaned := make(map[string]resolve.PkgAction, len(depclean))
+	for _, action := range depclean {
+		if action.Atom != nil {
+			orphaned[action.Atom.CPV()] = action
+		}
+	}
+	removals := make([]string, 0, len(unavailable))
+	for _, cpv := range unavailable {
+		action, ok := orphaned[cpv]
+		if !ok || action.Atom == nil {
+			return nil, fmt.Errorf("%s is unavailable but not independently classified as orphaned; select a replacement or removal policy", cpv)
+		}
+		removals = append(removals, "="+action.Atom.CPV())
+	}
+	sort.Strings(removals)
+	return removals, nil
 }
 
 func pythonCleanerResolveConfig(pretendMode ...bool) resolve.ResolveConfig {

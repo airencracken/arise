@@ -796,6 +796,42 @@ func TestReverseELFConsumers(t *testing.T) {
 	}
 }
 
+func TestReverseELFConsumersAllowsMissingMetadataOnlyForNonELFOwners(t *testing.T) {
+	root := t.TempDir()
+	vdb := filepath.Join(root, "var", "db", "pkg")
+	cpv := "dev-python/pure-1"
+	dir := filepath.Join(vdb, filepath.FromSlash(cpv))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "usr", "bin", "pure")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, []byte("#!/usr/bin/python\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "CONTENTS"), []byte("obj /usr/bin/pure digest 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if consumers, err := ReverseELFConsumers(vdb, cpv); err != nil || len(consumers) != 0 {
+		t.Fatalf("pure package without linkage metadata = %v, %v", consumers, err)
+	}
+
+	if err := os.WriteFile(script, []byte{0x7f, 'E', 'L', 'F', 0}, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReverseELFConsumers(vdb, cpv); err == nil || !strings.Contains(err.Error(), "read linkage metadata") {
+		t.Fatalf("ELF owner without linkage metadata error = %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, "CONTENTS")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReverseELFConsumers(vdb, cpv); err == nil || !strings.Contains(err.Error(), "verify absent linkage metadata") {
+		t.Fatalf("missing ownership evidence error = %v", err)
+	}
+}
+
 func TestReverseELFConsumersRespectsOriginRunpath(t *testing.T) {
 	vdb := t.TempDir()
 	write := func(cpv, metadata string) {

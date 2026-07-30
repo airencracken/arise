@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	ResumeStageCohort     = "repair-cohort"
-	ResumeStageValidate   = "validate-runtime"
-	ResumeStagePreference = "switch-preference"
-	ResumeStageComplete   = "complete"
+	ResumeStageCohort      = "repair-cohort"
+	ResumeStageUnavailable = "remove-unavailable"
+	ResumeStageValidate    = "validate-runtime"
+	ResumeStagePreference  = "switch-preference"
+	ResumeStageComplete    = "complete"
 )
 
 type ResumeState struct {
@@ -103,6 +104,10 @@ func validatePythonResume(state ResumeState) error {
 	case ResumeStageCohort:
 		if len(state.CurrentTargets) == 0 {
 			return fmt.Errorf("python-cleaner: cohort resume state has no targets")
+		}
+	case ResumeStageUnavailable:
+		if len(state.CurrentTargets) == 0 {
+			return fmt.Errorf("python-cleaner: unavailable-removal resume state has no targets")
 		}
 	case ResumeStageValidate, ResumeStagePreference, ResumeStageComplete:
 		if len(state.CurrentTargets) != 0 {

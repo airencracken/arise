@@ -70,6 +70,7 @@ func TestPythonResumeRejectsTamperingUnknownFieldsTrailingJSONAndInvalidStages(t
 	}
 	for _, invalid := range []ResumeState{
 		NewResumeState(state.Policy, ResumeStageCohort, nil, nil),
+		NewResumeState(state.Policy, ResumeStageUnavailable, nil, nil),
 		NewResumeState(state.Policy, "unknown", nil, nil),
 		NewResumeState(state.Policy, ResumeStageValidate, []string{"dev-python/a"}, nil),
 		NewResumeState(Policy{}, ResumeStageComplete, nil, nil),
@@ -77,6 +78,10 @@ func TestPythonResumeRejectsTamperingUnknownFieldsTrailingJSONAndInvalidStages(t
 		if err := validatePythonResume(invalid); err == nil {
 			t.Fatalf("invalid state accepted: %#v", invalid)
 		}
+	}
+	unavailable := NewResumeState(state.Policy, ResumeStageUnavailable, []string{"=dev-python/gone-1"}, nil)
+	if err := validatePythonResume(unavailable); err != nil {
+		t.Fatalf("valid unavailable-removal checkpoint rejected: %v", err)
 	}
 }
 

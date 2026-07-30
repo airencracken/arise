@@ -61,7 +61,7 @@ func validateConflictAlternatives(ctx context.Context, graph *resolve.DepGraph, 
 				transaction.Verified = true
 				transaction.Verification = resolve.VerificationVerified
 				candidate = transaction
-				alternative.Command = fmt.Sprintf("arise deselect %s && arise depclean", alternative.Package)
+				alternative.Command = fmt.Sprintf("arise deselect %s && arise uninstall %s", alternative.Package, removal.Atom.String())
 			default:
 				continue
 			}

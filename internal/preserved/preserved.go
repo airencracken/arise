@@ -582,6 +582,15 @@ func ReverseELFConsumers(vdbRoot, installedCPV string) ([]string, error) {
 	target := filepath.Join(vdbRoot, filepath.FromSlash(installedCPV), "NEEDED.ELF.2")
 	data, err := os.ReadFile(target)
 	if err != nil {
+		if os.IsNotExist(err) {
+			hasELF, inspectErr := packageOwnsELFWithoutLinkageMetadata(vdbRoot, installedCPV)
+			if inspectErr != nil {
+				return nil, fmt.Errorf("verify absent linkage metadata for %s: %w", installedCPV, inspectErr)
+			}
+			if !hasELF {
+				return []string{}, nil
+			}
+		}
 		return nil, fmt.Errorf("read linkage metadata for %s: %w", installedCPV, err)
 	}
 	provided := make(map[string][]string)
@@ -638,6 +647,42 @@ func ReverseELFConsumers(vdbRoot, installedCPV string) ([]string, error) {
 	}
 	sort.Strings(consumers)
 	return consumers, nil
+}
+
+func packageOwnsELFWithoutLinkageMetadata(vdbRoot, installedCPV string) (bool, error) {
+	contentsPath := filepath.Join(vdbRoot, filepath.FromSlash(installedCPV), "CONTENTS")
+	data, err := os.ReadFile(contentsPath)
+	if err != nil {
+		return false, err
+	}
+	root := filepath.Clean(strings.TrimSuffix(filepath.Clean(vdbRoot), filepath.Join("var", "db", "pkg")))
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "obj" {
+			continue
+		}
+		path := filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(fields[1], "/")))
+		file, err := os.Open(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		var magic [4]byte
+		count, readErr := io.ReadFull(file, magic[:])
+		closeErr := file.Close()
+		if readErr != nil && readErr != io.ErrUnexpectedEOF {
+			return false, readErr
+		}
+		if closeErr != nil {
+			return false, closeErr
+		}
+		if count == len(magic) && magic == [4]byte{0x7f, 'E', 'L', 'F'} {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func providerReachableFromRunpath(binary, runpath string, providerPaths []string) bool {
