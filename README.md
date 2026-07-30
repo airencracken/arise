@@ -69,7 +69,7 @@ update itself:
 
 ```sh
 arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.9
+arise -1 --reinstall =sys-apps/arise-0.0.10
 ```
 
 Release ebuilds build without network access. New releases use a small,
