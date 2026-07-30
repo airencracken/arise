@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/python-cleaner-report-v1.schema.json",
+  "title": "Arise Python cleaner report version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "operation", "complete", "report", "plan"],
+  "properties": {
+    "schema": {"const": 1},
+    "operation": {"const": "python-cleaner"},
+    "complete": {"const": true},
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "interpreters",
+        "missing_targets",
+        "consumers",
+        "removals",
+        "orphans",
+        "omitted_orphans"
+      ],
+      "properties": {
+        "policy": {"type": "object"},
+        "interpreters": {"type": "array"},
+        "missing_targets": {"type": "array", "items": {"type": "string"}},
+        "consumers": {"type": "array"},
+        "removals": {"type": "array"},
+        "orphans": {"type": "array"},
+        "omitted_orphans": {"type": "integer", "minimum": 0}
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stages"],
+      "properties": {
+        "stages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "targets", "checks"],
+            "properties": {
+              "name": {
+                "enum": [
+                  "bootstrap-interpreters",
+                  "repair-cohort",
+                  "unavailable-consumers",
+                  "validate-runtime",
+                  "switch-preference",
+                  "remove-obsolete-interpreters"
+                ]
+              },
+              "targets": {"type": "array", "items": {"type": "string"}},
+              "checks": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    }
+  }
+}

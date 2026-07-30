@@ -2447,7 +2447,8 @@ Acceptance gate:
   targets, and leftover policy across interruption while the executor's strict
   resume record tracks per-package completion; resume rejects ABI drift and
   supports skip-first only when package progress exists.
-- [ ] Add a Python repair/cleaner workflow: detect stale interpreter targets,
+- [~] Add a Python repair/cleaner workflow: the initial `arise python-cleaner`
+  foundation detects stale interpreter targets,
   invalid shebangs, orphaned site-packages, extension modules linked against
   removed libpython ABIs and packages whose installed PYTHON_TARGETS no longer
   satisfy current profile policy. Exploit Arise's independence from Portage's
@@ -2455,7 +2456,19 @@ Acceptance gate:
   interpreters and consumers first, run import/linkage/shebang probes, and only
   permit obsolete interpreter removal after whole-state verification. The
   bootstrap advantage must improve recovery capability, not weaken graph or
-  filesystem safety.
+  filesystem safety. Effective profile targets, ordered python-exec preference,
+  installed interpreter slots, recorded per-package target flags, owned Python
+  paths, strict libpython linkage, root-confined shebang probes, and bounded
+  unowned site-packages are now one immutable report. Removal candidates carry
+  package, linkage, shebang/probe, and preference blockers. `--pretend` emits an
+  ordered bootstrap/cohort/validate/preference/removal plan and resolves only
+  exact-version-aware dependency-connected repair islands through Arise;
+  unavailable historical ebuilds remain explicit; versioned JSON, route, property,
+  malformed metadata, symlink, confinement, generated-bytecode, bounded-output,
+  and host-canary tests are present. Implement import/linkage runtime probes,
+  atomic python-exec preference publication, independently verified removal,
+  resumable staged execution, and disposable broken-root recovery before
+  enabling the deliberately gated `--fix`.
 - [ ] Make both cleaner workflows usable when Portage's Python environment is
   broken, with read-only audit, structured output, pretend, bounded repair and
   resumable execution modes.

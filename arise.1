@@ -481,6 +481,19 @@ continues the executor's per-package progress; \fB\-\-skipfirst\fR is supported
 when saved package progress exists.
 
 .TP
+\fBpython-cleaner \-\-check|\-\-pretend|\-\-fix\fR
+Inventory Python interpreter transitions without requiring a working Python or
+Portage runtime. The cleaner correlates effective PYTHON_TARGETS policy,
+python-exec preference, installed interpreter slots, package USE metadata,
+owned Python paths, libpython linkage, root-confined shebangs, and unowned
+obsolete site-packages. Pretend mode isolates dependency-connected repair
+cohorts, pins viable installed versions, reports unavailable historical ebuilds,
+and resolves each cohort through Arise before displaying runtime validation,
+preference switch, and removal stages. \fB\-\-fix\fR remains explicitly gated until import
+probes and atomic python-exec preference publication are implemented; obsolete
+interpreters and orphan files are never removed by the foundation.
+
+.TP
 \fBmaintain world \-\-check|\-\-fix\fR
 Check the selected world set against installed packages and every configured
 repository. Check mode emits deterministic diagnostics and supports versioned
