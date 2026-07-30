@@ -11,6 +11,12 @@ github.com/airencracken/gentooling v0.0.0-20260730202718-cb24e717720a h1:6nW5bDW
 github.com/airencracken/gentooling v0.0.0-20260730202718-cb24e717720a/go.mod h1:Zp7cg8MaWRFr2YoUZxgjNAQzM01zETQIDTxU7iD+d6c=
 github.com/airencracken/gentooling v0.1.0 h1:TaIb+alpZY33xlHhCpUoVXqHTES/gRG3Ftn+QFnmlQY=
 github.com/airencracken/gentooling v0.1.0/go.mod h1:Zp7cg8MaWRFr2YoUZxgjNAQzM01zETQIDTxU7iD+d6c=
+github.com/airencracken/gentooling v0.1.1-0.20260730211405-acc930ee2b9b h1:YqwGc7Xx/A7HVP1zzeeYbaVYM0Qfh1UJ+GgZu1tu1J4=
+github.com/airencracken/gentooling v0.1.1-0.20260730211405-acc930ee2b9b/go.mod h1:Zp7cg8MaWRFr2YoUZxgjNAQzM01zETQIDTxU7iD+d6c=
+github.com/airencracken/gentooling v0.1.1-0.20260730211651-9a1c30870b35 h1:A+t8/xtKzUskMNsiGyg7A7yoE2NBvrQkhDDzOm2olcw=
+github.com/airencracken/gentooling v0.1.1-0.20260730211651-9a1c30870b35/go.mod h1:Zp7cg8MaWRFr2YoUZxgjNAQzM01zETQIDTxU7iD+d6c=
+github.com/airencracken/gentooling v0.2.0 h1:iVw6MH3qYWAQFqVb0igdNrP7y8MORQdxP3bKLeQBUC0=
+github.com/airencracken/gentooling v0.2.0/go.mod h1:Zp7cg8MaWRFr2YoUZxgjNAQzM01zETQIDTxU7iD+d6c=
 github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be h1:9AeTilPcZAjCFIImctFaOjnTIavg87rW78vTPkQqLI8=
 github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be/go.mod h1:ySMOLuWl6zY27l47sB3qLNK6tF2fkHG55UZxx8oIVo4=
 github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 h1:0CwZNZbxp69SHPdPJAN/hZIm0C4OItdklCFmMRWYpio=

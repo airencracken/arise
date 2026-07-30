@@ -39,6 +39,12 @@ bounded concurrent record scans, and final mutation revalidation. Its
 pre-1.0 compatibility policy permits documented breaking changes in minor
 releases while keeping patch releases compatible.
 
+Gentooling `v0.2.0` adds the active profile graph as the next public boundary.
+It retains root-to-leaf layers, explicit repository roots, ordered package
+policy, and source-line provenance while rejecting parent escapes, cycles,
+malformed rules, and policy symlinks. Arise now uses this graph when building
+its effective Portage configuration.
+
 Code remains in Arise until its boundary passes the stability and
 downstream-consumer gates below. New code should follow a dependency direction
 that permits cohesive packages to move into `gentooling` without importing

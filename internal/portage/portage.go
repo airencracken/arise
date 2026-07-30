@@ -2,6 +2,7 @@ package portage
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 	"sync"
 
 	"github.com/airencracken/arise/internal/atom"
-	"github.com/airencracken/arise/internal/profile"
+	"github.com/airencracken/gentooling"
 )
 
 // PhaseEnvironmentABI identifies artifact-affecting package execution
@@ -189,7 +190,20 @@ func loadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 	} else if err != nil {
 		return nil, fmt.Errorf("portage: inspect active profile: %w", err)
 	}
-	info, err := profile.LoadProfile(profileLink, "")
+	repositories, err := RepositoryPolicyOrder(filepath.Join(portageConfigRoot, "repos.conf"))
+	if err != nil {
+		return nil, err
+	}
+	repositoryPaths := make([]gentooling.RepositoryPath, 0, len(repositories))
+	for _, repository := range repositories {
+		if repository.Name != "" && repository.Location != "" {
+			repositoryPaths = append(repositoryPaths, gentooling.RepositoryPath{Name: repository.Name, Path: repository.Location})
+		}
+	}
+	info, err := gentooling.ReadProfile(context.Background(), gentooling.SystemPaths{
+		ActiveProfile: profileLink,
+		Repositories:  repositoryPaths,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("portage: load active profile: %w", err)
 	}
@@ -247,28 +261,24 @@ func loadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 	ResolveMakeConfRefs(merged)
 	cfg.MakeConf = merged
 	cfg.populateAccessors()
-	cfg.ProfilePath = info.Path
+	cfg.ProfilePath = info.ActivePath
 	if len(info.Directories) > 1 {
 		cfg.ProfileParents = append([]string(nil), info.Directories[:len(info.Directories)-1]...)
 	}
-	cfg.SystemSet = append([]string(nil), info.SystemSet...)
+	cfg.SystemSet = append([]string(nil), info.System...)
 	cfg.PackageProvided = applyAtomChanges(info.PackageProvided, cfg.PackageProvided)
 	cfg.UseForce = append([]string(nil), info.UseForce...)
 	cfg.UseMask = append([]string(nil), info.UseMask...)
 	cfg.UseStableForce = append([]string(nil), info.UseStableForce...)
 	cfg.UseStableMask = append([]string(nil), info.UseStableMask...)
-	cfg.PackageUseForce = cloneFlagMap(info.PkgUseForce)
-	cfg.PackageUseMask = cloneFlagMap(info.PkgUseMask)
-	cfg.PackageUseForceRules = profilePackageRules(info.PkgUseForceRules)
-	cfg.PackageUseMaskRules = profilePackageRules(info.PkgUseMaskRules)
-	cfg.PackageUseStableForceRules = profilePackageRules(info.PkgUseStableForceRules)
-	cfg.PackageUseStableMaskRules = profilePackageRules(info.PkgUseStableMaskRules)
-	profileUseRules := profilePackageRules(info.PkgUseRules)
+	cfg.PackageUseForce = profileRuleMap(info.PackageUseForce)
+	cfg.PackageUseMask = profileRuleMap(info.PackageUseMask)
+	cfg.PackageUseForceRules = profilePackageRules(info.PackageUseForce)
+	cfg.PackageUseMaskRules = profilePackageRules(info.PackageUseMask)
+	cfg.PackageUseStableForceRules = profilePackageRules(info.PackageUseStableForce)
+	cfg.PackageUseStableMaskRules = profilePackageRules(info.PackageUseStableMask)
+	profileUseRules := profilePackageRules(info.PackageUse)
 	cfg.PackageUseRules = append(profileUseRules, cfg.PackageUseRules...)
-	repositories, err := RepositoryPolicyOrder(filepath.Join(portageConfigRoot, "repos.conf"))
-	if err != nil {
-		return nil, err
-	}
 	var repositoryRoots []string
 	for _, repository := range repositories {
 		if repository.Location != "" {
@@ -969,10 +979,18 @@ func cloneFlagMap(input map[string][]string) map[string][]string {
 	return result
 }
 
-func profilePackageRules(input []profile.PackageFlagRule) []PackageUseRule {
+func profilePackageRules(input []gentooling.PackageFlagRule) []PackageUseRule {
 	result := make([]PackageUseRule, 0, len(input))
 	for _, rule := range input {
 		result = append(result, PackageUseRule{Atom: rule.Atom, Flags: append([]string(nil), rule.Flags...)})
+	}
+	return result
+}
+
+func profileRuleMap(input []gentooling.PackageFlagRule) map[string][]string {
+	result := make(map[string][]string)
+	for _, rule := range input {
+		result[rule.Atom] = applyOrderedChanges(result[rule.Atom], rule.Flags)
 	}
 	return result
 }
