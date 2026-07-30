@@ -11,6 +11,7 @@ import (
 	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/nameindex"
+	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/search"
 )
 
@@ -156,11 +157,18 @@ func runSearch(args []string, dbPath string) int {
 		return searchExitCode(len(results))
 	}
 
+	var useExpand, useExpandHidden []string
+	if portageConfig, configErr := portage.LoadEffectiveConfig(*portageConfigRoot); configErr == nil {
+		useExpand = append(useExpand, portageConfig.UseExpand...)
+		useExpand = append(useExpand, portageConfig.UseExpandImplicit...)
+		useExpandHidden = append(useExpandHidden, portageConfig.UseExpandHidden...)
+	}
+
 	overlays := make(map[int]search.SearchResult)
 	for _, r := range results {
 		marker := color.Green("*")
 		if r.Installed {
-			marker = color.Green("[I]")
+			marker = "[" + color.InstalledMarker("I") + "]"
 			if searchUpgradeAvailable(r) {
 				marker = "[" + color.ReverseBoldCyan("U") + "]"
 			}
@@ -213,29 +221,13 @@ func runSearch(args []string, dbPath string) int {
 					fmt.Print(color.BoldMagenta(time.Unix(installed.BuildTime, 0).Format("(03:04:05 PM 01/02/2006)")))
 				}
 				if len(installed.EnabledUSE)+len(installed.DisabledUSE) > 0 {
-					fmt.Print("(")
-					printed := 0
-					for _, flag := range installed.EnabledUSE {
-						if printed > 0 {
-							fmt.Print(" ")
-						}
-						fmt.Print(color.BoldRed(flag))
-						printed++
-					}
-					for _, flag := range installed.DisabledUSE {
-						if printed > 0 {
-							fmt.Print(" ")
-						}
-						fmt.Print(color.BoldBlue(flag))
-						printed++
-					}
-					fmt.Print(")")
+					fmt.Printf(" %s", installedUseDisplay(installed, useExpand, useExpandHidden))
 				}
 			}
 			fmt.Println()
 		}
 		if r.IUSE != "" {
-			fmt.Printf("       %s%s%s\n", color.BoldYellow("{"), r.IUSE, color.BoldYellow("}"))
+			fmt.Printf("     %s %s%s%s\n", color.Green("Declared USE flags:"), color.BoldYellow("{"), r.IUSE, color.BoldYellow("}"))
 		}
 		if r.Homepage != "" {
 			fmt.Printf("     %s            %s\n", color.Green("Homepage:"), r.Homepage)
@@ -263,6 +255,78 @@ func runSearch(args []string, dbPath string) int {
 	}
 	fmt.Println()
 	return searchExitCode(len(results))
+}
+
+func installedUseDisplay(installed search.InstalledVersion, expandGroups, hiddenGroups []string) string {
+	hidden := make(map[string]bool, len(hiddenGroups))
+	for _, group := range hiddenGroups {
+		hidden[strings.ToUpper(strings.TrimSpace(group))] = true
+	}
+	type useGroup struct {
+		name   string
+		prefix string
+		flags  []string
+	}
+	groups := make([]useGroup, 0, len(expandGroups))
+	seen := make(map[string]bool, len(expandGroups))
+	for _, raw := range expandGroups {
+		name := strings.ToUpper(strings.TrimSpace(raw))
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		groups = append(groups, useGroup{name: name, prefix: strings.ToLower(name) + "_"})
+	}
+	var ordinary []string
+	add := func(flag string, enabled bool) {
+		name := strings.TrimPrefix(flag, "-")
+		rendered := name
+		if !enabled {
+			rendered = "-" + name
+		}
+		for index := range groups {
+			if strings.HasPrefix(name, groups[index].prefix) {
+				if !hidden[groups[index].name] {
+					value := strings.TrimPrefix(name, groups[index].prefix)
+					if !enabled {
+						value = "-" + value
+					}
+					groups[index].flags = append(groups[index].flags, value)
+				}
+				return
+			}
+		}
+		ordinary = append(ordinary, rendered)
+	}
+	for _, flag := range installed.EnabledUSE {
+		add(flag, true)
+	}
+	for _, flag := range installed.DisabledUSE {
+		add(flag, false)
+	}
+
+	parts := make([]string, 0, len(groups)+1)
+	if len(ordinary) > 0 {
+		parts = append(parts, `USE="`+colorInstalledUseFlags(ordinary)+`"`)
+	}
+	for _, group := range groups {
+		if len(group.flags) > 0 {
+			parts = append(parts, group.name+`="`+colorInstalledUseFlags(group.flags)+`"`)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func colorInstalledUseFlags(flags []string) string {
+	rendered := make([]string, 0, len(flags))
+	for _, flag := range flags {
+		if strings.HasPrefix(flag, "-") {
+			rendered = append(rendered, color.BoldBlue(flag))
+		} else {
+			rendered = append(rendered, color.BoldRed(flag))
+		}
+	}
+	return strings.Join(rendered, " ")
 }
 
 func searchExitCode(matches int) int {

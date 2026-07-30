@@ -59,15 +59,18 @@ func Green(s string) string {
 	return fmt.Sprintf("%s%s%s", ansiGreen, s, ansiReset)
 }
 
-func BoldGreen(s string) string        { return styled(s, ansiBold, ansiGreen) }
-func BoldRed(s string) string          { return styled(s, ansiBold, ansiRed) }
-func BoldYellow(s string) string       { return styled(s, ansiBold, ansiYellow) }
-func BoldCyan(s string) string         { return styled(s, ansiBold, ansiCyan) }
-func BoldBlue(s string) string         { return styled(s, ansiBold, ansiBlue) }
-func BoldMagenta(s string) string      { return styled(s, ansiBold, ansiMagenta) }
-func ReverseBoldCyan(s string) string  { return styled(s, ansiBold, ansiReverse, ansiCyan) }
-func ReverseBoldBlue(s string) string  { return styled(s, ansiBold, ansiReverse, ansiBlue) }
-func InstalledVersion(s string) string { return styled(s, ansiBlueBackground) }
+func BoldGreen(s string) string       { return styled(s, ansiBold, ansiGreen) }
+func BoldRed(s string) string         { return styled(s, ansiBold, ansiRed) }
+func BoldYellow(s string) string      { return styled(s, ansiBold, ansiYellow) }
+func BoldCyan(s string) string        { return styled(s, ansiBold, ansiCyan) }
+func BoldBlue(s string) string        { return styled(s, ansiBold, ansiBlue) }
+func BoldMagenta(s string) string     { return styled(s, ansiBold, ansiMagenta) }
+func ReverseBoldCyan(s string) string { return styled(s, ansiBold, ansiReverse, ansiCyan) }
+func ReverseBoldBlue(s string) string { return styled(s, ansiBold, ansiReverse, ansiBlue) }
+func InstalledMarker(s string) string { return styled(s, ansiBold, ansiReverse, ansiCyan) }
+func InstalledVersion(s string) string {
+	return styled(s, ansiBold, ansiBrightGreen, ansiBlueBackground)
+}
 
 func styled(s string, codes ...string) string {
 	if s == "" || !UseColor {
