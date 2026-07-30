@@ -156,6 +156,55 @@ func BenchmarkSearchAll(b *testing.B) {
 	}
 }
 
+func BenchmarkSearchWithVersions(b *testing.B) {
+	db, err := CreateTestDB(1)
+	if err != nil {
+		b.Fatalf("create test db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	repoPath := b.TempDir()
+	packagePath := filepath.Join(repoPath, "app-admin", "pkg-0")
+	cachePath := filepath.Join(repoPath, "metadata", "md5-cache", "app-admin")
+	if err := os.MkdirAll(packagePath, 0755); err != nil {
+		b.Fatalf("create package path: %v", err)
+	}
+	if err := os.MkdirAll(cachePath, 0755); err != nil {
+		b.Fatalf("create metadata cache path: %v", err)
+	}
+	for version := 1; version <= 64; version++ {
+		pv := fmt.Sprintf("pkg-0-%d.0", version)
+		if err := os.WriteFile(filepath.Join(packagePath, pv+".ebuild"), []byte("EAPI=8\n"), 0644); err != nil {
+			b.Fatalf("write ebuild: %v", err)
+		}
+		keywords := "amd64"
+		if version%2 == 0 {
+			keywords = "~amd64"
+		}
+		cache := fmt.Sprintf("EAPI=8\nSLOT=0\nKEYWORDS=%s\nDESCRIPTION=version %d\n", keywords, version)
+		if err := os.WriteFile(filepath.Join(cachePath, pv), []byte(cache), 0644); err != nil {
+			b.Fatalf("write metadata cache: %v", err)
+		}
+	}
+	vdbPath := b.TempDir()
+	cfg := search.SearchConfig{
+		Query: "app-admin/pkg-0", Exact: true, Versions: true,
+		RepoPath: repoPath, VDBPath: vdbPath,
+	}
+	results, err := search.Search(db, cfg)
+	if err != nil {
+		b.Fatalf("warm search: %v", err)
+	}
+	if len(results) != 1 || results[0].BestVersion != "64.0" || results[0].BestVisibleVersion != "63.0" {
+		b.Fatalf("unexpected version expansion: %#v", results)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = search.Search(db, cfg)
+	}
+}
+
 // ── Dependency resolution benchmarks ───────────────────────────────────────
 
 func BenchmarkResolveSimple(b *testing.B) {

@@ -804,6 +804,12 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig, installed map[s
 			r.AllVersions = versions
 			sort.Slice(versionInfo, func(i, j int) bool { return compareVersionStrings(versionInfo[i].Version, versionInfo[j].Version) < 0 })
 			r.VersionInfo = versionInfo
+			for i := len(versionInfo) - 1; i >= 0; i-- {
+				if !versionInfo[i].Masked && versionInfo[i].Stable {
+					r.BestVisibleVersion = versionInfo[i].Version
+					break
+				}
+			}
 			if bestMetadata != nil {
 				r.Description = bestMetadata.DESCRIPTION
 				r.Homepage = bestMetadata.HOMEPAGE
@@ -812,14 +818,6 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig, installed map[s
 			}
 			if len(versions) > 0 {
 				r.BestVersion = bestVersionString(versions)
-			}
-			for _, version := range versionInfo {
-				if version.Masked || !version.Stable {
-					continue
-				}
-				if r.BestVisibleVersion == "" || compareVersionStrings(version.Version, r.BestVisibleVersion) > 0 {
-					r.BestVisibleVersion = version.Version
-				}
 			}
 			expanded = append(expanded, r)
 		} else {
