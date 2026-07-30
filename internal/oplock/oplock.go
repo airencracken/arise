@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/airencracken/gentooling"
 	"golang.org/x/sys/unix"
 )
 
@@ -18,8 +19,7 @@ type Lock struct {
 // PortageLockPath mirrors portage.locks.lockdir: a directory lock is stored in
 // its parent as .<basename>.portage_lockfile.
 func PortageLockPath(directory string) string {
-	directory = filepath.Clean(directory)
-	return filepath.Join(filepath.Dir(directory), "."+filepath.Base(directory)+".portage_lockfile")
+	return gentooling.PortageStateLockPath(directory)
 }
 
 // TryAcquireVDB acquires Portage's VDB mutation lock without waiting.
