@@ -237,44 +237,73 @@ or unreadable set is preserved.
 Search the package database with eix-style filtering.
 See @ref{Search Filters} for all available search flags.
 
-@item installed [@var{selector}]
-List installed package atoms. Versionless output is the default; selectors and
-flags provide CPVs, repository, build-time, quiet, and NUL-delimited views.
+@item installed [@var{inspection-option}] [@var{argument}]
+List or inspect installed packages. Versionless line output is the default.
+Inspection options cover ownership, contents, USE flags, installed size,
+integrity, atom matching, presence, and best installed versions.
 
-@item query @var{atom}
-Display metadata for a specific package.
+@item query [@var{query-option}] @var{atom}
+Query indexed repository, binary-package, or installed metadata. It can report
+best-visible versions, metadata keys, virtual expansion, and ebuild paths.
 
 @item state @var{subcommand}
 Emit deterministic available or installed package state used by parity,
 snapshot, and differential workflows.
 
-@item info
-Display system information: arise version, Go runtime, portage configuration,
-active profile, and repository status.
-
-@item installed [@var{inspection-option}] [@var{argument}]
-List or inspect installed packages. Inspection options cover ownership,
-contents, USE flags, installed size, integrity, atom matching, presence, and
-best installed versions.
-Subcommands:
-
-@table @command
-@item belongs @var{file}
-Find which installed package owns a file.
-@item files @var{atom}
-List installed files for a package.
-@item uses @var{atom}
-Show IUSE and active USE flags.
-@item size @var{atom}
-Show total installed size.
-@item check @var{atom}
-Verify installed files against checksums.
-@item which @var{atom}
-Find ebuild path.
-@item list [@var{pattern}]
-List installed packages matching a pattern.
+@item info [@var{information-option}] [@var{argument}]
+Display system, repository, path, eclass, license, protected-configuration,
+preserved-library, and color information.
 @end table
-@end table
+
+@subheading Native Package Query Examples
+
+Arise is a self-contained alternative that works alongside @command{emerge},
+@command{eix}, @command{equery}, @command{portageq}, and the @command{q} tools.
+It neither replaces those programs nor copies their command names. Default
+line-oriented output, package atoms, exit statuses, and Portage paths remain
+suitable for mixed shell pipelines. Requiring another package tool to diagnose
+Arise package state or a failed Arise operation identifies missing Arise
+diagnostic surface.
+
+@example
+# Installed matches, presence, and best installed version
+$ arise installed --match '>=llvm-core/clang-19'
+$ arise installed --has llvm-core/clang
+$ arise installed --best llvm-core/clang
+
+# Installed files, owners, USE state, size, and integrity
+$ arise installed --contents llvm-core/clang
+$ arise installed --owner /usr/bin/clang
+$ arise installed --uses llvm-core/clang
+$ arise installed --size llvm-core/clang
+$ arise installed --check llvm-core/clang
+
+# Repository, binary-package, and installed metadata
+$ arise query --best-visible llvm-core/clang
+$ arise query --best-visible --type=binary llvm-core/clang
+$ arise query --metadata=SLOT,KEYWORDS llvm-core/clang
+$ arise query --expand-virtual virtual/libc
+$ arise query --ebuild llvm-core/clang
+
+# Portage configuration and repository paths
+$ arise info --value DISTDIR PKGDIR
+$ arise info --repositories
+$ arise info --repo-path gentoo
+$ arise info --eclasses gentoo
+$ arise info --license-path gentoo GPL-2
+$ arise info --preserved-libs
+$ arise info --is-protected /etc/hosts
+
+# Maintainer discovery and machine-readable state
+$ arise search --search-maintainer maintainer@@gentoo.org
+$ arise search --search-orphaned
+$ arise state json
+@end example
+
+Batch forms accept multiple atoms, paths, repositories, or variables where
+shown by @command{arise @var{command} --help}. The complete reference-tool
+equivalence table is maintained in @file{docs/tool-equivalents.md} in the
+source distribution.
 
 @node System Maintenance
 @section System Maintenance

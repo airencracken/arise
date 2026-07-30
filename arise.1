@@ -397,7 +397,7 @@ an experimental eix/emerge-search-compatible workflow.
 List installed package atoms. The default output is one versionless
 \fIcategory/package\fR atom per line. Use \fB\-\-versions\fR (or
 \fB\-\-cpv\fR) for \fIcategory/package-version\fR; use \fB\-\-null\fR
-for NUL-delimited scripting output. Replaces \fBeix-installed\fR.
+for NUL-delimited scripting output.
 The compatibility selectors filter packages by VDB metadata. \fB\-=\fR prefixes
 atoms with an equals sign, \fB\-q\fR suppresses explanatory text, and
 \fB\-a\fR is shorthand for quiet \fBall\fR output.
@@ -430,6 +430,62 @@ Arise is a self-contained alternative with capabilities that overlap
 tools. It neither replaces them nor clones their command names. Requiring one
 of those tools to diagnose package state or a failed Arise operation indicates
 missing Arise diagnostic surface.
+
+.SS Native Package Query Examples
+
+.PP
+Default line-oriented output, package atoms, exit statuses, and Portage paths
+are suitable for pipelines that mix Arise with existing Gentoo tools. Batch
+forms accept multiple atoms, paths, repositories, or variables where shown by
+command help.
+
+.PP
+Installed matches, presence, and best installed version:
+.EX
+arise installed \-\-match '>=llvm-core/clang\-19'
+arise installed \-\-has llvm-core/clang
+arise installed \-\-best llvm-core/clang
+.EE
+
+.PP
+Installed files, owners, USE state, size, and integrity:
+.EX
+arise installed \-\-contents llvm-core/clang
+arise installed \-\-owner /usr/bin/clang
+arise installed \-\-uses llvm-core/clang
+arise installed \-\-size llvm-core/clang
+arise installed \-\-check llvm-core/clang
+.EE
+
+.PP
+Repository, binary-package, and installed metadata:
+.EX
+arise query \-\-best-visible llvm-core/clang
+arise query \-\-best-visible \-\-type=binary llvm-core/clang
+arise query \-\-metadata=SLOT,KEYWORDS llvm-core/clang
+arise query \-\-expand-virtual virtual/libc
+arise query \-\-ebuild llvm-core/clang
+.EE
+
+.PP
+Portage configuration and repository paths:
+.EX
+arise info \-\-value DISTDIR PKGDIR
+arise info \-\-repositories
+arise info \-\-repo-path gentoo
+arise info \-\-eclasses gentoo
+arise info \-\-license-path gentoo GPL\-2
+arise info \-\-preserved-libs
+arise info \-\-is-protected /etc/hosts
+.EE
+
+.PP
+Maintainer discovery and machine-readable state:
+.EX
+arise search \-\-search-maintainer maintainer@gentoo.org
+arise search \-\-search-orphaned
+arise state json
+.EE
 
 .SS Maintenance
 
