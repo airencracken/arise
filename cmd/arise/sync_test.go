@@ -94,9 +94,9 @@ func TestPrintSyncTargetReportUsesEixStylePackageChanges(t *testing.T) {
 
 	want := "" +
 		"  arise-overlay        updated      541ms\n" +
-		"    [N]   ** app-misc/new (1): A new package\n" +
+		"    [N]   >> app-misc/new (1): A new package\n" +
 		"    [>]   == app-containers/lxc-templates (3.0.4_p20240917 -> 3.0.4_p20260719): Old style template scripts for LXC\n" +
-		"    [D]   !! x11-apps/old (2): An obsolete package\n"
+		"    [D]   << x11-apps/old (2): An obsolete package\n"
 	if output.String() != want {
 		t.Fatalf("sync report = %q, want %q", output.String(), want)
 	}
@@ -124,6 +124,7 @@ func TestPrintPackageChangesColorizesEixStyleChangeKinds(t *testing.T) {
 		{CP: "app-misc/removed", Kind: "removed", Before: []string{"1"}},
 		{CP: "app-misc/upgrade", Kind: "upgrade", Before: []string{"1"}, After: []string{"2"}},
 		{CP: "app-misc/better", Kind: "better", Before: []string{"1"}, After: []string{"1", "2"}},
+		{CP: "app-misc/downgrade", Kind: "downgrade", Before: []string{"2"}, After: []string{"1"}},
 		{CP: "app-misc/worse", Kind: "worse", Before: []string{"1", "2"}, After: []string{"2"}},
 		{CP: "app-misc/changed", Kind: "changed", Before: []string{"1"}, After: []string{"1"}},
 	}}
@@ -132,13 +133,16 @@ func TestPrintPackageChangesColorizesEixStyleChangeKinds(t *testing.T) {
 	got := output.String()
 
 	for _, sequence := range []string{
-		"\x1b[1m\x1b[32m[N]\x1b[0m",
-		"\x1b[1m\x1b[31m[D]\x1b[0m",
-		"\x1b[1m\x1b[33m[U]\x1b[0m",
-		"\x1b[1m\x1b[32m[>]\x1b[0m",
-		"\x1b[1m\x1b[31m[<]\x1b[0m",
-		"\x1b[1m\x1b[33m[C]\x1b[0m",
-		"\x1b[33m1\x1b[0m \x1b[1m->\x1b[0m \x1b[32m2\x1b[0m",
+		"[\x1b[1m\x1b[32mN\x1b[0m]",
+		"[\x1b[1m\x1b[31mD\x1b[0m]",
+		"[\x1b[1m\x1b[7m\x1b[36mU\x1b[0m]",
+		"[\x1b[33m>\x1b[0m]",
+		"[\x1b[1m\x1b[7m\x1b[34m?\x1b[0m]",
+		"[\x1b[1m\x1b[31m<\x1b[0m]",
+		"[\x1b[1m\x1b[33mC\x1b[0m]",
+		"app-misc/\x1b[1mupgrade\x1b[0m",
+		"\x1b[33m==\x1b[0m",
+		"1 -> 2",
 	} {
 		if !strings.Contains(got, sequence) {
 			t.Errorf("colored sync changes do not contain %q:\n%q", sequence, got)

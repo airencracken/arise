@@ -140,42 +140,33 @@ func printPackageChanges(w io.Writer, changes sync.ChangeSummary) {
 		return
 	}
 	for _, change := range changes.Packages {
-		tag := color.BoldYellow("[C]")
-		cp := color.BoldYellow(change.CP)
-		relation := color.BoldYellow("==")
-		versions := color.Yellow(bestVersion(change.After))
+		tag := formatEixTag("C", color.BoldYellow)
+		cp := formatEixPackageName(change.CP)
+		relation := color.Yellow("==")
+		versions := bestVersion(change.After)
 		switch change.Kind {
 		case "new":
-			tag = color.BoldGreen("[N]")
-			cp = color.BoldGreen(change.CP)
-			relation = color.BoldGreen("**")
-			versions = color.Green(bestVersion(change.After))
+			tag = formatEixTag("N", color.BoldGreen)
+			relation = color.BoldGreen(">>")
 		case "removed":
-			tag = color.BoldRed("[D]")
-			cp = color.BoldRed(change.CP)
-			relation = color.BoldRed("!!")
-			versions = color.Red(bestVersion(change.Before))
+			tag = formatEixTag("D", color.BoldRed)
+			relation = color.BoldRed("<<")
+			versions = bestVersion(change.Before)
 		case "upgrade":
-			tag = color.BoldYellow("[U]")
-			versions = formatBestVersionTransition(change.Before, change.After, color.Green)
+			tag = formatEixTag("U", color.ReverseBoldCyan)
+			versions = formatBestVersionTransition(change.Before, change.After)
 		case "better":
-			tag = color.BoldGreen("[>]")
-			cp = color.BoldGreen(change.CP)
-			relation = color.BoldGreen("==")
-			versions = formatBestVersionTransition(change.Before, change.After, color.Green)
+			tag = formatEixTag(">", color.Yellow)
+			versions = formatBestVersionTransition(change.Before, change.After)
 		case "downgrade":
-			tag = color.BoldRed("[<]")
-			cp = color.BoldRed(change.CP)
-			relation = color.BoldRed("==")
-			versions = formatBestVersionTransition(change.Before, change.After, color.Red)
+			tag = formatEixTag("?", color.ReverseBoldBlue)
+			versions = formatBestVersionTransition(change.Before, change.After)
 		case "worse":
-			tag = color.BoldRed("[<]")
-			cp = color.BoldRed(change.CP)
-			relation = color.BoldRed("==")
-			versions = formatBestVersionTransition(change.Before, change.After, color.Red)
+			tag = formatEixTag("<", color.BoldRed)
+			versions = formatBestVersionTransition(change.Before, change.After)
 		case "changed":
 			if strings.Join(change.Before, "\x00") != strings.Join(change.After, "\x00") {
-				versions = formatBestVersionTransition(change.Before, change.After, color.Yellow)
+				versions = formatBestVersionTransition(change.Before, change.After)
 			}
 		}
 		description := ""
@@ -186,10 +177,20 @@ func printPackageChanges(w io.Writer, changes sync.ChangeSummary) {
 	}
 }
 
-func formatBestVersionTransition(before, after []string, styleAfter func(string) string) string {
-	return color.Yellow(bestVersion(before)) +
-		" " + color.Bold("->") + " " +
-		styleAfter(bestVersion(after))
+func formatEixTag(marker string, style func(string) string) string {
+	return "[" + style(marker) + "]"
+}
+
+func formatEixPackageName(cp string) string {
+	parts := strings.SplitN(cp, "/", 2)
+	if len(parts) != 2 {
+		return color.Bold(cp)
+	}
+	return parts[0] + "/" + color.Bold(parts[1])
+}
+
+func formatBestVersionTransition(before, after []string) string {
+	return bestVersion(before) + " -> " + bestVersion(after)
 }
 
 func bestVersion(versions []string) string {

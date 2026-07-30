@@ -45,6 +45,49 @@ func TestIndependentPlanAuditRouteAndLockedReplay(t *testing.T) {
 	}
 }
 
+func TestIndependentPlanAuditCanonicalizesBarePackageTarget(t *testing.T) {
+	graph := resolve.NewDepGraph()
+	version := graph.AddVersionFromRepository("sys-apps/arise", "0.0.8", "0", "0", false, nil, "~amd64", "arise-overlay")
+	version.Available = true
+	version.DependencyMetadataKnown = true
+	version.EAPI = "8"
+	selected, err := atom.Parse("sys-apps/arise-0.0.8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := &resolve.ResolveResult{
+		Verified: true, Verification: resolve.VerificationVerified,
+		Install: []resolve.PkgAction{{
+			Atom: selected, Action: "install", Slot: "0", Subslot: "0",
+			Repository: "arise-overlay",
+		}},
+	}
+	audit, err := prepareIndependentPlanAudit(graph, result, []string{"arise"}, resolve.ResolveConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := audit.fixture.Request.Targets, []string{"sys-apps/arise"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("canonical targets = %v, want %v", got, want)
+	}
+	if result := audit.validate(); !result.Valid {
+		t.Fatalf("bare target audit failed: %#v", result)
+	}
+}
+
+func TestIndependentPlanAuditBareTargetFailsClosedOnAmbiguity(t *testing.T) {
+	graph := resolve.NewDepGraph()
+	graph.AddPackage("app-misc/tool")
+	graph.AddPackage("dev-util/tool")
+	_, err := canonicalizeIndependentAuditTargets(graph, []string{"tool"})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous bare target error = %v", err)
+	}
+	_, err = canonicalizeIndependentAuditTargets(graph, []string{"missing"})
+	if err == nil || !strings.Contains(err.Error(), "absent") {
+		t.Fatalf("missing bare target error = %v", err)
+	}
+}
+
 func TestIndependentPlanAuditFreezesPartialPlanModes(t *testing.T) {
 	graph := resolve.NewDepGraph()
 	for name, test := range map[string]struct {

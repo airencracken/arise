@@ -30,6 +30,10 @@ func prepareIndependentPlanAudit(graph *resolve.DepGraph, result *resolve.Resolv
 	if err != nil {
 		return nil, err
 	}
+	expandedTargets, err = canonicalizeIndependentAuditTargets(graph, expandedTargets)
+	if err != nil {
+		return nil, err
+	}
 	operation := "install"
 	if cfg.Update {
 		operation = "update"
@@ -54,6 +58,25 @@ func prepareIndependentPlanAudit(graph *resolve.DepGraph, result *resolve.Resolv
 		return nil, err
 	}
 	return &independentPlanAudit{fixture: fixture, plan: plan}, nil
+}
+
+func canonicalizeIndependentAuditTargets(graph *resolve.DepGraph, targets []string) ([]string, error) {
+	canonical := append([]string(nil), targets...)
+	for index, target := range canonical {
+		if strings.Contains(target, "/") || strings.HasPrefix(target, "@") {
+			continue
+		}
+		matches := graph.FindPackagesByName(target)
+		switch len(matches) {
+		case 1:
+			canonical[index] = matches[0]
+		case 0:
+			return nil, fmt.Errorf("independent plan audit: package %q is absent from the frozen graph", target)
+		default:
+			return nil, fmt.Errorf("independent plan audit: package name %q is ambiguous: [%s]", target, strings.Join(matches, ", "))
+		}
+	}
+	return canonical, nil
 }
 
 func freezeIndependentPolicy(cfg resolve.ResolveConfig) (planvalidate.Policy, func(string, string, string) planvalidate.PackagePolicy) {

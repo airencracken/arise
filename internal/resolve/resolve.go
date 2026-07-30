@@ -2005,8 +2005,14 @@ func parseGeneratedSetAtom(entry string) (*atom.Atom, error) {
 }
 
 func (r *resolver) findPackagesByName(name string) []string {
+	return r.graph.FindPackagesByName(name)
+}
+
+// FindPackagesByName returns the sorted category/package identities whose
+// package component exactly matches name.
+func (g *DepGraph) FindPackagesByName(name string) []string {
 	var matches []string
-	for cp := range r.graph.Packages {
+	for cp := range g.Packages {
 		parts := strings.SplitN(cp, "/", 2)
 		if len(parts) == 2 && parts[1] == name {
 			matches = append(matches, cp)

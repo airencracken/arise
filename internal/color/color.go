@@ -49,6 +49,7 @@ func BoldCyan(s string) string         { return styled(s, ansiBold, ansiCyan) }
 func BoldBlue(s string) string         { return styled(s, ansiBold, ansiBlue) }
 func BoldMagenta(s string) string      { return styled(s, ansiBold, ansiMagenta) }
 func ReverseBoldCyan(s string) string  { return styled(s, ansiBold, ansiReverse, ansiCyan) }
+func ReverseBoldBlue(s string) string  { return styled(s, ansiBold, ansiReverse, ansiBlue) }
 func InstalledVersion(s string) string { return styled(s, ansiBlueBackground) }
 
 func styled(s string, codes ...string) string {
