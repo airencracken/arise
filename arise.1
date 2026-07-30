@@ -484,6 +484,20 @@ PDEPEND, and RDEPEND metadata. Fix mode takes the Portage VDB lock, revalidates
 the state-bound plan, and uses a rollback journal.
 
 .TP
+\fBmaintain merges \-\-check|\-\-fix|\-\-purge\fR
+Audit interrupted \fB\-MERGING\-\fR VDB entries and Portage failed-merge
+tracking. Fix mode journals and removes confined failed entries, then rebuilds
+their exact atoms through Arise. Tracking remains if rebuilding fails. Purge
+removes only the recovery tracking file.
+
+.TP
+\fBmaintain resume \-\-check|\-\-fix\fR
+Audit or clear Arise resume state and Portage \fBresume\fR and
+\fBresume_backup\fR mtimedb records. Fix mode validates and locks both formats,
+preserves unrelated mtimedb records, and commits through a rollback journal.
+\fBcleanresume\fR is accepted as an alias.
+
+.TP
 \fBbug-report\fR [\fB\-\-output\fR \fIdirectory\fR]
 Create private, reviewable Markdown and versioned JSON diagnostics without
 uploading anything. Optional \fB\-\-archive\fR creates a deterministic

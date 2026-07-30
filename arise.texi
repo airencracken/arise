@@ -304,6 +304,16 @@ Check or apply ordered repository package moves to installed VDB identities,
 slots, and dependency metadata. Fix mode locks and revalidates the VDB and
 commits through a rollback journal.
 
+@item maintain merges --check|--fix|--purge
+Audit interrupted @code{-MERGING-} VDB entries and Portage failed-merge
+tracking. Fix mode journals confined cleanup, rebuilds exact atoms through
+Arise, and retains tracking when rebuilding fails. Purge removes only tracking.
+
+@item maintain resume --check|--fix
+Audit or transactionally clear Arise resume state and Portage's @code{resume}
+and @code{resume_backup} mtimedb records while preserving unrelated keys.
+@code{cleanresume} is accepted as an alias.
+
 @item bug-report [--output @var{directory}]
 Create private, reviewable Markdown and versioned JSON diagnostics without
 uploading anything. @option{--archive} adds a deterministic @file{.tar.zst}

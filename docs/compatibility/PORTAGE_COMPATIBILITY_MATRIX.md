@@ -123,6 +123,8 @@ Important `make.conf` variables are tracked independently from file parsing:
 | `dispatch-conf` | `arise dispatch-conf` | partial | recursive/explicit discovery, decisions, safe three-way premerge, atomic confined archives, hooks, mixed-file diffs, metadata, cancellation, ROOT/config-root, schema, property, adversarial and installed-Portage archive differentials; session rollback/recovery and full command differential corpus remain open |
 | `emaint --check/--fix world` | `arise maintain world --check/--fix` | supported subset | deterministic text/JSON checks, configured-repository coverage, direct explicit repair, optional state-bound saved plans, constrained package moves, mask handling, provably redundant constraint cleanup, lock-time revalidation, interruption-safe atomic repair, alternate-root isolation and disposable-root Portage repair parity |
 | `emaint --check/--fix moveinst` | `arise maintain moveinst --check/--fix` | supported subset | ordered move/slotmove and five dependency-class updates, repository scoping/main fallback, VDB locking, state revalidation, journal rollback, alternate-root isolation and disposable-root Portage parity |
+| `emaint --check/--fix merges`, `--purge` | `arise maintain merges --check/--fix/--purge` | supported subset | strict failed-merge tracking, confined journaled VDB cleanup, exact-atom Arise rebuild, durable recovery across rebuild failure, pretend and idempotence tests |
+| `emaint --check/--fix cleanresume` | `arise maintain resume --check/--fix` (`cleanresume` alias) | supported subset | strict Arise/Portage resume validation, dual locking, unrelated mtimedb-key preservation, atomic cleanup and rollback tests |
 
 ## Maintenance rules
 

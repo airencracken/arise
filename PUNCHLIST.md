@@ -2353,6 +2353,16 @@ Acceptance gate:
   commits through a rollback journal. Unit, adversarial, atomicity,
   interruption, concurrent-change, alternate-ROOT, released-CLI, idempotence
   and disposable-root `emaint` differential tests cover the supported surface.
+- [x] Implement interrupted-merge and resume-state maintenance. `arise maintain
+  merges --check|--fix|--purge` discovers both `-MERGING-` VDB entries and
+  Portage's durable failed-merge list, confines journaled removal to direct VDB
+  package directories, and rebuilds exact atoms through Arise while retaining
+  recovery tracking across failure. `arise maintain resume --check|--fix`
+  validates and transactionally clears Arise resume state plus Portage's
+  `resume` and `resume_backup` mtimedb keys while preserving unrelated records.
+  Strict parsing, traversal rejection, pretend/read-only behavior, idempotence,
+  dual-state locking, atomic publication and injected rollback failures are
+  covered by tests.
 - [~] Before public testing, implement a built-in, strictly read-only
   `arise bug-report` command backed by an isolated `internal/bugreport`
   collector and a versioned report schema. Generate a reviewable `report.md`
