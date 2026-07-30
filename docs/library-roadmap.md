@@ -4,6 +4,35 @@ Arise does not yet promise a public Go API. Packages beneath `internal/` cannot
 be imported by downstream applications, and moving them merely to make them
 importable would freeze immature boundaries too early.
 
+## Intended shared module: gentooling
+
+The working name for the eventual shared library project is **gentooling**:
+
+> Reusable Go libraries for Gentoo system and package tooling.
+
+The intended module path is:
+
+```text
+github.com/airencracken/gentooling
+```
+
+The name describes a broad toolkit rather than a package manager or an
+official Portage component. Arise and Maize should become peer applications
+that consume gentooling:
+
+```text
+gentooling
+├── arise  package-management application
+├── maize  kernel configuration and upgrade tooling
+└── future Gentoo tools
+```
+
+This naming decision does not initialize a public API or require immediate
+repository extraction. Code remains in Arise until its boundary passes the
+stability and downstream-consumer gates below. New code should nevertheless
+follow a dependency direction that permits cohesive packages to move into
+`gentooling` without importing Arise command, terminal, or execution concerns.
+
 New work should nevertheless preserve a direct path to public libraries:
 
 - core operations accept typed inputs, contexts, explicit paths, and explicit

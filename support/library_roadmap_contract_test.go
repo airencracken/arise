@@ -15,6 +15,11 @@ func TestLibraryRoadmapRecordsExternalConsumerBoundary(t *testing.T) {
 	}
 	roadmap := string(data)
 	for _, fragment := range []string{
+		"Intended shared module: gentooling",
+		"github.com/airencracken/gentooling",
+		"Reusable Go libraries for Gentoo system and package tooling.",
+		"Arise and Maize should become peer applications",
+		"does not initialize a public API or require immediate",
 		"Concrete downstream consumer: Maize",
 		"hardware- and package-informed",
 		"not a requirement to merge kernel tooling into Arise",
