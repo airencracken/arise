@@ -196,11 +196,18 @@ func TestAdmitTmpdirJobRejectsSerialBuildBelowSafetyFloor(t *testing.T) {
 	cfg := Config{
 		Rebuild:             rebuild.RebuildConfig{WorkDirBase: "/work"},
 		TmpdirRequireFreeGB: 18,
-		FreeSpace:           func(string) (uint64, error) { return 84 << 20, nil },
+		FreeSpace:           func(string) (uint64, error) { return 827367424, nil },
 	}
 	admitted, err := admitTmpdirJob(cfg, 0)
-	if admitted || err == nil || !strings.Contains(err.Error(), "at least 1073741824 bytes") {
+	if admitted || err == nil {
 		t.Fatalf("admitted=%v err=%v", admitted, err)
+	}
+	want := "has 789.0 MiB available; at least 1.0 GiB is required"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("err=%q, want fragment %q", err, want)
+	}
+	if strings.Contains(err.Error(), "827367424") || strings.Contains(err.Error(), "1073741824") {
+		t.Fatalf("error leaks raw byte counts: %q", err)
 	}
 }
 

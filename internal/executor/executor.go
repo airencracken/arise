@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/airencracken/arise/internal/fetch"
+	"github.com/airencracken/arise/internal/humansize"
 	"github.com/airencracken/arise/internal/merge"
 	"github.com/airencracken/arise/internal/oplock"
 	"github.com/airencracken/arise/internal/rebuild"
@@ -281,15 +282,15 @@ func admitTmpdirJob(cfg Config, running int) (bool, error) {
 		return false, fmt.Errorf("executor: inspect temporary work filesystem for %s: %w", path, err)
 	}
 	if available == 0 {
-		return false, fmt.Errorf("executor: temporary work filesystem for %s has no free space (0 bytes available); free space before retrying", path)
+		return false, fmt.Errorf("executor: temporary work filesystem for %s has no free space (%s available); free space before retrying", path, humansize.Bytes(available))
 	}
 	required := tmpdirRequiredBytes(cfg.TmpdirRequireFreeGB, running)
 	if running == 0 && required > 0 {
 		floor := min(required, minimumSerialTmpdirBytes)
 		if available < floor {
 			return false, fmt.Errorf(
-				"executor: temporary work filesystem for %s has %d bytes available; at least %d bytes are required before starting a serial build",
-				path, available, floor,
+				"executor: temporary work filesystem for %s has %s available; at least %s is required before starting a serial build",
+				path, humansize.Bytes(available), humansize.Bytes(floor),
 			)
 		}
 	}

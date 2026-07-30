@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/airencracken/arise/internal/color"
+	"github.com/airencracken/arise/internal/humansize"
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/log"
 	"github.com/airencracken/arise/internal/search"
@@ -645,14 +646,8 @@ func colorIcon(action, label string) string {
 }
 
 func formatSize(size int64) string {
-	const unit = 1024
-	if size < unit {
+	if size < 0 {
 		return fmt.Sprintf("%d B", size)
 	}
-	div, exp := int64(unit), 0
-	for n := size / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(size)/float64(div), "KMGTPE"[exp])
+	return humansize.Bytes(uint64(size))
 }
