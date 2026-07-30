@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"reflect"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -12,6 +15,98 @@ import (
 	"github.com/airencracken/arise/internal/portage"
 	internalsync "github.com/airencracken/arise/internal/sync"
 )
+
+func TestExecuteSyncTargetsRunsRepositoriesConcurrentlyAndKeepsConfiguredOrder(t *testing.T) {
+	targets := []repositorySyncTarget{
+		{Name: "first", Location: "/first", URL: "git://first"},
+		{Name: "second", Location: "/second", URL: "git://second"},
+		{Name: "third", Location: "/third", URL: "git://third"},
+	}
+	started := make(chan struct{}, len(targets))
+	release := make(chan struct{})
+	var active, maximum atomic.Int32
+	runner := func(ctx context.Context, cfg internalsync.SyncConfig) error {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			observed := maximum.Load()
+			if current <= observed || maximum.CompareAndSwap(observed, current) {
+				break
+			}
+		}
+		started <- struct{}{}
+		select {
+		case <-release:
+			cfg.Progress("unchanged", "Already up to date")
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	done := make(chan []syncTargetResult, 1)
+	go func() {
+		done <- executeSyncTargets(context.Background(), targets, 2, runner, nil)
+	}()
+	<-started
+	<-started
+	if got := maximum.Load(); got != 2 {
+		t.Fatalf("maximum concurrent repositories = %d, want 2", got)
+	}
+	close(release)
+	results := <-done
+	for index, result := range results {
+		if result.Target.Name != targets[index].Name {
+			t.Fatalf("result %d = %q, want %q", index, result.Target.Name, targets[index].Name)
+		}
+	}
+}
+
+func TestExecuteSyncTargetsCancelsPeersAfterFailure(t *testing.T) {
+	failure := errors.New("remote failed")
+	targets := []repositorySyncTarget{
+		{Name: "bad", Location: "/bad", URL: "git://bad"},
+		{Name: "peer", Location: "/peer", URL: "git://peer"},
+	}
+	peerStarted := make(chan struct{})
+	badRelease := make(chan struct{})
+	runner := func(ctx context.Context, cfg internalsync.SyncConfig) error {
+		if cfg.TargetDir == "/bad" {
+			<-badRelease
+			return failure
+		}
+		close(peerStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	done := make(chan []syncTargetResult, 1)
+	go func() {
+		done <- executeSyncTargets(context.Background(), targets, 2, runner, nil)
+	}()
+	<-peerStarted
+	close(badRelease)
+	results := <-done
+	if !errors.Is(results[0].Err, failure) || !errors.Is(results[1].Err, context.Canceled) {
+		t.Fatalf("failure results = [%v, %v]", results[0].Err, results[1].Err)
+	}
+	if got := firstSyncFailure(results); got == nil || !errors.Is(got.Err, failure) {
+		t.Fatalf("primary failure = %#v", got)
+	}
+}
+
+func TestPrintSyncResultsIsStableInConfiguredOrder(t *testing.T) {
+	previousColor := color.UseColor
+	color.UseColor = false
+	t.Cleanup(func() { color.UseColor = previousColor })
+	results := []syncTargetResult{
+		{Target: repositorySyncTarget{Name: "first", URL: "git://first"}, Report: syncTargetReport{Stage: "unchanged"}, Elapsed: time.Second},
+		{Target: repositorySyncTarget{Name: "second", URL: "git://second"}, Report: syncTargetReport{Stage: "unchanged"}, Elapsed: 2 * time.Second},
+	}
+	var output bytes.Buffer
+	printSyncResults(&output, results, false, false)
+	if first, second := strings.Index(output.String(), "first"), strings.Index(output.String(), "second"); first < 0 || second <= first {
+		t.Fatalf("sync results are not in configured order:\n%s", output.String())
+	}
+}
 
 func TestConfiguredSyncTargetsIncludesPrimaryAndAllConfiguredRepositories(t *testing.T) {
 	repositories := []portage.RepoEntry{

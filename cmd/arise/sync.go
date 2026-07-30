@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	stdsync "sync"
 	"time"
 
 	"github.com/airencracken/arise/internal/color"
@@ -39,76 +40,22 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 	}
 	started := time.Now()
 	fmt.Printf("%s %s\n", color.Bold("Syncing"), formatRepositoryCount(len(targets)))
-	for _, target := range targets {
-		if target.URL == "" {
-			fmt.Printf("  %-20s %s\n", target.Name, color.Yellow("local only"))
-			if *verbose {
-				fmt.Printf("    Location: %s\n", target.Location)
-			}
-			continue
+	progress := startTerminalProgressMode("Synchronizing repositories", true, true)
+	results := executeSyncTargets(commandContext, targets, 4, sync.Sync, func(name, detail string) {
+		progress.setActivity(formatSyncProgress(name, detail))
+	})
+	progress.stopAndClear()
+	printSyncResults(os.Stdout, results, *verbose, *debugOutput)
+	if failed := firstSyncFailure(results); failed != nil {
+		if errors.Is(failed.Err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "sync: interrupted by user")
+			os.Exit(130)
 		}
-		targetStarted := time.Now()
-		var transport bytes.Buffer
-		output := io.Writer(&transport)
-		progress := startTerminalProgressMode(
-			formatSyncProgress(target.Name, "Starting synchronization"),
-			!*verbose,
-			true,
-		)
-		if *verbose {
-			fmt.Printf("\n%s\n", color.Bold(target.Name))
-			fmt.Printf("  URI:      %s\n", target.URL)
-			fmt.Printf("  Location: %s\n", target.Location)
-			output = os.Stdout
+		if failed.Transport != "" {
+			fmt.Fprint(os.Stderr, failed.Transport)
 		}
-		report := syncTargetReport{}
-		timings := newSyncStageTimings(targetStarted)
-		cfg := sync.SyncConfig{
-			RepoURL:        target.URL,
-			TargetDir:      target.Location,
-			RepositoryName: target.Name,
-			SyncType:       target.SyncType,
-			Output:         output,
-			Progress: func(stage, detail string) {
-				report.Stage = stage
-				timings.advance(stage, time.Now())
-				if *verbose {
-					fmt.Printf("  %s %s\n", color.Cyan("["+stage+"]"), detail)
-				} else {
-					progress.setActivity(formatSyncProgress(target.Name, detail))
-				}
-			},
-			Changes: func(changes sync.ChangeSummary) {
-				report.Changes = changes
-				report.HasChanges = true
-				if *verbose {
-					printSyncChanges(changes)
-				}
-			},
-		}
-		if err := sync.Sync(commandContext, cfg); err != nil {
-			timings.finish(time.Now())
-			progress.stopAndClear()
-			if errors.Is(err, context.Canceled) {
-				fmt.Fprintln(os.Stderr, "sync: interrupted by user")
-				os.Exit(130)
-			}
-			if transport.Len() > 0 {
-				fmt.Fprint(os.Stderr, transport.String())
-			}
-			fmt.Fprintf(os.Stderr, "\n%s %s: %v\n", color.Red("Sync failed:"), target.Name, err)
-			os.Exit(1)
-		}
-		timings.finish(time.Now())
-		if *verbose {
-			fmt.Printf("  %s synchronized in %s\n", color.Green("Done."), time.Since(targetStarted).Round(time.Millisecond))
-		} else {
-			progress.stopAndClear()
-			printSyncTargetReport(os.Stdout, target.Name, report, time.Since(targetStarted))
-		}
-		if *debugOutput {
-			fmt.Printf("    Stages: %s\n", timings.String())
-		}
+		fmt.Fprintf(os.Stderr, "\n%s %s: %v\n", color.Red("Sync failed:"), failed.Target.Name, failed.Err)
+		os.Exit(1)
 	}
 	if err := commandContext.Err(); err != nil {
 		fmt.Fprintln(os.Stderr, "sync: interrupted by user")
@@ -117,6 +64,126 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 	fmt.Printf("\n%s\n", color.Bold("Refreshing resolver index"))
 	runIndex(dbPath, repoPath)
 	fmt.Printf("%s in %s\n", color.Green("Synchronized"), time.Since(started).Round(time.Millisecond))
+}
+
+type syncTargetResult struct {
+	Target    repositorySyncTarget
+	Report    syncTargetReport
+	Timings   *syncStageTimings
+	Elapsed   time.Duration
+	Transport string
+	Err       error
+}
+
+type syncTargetRunner func(context.Context, sync.SyncConfig) error
+
+func executeSyncTargets(ctx context.Context, targets []repositorySyncTarget, limit int, runner syncTargetRunner, activity func(string, string)) []syncTargetResult {
+	if limit < 1 {
+		limit = 1
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make([]syncTargetResult, len(targets))
+	semaphore := make(chan struct{}, limit)
+	var wait stdsync.WaitGroup
+	for index, target := range targets {
+		results[index].Target = target
+		if target.URL == "" {
+			results[index].Report.Stage = "local"
+			continue
+		}
+		wait.Add(1)
+		go func(index int, target repositorySyncTarget) {
+			defer wait.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				results[index].Err = ctx.Err()
+				return
+			}
+			started := time.Now()
+			var transport bytes.Buffer
+			report := syncTargetReport{}
+			timings := newSyncStageTimings(started)
+			err := runner(ctx, sync.SyncConfig{
+				RepoURL: target.URL, TargetDir: target.Location,
+				RepositoryName: target.Name, SyncType: target.SyncType,
+				Output: &transport,
+				Progress: func(stage, detail string) {
+					report.Stage = stage
+					timings.advance(stage, time.Now())
+					if activity != nil {
+						activity(target.Name, detail)
+					}
+				},
+				Changes: func(changes sync.ChangeSummary) {
+					report.Changes = changes
+					report.HasChanges = true
+				},
+			})
+			timings.finish(time.Now())
+			results[index] = syncTargetResult{
+				Target: target, Report: report, Timings: timings,
+				Elapsed: time.Since(started), Transport: transport.String(), Err: err,
+			}
+			if err != nil && !errors.Is(err, context.Canceled) {
+				cancel()
+			}
+		}(index, target)
+	}
+	wait.Wait()
+	return results
+}
+
+func firstSyncFailure(results []syncTargetResult) *syncTargetResult {
+	var canceled *syncTargetResult
+	for index := range results {
+		if results[index].Err == nil {
+			continue
+		}
+		if !errors.Is(results[index].Err, context.Canceled) {
+			return &results[index]
+		}
+		if canceled == nil {
+			canceled = &results[index]
+		}
+	}
+	return canceled
+}
+
+func printSyncResults(writer io.Writer, results []syncTargetResult, verbose, debug bool) {
+	for _, result := range results {
+		if result.Target.URL == "" {
+			fmt.Fprintf(writer, "  %-20s %s\n", result.Target.Name, color.Yellow("local only"))
+			if verbose {
+				fmt.Fprintf(writer, "    Location: %s\n", result.Target.Location)
+			}
+			continue
+		}
+		if result.Err != nil && errors.Is(result.Err, context.Canceled) {
+			continue
+		}
+		if verbose {
+			fmt.Fprintf(writer, "\n%s\n", color.Bold(result.Target.Name))
+			fmt.Fprintf(writer, "  URI:      %s\n", result.Target.URL)
+			fmt.Fprintf(writer, "  Location: %s\n", result.Target.Location)
+			if result.Transport != "" {
+				fmt.Fprint(writer, result.Transport)
+			}
+			if result.Report.HasChanges {
+				printPackageChanges(writer, result.Report.Changes)
+			}
+			if result.Err == nil {
+				fmt.Fprintf(writer, "  %s synchronized in %s\n", color.Green("Done."), result.Elapsed.Round(time.Millisecond))
+			}
+		} else if result.Err == nil {
+			printSyncTargetReport(writer, result.Target.Name, result.Report, result.Elapsed)
+		}
+		if debug && result.Timings != nil {
+			fmt.Fprintf(writer, "    Stages: %s\n", result.Timings.String())
+		}
+	}
 }
 
 func formatSyncProgress(name, detail string) string {

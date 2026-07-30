@@ -280,7 +280,7 @@ func updateGitRepoCommand(ctx context.Context, cfg SyncConfig) error {
 		return err
 	}
 	if branch == "" {
-		return errors.New("repository has a detached HEAD; select a branch before syncing")
+		return errDetachedHead
 	}
 
 	cfg.progress("fetch", "Fetching "+branch+" from origin")
@@ -302,7 +302,7 @@ func updateGitRepoCommand(ctx context.Context, cfg SyncConfig) error {
 		return err
 	}
 	if dirty != "" {
-		return errors.New("repository has local changes; refusing to overwrite them")
+		return errDirtyWorktree
 	}
 
 	cfg.progress("update", "Updating working tree")
