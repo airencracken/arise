@@ -577,7 +577,10 @@ func TestSearch_Print(t *testing.T) {
 
 func TestSearch_JSONOutput(t *testing.T) {
 	results := []SearchResult{
-		{Category: "dev-lang", Package: "python", Version: "3.12.0"},
+		{
+			Category: "dev-lang", Package: "python", Version: "3.12.0",
+			BestVersion: "3.13.0", BestVisibleVersion: "3.12.0",
+		},
 	}
 
 	out, err := JSONOutput(results)
@@ -594,6 +597,9 @@ func TestSearch_JSONOutput(t *testing.T) {
 	}
 	if parsed[0].Package != "python" {
 		t.Errorf("expected python in JSON, got %s", parsed[0].Package)
+	}
+	if parsed[0].BestVersion != "3.13.0" || parsed[0].BestVisibleVersion != "3.12.0" {
+		t.Errorf("version summary fields were not preserved: %#v", parsed[0])
 	}
 }
 

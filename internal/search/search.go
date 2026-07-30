@@ -37,18 +37,19 @@ type SearchResult struct {
 	Stable      bool
 	Testing     bool
 
-	AllVersions       []string           `json:",omitempty"`
-	IsMasked          bool               `json:",omitempty"`
-	IsOverflow        bool               `json:",omitempty"`
-	DependsOn         []string           `json:",omitempty"`
-	RequiredBy        []string           `json:",omitempty"`
-	BestVersion       string             `json:",omitempty"`
-	InstalledVer      string             `json:",omitempty"`
-	VersionInfo       []VersionInfo      `json:",omitempty"`
-	Repository        string             `json:",omitempty"`
-	RepoPath          string             `json:",omitempty"`
-	OverlayIndex      int                `json:",omitempty"`
-	InstalledVersions []InstalledVersion `json:",omitempty"`
+	AllVersions        []string           `json:",omitempty"`
+	IsMasked           bool               `json:",omitempty"`
+	IsOverflow         bool               `json:",omitempty"`
+	DependsOn          []string           `json:",omitempty"`
+	RequiredBy         []string           `json:",omitempty"`
+	BestVersion        string             `json:",omitempty"`
+	BestVisibleVersion string             `json:",omitempty"`
+	InstalledVer       string             `json:",omitempty"`
+	VersionInfo        []VersionInfo      `json:",omitempty"`
+	Repository         string             `json:",omitempty"`
+	RepoPath           string             `json:",omitempty"`
+	OverlayIndex       int                `json:",omitempty"`
+	InstalledVersions  []InstalledVersion `json:",omitempty"`
 }
 
 type VersionInfo struct {
@@ -811,6 +812,14 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig, installed map[s
 			}
 			if len(versions) > 0 {
 				r.BestVersion = bestVersionString(versions)
+			}
+			for _, version := range versionInfo {
+				if version.Masked || !version.Stable {
+					continue
+				}
+				if r.BestVisibleVersion == "" || compareVersionStrings(version.Version, r.BestVisibleVersion) > 0 {
+					r.BestVisibleVersion = version.Version
+				}
 			}
 			expanded = append(expanded, r)
 		} else {

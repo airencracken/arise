@@ -195,6 +195,47 @@ func TestResolveDecisionLedgerClassifiesCommittedCandidates(t *testing.T) {
 	}
 }
 
+func TestDecisionLedgerIncludesRejectedAlternativesForWarningBlocker(t *testing.T) {
+	g := makeGraph()
+	pkgKeywords(g, "dev-python/sphinx", "9.1.0", "0", "0", true, nil, "amd64")
+	pkgKeywords(g, "dev-python/sphinx", "9.1.0-r1", "0", "0", false, nil, "~amd64")
+	portageConfig := &portage.Config{
+		MakeConf:        map[string]string{"ARCH": "amd64"},
+		ACCEPT_KEYWORDS: []string{"amd64"},
+	}
+	r := &resolver{
+		graph:         g,
+		config:        DefaultResolveConfig(),
+		portageConfig: portageConfig,
+		constraints:   make(map[string][]*atom.Atom),
+		warningDiagnostics: []WarningDiagnostic{{
+			Blocker: "dev-python/sphinx",
+		}},
+		onlyDepsTargets: make(map[string]bool),
+		maskCache:       make(map[string]portage.MaskStatus),
+		keywordCache:    make(map[string]bool),
+	}
+
+	ledger := r.buildDecisionLedger(nil, nil)
+	var installed, rejected *CandidateDecision
+	for index := range ledger.Records {
+		record := &ledger.Records[index]
+		switch record.CPV {
+		case "dev-python/sphinx-9.1.0":
+			installed = record
+		case "dev-python/sphinx-9.1.0-r1":
+			rejected = record
+		}
+	}
+	if installed == nil || installed.Outcome != DecisionRetained {
+		t.Fatalf("installed blocker decision = %#v", installed)
+	}
+	if rejected == nil || rejected.Outcome != DecisionRejected ||
+		!slices.Contains(rejected.Reasons, "keywords not accepted") {
+		t.Fatalf("rejected blocker alternative = %#v", rejected)
+	}
+}
+
 func TestDecisionLedgerBoundsAdversarialCandidateVolume(t *testing.T) {
 	records := make([]CandidateDecision, MaxDecisionRecords+100)
 	for index := range records {

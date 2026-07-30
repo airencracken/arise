@@ -131,6 +131,50 @@ func BestVisible(db *badger.DB, cfg *portage.Config, query string) (*metadata.Pa
 	return records[len(records)-1], nil
 }
 
+// BestMatching returns the highest indexed repository record satisfying query
+// without applying mask or keyword policy. Exact diagnostic queries use this
+// to inspect candidates whose invisibility is itself the fact under review.
+func BestMatching(db *badger.DB, query string) (*metadata.PackageMetadata, error) {
+	rule, err := atom.ParsePackageAtom(query)
+	if err != nil {
+		return nil, fmt.Errorf("repository query: parse atom: %w", err)
+	}
+	records, err := ingest.QueryVersions(db, rule.Key())
+	if err != nil {
+		return nil, err
+	}
+	var result []*metadata.PackageMetadata
+	for _, record := range records {
+		slot := record.SLOT
+		if record.Subslot != "" {
+			slot += "/" + record.Subslot
+		}
+		if portage.PackageAtomMatches(queryWithoutUse(*rule), record.CPV(), slot, record.Repository) {
+			result = append(result, record)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left, leftErr := atom.ParseVersion(result[i].Version)
+		right, rightErr := atom.ParseVersion(result[j].Version)
+		if leftErr == nil && rightErr == nil {
+			if comparison := left.Compare(right); comparison != 0 {
+				return comparison < 0
+			}
+		}
+		if result[i].RepositoryPriority != result[j].RepositoryPriority {
+			return result[i].RepositoryPriority < result[j].RepositoryPriority
+		}
+		if result[i].OverlayIndex != result[j].OverlayIndex {
+			return result[i].OverlayIndex < result[j].OverlayIndex
+		}
+		return result[i].Repository < result[j].Repository
+	})
+	if len(result) == 0 {
+		return nil, nil
+	}
+	return result[len(result)-1], nil
+}
+
 // AllBestVisible returns one preferred visible record for every indexed CP.
 func AllBestVisible(db *badger.DB, cfg *portage.Config) ([]*metadata.PackageMetadata, error) {
 	keys := make(map[string]bool)

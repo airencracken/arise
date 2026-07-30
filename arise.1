@@ -403,9 +403,12 @@ atoms with an equals sign, \fB\-q\fR suppresses explanatory text, and
 \fB\-a\fR is shorthand for quiet \fBall\fR output.
 
 .TP
-\fBquery\fR \fIatom\fR
-Look up metadata for a specific package from the database.
-Display description, homepage, license, and other cached metadata.
+\fBquery\fR [\fIquery-option\fR] \fIatom\fR
+Query indexed repository, binary-package, or installed metadata, including
+best-visible versions, metadata keys, virtual expansion, and ebuild paths.
+For repository metadata, a versioned atom inspects its matching indexed
+candidate even when mask or keyword policy makes that candidate invisible;
+an unversioned atom selects the best visible candidate.
 
 .TP
 \fBstate\fR \fIsubcommand\fR
@@ -463,6 +466,7 @@ Repository, binary-package, and installed metadata:
 arise query \-\-best-visible llvm-core/clang
 arise query \-\-best-visible \-\-type=binary llvm-core/clang
 arise query \-\-metadata=SLOT,KEYWORDS llvm-core/clang
+arise query \-\-metadata=KEYWORDS,RDEPEND '=dev-python/sphinx\-9.1.0\-r1'
 arise query \-\-expand-virtual virtual/libc
 arise query \-\-ebuild llvm-core/clang
 .EE

@@ -245,6 +245,9 @@ integrity, atom matching, presence, and best installed versions.
 @item query [@var{query-option}] @var{atom}
 Query indexed repository, binary-package, or installed metadata. It can report
 best-visible versions, metadata keys, virtual expansion, and ebuild paths.
+For repository metadata, a versioned atom inspects its matching indexed
+candidate even when mask or keyword policy makes that candidate invisible;
+an unversioned atom selects the best visible candidate.
 
 @item state @var{subcommand}
 Emit deterministic available or installed package state used by parity,
@@ -282,6 +285,7 @@ $ arise installed --check llvm-core/clang
 $ arise query --best-visible llvm-core/clang
 $ arise query --best-visible --type=binary llvm-core/clang
 $ arise query --metadata=SLOT,KEYWORDS llvm-core/clang
+$ arise query --metadata=KEYWORDS,RDEPEND '=dev-python/sphinx-9.1.0-r1'
 $ arise query --expand-virtual virtual/libc
 $ arise query --ebuild llvm-core/clang
 

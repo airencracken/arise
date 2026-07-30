@@ -35,6 +35,10 @@ func TestPrintResolutionWarningsIncludesConstraintAndRecoveryAdvice(t *testing.T
 	warning := "skipped update dev-python/docutils-0.23"
 	result := &resolve.ResolveResult{
 		Warnings: []string{warning},
+		DecisionLedger: resolve.DecisionLedger{Records: []resolve.CandidateDecision{{
+			Outcome: resolve.DecisionRejected, State: "available",
+			CPV: "dev-python/sphinx-9.1.0-r1", Reasons: []string{"keywords not accepted"},
+		}}},
 		WarningDiagnostics: []resolve.WarningDiagnostic{{
 			Summary: warning, Message: "dev-python/docutils-0.23 was skipped because an installed dependency requires:",
 			Source: "<dev-python/docutils-0.23[python_targets_python3_14(-)]",
@@ -50,11 +54,23 @@ func TestPrintResolutionWarningsIncludesConstraintAndRecoveryAdvice(t *testing.T
 		"dev-python/docutils-0.23 was skipped",
 		"<dev-python/docutils-0.23[python_targets_python3_14(-)]",
 		"inspect compatible versions: arise search --exact --versions dev-python/sphinx",
+		"newer candidate unavailable: dev-python/sphinx-9.1.0-r1 (keywords not accepted)",
 		"if no longer needed: arise --pretend uninstall =dev-python/sphinx-9.1.0",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("warning output omits %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestRenderDecisionLedgerPrioritizesWarningBlockers(t *testing.T) {
+	ledger := resolve.DecisionLedger{Records: []resolve.CandidateDecision{
+		{Outcome: resolve.DecisionRejected, State: "available", CPV: "app-admin/first-2", Reasons: []string{"keywords not accepted"}},
+		{Outcome: resolve.DecisionRejected, State: "available", CPV: "dev-python/sphinx-9.1.0-r1", Reasons: []string{"keywords not accepted"}},
+	}}
+	lines := renderDecisionLedger(ledger, 1, "dev-python/sphinx")
+	if len(lines) != 2 || !strings.Contains(lines[1], "dev-python/sphinx-9.1.0-r1") {
+		t.Fatalf("focused decision ledger = %#v", lines)
 	}
 }
 

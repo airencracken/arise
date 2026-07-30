@@ -683,7 +683,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 		printActionTotals(result.Install, downloadSizes, cfg.FetchOnly)
-		for _, line := range renderDebugDecisionLedger(*debugOutput, result.DecisionLedger, 10) {
+		for _, line := range renderDebugDecisionLedger(*debugOutput, result.DecisionLedger, 10, warningBlockers(result.WarningDiagnostics)...) {
 			fmt.Println(line)
 		}
 		if *showEstimates {
@@ -1080,6 +1080,9 @@ func printResolutionWarnings(writer io.Writer, result *resolve.ResolveResult, ve
 			advised[detail.Blocker] = true
 			fmt.Fprintln(writer, "    To clear this block:")
 			fmt.Fprintf(writer, "      inspect compatible versions: arise search --exact --versions %s\n", detail.Blocker)
+			if candidate, reasons, ok := highestRejectedBlockerCandidate(result.DecisionLedger, detail.Blocker); ok {
+				fmt.Fprintf(writer, "      newer candidate unavailable: %s (%s)\n", candidate, strings.Join(reasons, "; "))
+			}
 			if detail.BlockerCPV != "" {
 				fmt.Fprintf(writer, "      if no longer needed: arise --pretend uninstall =%s\n", detail.BlockerCPV)
 			}
@@ -1099,7 +1102,7 @@ func renderResolverDiagnostics(enabled bool, timings planTimings, metrics resolv
 	}
 }
 
-func renderDecisionLedger(ledger resolve.DecisionLedger, detailLimit int) []string {
+func renderDecisionLedger(ledger resolve.DecisionLedger, detailLimit int, focusPackages ...string) []string {
 	counts := map[string]int{}
 	for _, record := range ledger.Records {
 		counts[record.Outcome]++
@@ -1116,8 +1119,14 @@ func renderDecisionLedger(ledger resolve.DecisionLedger, detailLimit int) []stri
 	if detailLimit <= 0 {
 		return lines
 	}
+	records := append([]resolve.CandidateDecision(nil), ledger.Records...)
+	sort.SliceStable(records, func(i, j int) bool {
+		left := decisionMatchesAnyPackage(records[i], focusPackages)
+		right := decisionMatchesAnyPackage(records[j], focusPackages)
+		return left && !right
+	})
 	details := 0
-	for _, record := range ledger.Records {
+	for _, record := range records {
 		if record.Outcome == resolve.DecisionSelected || record.Outcome == resolve.DecisionRetained {
 			continue
 		}
@@ -1130,11 +1139,58 @@ func renderDecisionLedger(ledger resolve.DecisionLedger, detailLimit int) []stri
 	return lines
 }
 
-func renderDebugDecisionLedger(enabled bool, ledger resolve.DecisionLedger, detailLimit int) []string {
+func renderDebugDecisionLedger(enabled bool, ledger resolve.DecisionLedger, detailLimit int, focusPackages ...string) []string {
 	if !enabled {
 		return nil
 	}
-	return renderDecisionLedger(ledger, detailLimit)
+	return renderDecisionLedger(ledger, detailLimit, focusPackages...)
+}
+
+func warningBlockers(diagnostics []resolve.WarningDiagnostic) []string {
+	var blockers []string
+	for _, detail := range diagnostics {
+		if detail.Blocker != "" {
+			blockers = append(blockers, detail.Blocker)
+		}
+	}
+	sort.Strings(blockers)
+	return blockers
+}
+
+func decisionMatchesAnyPackage(record resolve.CandidateDecision, packages []string) bool {
+	parsed, err := atom.Parse(record.CPV)
+	if err != nil {
+		return false
+	}
+	for _, cp := range packages {
+		if parsed.CP() == cp {
+			return true
+		}
+	}
+	return false
+}
+
+func highestRejectedBlockerCandidate(ledger resolve.DecisionLedger, blocker string) (string, []string, bool) {
+	var best *resolve.CandidateDecision
+	var bestVersion *atom.Version
+	for index := range ledger.Records {
+		record := &ledger.Records[index]
+		if record.Outcome != resolve.DecisionRejected || record.State != "available" ||
+			!decisionMatchesAnyPackage(*record, []string{blocker}) {
+			continue
+		}
+		parsed, err := atom.Parse(record.CPV)
+		if err != nil || parsed.Version == nil {
+			continue
+		}
+		if best == nil || parsed.Version.Compare(bestVersion) > 0 {
+			best, bestVersion = record, parsed.Version
+		}
+	}
+	if best == nil {
+		return "", nil, false
+	}
+	return best.CPV, append([]string(nil), best.Reasons...), true
 }
 
 func downloadBinpkgTargets(ctx context.Context, binhosts, targets []string, destination string, required, quiet bool) error {

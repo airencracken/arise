@@ -70,6 +70,27 @@ func TestBestVisibleHonorsAtomKeywordsMasksAndGentooVersionOrder(t *testing.T) {
 	}
 }
 
+func TestBestMatchingInspectsExactInvisibleRevision(t *testing.T) {
+	db := queryTestDB(t,
+		&metadata.PackageMetadata{Category: "dev-python", Package: "sphinx", Version: "9.1.0", SLOT: "0", Repository: "gentoo", KEYWORDS: "amd64"},
+		&metadata.PackageMetadata{Category: "dev-python", Package: "sphinx", Version: "9.1.0-r1", SLOT: "0", Repository: "gentoo", KEYWORDS: "~amd64"},
+	)
+	record, err := BestMatching(db, "=dev-python/sphinx-9.1.0-r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record == nil || record.Version != "9.1.0-r1" || record.KEYWORDS != "~amd64" {
+		t.Fatalf("BestMatching exact testing revision = %#v", record)
+	}
+}
+
+func TestBestMatchingRejectsAdversarialAtom(t *testing.T) {
+	db := queryTestDB(t)
+	if _, err := BestMatching(db, "../../etc/passwd"); err == nil {
+		t.Fatal("path-like exact metadata atom accepted")
+	}
+}
+
 func TestAllBestVisibleReturnsOneSortedRecordPerPackage(t *testing.T) {
 	db := queryTestDB(t,
 		&metadata.PackageMetadata{Category: "z", Package: "last", Version: "1", SLOT: "0", Repository: "gentoo", KEYWORDS: "amd64"},

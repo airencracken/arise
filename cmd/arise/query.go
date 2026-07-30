@@ -290,7 +290,17 @@ func runMetadataQuery(args []string, dbPath string) int {
 		fmt.Fprintf(os.Stderr, "query --metadata: loading portage config: %v\n", err)
 		return 1
 	}
-	record, err := repositoryquery.BestVisible(db, cfg, args[0])
+	rule, parseErr := atom.ParsePackageAtom(args[0])
+	if parseErr != nil {
+		fmt.Fprintf(os.Stderr, "query --metadata: %v\n", parseErr)
+		return 2
+	}
+	var record *metadata.PackageMetadata
+	if rule.Version != nil {
+		record, err = repositoryquery.BestMatching(db, args[0])
+	} else {
+		record, err = repositoryquery.BestVisible(db, cfg, args[0])
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "query --metadata: %v\n", err)
 		return 2

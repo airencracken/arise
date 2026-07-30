@@ -48,8 +48,26 @@ func (r *resolver) buildDecisionLedger(installs, removals []PkgAction) DecisionL
 		}
 	}
 
-	keys := make([]string, 0, len(r.constraints))
+	candidateKeys := make(map[string]bool, len(r.constraints))
 	for key := range r.constraints {
+		candidateKeys[key] = true
+	}
+	// A retained installed package can block an update without receiving a
+	// committed constraint of its own. Preserve its rejected alternatives in
+	// the ledger so warning explanations have resolver-owned evidence.
+	for _, diagnostic := range r.warningDiagnostics {
+		node := r.graph.Packages[diagnostic.Blocker]
+		if node == nil {
+			continue
+		}
+		for _, version := range node.Versions {
+			if version != nil && version.Slot != "" {
+				candidateKeys[diagnostic.Blocker+"|"+version.Slot] = true
+			}
+		}
+	}
+	keys := make([]string, 0, len(candidateKeys))
+	for key := range candidateKeys {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
