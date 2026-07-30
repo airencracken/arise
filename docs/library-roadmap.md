@@ -45,6 +45,12 @@ policy, and source-line provenance while rejecting parent escapes, cycles,
 malformed rules, and policy symlinks. Arise now uses this graph when building
 its effective Portage configuration.
 
+Gentooling `v0.3.0` adds explicit effective configuration over make.globals,
+profile defaults, make.conf, package.use, USE_EXPAND, and a caller-supplied
+command environment. It retains policy layers and source provenance without
+reading process state implicitly. Arise search now consumes this API for its
+installed USE-expansion presentation.
+
 Code remains in Arise until its boundary passes the stability and
 downstream-consumer gates below. New code should follow a dependency direction
 that permits cohesive packages to move into `gentooling` without importing

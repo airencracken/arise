@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/airencracken/arise/internal/nameindex"
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/search"
+	"github.com/airencracken/gentooling"
 )
 
 func runSearch(args []string, dbPath string) int {
@@ -158,10 +161,10 @@ func runSearch(args []string, dbPath string) int {
 	}
 
 	var useExpand, useExpandHidden []string
-	if portageConfig, configErr := portage.LoadEffectiveConfig(*portageConfigRoot); configErr == nil {
-		useExpand = append(useExpand, portageConfig.UseExpand...)
-		useExpand = append(useExpand, portageConfig.UseExpandImplicit...)
-		useExpandHidden = append(useExpandHidden, portageConfig.UseExpandHidden...)
+	if effective, configErr := searchEffectiveConfig(); configErr == nil {
+		useExpand = append(useExpand, effective.UseExpand...)
+		useExpand = append(useExpand, effective.UseExpandImplicit...)
+		useExpandHidden = append(useExpandHidden, effective.UseExpandHidden...)
 	}
 
 	overlays := make(map[int]search.SearchResult)
@@ -255,6 +258,29 @@ func runSearch(args []string, dbPath string) int {
 	}
 	fmt.Println()
 	return searchExitCode(len(results))
+}
+
+func searchEffectiveConfig() (gentooling.EffectiveConfig, error) {
+	paths := gentooling.DefaultSystemPaths("/")
+	paths.ConfigRoot = *portageConfigRoot
+	paths.ActiveProfile = filepath.Join(*portageConfigRoot, "make.profile")
+	if _, err := os.Lstat(paths.ActiveProfile); os.IsNotExist(err) {
+		paths.ActiveProfile = ""
+	} else if err != nil {
+		return gentooling.EffectiveConfig{}, err
+	}
+	repositories, err := portage.RepositoryPolicyOrder(filepath.Join(*portageConfigRoot, "repos.conf"))
+	if err != nil {
+		return gentooling.EffectiveConfig{}, err
+	}
+	for _, repository := range repositories {
+		if repository.Name != "" && repository.Location != "" {
+			paths.Repositories = append(paths.Repositories, gentooling.RepositoryPath{
+				Name: repository.Name, Path: repository.Location,
+			})
+		}
+	}
+	return gentooling.ReadEffectiveConfig(context.Background(), paths, gentooling.ConfigOptions{Environment: os.Environ()})
 }
 
 func installedUseDisplay(installed search.InstalledVersion, expandGroups, hiddenGroups []string) string {
