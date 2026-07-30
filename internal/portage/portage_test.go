@@ -843,6 +843,33 @@ func TestPackageAcceptKeywordsForEmptyRuleAcceptsHostTesting(t *testing.T) {
 	}
 }
 
+func TestEffectiveAcceptedKeywordsForAppliesOrderedGlobalAndPackagePolicy(t *testing.T) {
+	cfg := &Config{
+		ACCEPT_KEYWORDS: []string{"~amd64", "-amd64"},
+		PackageAcceptKeywordRules: []PackageUseRule{
+			{Atom: "dev-lang/python", Flags: []string{"amd64", "-~amd64"}},
+			{Atom: ">=dev-lang/python-3.13", Flags: []string{"~amd64"}},
+		},
+	}
+	got := cfg.EffectiveAcceptedKeywordsFor("dev-lang/python-3.13", "0", "gentoo", "amd64")
+	if want := []string{"amd64", "~amd64"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("EffectiveAcceptedKeywordsFor() = %v, want %v", got, want)
+	}
+}
+
+func TestEffectiveAcceptedKeywordsForRejectsAdversarialNonmatchingRule(t *testing.T) {
+	cfg := &Config{
+		PackageAcceptKeywordRules: []PackageUseRule{
+			{Atom: "=dev-lang/python-3.13", Flags: []string{"~amd64"}},
+			{Atom: "../../etc/passwd", Flags: []string{"**"}},
+		},
+	}
+	got := cfg.EffectiveAcceptedKeywordsFor("dev-lang/python-3.12", "0", "gentoo", "amd64")
+	if want := []string{"amd64"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("nonmatching policy changed accepted keywords: got %v, want %v", got, want)
+	}
+}
+
 func TestParsePackageLicense_Basic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "package.license")

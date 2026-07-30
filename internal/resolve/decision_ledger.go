@@ -2,6 +2,8 @@ package resolve
 
 import (
 	"encoding/json"
+	"fmt"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -153,7 +155,7 @@ func (r *resolver) candidateDecisionOutcome(node *PkgNode, version *VersionInfo,
 		return []string{"masked by " + status.Source + " atom " + status.Atom}, DecisionRejected
 	}
 	if !version.Installed && !r.versionKeywordAccepted(node, version) {
-		return []string{"keywords not accepted"}, DecisionRejected
+		return []string{r.keywordRejectionReason(node, version)}, DecisionRejected
 	}
 	flags := r.candidateUseFlags(node, version)
 	for _, raw := range requirements {
@@ -163,6 +165,24 @@ func (r *resolver) candidateDecisionOutcome(node *PkgNode, version *VersionInfo,
 		}
 	}
 	return []string{"lower committed preference"}, DecisionSkipped
+}
+
+func (r *resolver) keywordRejectionReason(node *PkgNode, version *VersionInfo) string {
+	keywords := ""
+	if version != nil {
+		keywords = version.Keywords
+	}
+	reason := fmt.Sprintf("keywords not accepted: candidate KEYWORDS=%q", strings.TrimSpace(keywords))
+	if r.portageConfig == nil || node == nil || node.Atom == nil || version == nil || version.Version == nil {
+		return reason
+	}
+	arch := r.portageConfig.MakeConf["ARCH"]
+	if arch == "" {
+		arch = gentooRuntimeArch(runtime.GOARCH)
+	}
+	cpv := node.Atom.CP() + "-" + version.Version.Raw
+	accepted := r.portageConfig.EffectiveAcceptedKeywordsFor(cpv, policySlot(version), version.Repository, arch)
+	return fmt.Sprintf("%s; effective ACCEPT_KEYWORDS=%q", reason, strings.Join(accepted, " "))
 }
 
 func selectedReplacesSlot(actions []PkgAction, cp, slot string) bool {

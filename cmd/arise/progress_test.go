@@ -179,6 +179,28 @@ func TestNonAnimatedTerminalProgressHasNoBackgroundRedraw(t *testing.T) {
 	}
 }
 
+func TestAnimatedTerminalProgressDoesNotRedrawUnchangedMeasuredProgress(t *testing.T) {
+	var output bytes.Buffer
+	progress := &terminalProgress{
+		output: true, terminal: true, animate: true, writer: &output,
+		progressBucket: -1,
+	}
+	message := ">>> Installing package contents: 110/110 entries (100%) (2 of 14) dev-go/gopls-0.22.0:0"
+	progress.setProgress(message, 110, 110)
+	for frame := range 100 {
+		progress.render(frame % len(progressFrames))
+	}
+	progress.message(">>> Syncing package contents (2 of 14) dev-go/gopls-0.22.0:0::gentoo")
+
+	got := output.String()
+	if count := strings.Count(got, message); count != 1 {
+		t.Fatalf("unchanged completion rendered %d times, want 1: %q", count, got)
+	}
+	if !strings.Contains(got, "\r\033[K"+message+"\r\033[K>>> Syncing package contents (2 of 14) dev-go/gopls-0.22.0:0::gentoo\n") {
+		t.Fatalf("next stage did not replace completion with a clean line: %q", got)
+	}
+}
+
 func TestFetchProgressCanShareTerminalMessageOwner(t *testing.T) {
 	var output bytes.Buffer
 	terminal := &terminalProgress{output: true, terminal: true, writer: &output}

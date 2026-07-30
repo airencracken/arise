@@ -6035,7 +6035,7 @@ func (r *resolver) slotConflictCandidates(node *PkgNode, slot string, constraint
 			if status := r.versionMaskStatus(node, vi); status.Masked {
 				visible, why = false, "masked by "+status.Source
 			} else if !r.versionKeywordAccepted(node, vi) {
-				visible, why = false, "keywords not accepted"
+				visible, why = false, r.keywordRejectionReason(node, vi)
 			}
 			appendState(vi, "available", r.candidateUseFlags(node, vi), visible, why)
 		}

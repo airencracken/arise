@@ -24,6 +24,7 @@ type terminalProgress struct {
 	label             string
 	status            string
 	transient         string
+	renderedLine      string
 	progressBucket    int
 	concurrent        bool
 	completedProgress map[string]bool
@@ -87,12 +88,19 @@ func (p *terminalProgress) renderLocked(frame int) {
 		return
 	}
 	if file, ok := p.writer.(*os.File); ok {
-		if width, _, err := term.GetSize(int(file.Fd())); err == nil && width > 0 && len(line) > width {
-			line = line[:width]
+		if width, _, err := term.GetSize(int(file.Fd())); err == nil && width > 1 && len(line) >= width {
+			// Writing the final terminal column can trigger an automatic wrap.
+			// Leave one column unused so the next durable phase message can
+			// reliably erase this transient line.
+			line = line[:width-1]
 		}
+	}
+	if p.displayed && line == p.renderedLine {
+		return
 	}
 	fmt.Fprintf(p.writer, "\r\033[K%s", line)
 	p.displayed = true
+	p.renderedLine = line
 }
 
 func (p *terminalProgress) setLabel(label string) {
@@ -181,6 +189,7 @@ func (p *terminalProgress) setProgress(message string, current, total int) {
 		if p.terminal && p.displayed {
 			fmt.Fprint(p.writer, "\r\033[K")
 			p.displayed = false
+			p.renderedLine = ""
 		}
 		fmt.Fprintln(p.writer, message)
 		if p.terminal && p.status != "" {
@@ -223,6 +232,7 @@ func (p *terminalProgress) message(message string) {
 	if p.terminal && p.displayed {
 		fmt.Fprint(p.writer, "\r\033[K")
 		p.displayed = false
+		p.renderedLine = ""
 	}
 	fmt.Fprintln(p.writer, message)
 	if p.terminal && p.status != "" {
@@ -256,6 +266,7 @@ func (p *terminalProgress) stopMode(newline bool) {
 			fmt.Fprintln(p.writer)
 		}
 		p.displayed = false
+		p.renderedLine = ""
 	}
 	p.mu.Unlock()
 }

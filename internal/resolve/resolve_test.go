@@ -231,7 +231,7 @@ func TestDecisionLedgerIncludesRejectedAlternativesForWarningBlocker(t *testing.
 		t.Fatalf("installed blocker decision = %#v", installed)
 	}
 	if rejected == nil || rejected.Outcome != DecisionRejected ||
-		!slices.Contains(rejected.Reasons, "keywords not accepted") {
+		!slices.Contains(rejected.Reasons, `keywords not accepted: candidate KEYWORDS="~amd64"; effective ACCEPT_KEYWORDS="amd64"`) {
 		t.Fatalf("rejected blocker alternative = %#v", rejected)
 	}
 }

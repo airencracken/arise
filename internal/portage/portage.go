@@ -1475,13 +1475,23 @@ func (cfg *Config) PackageAcceptKeywordsFor(cpv, slot, repo, arch string) []stri
 	return result
 }
 
-func (cfg *Config) KeywordAcceptedFor(cpv, slot, repo, keywords, arch string) bool {
+// EffectiveAcceptedKeywordsFor returns the keyword policy remaining after
+// global and package-specific ordered additions and removals are applied.
+func (cfg *Config) EffectiveAcceptedKeywordsFor(cpv, slot, repo, arch string) []string {
 	if cfg == nil {
-		return true
+		return nil
 	}
 	accepted := []string{arch}
 	accepted = applyOrderedChanges(accepted, cfg.ACCEPT_KEYWORDS)
 	accepted = applyOrderedChanges(accepted, cfg.PackageAcceptKeywordsFor(cpv, slot, repo, arch))
+	return accepted
+}
+
+func (cfg *Config) KeywordAcceptedFor(cpv, slot, repo, keywords, arch string) bool {
+	if cfg == nil {
+		return true
+	}
+	accepted := cfg.EffectiveAcceptedKeywordsFor(cpv, slot, repo, arch)
 	for _, allow := range accepted {
 		if allow == "**" {
 			return true
