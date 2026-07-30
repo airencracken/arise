@@ -41,6 +41,7 @@ type ResolveConfig struct {
 	RootDeps                    string   // --root-deps=True|rdeps
 	EmptyTree                   bool     // -e, rebuild entire tree as if empty
 	Reinstall                   bool     // force reinstall of already-installed packages
+	ExplicitReinstall           bool     // reinstall same-version package atoms named directly by the user
 	ChangedUse                  bool     // reinstall when USE flags changed
 	ChangedDeps                 bool     // reinstall when DEPENDs changed
 	DynamicDeps                 bool     // use current ebuild deps for installed packages when available
@@ -971,6 +972,7 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 		activeDeps:            make(map[string]int),
 		selectedCPs:           make(map[string]bool),
 		explicitTargets:       make(map[string]bool),
+		directTargets:         make(map[string]bool),
 		worldTargets:          make(map[string]bool),
 		onlyDepsTargets:       make(map[string]bool),
 		constraints:           make(map[string][]*atom.Atom),
@@ -1319,6 +1321,7 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 		activeDeps:          make(map[string]int),
 		selectedCPs:         make(map[string]bool),
 		explicitTargets:     make(map[string]bool),
+		directTargets:       make(map[string]bool),
 		worldTargets:        make(map[string]bool),
 		constraints:         make(map[string][]*atom.Atom),
 		constraintCauses:    make(map[string][]ConflictRequirement),
@@ -1418,7 +1421,8 @@ type resolver struct {
 	activeDeps            map[string]int
 	dependencyPath        []string
 	selectedCPs           map[string]bool // final target/dependency closure
-	explicitTargets       map[string]bool // atoms named directly, excluding expanded sets
+	explicitTargets       map[string]bool // root targets, including generated rebuild sets
+	directTargets         map[string]bool // package atoms named directly by the user
 	worldTargets          map[string]bool // atoms selected by the user world set
 	onlyDepsTargets       map[string]bool // argument packages receiving --onlydeps policy
 	backtrackRemaining    int
@@ -1963,6 +1967,7 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 					}
 					atoms = append(atoms, a)
 					r.explicitTargets[a.CP()] = true
+					r.directTargets[a.CP()] = true
 					continue
 				default:
 					names := strings.Join(matches, ", ")
@@ -1982,6 +1987,7 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 		}
 		atoms = append(atoms, a)
 		r.explicitTargets[a.CP()] = true
+		r.directTargets[a.CP()] = true
 	}
 
 	return atoms, nil
@@ -2430,17 +2436,19 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	// --update controls set members and traversal into dependencies; it is not
 	// required for `emerge category/package` to select a newer visible CPV.
 	allowUpdate := (r.config.Update || (depth == 0 && r.explicitTargets[cp])) && (depth == 0 || r.config.Deep)
-	forceReinstall := r.config.Reinstall && depth == 0 && r.explicitTargets[cp]
+	requestedReinstall := r.config.Reinstall && depth == 0 && r.explicitTargets[cp]
+	defaultExplicitReinstall := r.config.ExplicitReinstall && !r.config.Update && !r.config.NoReplace && depth == 0 && r.directTargets[cp]
 
 	// check package.provided — treat as already installed
 	if r.isPackageProvided(target) {
-		if !r.config.Update && !forceReinstall {
+		if !r.config.Update && !requestedReinstall {
 			if installed != nil && !r.config.NoDeps && r.config.Deep {
 				return r.processDeps(node, installed, target.String(), depth+1, DomainROOT)
 			}
 			return nil
 		}
 	}
+	forceReinstall := requestedReinstall || defaultExplicitReinstall
 
 	if installed != nil {
 		if versionAtomMatches(node.Atom, installedConstraint, installed, installedFlags(installed)) {

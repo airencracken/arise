@@ -26,28 +26,30 @@ type canonicalPlanAuthorization struct {
 }
 
 type planOptions struct {
-	Update        bool    `json:"update"`
-	Deep          bool    `json:"deep"`
-	CompleteGraph bool    `json:"complete_graph"`
-	NewUse        bool    `json:"newuse"`
-	ChangedUse    bool    `json:"changed_use"`
-	ChangedDeps   bool    `json:"changed_deps"`
-	EmptyTree     bool    `json:"empty_tree"`
-	Reinstall     bool    `json:"reinstall"`
-	OnlyDeps      bool    `json:"only_deps"`
-	NoDeps        bool    `json:"no_deps"`
-	Oneshot       bool    `json:"oneshot"`
-	WithBdeps     string  `json:"with_bdeps"`
-	RootDeps      string  `json:"root_deps"`
-	Backtrack     int     `json:"backtrack"`
-	Jobs          int     `json:"jobs"`
-	LoadAverage   float64 `json:"load_average"`
+	Update            bool    `json:"update"`
+	Deep              bool    `json:"deep"`
+	CompleteGraph     bool    `json:"complete_graph"`
+	NewUse            bool    `json:"newuse"`
+	ChangedUse        bool    `json:"changed_use"`
+	ChangedDeps       bool    `json:"changed_deps"`
+	EmptyTree         bool    `json:"empty_tree"`
+	Reinstall         bool    `json:"reinstall"`
+	ExplicitReinstall bool    `json:"explicit_reinstall"`
+	OnlyDeps          bool    `json:"only_deps"`
+	NoDeps            bool    `json:"no_deps"`
+	Oneshot           bool    `json:"oneshot"`
+	WithBdeps         string  `json:"with_bdeps"`
+	RootDeps          string  `json:"root_deps"`
+	Backtrack         int     `json:"backtrack"`
+	Jobs              int     `json:"jobs"`
+	LoadAverage       float64 `json:"load_average"`
 }
 
 func optionsForPlan(cfg resolve.ResolveConfig) planOptions {
 	return planOptions{Update: cfg.Update, Deep: cfg.Deep, CompleteGraph: cfg.CompleteGraph, NewUse: cfg.NewUse,
 		ChangedUse: cfg.ChangedUse, ChangedDeps: cfg.ChangedDeps, EmptyTree: cfg.EmptyTree, Reinstall: cfg.Reinstall,
-		OnlyDeps: cfg.OnlyDeps, NoDeps: cfg.NoDeps, Oneshot: cfg.Oneshot, WithBdeps: cfg.WithBdeps,
+		ExplicitReinstall: cfg.ExplicitReinstall,
+		OnlyDeps:          cfg.OnlyDeps, NoDeps: cfg.NoDeps, Oneshot: cfg.Oneshot, WithBdeps: cfg.WithBdeps,
 		RootDeps: cfg.RootDeps, Backtrack: cfg.Backtrack, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage}
 }
 
@@ -319,6 +321,7 @@ func describeApprovedPlanDifference(reference, directory string, current resolve
 	boolOption("changed-deps", saved.Options.ChangedDeps, want.ChangedDeps)
 	boolOption("emptytree", saved.Options.EmptyTree, want.EmptyTree)
 	boolOption("reinstall", saved.Options.Reinstall, want.Reinstall)
+	boolOption("explicit-reinstall", saved.Options.ExplicitReinstall, want.ExplicitReinstall)
 	boolOption("onlydeps", saved.Options.OnlyDeps, want.OnlyDeps)
 	boolOption("nodeps", saved.Options.NoDeps, want.NoDeps)
 	boolOption("oneshot", saved.Options.Oneshot, want.Oneshot)

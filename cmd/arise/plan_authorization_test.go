@@ -88,6 +88,11 @@ func TestCanonicalPlanSHA256IgnoresTimingAndMapOrder(t *testing.T) {
 	if left != right {
 		t.Fatalf("equivalent plans have different authorization digests: %s != %s", left, right)
 	}
+	changedOptions := cfg
+	changedOptions.ExplicitReinstall = true
+	if changed := canonicalPlanSHA256([]string{"media-sound/apulse"}, changedOptions, second, strings.Repeat("a", 64)); changed == left {
+		t.Fatal("explicit reinstall semantics did not invalidate plan authorization")
+	}
 	second.Install[0].UseFlags["test"] = true
 	if changed := canonicalPlanSHA256([]string{"media-sound/apulse"}, cfg, second, strings.Repeat("a", 64)); changed == left {
 		t.Fatal("USE mutation did not invalidate plan authorization")

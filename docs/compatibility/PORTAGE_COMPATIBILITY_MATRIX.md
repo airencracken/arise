@@ -20,6 +20,10 @@ Status values are `supported`, `partial`, `planned`, and `not-applicable`.
 | `-N`, `--newuse` | same | supported | USE transition fixtures |
 | `--changed-use` | same | supported | reinstall classification tests |
 | `--changed-deps` | same | supported | installed/current dependency tests |
+| explicit package reinstall | same default behavior | supported | a same-version directly named atom reinstalls; update mode, sets and dependencies retain it |
+| `-n`, `--noreplace` | same | supported | suppresses the default same-version explicit reinstall without suppressing upgrades |
+| `-v`, `--verbose` | same | supported subset | package reasons and USE details; resolver internals are excluded |
+| resolver diagnostics | `--debug` | Arise extension | stage/solver timings and bounded decision ledger are debug-only |
 | `--dynamic-deps[=y/n]` | boolean `--dynamic-deps` | partial | behavior tested; value syntax pending |
 | `--complete-graph[=y/n]` | boolean `--complete-graph` | partial | reverse-graph tests; value syntax pending |
 | `--with-bdeps=y/n/auto` | same | supported | dependency-class matrix |

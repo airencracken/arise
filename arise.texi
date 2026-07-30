@@ -455,6 +455,9 @@ Prompt before acting.
 Minimal output.
 @item -v, --verbose
 Verbose output.
+@item --debug
+Show resolver stage timings and the candidate decision ledger. These
+diagnostics are separate from verbose package and USE details.
 @item -t, --tree
 Dependency tree display.
 @item -j @var{N}, --jobs @var{N}

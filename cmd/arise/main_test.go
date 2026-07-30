@@ -704,6 +704,9 @@ func TestResolveFlagsToConfig_Defaults(t *testing.T) {
 	if cfg.Update {
 		t.Error("Update should be false")
 	}
+	if !cfg.ExplicitReinstall {
+		t.Error("install command should use emerge-compatible explicit reinstall semantics")
+	}
 	if cfg.WithBdeps != "auto" {
 		t.Errorf("WithBdeps = %q, want auto", cfg.WithBdeps)
 	}
@@ -723,6 +726,9 @@ func TestResolveFlagsToConfig_UpdateAndDeep(t *testing.T) {
 	cfg := resolveFlagsToConfig(true, false)
 	if !cfg.Update {
 		t.Error("Update=true via param")
+	}
+	if cfg.ExplicitReinstall {
+		t.Error("update command must not reinstall unchanged explicit targets")
 	}
 	if cfg.Deep {
 		t.Error("Deep should be false")
@@ -745,6 +751,27 @@ func TestResolveFlagsToConfig_UpdateAndDeep(t *testing.T) {
 	cfg = resolveFlagsToConfig(true, true)
 	if !cfg.Update || !cfg.Deep {
 		t.Error("both Update and Deep should be true")
+	}
+}
+
+func TestResolverDiagnosticsRequireDebugRatherThanVerbose(t *testing.T) {
+	originalVerbose, originalDebug := *verbose, *debugOutput
+	defer func() { *verbose, *debugOutput = originalVerbose, originalDebug }()
+	*verbose, *debugOutput = true, false
+	if lines := renderResolverDiagnostics(*debugOutput, planTimings{}, resolve.ResolveMetrics{}); len(lines) != 0 {
+		t.Fatalf("verbose emitted debug diagnostics: %v", lines)
+	}
+	if lines := renderDebugDecisionLedger(*debugOutput, resolve.DecisionLedger{}, 10); len(lines) != 0 {
+		t.Fatalf("verbose emitted decision ledger: %v", lines)
+	}
+	*debugOutput = true
+	lines := renderResolverDiagnostics(*debugOutput, planTimings{}, resolve.ResolveMetrics{})
+	if len(lines) != 2 || !strings.Contains(lines[0], "Stages:") || !strings.Contains(lines[1], "Solver:") {
+		t.Fatalf("debug diagnostics=%v", lines)
+	}
+	if lines := renderDebugDecisionLedger(*debugOutput, resolve.DecisionLedger{}, 10); len(lines) != 1 ||
+		!strings.Contains(lines[0], "Decision ledger:") {
+		t.Fatalf("debug decision ledger=%v", lines)
 	}
 }
 

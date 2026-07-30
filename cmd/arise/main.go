@@ -102,6 +102,7 @@ var (
 	ask                      = flag.Bool("ask", false, "-a, prompt before proceeding")
 	quiet                    = flag.Bool("quiet", false, "-q, minimal output")
 	verbose                  = flag.Bool("verbose", false, "-v, verbose output")
+	debugOutput              = flag.Bool("debug", false, "show resolver timing stages and decision ledger")
 	jsonOutput               = flag.Bool("json", false, "emit a versioned JSON resolution plan")
 	includeValidationFixture = flag.Bool("include-validation-fixture", false, "include the frozen independent-validation fixture and plan in JSON output")
 	tree                     = flag.Bool("tree", false, "-t, display dependency tree")

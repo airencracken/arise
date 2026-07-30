@@ -239,6 +239,7 @@ func resolveFlagsToConfig(update, deepParam bool) resolve.ResolveConfig {
 		RootDeps:                    *rootDeps,
 		EmptyTree:                   *emptytree,
 		Reinstall:                   *reinstall,
+		ExplicitReinstall:           !update,
 		ChangedUse:                  *changedUse,
 		ChangedDeps:                 *changedDeps,
 		DynamicDeps:                 *dynamicDeps,
@@ -540,11 +541,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	if !cfg.Quiet {
 		fmt.Printf("Dependency resolution took %.3f s (backtrack: %d/%d).\n",
 			resolutionDuration.Seconds(), result.BacktrackLevel, cfg.Backtrack)
-		if cfg.Verbose {
-			fmt.Printf("  Stages: index %.3f s, state %.3f s, graph %.3f s, solver %.3f s\n",
-				openDuration.Seconds(), stateDuration.Seconds(), graphDuration.Seconds(), solverDuration.Seconds())
-			fmt.Printf("  Solver: search %.3f s, direct-refresh %.3f s, complete-graph %.3f s, verification %.3f s, sort %.3f s\n",
-				result.Metrics.Search.Seconds(), result.Metrics.DirectUpdateRefresh.Seconds(), result.Metrics.CompleteGraph.Seconds(), result.Metrics.Verification.Seconds(), result.Metrics.Sort.Seconds())
+		for _, line := range renderResolverDiagnostics(*debugOutput, planTimings{
+			Index: openDuration, State: stateDuration, Graph: graphDuration, Solver: solverDuration,
+		}, result.Metrics) {
+			fmt.Println(line)
 		}
 	}
 	if err != nil {
@@ -652,10 +652,8 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 		printActionTotals(result.Install, downloadSizes, cfg.FetchOnly)
-		if cfg.Verbose {
-			for _, line := range renderDecisionLedger(result.DecisionLedger, 10) {
-				fmt.Println(line)
-			}
+		for _, line := range renderDebugDecisionLedger(*debugOutput, result.DecisionLedger, 10) {
+			fmt.Println(line)
 		}
 		if *showEstimates {
 			var total time.Duration
@@ -1019,6 +1017,18 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 
 }
 
+func renderResolverDiagnostics(enabled bool, timings planTimings, metrics resolve.ResolveMetrics) []string {
+	if !enabled {
+		return nil
+	}
+	return []string{
+		fmt.Sprintf("  Stages: index %.3f s, state %.3f s, graph %.3f s, solver %.3f s",
+			timings.Index.Seconds(), timings.State.Seconds(), timings.Graph.Seconds(), timings.Solver.Seconds()),
+		fmt.Sprintf("  Solver: search %.3f s, direct-refresh %.3f s, complete-graph %.3f s, verification %.3f s, sort %.3f s",
+			metrics.Search.Seconds(), metrics.DirectUpdateRefresh.Seconds(), metrics.CompleteGraph.Seconds(), metrics.Verification.Seconds(), metrics.Sort.Seconds()),
+	}
+}
+
 func renderDecisionLedger(ledger resolve.DecisionLedger, detailLimit int) []string {
 	counts := map[string]int{}
 	for _, record := range ledger.Records {
@@ -1048,6 +1058,13 @@ func renderDecisionLedger(ledger resolve.DecisionLedger, detailLimit int) []stri
 		}
 	}
 	return lines
+}
+
+func renderDebugDecisionLedger(enabled bool, ledger resolve.DecisionLedger, detailLimit int) []string {
+	if !enabled {
+		return nil
+	}
+	return renderDecisionLedger(ledger, detailLimit)
 }
 
 func downloadBinpkgTargets(ctx context.Context, binhosts, targets []string, destination string, required, quiet bool) error {

@@ -325,6 +325,84 @@ func TestResolve_ExplicitInstalledTargetSelectsAvailableUpgrade(t *testing.T) {
 	}
 }
 
+func TestResolve_ExplicitInstalledTargetReinstallsSameVersionByDefault(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-util/pkgcheck", "0.10.40-r1", "0", "0", true, nil)
+	pkg(g, "dev-util/pkgcheck", "0.10.40-r1", "0", "0", false, nil)
+
+	cfg := DefaultResolveConfig()
+	cfg.ExplicitReinstall = true
+	result, err := Resolve(g, []string{"dev-util/pkgcheck"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Install) != 1 || result.Install[0].Action != "reinstall" ||
+		result.Install[0].Atom.CP() != "dev-util/pkgcheck" || result.Install[0].Atom.Version == nil ||
+		result.Install[0].Atom.Version.Raw != "0.10.40-r1" {
+		t.Fatalf("explicit same-version plan = %#v, want one reinstall", result.Install)
+	}
+}
+
+func TestResolve_ExplicitInstalledTargetDoesNotReinstallDuringUpdate(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-util/pkgcheck", "0.10.40-r1", "0", "0", true, nil)
+	pkg(g, "dev-util/pkgcheck", "0.10.40-r1", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.ExplicitReinstall = true
+	cfg.Update = true
+
+	result, err := Resolve(g, []string{"dev-util/pkgcheck"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Install) != 0 {
+		t.Fatalf("same-version update plan = %#v, want retained package", result.Install)
+	}
+}
+
+func TestResolve_SetMembersDoNotBecomeDefaultReinstalls(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-util/pkgcheck", "0.10.40-r1", "0", "0", true, nil)
+	pkg(g, "dev-util/pkgcheck", "0.10.40-r1", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.ExplicitReinstall = true
+	cfg.PackageSetExpander = func(name string) ([]string, error) {
+		if name != "@tools" {
+			t.Fatalf("unexpected set %q", name)
+		}
+		return []string{"dev-util/pkgcheck"}, nil
+	}
+
+	result, err := Resolve(g, []string{"@tools"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Install) != 0 {
+		t.Fatalf("set plan = %#v, want retained package", result.Install)
+	}
+}
+
+func TestResolve_DefaultExplicitReinstallDoesNotReinstallDependencies(t *testing.T) {
+	g := makeGraph()
+	target := pkg(g, "app-misc/target", "1", "0", "0", true, nil)
+	pkg(g, "app-misc/target", "1", "0", "0", false, nil)
+	target.Rdepend = "dev-libs/dependency"
+	pkg(g, "dev-libs/dependency", "1", "0", "0", true, nil)
+	pkg(g, "dev-libs/dependency", "1", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.ExplicitReinstall = true
+	cfg.Deep = true
+
+	result, err := Resolve(g, []string{"app-misc/target"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Install) != 1 || result.Install[0].Atom.CP() != "app-misc/target" ||
+		result.Install[0].Action != "reinstall" {
+		t.Fatalf("explicit target closure = %#v, want only target reinstall", result.Install)
+	}
+}
+
 func TestResolve_ReinstallRejectsInstalledVersionMissingFromRepository(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "net-libs/libsoup", "2.74.2", "2.4", "0", true, nil)
