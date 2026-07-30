@@ -475,7 +475,10 @@ Perl or Portage's Python runtime. Modes retain perl-cleaner semantics:
 \fB\-\-reallyall\fR forces all modules. Pretend plans are resolved through
 Arise with typed evidence. Successful repairs are independently re-audited;
 known generated leftovers are removed through a rollback journal and unknown
-files are reported.
+files are reported. If rebuilding is interrupted,
+\fBperl-cleaner \-\-resume\fR restores the integrity-bound cleaner context and
+continues the executor's per-package progress; \fB\-\-skipfirst\fR is supported
+when saved package progress exists.
 
 .TP
 \fBmaintain world \-\-check|\-\-fix\fR

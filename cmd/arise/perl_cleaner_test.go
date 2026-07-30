@@ -40,11 +40,44 @@ func TestParsePerlCleanerRejectsMissingConflictingAndUnknownModes(t *testing.T) 
 		nil,
 		{"--modules", "--libperl"},
 		{"--all", "--reallyall"},
+		{"--resume", "--modules"},
+		{"--modules", "--skipfirst"},
 		{"--modules", "--shell-command=bad"},
 	} {
 		if _, err := parsePerlCleanerOptions(args); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
+	}
+}
+
+func TestParsePerlCleanerResumeRestoresMode(t *testing.T) {
+	options, err := parsePerlCleanerOptions([]string{"--resume", "--skipfirst", "--pretend"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.Resume || !options.SkipFirst || !options.Pretend {
+		t.Fatalf("resume options = %#v", options)
+	}
+	if options.Mode.Modules || options.Mode.LibPerl {
+		t.Fatalf("resume parser invented mode: %#v", options.Mode)
+	}
+}
+
+func TestPerlCleanerResumePathAndABIMatch(t *testing.T) {
+	if got := perlCleanerResumePath("/var/tmp/arise/resume"); got != "/var/tmp/arise/resume.perl-cleaner" {
+		t.Fatalf("resume path = %q", got)
+	}
+	abi := perlcleaner.ABI{
+		Version: "5.42", Arch: "x86_64-linux", SourceCPV: "dev-lang/perl-5.42.2",
+		LibPerlSONames: []string{"libperl.so.5.42"},
+	}
+	if !samePerlABI(abi, abi) {
+		t.Fatal("identical ABI rejected")
+	}
+	changed := abi
+	changed.LibPerlSONames = []string{"libperl.so.5.44"}
+	if samePerlABI(abi, changed) {
+		t.Fatal("changed ABI accepted")
 	}
 }
 

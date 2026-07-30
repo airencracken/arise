@@ -298,7 +298,10 @@ Audit and repair installed Perl modules and libperl consumers from VDB
 metadata without requiring a working Perl interpreter or Portage Python
 runtime. The familiar mode distinctions are preserved. Repair targets use the
 verified resolver, final state is re-audited, known generated leftovers are
-journaled, and unknown leftovers are reported.
+journaled, and unknown leftovers are reported. @option{--resume} restores the
+integrity-bound cleaner mode, ABI evidence, targets, and leftover policy while
+the executor resumes remaining packages. @option{--skipfirst} is supported when
+saved package progress exists.
 
 @item maintain world --check|--fix
 Check the selected world set against installed packages and every configured

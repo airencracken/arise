@@ -2430,7 +2430,7 @@ Acceptance gate:
   filtering and resumable sessions—without duplicating protected-file policy
   or granting the UI a path around journaling and apply validation.
 - [ ] Wire preserved-rebuild and revdep-rebuild through the safe planner/executor.
-- [~] Supplant `perl-cleaner`: `arise perl-cleaner` now preserves the
+- [x] Supplant `perl-cleaner`: `arise perl-cleaner` preserves the
   `--modules`, `--allmodules`, `--libperl`, `--all`, and `--reallyall` mode
   distinctions; derives the active version, architecture, and libperl SONAME
   from VDB state without executing Perl; emits typed module/linkage reasons and
@@ -2439,8 +2439,14 @@ Acceptance gate:
   state; and confines known-leftover deletion to a rollback journal while
   reporting unknown files. Unit, route, mode, adversarial, fuzz, rollback,
   alternate-root, and live `perl-cleaner 2.31 --modules` differential tests are
-  present. Complete the known-leftover corpus and disposable-root differentials
-  for libperl, preclean, every mode union, and interrupted/resumed execution.
+  present. The exact known-leftover corpus is enforced without broad suffix
+  deletion. A bubblewrap-isolated disposable root differentially covers every
+  mode union, libperl SONAME selection, perl-core/virtual preclean, and
+  known-versus-unknown leftovers against installed `perl-cleaner 2.31`.
+  Integrity-bound companion state preserves mode, ABI evidence, original
+  targets, and leftover policy across interruption while the executor's strict
+  resume record tracks per-package completion; resume rejects ABI drift and
+  supports skip-first only when package progress exists.
 - [ ] Add a Python repair/cleaner workflow: detect stale interpreter targets,
   invalid shebangs, orphaned site-packages, extension modules linked against
   removed libpython ABIs and packages whose installed PYTHON_TARGETS no longer

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/perl-cleaner-resume-v1.schema.json",
+  "title": "Arise Perl cleaner resume context version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation",
+    "stage",
+    "plan_sha256",
+    "mode",
+    "delete_leftovers",
+    "abi",
+    "targets"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "operation": {"const": "perl-cleaner"},
+    "stage": {"const": "rebuild"},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "mode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["modules", "all_modules", "libperl", "preclean", "leftovers"],
+      "properties": {
+        "modules": {"type": "boolean"},
+        "all_modules": {"type": "boolean"},
+        "libperl": {"type": "boolean"},
+        "preclean": {"type": "boolean"},
+        "leftovers": {"type": "boolean"}
+      }
+    },
+    "delete_leftovers": {"type": "boolean"},
+    "abi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "arch", "libperl_sonames", "source_cpv"],
+      "properties": {
+        "version": {"type": "string", "minLength": 1},
+        "arch": {"type": "string"},
+        "libperl_sonames": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "source_cpv": {"type": "string", "minLength": 1}
+      }
+    },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

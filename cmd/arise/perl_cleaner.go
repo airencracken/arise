@@ -16,6 +16,8 @@ import (
 type perlCleanerOptions struct {
 	Mode            perlcleaner.Mode
 	Pretend         bool
+	Resume          bool
+	SkipFirst       bool
 	DeleteLeftovers bool
 }
 
@@ -43,6 +45,10 @@ func parsePerlCleanerOptions(args []string) (perlCleanerOptions, error) {
 			selected++
 		case "-p", "--pretend", "--dry-run":
 			options.Pretend = true
+		case "--resume":
+			options.Resume = true
+		case "--skipfirst":
+			options.SkipFirst = true
 		case "--dont-delete-leftovers", "dont-delete-leftovers":
 			options.DeleteLeftovers = false
 		case "-h", "--help":
@@ -50,6 +56,15 @@ func parsePerlCleanerOptions(args []string) (perlCleanerOptions, error) {
 		default:
 			return options, fmt.Errorf("unknown option %q", arg)
 		}
+	}
+	if options.Resume {
+		if selected != 0 {
+			return options, fmt.Errorf("--resume restores its mode; do not specify another mode")
+		}
+		return options, nil
+	}
+	if options.SkipFirst {
+		return options, fmt.Errorf("--skipfirst requires --resume")
 	}
 	if selected != 1 {
 		return options, fmt.Errorf("require exactly one of --modules, --allmodules, --libperl, --all, or --reallyall")
@@ -67,12 +82,40 @@ func runPerlCleaner(args []string) int {
 		fmt.Fprintf(os.Stderr, "perl-cleaner: %v\n", err)
 		return 2
 	}
+	companionPath := perlCleanerResumePath(*resumeFile)
+	var saved perlcleaner.ResumeState
+	useExecutorResume := false
+	if options.Resume {
+		saved, err = perlcleaner.LoadResume(companionPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "perl-cleaner: load resume context: %v\n", err)
+			return 1
+		}
+		options.Mode = saved.Mode
+		options.DeleteLeftovers = saved.DeleteLeftovers
+		if _, statErr := os.Stat(*resumeFile); statErr == nil {
+			useExecutorResume = true
+		} else if !os.IsNotExist(statErr) {
+			fmt.Fprintf(os.Stderr, "perl-cleaner: inspect executor resume state: %v\n", statErr)
+			return 1
+		} else if options.SkipFirst || *skipFirst {
+			fmt.Fprintln(os.Stderr, "perl-cleaner: --skipfirst requires saved package progress")
+			return 1
+		}
+	}
 	report, err := perlcleaner.Check(*vdbDir, options.Mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "perl-cleaner: %v\n", err)
 		return 1
 	}
 	targets := perlcleaner.Targets(report)
+	if options.Resume {
+		if !samePerlABI(saved.ABI, report.ABI) {
+			fmt.Fprintln(os.Stderr, "perl-cleaner: active Perl ABI changed since interruption; generate a fresh repair plan")
+			return 1
+		}
+		targets = append([]string(nil), saved.Targets...)
+	}
 	leftovers, err := perlcleaner.FindLeftovers(commandEnv("ROOT", "/"), report.ABI)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "perl-cleaner: inspect leftovers: %v\n", err)
@@ -105,8 +148,16 @@ func runPerlCleaner(args []string) int {
 	if *pretend && len(targets) == 0 {
 		return 0
 	}
-	if !*pretend && report.Mode.Preclean && len(targets) != 0 {
+	if !*pretend && len(targets) != 0 && !options.Resume {
+		state := perlcleaner.NewResumeState(report, targets, options.DeleteLeftovers)
+		if err := perlcleaner.SaveResume(companionPath, state); err != nil {
+			fmt.Fprintf(os.Stderr, "perl-cleaner: save resume context: %v\n", err)
+			return 1
+		}
+	}
+	if !*pretend && report.Mode.Preclean && len(targets) != 0 && !options.Resume {
 		if err := deselectPerlCore(report.Preclean.PerlCore); err != nil {
+			_ = perlcleaner.RemoveResume(companionPath)
 			fmt.Fprintf(os.Stderr, "perl-cleaner: update world set: %v\n", err)
 			return 1
 		}
@@ -115,6 +166,8 @@ func runPerlCleaner(args []string) int {
 		cfg := resolveFlagsToConfig(report.Mode.Preclean, false)
 		cfg.Reinstall, cfg.ExplicitReinstall = true, true
 		cfg.Oneshot, cfg.CompleteGraph, cfg.Pretend = true, true, *pretend
+		cfg.Resume = useExecutorResume
+		cfg.SkipFirst = options.SkipFirst || *skipFirst
 		runResolve(targets, *dbPath, *repoPath, cfg)
 	}
 	if *pretend {
@@ -148,12 +201,34 @@ func runPerlCleaner(args []string) int {
 	for _, leftover := range remaining {
 		fmt.Fprintf(os.Stdout, "Perl leftover requires manual review: %s\n", leftover.Path)
 	}
+	if err := perlcleaner.RemoveResume(companionPath); err != nil {
+		fmt.Fprintf(os.Stderr, "perl-cleaner: remove completed resume context: %v\n", err)
+		return 1
+	}
 	fmt.Fprintln(os.Stdout, "Perl repair completed and final state validated.")
 	return 0
 }
 
 func printPerlCleanerUsage(writer io.Writer) {
 	fmt.Fprintln(writer, "Usage: arise perl-cleaner --modules|--allmodules|--libperl|--all|--reallyall [--pretend] [--dont-delete-leftovers]")
+	fmt.Fprintln(writer, "       arise perl-cleaner --resume [--skipfirst] [--pretend]")
+}
+
+func perlCleanerResumePath(generic string) string {
+	return generic + ".perl-cleaner"
+}
+
+func samePerlABI(left, right perlcleaner.ABI) bool {
+	if left.Version != right.Version || left.Arch != right.Arch || left.SourceCPV != right.SourceCPV ||
+		len(left.LibPerlSONames) != len(right.LibPerlSONames) {
+		return false
+	}
+	for index := range left.LibPerlSONames {
+		if left.LibPerlSONames[index] != right.LibPerlSONames[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func printPerlCleanerReport(writer io.Writer, report perlcleaner.Report, options perlCleanerOptions, leftovers []perlcleaner.Leftover) {
