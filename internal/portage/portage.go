@@ -1475,22 +1475,48 @@ func (cfg *Config) KeywordAcceptedFor(cpv, slot, repo, keywords, arch string) bo
 	if cfg == nil {
 		return true
 	}
-	accepted := cfg.EffectiveAcceptedKeywordsFor(cpv, slot, repo, arch)
-	for _, allow := range accepted {
-		if allow == "**" {
-			return true
+	candidate, err := gentooling.ParsePackageVersion(cpv)
+	if err != nil || candidate.Version == nil {
+		return false
+	}
+	candidateSlot, candidateSubslot := slot, ""
+	if before, after, found := strings.Cut(slot, "/"); found {
+		candidateSlot, candidateSubslot = before, after
+	}
+	effective := gentooling.EffectiveConfig{
+		Variables: map[string]string{"ARCH": arch},
+	}
+	for _, raw := range cfg.ACCEPT_KEYWORDS {
+		effective.AcceptKeywords = append(effective.AcceptKeywords, gentooling.KeywordChange{
+			Keyword: strings.TrimPrefix(raw, "-"), Enabled: !strings.HasPrefix(raw, "-"),
+			Layer: "arise",
+		})
+	}
+	for _, rule := range cfg.PackageAcceptKeywordRules {
+		effective.PackageKeywords = append(effective.PackageKeywords, gentooling.PackageKeywordRule{
+			Atom: rule.Atom, Changes: append([]string(nil), rule.Flags...),
+		})
+	}
+	if len(effective.PackageKeywords) == 0 {
+		names := make([]string, 0, len(cfg.PackageAcceptKeywords))
+		for name := range cfg.PackageAcceptKeywords {
+			names = append(names, name)
 		}
-		for _, keyword := range strings.Fields(keywords) {
-			if strings.HasPrefix(keyword, "-") {
-				continue
-			}
-			if allow == keyword || allow == "*" && !strings.HasPrefix(keyword, "~") ||
-				allow == "~*" && strings.HasPrefix(keyword, "~") {
-				return true
-			}
+		sort.Strings(names)
+		for _, name := range names {
+			effective.PackageKeywords = append(effective.PackageKeywords, gentooling.PackageKeywordRule{
+				Atom: name, Changes: splitShWords(cfg.PackageAcceptKeywords[name]),
+			})
 		}
 	}
-	return false
+	result, err := effective.EvaluateVisibility(context.Background(), gentooling.PackageVisibilityContext{
+		ID: gentooling.PackageID{
+			Category: candidate.Category, Name: candidate.Package, Version: candidate.Version.Raw,
+			Slot: candidateSlot, Subslot: candidateSubslot, Repository: repo,
+		},
+		Keywords: strings.Fields(keywords),
+	})
+	return err == nil && result.Visible
 }
 
 func ParsePackageLicense(path string) (map[string]string, error) {
