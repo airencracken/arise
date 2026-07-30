@@ -35,6 +35,36 @@ func TestParseReposConfMatchesRepositoryNameAfterLocationMigration(t *testing.T)
 	}
 }
 
+func TestReadReposConfParsesIndependentGitDepthsIncludingFullHistory(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "repos.conf")
+	content := "[gentoo]\nlocation = /var/db/repos/gentoo\nsync-type = git\nsync-uri = https://example.test/gentoo.git\nclone-depth = 5\nsync-depth = 0\n"
+	if err := os.WriteFile(conf, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ReadReposConf(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].CloneDepth == nil || *entries[0].CloneDepth != 5 ||
+		entries[0].SyncDepth == nil || *entries[0].SyncDepth != 0 {
+		t.Fatalf("repository depths = %#v", entries)
+	}
+}
+
+func TestReadReposConfRejectsInvalidGitDepth(t *testing.T) {
+	for _, value := range []string{"-1", "all", "1.5"} {
+		t.Run(value, func(t *testing.T) {
+			conf := filepath.Join(t.TempDir(), "repos.conf")
+			if err := os.WriteFile(conf, []byte("[gentoo]\nclone-depth = "+value+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadReposConf(conf); err == nil || !strings.Contains(err.Error(), "clone-depth") {
+				t.Fatalf("invalid depth error = %v", err)
+			}
+		})
+	}
+}
+
 func TestRepositoryPolicyOrderMastersBeforeChildren(t *testing.T) {
 	root := t.TempDir()
 	master := filepath.Join(root, "master")

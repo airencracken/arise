@@ -283,7 +283,10 @@ arguments, via git (primary) or rsync (fallback), then atomically publish the
 refreshed resolver index. Git repositories whose fetched branch has not
 changed are left untouched. The default output summarizes package/version-set
 changes with eix-style tags; @option{-v} includes transport and per-ebuild
-diagnostics. Success means both stages completed.
+diagnostics. Independent repositories synchronize concurrently, while final
+reports retain configured order. Per-repository @option{clone-depth} and
+@option{sync-depth} values are read from @file{repos.conf}; the default is 1,
+and 0 requests full history. Success means both stages completed.
 
 @item index
 Rebuild the BadgerDB metadata database from the ebuild tree.

@@ -109,6 +109,7 @@ func executeSyncTargets(ctx context.Context, targets []repositorySyncTarget, lim
 			err := runner(ctx, sync.SyncConfig{
 				RepoURL: target.URL, TargetDir: target.Location,
 				RepositoryName: target.Name, SyncType: target.SyncType,
+				CloneDepth: target.CloneDepth, SyncDepth: target.SyncDepth,
 				Output: &transport,
 				Progress: func(stage, detail string) {
 					report.Stage = stage
@@ -361,11 +362,13 @@ func selectSyncTargets(targets []repositorySyncTarget, requested []string) ([]re
 }
 
 type repositorySyncTarget struct {
-	Name     string
-	Location string
-	URL      string
-	SyncType string
-	Primary  bool
+	Name       string
+	Location   string
+	URL        string
+	SyncType   string
+	CloneDepth *int
+	SyncDepth  *int
+	Primary    bool
 }
 
 func configuredSyncTargets(repoPath, repoURL string, repositories []portage.RepoEntry) []repositorySyncTarget {
@@ -384,6 +387,8 @@ func configuredSyncTargets(repoPath, repoURL string, repositories []portage.Repo
 		}
 		primary.Name = repository.Name
 		primary.SyncType = repository.SyncType
+		primary.CloneDepth = repository.CloneDepth
+		primary.SyncDepth = repository.SyncDepth
 		if primary.URL == "" {
 			primary.URL = repository.SyncURI
 		}
@@ -407,6 +412,7 @@ func configuredSyncTargets(repoPath, repoURL string, repositories []portage.Repo
 		}
 		additional = append(additional, repositorySyncTarget{
 			Name: repository.Name, Location: location, URL: url, SyncType: repository.SyncType,
+			CloneDepth: repository.CloneDepth, SyncDepth: repository.SyncDepth,
 		})
 		seenLocations[location] = true
 	}

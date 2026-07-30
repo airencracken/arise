@@ -72,6 +72,10 @@ arise sync
 arise -1 --reinstall =sys-apps/arise-0.0.10
 ```
 
+Git repositories synchronize concurrently. Arise honors Portage-compatible
+`clone-depth` and `sync-depth` values from each `repos.conf` section. The
+default is `1`; set either value to `0` to request full history.
+
 Release ebuilds build without network access. New releases use a small,
 deterministic vendor archive whose checksum is recorded in the overlay
 Manifest. The archive carries a machine-verifiable provenance manifest and is

@@ -454,7 +454,10 @@ arguments. Uses \fBgit\fR(1) as primary method with \fBrsync\fR(1) fallback,
 then atomically publishes the refreshed resolver index. Git repositories whose
 fetched branch has not changed are left untouched. Default output summarizes
 package/version-set changes with eix-style tags; \fB\-v\fR includes transport
-and per-ebuild diagnostics. Success means both stages completed.
+and per-ebuild diagnostics. Independent repositories synchronize concurrently,
+while final reports retain configured order. Per-repository \fBclone-depth\fR
+and \fBsync-depth\fR values are read from \fBrepos.conf\fR; the default is 1,
+and 0 requests full history. Success means both stages completed.
 
 .TP
 \fBindex\fR

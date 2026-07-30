@@ -958,6 +958,20 @@ func TestSyncCommandReportsExactEbuildChangesAndProgress(t *testing.T) {
 	}
 }
 
+func TestSyncConfigDepthDefaultsAndExplicitFullHistory(t *testing.T) {
+	cfg := SyncConfig{}
+	cfg.defaults()
+	if cfg.CloneDepth == nil || *cfg.CloneDepth != 1 || cfg.SyncDepth == nil || *cfg.SyncDepth != 1 {
+		t.Fatalf("default depths = clone %v sync %v", cfg.CloneDepth, cfg.SyncDepth)
+	}
+	zero, five := 0, 5
+	cfg = SyncConfig{CloneDepth: &zero, SyncDepth: &five}
+	cfg.defaults()
+	if *cfg.CloneDepth != 0 || *cfg.SyncDepth != 5 {
+		t.Fatalf("explicit depths changed = clone %d sync %d", *cfg.CloneDepth, *cfg.SyncDepth)
+	}
+}
+
 func TestGitEbuildChangesReportsPackageVersionTransition(t *testing.T) {
 	repository := initSyncRemote(t)
 	oldRevision := testGitOutput(t, "-C", repository, "rev-parse", "HEAD")

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -1927,11 +1928,13 @@ func unquote(s string) string {
 
 // RepoEntry holds a single repository configuration from repos.conf.
 type RepoEntry struct {
-	Name     string
-	Location string
-	SyncURI  string
-	SyncType string
-	Masters  []string
+	Name       string
+	Location   string
+	SyncURI    string
+	SyncType   string
+	CloneDepth *int
+	SyncDepth  *int
+	Masters    []string
 }
 
 // EclassLookupDirectories returns the selected repository followed by its
@@ -2062,7 +2065,7 @@ func parseReposConfDir(root string) ([]RepoEntry, error) {
 	for _, f := range files {
 		entries, err := parseReposConfFile(f)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		allEntries = append(allEntries, entries...)
 	}
@@ -2192,6 +2195,18 @@ func parseReposConfFile(path string) ([]RepoEntry, error) {
 			current.SyncURI = val
 		case "sync-type":
 			current.SyncType = val
+		case "clone-depth":
+			depth, err := parseRepositoryDepth(key, val)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			current.CloneDepth = &depth
+		case "sync-depth":
+			depth, err := parseRepositoryDepth(key, val)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			current.SyncDepth = &depth
 		}
 	}
 
@@ -2204,6 +2219,14 @@ func parseReposConfFile(path string) ([]RepoEntry, error) {
 	}
 
 	return entries, nil
+}
+
+func parseRepositoryDepth(name, value string) (int, error) {
+	depth, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || depth < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer, got %q", name, value)
+	}
+	return depth, nil
 }
 
 // ParseBinhostConfig reads binhost URLs from portage config.

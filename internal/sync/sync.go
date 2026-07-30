@@ -43,6 +43,10 @@ type SyncConfig struct {
 
 	// Depth controls shallow clone depth. If <= 0, defaults to 1.
 	Depth int
+	// CloneDepth and SyncDepth implement repos.conf's independent Git history
+	// controls. A non-nil zero requests full history.
+	CloneDepth *int
+	SyncDepth  *int
 
 	// RsyncPath is the path to the rsync binary (default: "rsync").
 	RsyncPath string
@@ -109,8 +113,16 @@ func (c SyncConfig) Validate() error {
 }
 
 func (c *SyncConfig) defaults() {
-	if c.Depth <= 0 {
-		c.Depth = 1
+	depth := c.Depth
+	if depth <= 0 {
+		depth = 1
+	}
+	c.Depth = depth
+	if c.CloneDepth == nil {
+		c.CloneDepth = intPointer(depth)
+	}
+	if c.SyncDepth == nil {
+		c.SyncDepth = intPointer(depth)
 	}
 	if c.RsyncPath == "" {
 		c.RsyncPath = "rsync"
@@ -118,6 +130,30 @@ func (c *SyncConfig) defaults() {
 	if c.Output == nil {
 		c.Output = os.Stdout
 	}
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
+func cloneDepth(c SyncConfig) int {
+	if c.CloneDepth != nil {
+		return *c.CloneDepth
+	}
+	if c.Depth > 0 {
+		return c.Depth
+	}
+	return 1
+}
+
+func updateDepth(c SyncConfig) int {
+	if c.SyncDepth != nil {
+		return *c.SyncDepth
+	}
+	if c.Depth > 0 {
+		return c.Depth
+	}
+	return 1
 }
 
 func (c SyncConfig) progress(stage, detail string) {
@@ -284,7 +320,12 @@ func updateGitRepoCommand(ctx context.Context, cfg SyncConfig) error {
 	}
 
 	cfg.progress("fetch", "Fetching "+branch+" from origin")
-	if err := runGit(ctx, cfg.Output, "-C", cfg.TargetDir, "fetch", "--progress", "--depth", strconv.Itoa(cfg.Depth), "origin", branch); err != nil {
+	args := []string{"-C", cfg.TargetDir, "fetch", "--progress"}
+	if depth := updateDepth(cfg); depth > 0 {
+		args = append(args, "--depth", strconv.Itoa(depth))
+	}
+	args = append(args, "origin", branch)
+	if err := runGit(ctx, cfg.Output, args...); err != nil {
 		return err
 	}
 	remoteRevision, err := gitOutput(ctx, "-C", cfg.TargetDir, "rev-parse", "FETCH_HEAD")
@@ -581,7 +622,12 @@ func ebuildCPV(path string) (string, bool) {
 func cloneGitRepoCommand(ctx context.Context, cfg SyncConfig) error {
 	return cloneGitRepoAtomically(ctx, cfg, func(staging string) error {
 		cfg.progress("clone", "Cloning repository with system Git fallback")
-		return runGit(ctx, cfg.Output, "clone", "--progress", "--depth", strconv.Itoa(cfg.Depth), cfg.RepoURL, staging)
+		args := []string{"clone", "--progress"}
+		if depth := cloneDepth(cfg); depth > 0 {
+			args = append(args, "--depth", strconv.Itoa(depth))
+		}
+		args = append(args, cfg.RepoURL, staging)
+		return runGit(ctx, cfg.Output, args...)
 	})
 }
 
@@ -606,7 +652,7 @@ func cloneGitRepo(ctx context.Context, cfg SyncConfig) error {
 		cfg.progress("clone", "Cloning repository with built-in transport")
 		_, err := git.PlainCloneContext(ctx, staging, false, &git.CloneOptions{
 			URL:      cfg.RepoURL,
-			Depth:    cfg.Depth,
+			Depth:    cloneDepth(cfg),
 			Progress: cfg.Output,
 		})
 		if err != nil {
@@ -696,7 +742,7 @@ func updateGitRepo(ctx context.Context, cfg SyncConfig) error {
 	cfg.progress("fetch", "Fetching "+branch.Short()+" from origin")
 	err = remote.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: "origin",
-		Depth:      cfg.Depth,
+		Depth:      updateDepth(cfg),
 		Progress:   cfg.Output,
 	})
 	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) && !strings.Contains(err.Error(), "already up-to-date") {

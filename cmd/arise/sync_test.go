@@ -109,15 +109,16 @@ func TestPrintSyncResultsIsStableInConfiguredOrder(t *testing.T) {
 }
 
 func TestConfiguredSyncTargetsIncludesPrimaryAndAllConfiguredRepositories(t *testing.T) {
+	cloneDepth, syncDepth := 5, 0
 	repositories := []portage.RepoEntry{
 		{Name: "local", Location: "/repos/local"},
 		{Name: "overlay", Location: "/repos/overlay", SyncType: "git", SyncURI: "https://example.invalid/overlay.git"},
-		{Name: "gentoo", Location: "/repos/gentoo", SyncType: "rsync", SyncURI: "rsync://example.invalid/gentoo"},
+		{Name: "gentoo", Location: "/repos/gentoo", SyncType: "rsync", SyncURI: "rsync://example.invalid/gentoo", CloneDepth: &cloneDepth, SyncDepth: &syncDepth},
 		{Name: "guru", Location: "/repos/guru", SyncType: "git", SyncURI: "https://example.invalid/guru.git"},
 	}
 	got := configuredSyncTargets("/repos/gentoo", "", repositories)
 	want := []repositorySyncTarget{
-		{Name: "gentoo", Location: "/repos/gentoo", URL: "rsync://example.invalid/gentoo", SyncType: "rsync", Primary: true},
+		{Name: "gentoo", Location: "/repos/gentoo", URL: "rsync://example.invalid/gentoo", SyncType: "rsync", CloneDepth: &cloneDepth, SyncDepth: &syncDepth, Primary: true},
 		{Name: "guru", Location: "/repos/guru", URL: "https://example.invalid/guru.git", SyncType: "git"},
 		{Name: "local", Location: "/repos/local"},
 		{Name: "overlay", Location: "/repos/overlay", URL: "https://example.invalid/overlay.git", SyncType: "git"},
