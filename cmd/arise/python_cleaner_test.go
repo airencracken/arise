@@ -19,6 +19,7 @@ func TestParsePythonCleanerOptions(t *testing.T) {
 		{[]string{"--check"}, pythonCleanerOptions{Check: true}},
 		{[]string{"--pretend"}, pythonCleanerOptions{Pretend: true}},
 		{[]string{"--fix"}, pythonCleanerOptions{Fix: true}},
+		{[]string{"--resume"}, pythonCleanerOptions{Resume: true}},
 	}
 	for _, test := range tests {
 		got, err := parsePythonCleanerOptions(test.args)
@@ -29,7 +30,7 @@ func TestParsePythonCleanerOptions(t *testing.T) {
 			t.Fatalf("%v = %#v, want %#v", test.args, got, test.want)
 		}
 	}
-	for _, args := range [][]string{nil, {"--check", "--fix"}, {"--unknown"}} {
+	for _, args := range [][]string{nil, {"--check", "--fix"}, {"--fix", "--resume"}, {"--unknown"}} {
 		if _, err := parsePythonCleanerOptions(args); err == nil {
 			t.Fatalf("accepted %v", args)
 		}
@@ -112,6 +113,157 @@ func TestPythonCleanerResolveConfigDoesNotExpandToCompleteGraph(t *testing.T) {
 	if cfg.CompleteGraph {
 		t.Fatal("recovery cohort expanded to complete graph")
 	}
+	live := pythonCleanerResolveConfig(false)
+	if live.Pretend || !live.Reinstall || !live.Oneshot {
+		t.Fatalf("live recovery config = %#v", live)
+	}
+}
+
+func TestPythonCleanerResumeHelpersPreserveBoundariesAndIgnorePreferenceDrift(t *testing.T) {
+	left := pythoncleaner.Policy{
+		Targets: []string{"python3_14"}, SingleTarget: "python3_14",
+		Preference: []string{"python3_13"},
+	}
+	right := left
+	right.Preference = []string{"python3_14"}
+	if !samePythonRepairPolicy(left, right) {
+		t.Fatal("preference publication treated as repair policy drift")
+	}
+	right.Targets = []string{"python3_15"}
+	if samePythonRepairPolicy(left, right) {
+		t.Fatal("target policy drift accepted")
+	}
+	cohorts := [][]string{{"dev-python/A"}, {"dev-python/B", "dev-python/C"}}
+	cloned := cloneStringCohorts(cohorts)
+	flat := flattenStringCohorts(cloned)
+	if !reflect.DeepEqual(flat, []string{"dev-python/A", "dev-python/B", "dev-python/C"}) {
+		t.Fatalf("flat cohorts = %v", flat)
+	}
+	cloned[0][0] = "mutated"
+	if cohorts[0][0] != "dev-python/A" {
+		t.Fatal("cloned cohorts alias source")
+	}
+}
+
+func TestPythonCleanerUnavailableIsCopied(t *testing.T) {
+	plan := pythoncleaner.Plan{Stages: []pythoncleaner.Stage{{
+		Name: "unavailable-consumers", Targets: []string{"dev-python/Gone-1"},
+	}}}
+	got := pythonCleanerUnavailable(plan)
+	if !reflect.DeepEqual(got, []string{"dev-python/Gone-1"}) {
+		t.Fatalf("unavailable = %v", got)
+	}
+	got[0] = "mutated"
+	if plan.Stages[0].Targets[0] != "dev-python/Gone-1" {
+		t.Fatal("unavailable result aliases plan")
+	}
+}
+
+func TestPythonCleanerRejectsStructuredMutationBeforeStateAccess(t *testing.T) {
+	original := *jsonOutput
+	*jsonOutput = true
+	t.Cleanup(func() { *jsonOutput = original })
+	for _, option := range []string{"--fix", "--resume"} {
+		if code := runPythonCleaner([]string{option}); code != 2 {
+			t.Fatalf("%s exit = %d", option, code)
+		}
+	}
+}
+
+func TestPythonCleanerFixPublishesPreferenceOnlyAfterRuntimeValidation(t *testing.T) {
+	root, preference, companion := pythonCleanerFixFixture(t, "# keep\npython3.13\n", "#!/bin/sh\nexit 0\n")
+	if code := runPythonCleaner([]string{"--fix"}); code != 0 {
+		t.Fatalf("fix exit = %d", code)
+	}
+	data, err := os.ReadFile(preference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "python3.14\n") || !strings.Contains(string(data), "# keep\n") {
+		t.Fatalf("preference = %q", data)
+	}
+	if _, err := os.Stat(companion); !os.IsNotExist(err) {
+		t.Fatalf("completed resume context remains under %s: %v", root, err)
+	}
+}
+
+func TestPythonCleanerRuntimeFailurePreservesPreferenceAndCheckpoint(t *testing.T) {
+	root, preference, companion := pythonCleanerFixFixture(t, "python3.13\n", "#!/bin/sh\necho broken >&2\nexit 7\n")
+	if code := runPythonCleaner([]string{"--fix"}); code != 1 {
+		t.Fatalf("fix exit = %d", code)
+	}
+	data, err := os.ReadFile(preference)
+	if err != nil || string(data) != "python3.13\n" {
+		t.Fatalf("preference changed after failed probe: %q %v", data, err)
+	}
+	state, err := pythoncleaner.LoadResume(companion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Stage != pythoncleaner.ResumeStageValidate {
+		t.Fatalf("checkpoint stage = %q", state.Stage)
+	}
+	if err := os.WriteFile(filepath.Join(root, "usr", "bin", "python3.14"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code := runPythonCleaner([]string{"--resume"}); code != 0 {
+		t.Fatalf("resume exit = %d", code)
+	}
+	data, err = os.ReadFile(preference)
+	if err != nil || !strings.HasPrefix(string(data), "python3.14\n") {
+		t.Fatalf("resume did not publish preference: %q %v", data, err)
+	}
+}
+
+func pythonCleanerFixFixture(t *testing.T, preference, interpreter string) (string, string, string) {
+	t.Helper()
+	root := t.TempDir()
+	configRoot := filepath.Join(root, "etc", "portage")
+	vdbRoot := filepath.Join(root, "var", "db", "pkg")
+	repository := filepath.Join(root, "var", "db", "repos", "gentoo")
+	resumePath := filepath.Join(root, "var", "tmp", "arise", "resume")
+	for _, directory := range []string{
+		configRoot, vdbRoot, repository,
+		filepath.Join(root, "etc", "python-exec"),
+		filepath.Join(root, "usr", "bin"),
+	} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "make.conf"), []byte(
+		"PYTHON_TARGETS=\"python3_14\"\nPYTHON_SINGLE_TARGET=\"python3_14\"\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	preferencePath := filepath.Join(root, "etc", "python-exec", "python-exec.conf")
+	if err := os.WriteFile(preferencePath, []byte(preference), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "usr", "bin", "python3.14"), []byte(interpreter), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	packagePath := filepath.Join(vdbRoot, "dev-lang", "python-3.14.6")
+	if err := os.MkdirAll(packagePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"CONTENTS": "", "EAPI": "8\n", "SLOT": "3.14\n", "repository": "gentoo\n",
+	} {
+		if err := os.WriteFile(filepath.Join(packagePath, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldConfigRoot, oldVDB, oldRepo, oldResume := *portageConfigRoot, *vdbDir, *repoPath, *resumeFile
+	oldPretend, oldJSON := *pretend, *jsonOutput
+	*portageConfigRoot, *vdbDir, *repoPath, *resumeFile = configRoot, vdbRoot, repository, resumePath
+	*pretend, *jsonOutput = false, false
+	t.Setenv("ROOT", root)
+	t.Cleanup(func() {
+		*portageConfigRoot, *vdbDir, *repoPath, *resumeFile = oldConfigRoot, oldVDB, oldRepo, oldResume
+		*pretend, *jsonOutput = oldPretend, oldJSON
+	})
+	return root, preferencePath, resumePath + ".python-cleaner"
 }
 
 func TestPythonCleanerRouteExists(t *testing.T) {

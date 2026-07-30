@@ -2465,10 +2465,14 @@ Acceptance gate:
   exact-version-aware dependency-connected repair islands through Arise;
   unavailable historical ebuilds remain explicit; versioned JSON, route, property,
   malformed metadata, symlink, confinement, generated-bytecode, bounded-output,
-  and host-canary tests are present. Implement import/linkage runtime probes,
-  atomic python-exec preference publication, independently verified removal,
-  resumable staged execution, and disposable broken-root recovery before
-  enabling the deliberately gated `--fix`.
+  and host-canary tests are present. `--fix` now applies one dependency-connected
+  cohort at a time, checkpoints an integrity-bound orchestration record alongside
+  executor progress, refreshes VDB state after every transaction, rejects policy
+  drift and no-progress loops, blocks on unavailable ebuilds, runs bounded direct
+  interpreter and rebuilt native-extension imports, and atomically publishes
+  python-exec preference; `--resume` restores interrupted work. Implement
+  independently verified interpreter/orphan removal and disposable broken-root
+  recovery before declaring the workflow complete.
 - [ ] Make both cleaner workflows usable when Portage's Python environment is
   broken, with read-only audit, structured output, pretend, bounded repair and
   resumable execution modes.

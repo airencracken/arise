@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"time"
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/portage"
@@ -18,6 +21,7 @@ type pythonCleanerOptions struct {
 	Check   bool
 	Pretend bool
 	Fix     bool
+	Resume  bool
 }
 
 func parsePythonCleanerOptions(args []string) (pythonCleanerOptions, error) {
@@ -30,14 +34,16 @@ func parsePythonCleanerOptions(args []string) (pythonCleanerOptions, error) {
 			options.Pretend = true
 		case "--fix":
 			options.Fix = true
+		case "--resume":
+			options.Resume = true
 		case "-h", "--help":
 			return options, errPythonCleanerHelp
 		default:
 			return options, fmt.Errorf("unknown option %q", arg)
 		}
 	}
-	if countTrue(options.Check, options.Pretend, options.Fix) != 1 {
-		return options, fmt.Errorf("require exactly one of --check, --pretend, or --fix")
+	if countTrue(options.Check, options.Pretend, options.Fix, options.Resume) != 1 {
+		return options, fmt.Errorf("require exactly one of --check, --pretend, --fix, or --resume")
 	}
 	return options, nil
 }
@@ -54,35 +60,16 @@ func runPythonCleaner(args []string) int {
 		fmt.Fprintf(os.Stderr, "python-cleaner: %v\n", err)
 		return 2
 	}
-	if options.Fix {
-		fmt.Fprintln(os.Stderr, "python-cleaner: --fix remains gated until runtime import probes and preference publication are implemented")
-		return 1
-	}
-	cfg, err := portage.LoadEffectiveConfig(*portageConfigRoot)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "python-cleaner: load Portage configuration: %v\n", err)
-		return 1
+	if (options.Fix || options.Resume) && *jsonOutput {
+		fmt.Fprintln(os.Stderr, "python-cleaner: structured output is not yet available for staged mutation")
+		return 2
 	}
 	preferencePath := commandRootPath("/etc/python-exec/python-exec.conf")
-	preference, err := pythoncleaner.ParsePreference(preferencePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "python-cleaner: read python-exec preference: %v\n", err)
-		return 1
-	}
-	policy := pythoncleaner.Policy{
-		Targets:      strings.Fields(cfg.MakeConf["PYTHON_TARGETS"]),
-		SingleTarget: cfg.MakeConf["PYTHON_SINGLE_TARGET"],
-		Preference:   preference,
-	}
-	report, err := pythoncleaner.Check(*vdbDir, commandEnv("ROOT", "/"), policy)
+	report, plan, err := loadPythonCleanerState(preferencePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "python-cleaner: %v\n", err)
 		return 1
 	}
-	repositories := maintainRepositoryRoots(*repoPath, *portageConfigRoot)
-	plan := pythoncleaner.BuildPlanWithTargets(report, func(consumer pythoncleaner.Consumer) (string, bool) {
-		return pythonConsumerRepairTarget(consumer, report.Policy.Targets, repositories)
-	})
 	if *jsonOutput {
 		document := struct {
 			Schema    int                  `json:"schema"`
@@ -106,6 +93,9 @@ func runPythonCleaner(args []string) int {
 		}
 		return 0
 	}
+	if options.Fix || options.Resume {
+		return runPythonCleanerFix(options, preferencePath, report, plan)
+	}
 	cohorts := pythonCleanerRepairCohorts(plan)
 	if len(cohorts) == 0 {
 		fmt.Fprintln(os.Stdout, "No bootstrap or consumer rebuild is required.")
@@ -120,14 +110,203 @@ func runPythonCleaner(args []string) int {
 	return 0
 }
 
-func pythonCleanerResolveConfig() resolve.ResolveConfig {
+func loadPythonCleanerState(preferencePath string) (pythoncleaner.Report, pythoncleaner.Plan, error) {
+	cfg, err := portage.LoadEffectiveConfig(*portageConfigRoot)
+	if err != nil {
+		return pythoncleaner.Report{}, pythoncleaner.Plan{}, fmt.Errorf("load Portage configuration: %w", err)
+	}
+	preference, err := pythoncleaner.ParsePreference(preferencePath)
+	if err != nil {
+		return pythoncleaner.Report{}, pythoncleaner.Plan{}, fmt.Errorf("read python-exec preference: %w", err)
+	}
+	policy := pythoncleaner.Policy{
+		Targets:      strings.Fields(cfg.MakeConf["PYTHON_TARGETS"]),
+		SingleTarget: cfg.MakeConf["PYTHON_SINGLE_TARGET"], Preference: preference,
+	}
+	report, err := pythoncleaner.Check(*vdbDir, commandEnv("ROOT", "/"), policy)
+	if err != nil {
+		return pythoncleaner.Report{}, pythoncleaner.Plan{}, err
+	}
+	repositories := maintainRepositoryRoots(*repoPath, *portageConfigRoot)
+	plan := pythoncleaner.BuildPlanWithTargets(report, func(consumer pythoncleaner.Consumer) (string, bool) {
+		return pythonConsumerRepairTarget(consumer, report.Policy.Targets, repositories)
+	})
+	return report, plan, nil
+}
+
+func runPythonCleanerFix(options pythonCleanerOptions, preferencePath string, report pythoncleaner.Report, plan pythoncleaner.Plan) int {
+	companionPath := *resumeFile + ".python-cleaner"
+	state := pythoncleaner.NewResumeState(report.Policy, pythoncleaner.ResumeStageValidate, nil, nil)
+	useExecutorResume := false
+	if options.Resume {
+		saved, err := pythoncleaner.LoadResume(companionPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "python-cleaner: load resume context: %v\n", err)
+			return 1
+		}
+		if !samePythonRepairPolicy(saved.Policy, report.Policy) {
+			fmt.Fprintln(os.Stderr, "python-cleaner: effective Python policy changed since interruption; generate a fresh repair plan")
+			return 1
+		}
+		state = saved
+		if _, err := os.Stat(*resumeFile); err == nil {
+			if saved.Stage != pythoncleaner.ResumeStageCohort {
+				fmt.Fprintln(os.Stderr, "python-cleaner: executor progress exists outside a package cohort")
+				return 1
+			}
+			useExecutorResume = true
+		} else if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "python-cleaner: inspect executor resume state: %v\n", err)
+			return 1
+		}
+	}
+	completed := cloneStringCohorts(state.CompletedCohorts)
+	cohorts := pythonCleanerRepairCohorts(plan)
+	current := []string(nil)
+	if useExecutorResume {
+		current = append([]string(nil), state.CurrentTargets...)
+	} else if len(cohorts) != 0 {
+		current = cohorts[0]
+	}
+	for iteration := 0; len(current) != 0; iteration++ {
+		if iteration >= 256 {
+			fmt.Fprintln(os.Stderr, "python-cleaner: repair exceeded the bounded cohort limit")
+			return 1
+		}
+		state = pythoncleaner.NewResumeState(report.Policy, pythoncleaner.ResumeStageCohort, current, completed)
+		if err := pythoncleaner.SaveResume(companionPath, state); err != nil {
+			fmt.Fprintf(os.Stderr, "python-cleaner: save resume context: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stdout, "Applying Python repair cohort: %s\n", strings.Join(current, ", "))
+		cfg := pythonCleanerResolveConfig(false)
+		cfg.Resume = useExecutorResume
+		runResolve(current, *dbPath, *repoPath, cfg)
+		useExecutorResume = false
+		completed = append(completed, append([]string(nil), current...))
+		before := strings.Join(current, "\x00")
+		var err error
+		report, plan, err = loadPythonCleanerState(preferencePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "python-cleaner: post-cohort inventory failed: %v\n", err)
+			return 1
+		}
+		if !samePythonRepairPolicy(state.Policy, report.Policy) {
+			fmt.Fprintln(os.Stderr, "python-cleaner: effective Python policy changed during repair")
+			return 1
+		}
+		cohorts = pythonCleanerRepairCohorts(plan)
+		if len(cohorts) == 0 {
+			current = nil
+			break
+		}
+		current = cohorts[0]
+		if strings.Join(current, "\x00") == before {
+			state = pythoncleaner.NewResumeState(report.Policy, pythoncleaner.ResumeStageCohort, current, completed)
+			_ = pythoncleaner.SaveResume(companionPath, state)
+			fmt.Fprintln(os.Stderr, "python-cleaner: cohort made no independently observable repair progress")
+			return 1
+		}
+	}
+	state = pythoncleaner.NewResumeState(report.Policy, pythoncleaner.ResumeStageValidate, nil, completed)
+	if err := pythoncleaner.SaveResume(companionPath, state); err != nil {
+		fmt.Fprintf(os.Stderr, "python-cleaner: save validation checkpoint: %v\n", err)
+		return 1
+	}
+	if unavailable := pythonCleanerUnavailable(plan); len(unavailable) != 0 {
+		fmt.Fprintf(os.Stderr, "python-cleaner: unavailable installed packages require replacement or removal before preference switching: %s\n", strings.Join(unavailable, ", "))
+		return 1
+	}
+	repairedTargets := flattenStringCohorts(completed)
+	probes, err := pythoncleaner.BuildRuntimeProbes(*vdbDir, commandEnv("ROOT", "/"), report.Policy.Targets, repairedTargets)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "python-cleaner: build runtime probes: %v\n", err)
+		return 1
+	}
+	probes = append(pythoncleaner.InterpreterSmokeProbes(commandEnv("ROOT", "/"), report.Policy.Targets), probes...)
+	if failures := pythoncleaner.RunRuntimeProbes(context.Background(), probes, 30*time.Second); len(failures) != 0 {
+		for _, failure := range failures {
+			fmt.Fprintf(os.Stderr, "python-cleaner: runtime probe failed for %s using %s: %s\n",
+				failure.Probe.Module, failure.Probe.Interpreter, failure.Detail)
+		}
+		return 1
+	}
+	state = pythoncleaner.NewResumeState(report.Policy, pythoncleaner.ResumeStagePreference, nil, completed)
+	if err := pythoncleaner.SaveResume(companionPath, state); err != nil {
+		fmt.Fprintf(os.Stderr, "python-cleaner: save preference checkpoint: %v\n", err)
+		return 1
+	}
+	target, err := pythoncleaner.PreferredPolicyTarget(report.Policy)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "python-cleaner: %v\n", err)
+		return 1
+	}
+	if err := pythoncleaner.PublishPreference(preferencePath, target); err != nil {
+		fmt.Fprintf(os.Stderr, "python-cleaner: publish python-exec preference: %v\n", err)
+		return 1
+	}
+	preference, err := pythoncleaner.ParsePreference(preferencePath)
+	if err != nil || len(preference) == 0 || preference[0] != target {
+		fmt.Fprintf(os.Stderr, "python-cleaner: verify published python-exec preference: %v\n", err)
+		return 1
+	}
+	finalReport, finalPlan, err := loadPythonCleanerState(preferencePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "python-cleaner: final-state inventory failed: %v\n", err)
+		return 1
+	}
+	if !samePythonRepairPolicy(report.Policy, finalReport.Policy) ||
+		len(pythonCleanerRepairCohorts(finalPlan)) != 0 ||
+		len(pythonCleanerUnavailable(finalPlan)) != 0 {
+		fmt.Fprintln(os.Stderr, "python-cleaner: final-state validation found unresolved Python package repair")
+		return 1
+	}
+	if err := pythoncleaner.RemoveResume(companionPath); err != nil {
+		fmt.Fprintf(os.Stderr, "python-cleaner: remove completed resume context: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(os.Stdout, "Python package repair and runtime validation completed; python-exec preference published.")
+	return 0
+}
+
+func pythonCleanerResolveConfig(pretendMode ...bool) resolve.ResolveConfig {
 	cfg := resolveFlagsToConfig(true, false)
 	cfg.Reinstall, cfg.ExplicitReinstall = true, true
-	cfg.Oneshot, cfg.Pretend = true, true
+	cfg.Oneshot = true
+	cfg.Pretend = len(pretendMode) == 0 || pretendMode[0]
 	// Complete-graph updates are intentionally excluded. Recovery cohorts must
 	// not silently expand into unrelated reverse-dependent or world repairs.
 	cfg.CompleteGraph = false
 	return cfg
+}
+
+func samePythonRepairPolicy(left, right pythoncleaner.Policy) bool {
+	return reflect.DeepEqual(left.Targets, right.Targets) && left.SingleTarget == right.SingleTarget
+}
+
+func pythonCleanerUnavailable(plan pythoncleaner.Plan) []string {
+	for _, stage := range plan.Stages {
+		if stage.Name == "unavailable-consumers" {
+			return append([]string(nil), stage.Targets...)
+		}
+	}
+	return nil
+}
+
+func cloneStringCohorts(cohorts [][]string) [][]string {
+	result := make([][]string, len(cohorts))
+	for index := range cohorts {
+		result[index] = append([]string(nil), cohorts[index]...)
+	}
+	return result
+}
+
+func flattenStringCohorts(cohorts [][]string) []string {
+	var result []string
+	for _, cohort := range cohorts {
+		result = append(result, cohort...)
+	}
+	return result
 }
 
 func pythonConsumerRepairTarget(consumer pythoncleaner.Consumer, policyTargets, repositories []string) (string, bool) {
@@ -199,7 +378,7 @@ func pythonCleanerRepairCohorts(plan pythoncleaner.Plan) [][]string {
 }
 
 func printPythonCleanerUsage(writer io.Writer) {
-	fmt.Fprintln(writer, "Usage: arise python-cleaner --check|--pretend|--fix")
+	fmt.Fprintln(writer, "Usage: arise python-cleaner --check|--pretend|--fix|--resume")
 }
 
 func printPythonCleanerReport(writer io.Writer, report pythoncleaner.Report, plan pythoncleaner.Plan) {

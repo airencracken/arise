@@ -66,9 +66,10 @@ type Report struct {
 }
 
 var (
-	pythonPathRE = regexp.MustCompile(`/usr/lib(?:32|64|x32)?/python([0-9]+\.[0-9]+)(?:/|$)`)
-	libPythonRE  = regexp.MustCompile(`^libpython([0-9]+\.[0-9]+)[^,]*`)
-	shebangRE    = regexp.MustCompile(`^#![ \t]*(?:/usr/bin/env(?:[ \t]+-S)?[ \t]+|/usr/bin/)(python[0-9]+\.[0-9]+)(?:[ \t]|$)`)
+	pythonPathRE    = regexp.MustCompile(`/usr/lib(?:32|64|x32)?/python([0-9]+\.[0-9]+)(?:/|$)`)
+	libPythonRE     = regexp.MustCompile(`^libpython([0-9]+\.[0-9]+)[^,]*`)
+	shebangRE       = regexp.MustCompile(`^#![ \t]*(?:/usr/bin/env(?:[ \t]+-S)?[ \t]+|/usr/bin/)(python[0-9]+\.[0-9]+)(?:[ \t]|$)`)
+	targetVersionRE = regexp.MustCompile(`^[0-9]+\.[0-9]+t?$`)
 )
 
 func Check(vdbRoot, root string, policy Policy) (Report, error) {
@@ -515,7 +516,7 @@ func normalizeTarget(value string) string {
 	if strings.HasPrefix(value, "python") {
 		version := strings.TrimPrefix(value, "python")
 		version = strings.ReplaceAll(version, "_", ".")
-		if version != "" {
+		if targetVersionRE.MatchString(version) {
 			return "python" + strings.ReplaceAll(version, ".", "_")
 		}
 	}

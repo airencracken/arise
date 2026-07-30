@@ -303,15 +303,19 @@ integrity-bound cleaner mode, ABI evidence, targets, and leftover policy while
 the executor resumes remaining packages. @option{--skipfirst} is supported when
 saved package progress exists.
 
-@item python-cleaner --check|--pretend|--fix
+@item python-cleaner --check|--pretend|--fix|--resume
 Inventory Python transitions from effective target policy, python-exec
 preference, installed slots, package USE metadata, owned paths, libpython
 linkage, root-confined shebangs, and unowned obsolete site-packages. Pretend
 mode isolates dependency-connected repair cohorts, pins viable installed
 versions, reports unavailable historical ebuilds, resolves each cohort, and
-shows the ordered validation, preference-switch, and removal stages. @option{--fix} remains
-explicitly gated pending runtime import probes and atomic preference
-publication; the foundation never removes interpreters or orphan files.
+shows the ordered validation, preference-switch, and removal stages.
+@option{--fix} applies checkpointed cohorts with a fresh inventory after each
+transaction, probes policy interpreters and rebuilt native extensions, and
+atomically publishes python-exec preference only after validation.
+@option{--resume} restores integrity-bound recovery state. Unavailable ebuilds
+block preference switching. The workflow does not yet remove interpreters or
+orphan files.
 
 @item maintain world --check|--fix
 Check the selected world set against installed packages and every configured
