@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/airencracken/arise/internal/equery"
@@ -10,11 +11,22 @@ import (
 
 func runEquery(args []string, dbPath, repoDir, vdbPath string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "equery: expected subcommand: belongs, files, uses, size, check, which, list\n")
+		fmt.Fprintf(os.Stderr, "equery: expected subcommand: belongs, files, uses, size, check, which\n")
 		os.Exit(1)
 	}
 	subcmd := args[0]
 	subArgs := args[1:]
+	if subcmd == "--help" || subcmd == "-h" || subcmd == "help" {
+		writeCommandHelp(os.Stdout, "equery")
+		return
+	}
+	if isHelpRequest(subArgs) {
+		if writeEquerySubcommandHelp(os.Stdout, subcmd) {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "equery: unknown subcommand %q\n", subcmd)
+		os.Exit(1)
+	}
 
 	var arg string
 	if len(subArgs) > 0 {
@@ -111,19 +123,26 @@ func runEquery(args []string, dbPath, repoDir, vdbPath string) {
 		}
 		fmt.Println(path)
 
-	case "list":
-		packages, err := equery.List(vdbPath, arg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "equery list: %v\n", err)
-			os.Exit(1)
-		}
-		for _, p := range packages {
-			fmt.Println(p)
-		}
-
 	default:
 		fmt.Fprintf(os.Stderr, "equery: unknown subcommand %q\n", subcmd)
-		fmt.Fprintf(os.Stderr, "Expected: belongs, files, uses, size, check, which, list\n")
+		fmt.Fprintf(os.Stderr, "Expected: belongs, files, uses, size, check, which\n")
 		os.Exit(1)
 	}
+}
+
+func writeEquerySubcommandHelp(writer io.Writer, subcommand string) bool {
+	usage := map[string]string{
+		"belongs": "arise equery belongs <path>",
+		"files":   "arise equery files <atom>",
+		"uses":    "arise equery uses <atom>",
+		"size":    "arise equery size <atom>",
+		"check":   "arise equery check <atom>",
+		"which":   "arise equery which <atom>",
+	}
+	line, ok := usage[subcommand]
+	if !ok {
+		return false
+	}
+	fmt.Fprintf(writer, "Usage: %s\n", line)
+	return true
 }

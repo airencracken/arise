@@ -87,19 +87,14 @@ func TestEveryDocumentedCommandHasASelectionRoute(t *testing.T) {
 	fs := flag.NewFlagSet("routes", flag.ContinueOnError)
 	var output bytes.Buffer
 	writeUsage(&output, fs)
-	const prefix = "Commands: "
-	var documented []string
-	for _, line := range strings.Split(output.String(), "\n") {
-		if strings.HasPrefix(line, prefix) {
-			documented = strings.Split(strings.TrimPrefix(line, prefix), ", ")
-			break
+	if !strings.Contains(output.String(), "Commands:\n") {
+		t.Fatal("help has no command section")
+	}
+	seen := make(map[string]bool, len(commandOrder))
+	for _, command := range commandOrder {
+		if !strings.Contains(output.String(), "\n  "+command) {
+			t.Errorf("help does not document %q", command)
 		}
-	}
-	if len(documented) == 0 {
-		t.Fatal("help has no documented command list")
-	}
-	seen := make(map[string]bool, len(documented))
-	for _, command := range documented {
 		if seen[command] {
 			t.Fatalf("help documents command %q more than once", command)
 		}

@@ -245,6 +245,11 @@ func main() {
 	}
 
 	cmd, cmdArgs := selectCommand(args)
+	if isHelpRequest(cmdArgs) {
+		if writeCommandHelp(os.Stdout, cmd) {
+			return
+		}
+	}
 	if *jsonOutput && cmd == "search" {
 		*searchJSON = true
 	}
@@ -346,7 +351,10 @@ func main() {
 
 func writeUsage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprintln(w, "Usage: arise [options] <command> [args...]")
-	fmt.Fprintln(w, "Commands: sync, index, install, update, uninstall, select, recover, query, state, search, installed, info, audit, perl-cleaner, python-cleaner, maintain, bug-report, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench")
+	fmt.Fprintln(w, "Commands:")
+	for _, command := range commandOrder {
+		fmt.Fprintf(w, "  %-19s %s\n", command, commandHelp[command].Summary)
+	}
 	fmt.Fprintln(w, "Options:")
 	var rendered bytes.Buffer
 	original := fs.Output()
@@ -489,15 +497,7 @@ func selectCommand(args []string) (string, []string) {
 	if len(args) == 0 {
 		return "", nil
 	}
-	commands := map[string]bool{
-		"sync": true, "index": true, "query": true, "state": true,
-		"install": true, "update": true, "uninstall": true, "select": true, "recover": true, "audit": true, "maintain": true, "bug-report": true,
-		"dispatch-conf": true, "quickpkg": true, "depclean": true, "prune": true,
-		"search": true, "installed": true, "info": true, "preserved-rebuild": true,
-		"revdep-rebuild": true, "env-update": true, "ldconfig": true, "config": true,
-		"news": true, "deselect": true, "equery": true, "bench": true, "perl-cleaner": true, "python-cleaner": true,
-	}
-	if commands[args[0]] {
+	if knownCommand(args[0]) {
 		return args[0], args[1:]
 	}
 	return "install", args

@@ -10,7 +10,7 @@ _arise() {
 
     local audit_sub="python perl"
     local news_sub="list read display"
-    local equery_sub="belongs files uses size check which list"
+    local equery_sub="belongs files uses size check which"
 
     if [[ $cword -eq 1 ]]; then
         if [[ $cur == -* ]]; then
