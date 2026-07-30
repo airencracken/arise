@@ -121,6 +121,8 @@ type WarningDiagnostic struct {
 	Start      int    `json:"start"`
 	End        int    `json:"end"`
 	Annotation string `json:"annotation"`
+	Blocker    string `json:"blocker,omitempty"`
+	BlockerCPV string `json:"blocker_cpv,omitempty"`
 }
 
 const (
@@ -1296,10 +1298,14 @@ func (r *resolver) warnSkippedUpdatesDueToConstraints() {
 			source := constraint.String()
 			start, end := warningAtomSpan(source)
 			annotation := "dependency constraint excludes this update"
+			blocker := ""
+			blockerCPV := ""
 			if index < len(r.constraintCauses[key]) && r.constraintCauses[key][index].Reason != "" {
 				reason := r.constraintCauses[key][index].Reason
 				if after, ok := strings.CutPrefix(reason, "dependency of "); ok {
 					annotation = "required by " + after
+					blocker = after
+					blockerCPV = r.installedCPV(after)
 				} else {
 					annotation = "required by " + reason
 				}
@@ -1308,17 +1314,34 @@ func (r *resolver) warnSkippedUpdatesDueToConstraints() {
 				Summary: summary,
 				Message: candidate + " was skipped because an installed dependency requires:",
 				Source:  source, Start: start, End: end, Annotation: annotation,
+				Blocker:    blocker,
+				BlockerCPV: blockerCPV,
 			})
 		}
 	}
 }
 
-func warningAtomSpan(source string) (int, int) {
-	start := strings.IndexByte(source, '[')
-	end := strings.LastIndexByte(source, ']')
-	if start >= 0 && end > start+1 {
-		return start + 1, end
+func (r *resolver) installedCPV(cp string) string {
+	node := r.graph.Packages[cp]
+	if node == nil {
+		return ""
 	}
+	var installed []*VersionInfo
+	for _, version := range node.Versions {
+		if version != nil && version.Installed && version.Version != nil {
+			installed = append(installed, version)
+		}
+	}
+	if len(installed) == 0 {
+		return ""
+	}
+	sort.Slice(installed, func(i, j int) bool {
+		return installed[i].Version.Compare(installed[j].Version) > 0
+	})
+	return cp + "-" + installed[0].Version.Raw
+}
+
+func warningAtomSpan(source string) (int, int) {
 	return 0, len(source)
 }
 

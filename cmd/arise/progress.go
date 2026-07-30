@@ -101,6 +101,28 @@ func (p *terminalProgress) setLabel(label string) {
 	}
 	p.mu.Lock()
 	p.label = label
+	if p.terminal {
+		p.renderLocked(0)
+	}
+	p.mu.Unlock()
+}
+
+// setActivity replaces the animated terminal label, or writes a durable stage
+// line when output is redirected. It is intended for work that has meaningful
+// stages but no measurable item count.
+func (p *terminalProgress) setActivity(activity string) {
+	if p == nil || !p.output {
+		return
+	}
+	p.mu.Lock()
+	p.label = activity
+	p.status = ""
+	p.transient = ""
+	if p.terminal {
+		p.renderLocked(0)
+	} else {
+		fmt.Fprintln(p.writer, activity)
+	}
 	p.mu.Unlock()
 }
 
@@ -209,6 +231,17 @@ func (p *terminalProgress) message(message string) {
 }
 
 func (p *terminalProgress) stop() {
+	p.stopMode(true)
+}
+
+// stopAndClear releases a transient terminal line so a durable final report
+// can replace it without leaving an empty line. Redirected output is already
+// durable and needs no cleanup.
+func (p *terminalProgress) stopAndClear() {
+	p.stopMode(false)
+}
+
+func (p *terminalProgress) stopMode(newline bool) {
 	if p == nil || !p.terminal {
 		return
 	}
@@ -218,7 +251,10 @@ func (p *terminalProgress) stop() {
 	}
 	p.mu.Lock()
 	if p.displayed {
-		fmt.Fprint(p.writer, "\r\033[K\n")
+		fmt.Fprint(p.writer, "\r\033[K")
+		if newline {
+			fmt.Fprintln(p.writer)
+		}
 		p.displayed = false
 	}
 	p.mu.Unlock()

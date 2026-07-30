@@ -26,6 +26,21 @@ func TestRenderProducesCompilerStyleCaretSpan(t *testing.T) {
 	}
 }
 
+func TestRenderColorizesTheSourceSpanAndCarets(t *testing.T) {
+	previous := color.UseColor
+	color.UseColor = true
+	t.Cleanup(func() { color.UseColor = previous })
+	var output bytes.Buffer
+	Render(&output, SourceSpan{Source: "<cat/pkg-2[flag]", Start: 0, End: 17})
+	got := output.String()
+	if strings.Count(got, "\x1b[") < 4 {
+		t.Fatalf("source and carets were not both colorized: %q", got)
+	}
+	if !strings.Contains(got, color.PortageYellow("<cat/pkg-2[flag]")) {
+		t.Fatalf("source constraint was not colorized as one span: %q", got)
+	}
+}
+
 func TestRenderBoundsAdversarialSpansAndControlCharacters(t *testing.T) {
 	previous := color.UseColor
 	color.UseColor = false

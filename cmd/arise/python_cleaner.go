@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/graph"
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/portage"
@@ -458,39 +459,48 @@ func printPythonCleanerUsage(writer io.Writer) {
 }
 
 func printPythonCleanerReport(writer io.Writer, report pythoncleaner.Report, plan pythoncleaner.Plan) {
-	fmt.Fprintf(writer, "Python policy targets: %s", strings.Join(report.Policy.Targets, ", "))
+	fmt.Fprintf(writer, "%s %s", color.Bold("Python policy targets:"), color.Cyan(strings.Join(report.Policy.Targets, ", ")))
 	if report.Policy.SingleTarget != "" {
-		fmt.Fprintf(writer, "; single target: %s", report.Policy.SingleTarget)
+		fmt.Fprintf(writer, "; %s %s", color.Bold("single target:"), color.Cyan(report.Policy.SingleTarget))
 	}
 	fmt.Fprintln(writer)
-	fmt.Fprintf(writer, "python-exec preference: %s\n", strings.Join(report.Policy.Preference, ", "))
-	fmt.Fprintf(writer, "Installed interpreters: %d; missing policy targets: %d\n",
-		len(report.Interpreters), len(report.Missing))
+	fmt.Fprintf(writer, "%s %s\n", color.Bold("python-exec preference:"), color.Blue(strings.Join(report.Policy.Preference, ", ")))
+	missing := fmt.Sprintf("%d", len(report.Missing))
+	if len(report.Missing) != 0 {
+		missing = color.BoldRed(missing)
+	}
+	fmt.Fprintf(writer, "%s %s; %s %s\n",
+		color.Bold("Installed interpreters:"), color.Green(fmt.Sprintf("%d", len(report.Interpreters))),
+		color.Bold("missing policy targets:"), missing)
 	for _, consumer := range report.Consumers {
-		fmt.Fprintf(writer, "  rebuild %s as %s\n", consumer.CPV, consumer.Atom)
+		fmt.Fprintf(writer, "  %s %s as %s\n", color.Yellow("rebuild"), color.Bold(consumer.CPV), color.Cyan(consumer.Atom))
 		for _, reason := range consumer.Reasons {
-			fmt.Fprintf(writer, "    %s [%s]: %s\n", reason.Kind, reason.Target, reason.Evidence)
+			fmt.Fprintf(writer, "    %s [%s]: %s\n", color.Yellow(reason.Kind), color.Cyan(reason.Target), reason.Evidence)
 		}
 	}
 	for _, removal := range report.Removals {
-		status := "blocked"
+		status := color.Red("blocked")
 		if removal.Safe {
-			status = "eligible after validation"
+			status = color.Green("eligible after validation")
 		}
-		fmt.Fprintf(writer, "  remove %s: %s", removal.Interpreter.CPV, status)
+		fmt.Fprintf(writer, "  %s %s: %s", color.Red("remove"), color.Bold(removal.Interpreter.CPV), status)
 		if len(removal.Blockers) != 0 {
 			fmt.Fprintf(writer, " (%s)", strings.Join(removal.Blockers, ", "))
 		}
 		fmt.Fprintln(writer)
 	}
-	fmt.Fprintf(writer, "Unowned obsolete site-packages: %d", len(report.Orphans))
+	orphanCount := fmt.Sprintf("%d", len(report.Orphans))
+	if len(report.Orphans) != 0 || report.OmittedOrphans != 0 {
+		orphanCount = color.BoldRed(orphanCount)
+	}
+	fmt.Fprintf(writer, "%s %s", color.Bold("Unowned obsolete site-packages:"), orphanCount)
 	if report.OmittedOrphans != 0 {
 		fmt.Fprintf(writer, " (%d additional omitted)", report.OmittedOrphans)
 	}
 	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "Ordered Python repair plan:")
+	fmt.Fprintln(writer, color.Bold("Ordered Python repair plan:"))
 	for index, stage := range plan.Stages {
-		fmt.Fprintf(writer, "  %d. %s", index+1, stage.Name)
+		fmt.Fprintf(writer, "  %s %s", color.Cyan(fmt.Sprintf("%d.", index+1)), color.Bold(stage.Name))
 		if len(stage.Targets) != 0 {
 			fmt.Fprintf(writer, ": %s", strings.Join(stage.Targets, ", "))
 		}

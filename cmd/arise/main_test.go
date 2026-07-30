@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"os"
 	"path/filepath"
@@ -17,6 +18,18 @@ import (
 	"github.com/airencracken/arise/internal/search"
 )
 
+func TestCancellationRestoresDefaultSignalHandling(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	restoreSignalDefaultsAfterCancellation(ctx, func() { close(stopped) })
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("signal defaults were not restored after cancellation")
+	}
+}
+
 func TestProgressFramesAreASCII(t *testing.T) {
 	for _, frame := range progressFrames {
 		for _, b := range []byte(frame) {
@@ -24,6 +37,36 @@ func TestProgressFramesAreASCII(t *testing.T) {
 				t.Fatalf("progress frame %q is not ASCII", frame)
 			}
 		}
+	}
+}
+
+func TestTerminalProgressActivityStreamsDurableStages(t *testing.T) {
+	var output bytes.Buffer
+	progress := startTerminalProgressWriter("starting", true, true, false, &output)
+	progress.setActivity("checking repository")
+	progress.setActivity("fetching main")
+	progress.stopAndClear()
+
+	if got, want := output.String(), "checking repository\nfetching main\n"; got != want {
+		t.Fatalf("redirected activity = %q, want %q", got, want)
+	}
+}
+
+func TestTerminalProgressActivityIsTransientOnTerminal(t *testing.T) {
+	var output bytes.Buffer
+	progress := startTerminalProgressWriter("starting", true, true, true, &output)
+	progress.setActivity("fetching main")
+	progress.stopAndClear()
+
+	got := output.String()
+	if !strings.Contains(got, "fetching main") {
+		t.Fatalf("terminal activity omits stage: %q", got)
+	}
+	if strings.HasSuffix(got, "\n") {
+		t.Fatalf("transient terminal activity left a blank line: %q", got)
+	}
+	if !strings.HasSuffix(got, "\r\x1b[K") {
+		t.Fatalf("terminal activity was not cleared: %q", got)
 	}
 }
 

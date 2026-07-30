@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestMaintainCompletion(t *testing.T) {
+func TestCommandCompletion(t *testing.T) {
 	completion, err := filepath.Abs("arise-completion.bash")
 	if err != nil {
 		t.Fatal(err)
@@ -21,6 +21,11 @@ func TestMaintainCompletion(t *testing.T) {
 		{name: "target", words: []string{"arise", "maintain", ""}, want: []string{"world"}},
 		{name: "mode", words: []string{"arise", "maintain", "world", "--"}, want: []string{"--check", "--fix"}},
 		{name: "filtered mode", words: []string{"arise", "maintain", "world", "--f"}, want: []string{"--fix"}},
+		{name: "perl cleaner command", words: []string{"arise", "perl-c"}, want: []string{"perl-cleaner"}},
+		{name: "perl cleaner modes", words: []string{"arise", "perl-cleaner", "--all"}, want: []string{"--allmodules", "--all"}},
+		{name: "python cleaner command", words: []string{"arise", "python-c"}, want: []string{"python-cleaner"}},
+		{name: "python cleaner modes", words: []string{"arise", "python-cleaner", "--"}, want: []string{"--check", "--pretend", "--fix", "--resume"}},
+		{name: "removed equery list", words: []string{"arise", "equery", "l"}, want: nil},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

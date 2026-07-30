@@ -204,6 +204,7 @@ func main() {
 		os.Exit(runPhaseQuery(os.Args[2:]))
 	}
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	restoreSignalDefaultsAfterCancellation(ctx, stopSignals)
 	commandContext = ctx
 	defer stopSignals()
 	stopRuntimeProfiles := startRuntimeProfilesFromEnvironment()
@@ -347,6 +348,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: arise [flags] <command> [args...]\n")
 		os.Exit(1)
 	}
+}
+
+// Restore the process defaults after the first termination signal cancels the
+// command. This keeps the first SIGINT cooperative while ensuring a second one
+// terminates immediately instead of being swallowed or encouraging SIGQUIT,
+// which makes the Go runtime dump every goroutine.
+func restoreSignalDefaultsAfterCancellation(ctx context.Context, stop func()) {
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 }
 
 func writeUsage(w io.Writer, fs *flag.FlagSet) {

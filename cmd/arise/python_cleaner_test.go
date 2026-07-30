@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/pythoncleaner"
 	"github.com/airencracken/arise/internal/resolve"
 )
@@ -411,5 +413,34 @@ func TestPrintPythonCleanerReportShowsOrderedSafetyPlan(t *testing.T) {
 		if !strings.Contains(output.String(), fragment) {
 			t.Fatalf("output missing %q:\n%s", fragment, output.String())
 		}
+	}
+}
+
+func TestPrintPythonCleanerReportColorizesActionsAndStatusWithoutChangingText(t *testing.T) {
+	report := pythoncleaner.Report{
+		Policy: pythoncleaner.Policy{Targets: []string{"python3_14"}, Preference: []string{"python3_13"}},
+		Consumers: []pythoncleaner.Consumer{{
+			CPV: "dev-python/example-1", Atom: "dev-python/example:0",
+			Reasons: []pythoncleaner.Reason{{Kind: "stale-python-path", Target: "python3_13", Evidence: "python3.13"}},
+		}},
+		Removals: []pythoncleaner.Removal{{Interpreter: pythoncleaner.Interpreter{CPV: "dev-lang/python-3.13"}, Safe: true}},
+	}
+	plan := pythoncleaner.BuildPlan(report)
+	previous := color.UseColor
+	t.Cleanup(func() { color.UseColor = previous })
+
+	color.UseColor = false
+	var plain bytes.Buffer
+	printPythonCleanerReport(&plain, report, plan)
+	color.UseColor = true
+	var colored bytes.Buffer
+	printPythonCleanerReport(&colored, report, plan)
+
+	if !strings.Contains(colored.String(), "\x1b[") {
+		t.Fatalf("colored cleaner report contains no ANSI styles: %q", colored.String())
+	}
+	ansi := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	if got := ansi.ReplaceAllString(colored.String(), ""); got != plain.String() {
+		t.Fatalf("color changed cleaner report text:\ncolored: %q\nplain: %q", got, plain.String())
 	}
 }

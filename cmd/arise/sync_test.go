@@ -114,6 +114,30 @@ func TestPrintSyncTargetReportKeepsUnchangedOutputToOneLine(t *testing.T) {
 	}
 }
 
+func TestFormatSyncProgressKeepsRepositoryAndStageTogether(t *testing.T) {
+	got := formatSyncProgress("gentoo", "Fetching master from origin")
+	want := "  gentoo               Fetching master from origin"
+	if got != want {
+		t.Fatalf("sync progress = %q, want %q", got, want)
+	}
+}
+
+func TestSyncStageTimingsAttributeElapsedTimeToEachStage(t *testing.T) {
+	started := time.Unix(100, 0)
+	timings := newSyncStageTimings(started)
+	timings.advance("check", started.Add(10*time.Millisecond))
+	timings.advance("fetch", started.Add(35*time.Millisecond))
+	timings.advance("unchanged", started.Add(2*time.Second))
+	timings.finish(started.Add(2003 * time.Millisecond))
+	timings.finish(started.Add(3 * time.Second))
+
+	got := timings.String()
+	want := "check 25ms, fetch 1.965s, unchanged 3ms"
+	if got != want {
+		t.Fatalf("stage timings = %q, want %q", got, want)
+	}
+}
+
 func TestPrintPackageChangesColorizesEixStyleChangeKinds(t *testing.T) {
 	previousColor := color.UseColor
 	color.UseColor = true

@@ -24,7 +24,7 @@ func Render(writer io.Writer, span SourceSpan) {
 	if summary := singleLine(span.Summary); summary != "" {
 		fmt.Fprintf(writer, "  %s\n", summary)
 	}
-	fmt.Fprintf(writer, "    %s\n", source)
+	fmt.Fprintf(writer, "    %s%s%s\n", source[:start], color.PortageYellow(source[start:end]), source[end:])
 	carets := color.PortageYellow(strings.Repeat("^", max(1, end-start)))
 	fmt.Fprintf(writer, "    %s%s", strings.Repeat(" ", start), carets)
 	if annotation := singleLine(span.Annotation); annotation != "" {

@@ -6321,6 +6321,7 @@ func TestResolve_WarnsWhenDependencyConstraintSkipsVisibleUpdate(t *testing.T) {
 	installed := pkg(g, "dev-python/docutils", "0.22", "0", "0", true, map[string]bool{"python_targets_python3_14": true})
 	installed.InstalledUseFlags = map[string]bool{"python_targets_python3_14": true}
 	pkg(g, "dev-python/docutils", "0.23", "0", "0", false, map[string]bool{"python_targets_python3_14": true})
+	pkg(g, "dev-python/sphinx", "9.1.0", "0", "0", true, nil)
 	constraint, err := atom.Parse("<dev-python/docutils-0.23[python_targets_python3_14(-)]")
 	if err != nil {
 		t.Fatal(err)
@@ -6343,9 +6344,11 @@ func TestResolve_WarnsWhenDependencyConstraintSkipsVisibleUpdate(t *testing.T) {
 			}
 			detail := r.warningDiagnostics[0]
 			if detail.Summary != warning ||
-				detail.Source[detail.Start:detail.End] != "python_targets_python3_14(-)" ||
+				detail.Source[detail.Start:detail.End] != "<dev-python/docutils-0.23[python_targets_python3_14(-)]" ||
 				detail.Message != "dev-python/docutils-0.23 was skipped because an installed dependency requires:" ||
-				detail.Annotation != "required by dev-python/sphinx" {
+				detail.Annotation != "required by dev-python/sphinx" ||
+				detail.Blocker != "dev-python/sphinx" ||
+				detail.BlockerCPV != "dev-python/sphinx-9.1.0" {
 				t.Fatalf("warning diagnostic = %#v", detail)
 			}
 			return

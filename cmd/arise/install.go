@@ -432,11 +432,23 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		fmt.Fprintf(os.Stderr, "resolve: build graph: %v\n", err)
 		os.Exit(1)
 	}
+	if errors.Is(commandContext.Err(), context.Canceled) {
+		progress.stop()
+		_ = db.Close()
+		fmt.Fprintln(os.Stderr, "resolve: interrupted by user")
+		exitAfterRuntimeProfiles(130)
+	}
 	stateDuration := time.Since(stageStarted)
 
 	stageStarted = time.Now()
 	progress.setStatus("Constructing resolver graph...")
 	rg := g.ToResolveGraph()
+	if errors.Is(commandContext.Err(), context.Canceled) {
+		progress.stop()
+		_ = db.Close()
+		fmt.Fprintln(os.Stderr, "resolve: interrupted by user")
+		exitAfterRuntimeProfiles(130)
+	}
 	graphDuration := time.Since(stageStarted)
 
 	stageStarted = time.Now()
@@ -475,7 +487,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	if err == nil {
 		result, err = resolve.ResolveContext(resolveCtx, rg, targets, cfg)
 	}
-	if result != nil && len(result.Conflicts) != 0 {
+	if result != nil && len(result.Conflicts) != 0 && commandContext.Err() == nil {
 		progress.setStatus("Validating conflict alternatives...")
 		validateConflictAlternatives(resolveCtx, rg, targets, cfg, result)
 	}
@@ -486,6 +498,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		exitAfterRuntimeProfiles(1)
 	}
 	progress.stop()
+	if errors.Is(commandContext.Err(), context.Canceled) {
+		fmt.Fprintln(os.Stderr, "resolve: interrupted by user")
+		exitAfterRuntimeProfiles(130)
+	}
 	if result == nil {
 		result = &resolve.ResolveResult{}
 	}
@@ -628,31 +644,6 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 	}
-	displayWarnings := warningsForDisplay(result.Warnings, cfg.Verbose)
-	if len(displayWarnings) > 0 && !cfg.Quiet {
-		fmt.Println("\nWarnings:")
-		for _, warning := range displayWarnings {
-			details := warningDiagnostics(result.WarningDiagnostics, warning)
-			if len(details) == 0 {
-				fmt.Printf("  %s\n", warning)
-				continue
-			}
-			for index, detail := range details {
-				summary := ""
-				if index == 0 {
-					summary = detail.Message
-					if summary == "" {
-						summary = warning
-					}
-				}
-				diagnostic.Render(os.Stdout, diagnostic.SourceSpan{
-					Summary: summary, Source: detail.Source, Start: detail.Start,
-					End: detail.End, Annotation: detail.Annotation,
-				})
-			}
-		}
-	}
-
 	if !cfg.Quiet {
 		estimates := mergeEstimates(nil)
 		if *showEstimates {
@@ -710,6 +701,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				fmt.Println("Estimated merge time: unavailable (no matching history)")
 			}
 		}
+		printResolutionWarnings(os.Stdout, result, cfg.Verbose)
 	}
 
 	if len(result.Conflicts) > 0 {
@@ -1055,6 +1047,44 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		return
 	}
 
+}
+
+func printResolutionWarnings(writer io.Writer, result *resolve.ResolveResult, verbose bool) {
+	displayWarnings := warningsForDisplay(result.Warnings, verbose)
+	if len(displayWarnings) == 0 {
+		return
+	}
+	fmt.Fprintln(writer, "\nWarnings:")
+	advised := make(map[string]bool)
+	for _, warning := range displayWarnings {
+		details := warningDiagnostics(result.WarningDiagnostics, warning)
+		if len(details) == 0 {
+			fmt.Fprintf(writer, "  %s\n", warning)
+			continue
+		}
+		for index, detail := range details {
+			summary := ""
+			if index == 0 {
+				summary = detail.Message
+				if summary == "" {
+					summary = warning
+				}
+			}
+			diagnostic.Render(writer, diagnostic.SourceSpan{
+				Summary: summary, Source: detail.Source, Start: detail.Start,
+				End: detail.End, Annotation: detail.Annotation,
+			})
+			if detail.Blocker == "" || advised[detail.Blocker] {
+				continue
+			}
+			advised[detail.Blocker] = true
+			fmt.Fprintln(writer, "    To clear this block:")
+			fmt.Fprintf(writer, "      inspect compatible versions: arise search --exact --versions %s\n", detail.Blocker)
+			if detail.BlockerCPV != "" {
+				fmt.Fprintf(writer, "      if no longer needed: arise --pretend uninstall =%s\n", detail.BlockerCPV)
+			}
+		}
+	}
 }
 
 func renderResolverDiagnostics(enabled bool, timings planTimings, metrics resolve.ResolveMetrics) []string {

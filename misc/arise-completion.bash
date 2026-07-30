@@ -6,7 +6,7 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install update uninstall select deselect recover query state search installed info audit maintain dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild equery bench"
+    local commands="sync index install update uninstall select deselect recover query state search installed info audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild equery bench"
 
     local audit_sub="python perl"
     local news_sub="list read display"
@@ -36,7 +36,7 @@ _arise() {
                 COMPREPLY=($(compgen -W "$equery_sub" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${words[2]}" in
-                    belongs|files|uses|size|check|which|list)
+                    belongs|files|uses|size|check|which)
                         _arise_pkg_atoms "$cur"
                         ;;
                 esac
@@ -46,6 +46,12 @@ _arise() {
             if [[ $cword -eq 2 ]]; then
                 COMPREPLY=($(compgen -W "$audit_sub" -- "$cur"))
             fi
+            ;;
+        perl-cleaner)
+            COMPREPLY=($(compgen -W "--modules --allmodules --libperl --all --reallyall --resume --pretend --dont-delete-leftovers --skipfirst" -- "$cur"))
+            ;;
+        python-cleaner)
+            COMPREPLY=($(compgen -W "--check --pretend --fix --resume" -- "$cur"))
             ;;
         maintain)
             if [[ $cword -eq 2 ]]; then
@@ -69,13 +75,14 @@ _arise() {
         installed)
             COMPREPLY=($(compgen -W "all repo no-repo buildtime no-buildtime --versions --cpv --null -0 -= -q -a" -- "$cur"))
             ;;
-        sync|index|state|info|dispatch-conf|depclean|prune|env-update|ldconfig|preserved-rebuild|revdep-rebuild|bench)
+        sync|index|state|info|bug-report|dispatch-conf|depclean|prune|env-update|ldconfig|preserved-rebuild|revdep-rebuild|bench)
             _arise_flags
             ;;
         recover)
             COMPREPLY=($(compgen -W "status rollback --all-active" -- "$cur"))
             ;;
     esac
+    return 0
 }
 
 _arise_flags() {

@@ -50,6 +50,11 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 		targetStarted := time.Now()
 		var transport bytes.Buffer
 		output := io.Writer(&transport)
+		progress := startTerminalProgressMode(
+			formatSyncProgress(target.Name, "Starting synchronization"),
+			!*verbose,
+			true,
+		)
 		if *verbose {
 			fmt.Printf("\n%s\n", color.Bold(target.Name))
 			fmt.Printf("  URI:      %s\n", target.URL)
@@ -57,6 +62,7 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 			output = os.Stdout
 		}
 		report := syncTargetReport{}
+		timings := newSyncStageTimings(targetStarted)
 		cfg := sync.SyncConfig{
 			RepoURL:        target.URL,
 			TargetDir:      target.Location,
@@ -65,8 +71,11 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 			Output:         output,
 			Progress: func(stage, detail string) {
 				report.Stage = stage
+				timings.advance(stage, time.Now())
 				if *verbose {
 					fmt.Printf("  %s %s\n", color.Cyan("["+stage+"]"), detail)
+				} else {
+					progress.setActivity(formatSyncProgress(target.Name, detail))
 				}
 			},
 			Changes: func(changes sync.ChangeSummary) {
@@ -78,6 +87,8 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 			},
 		}
 		if err := sync.Sync(commandContext, cfg); err != nil {
+			timings.finish(time.Now())
+			progress.stopAndClear()
 			if errors.Is(err, context.Canceled) {
 				fmt.Fprintln(os.Stderr, "sync: interrupted by user")
 				os.Exit(130)
@@ -88,10 +99,15 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 			fmt.Fprintf(os.Stderr, "\n%s %s: %v\n", color.Red("Sync failed:"), target.Name, err)
 			os.Exit(1)
 		}
+		timings.finish(time.Now())
 		if *verbose {
 			fmt.Printf("  %s synchronized in %s\n", color.Green("Done."), time.Since(targetStarted).Round(time.Millisecond))
 		} else {
+			progress.stopAndClear()
 			printSyncTargetReport(os.Stdout, target.Name, report, time.Since(targetStarted))
+		}
+		if *debugOutput {
+			fmt.Printf("    Stages: %s\n", timings.String())
 		}
 	}
 	if err := commandContext.Err(); err != nil {
@@ -101,6 +117,49 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 	fmt.Printf("\n%s\n", color.Bold("Refreshing resolver index"))
 	runIndex(dbPath, repoPath)
 	fmt.Printf("%s in %s\n", color.Green("Synchronized"), time.Since(started).Round(time.Millisecond))
+}
+
+func formatSyncProgress(name, detail string) string {
+	return fmt.Sprintf("  %-20s %s", name, detail)
+}
+
+type syncStageDuration struct {
+	name     string
+	duration time.Duration
+}
+
+type syncStageTimings struct {
+	started time.Time
+	current string
+	stages  []syncStageDuration
+}
+
+func newSyncStageTimings(started time.Time) *syncStageTimings {
+	return &syncStageTimings{started: started}
+}
+
+func (t *syncStageTimings) advance(stage string, now time.Time) {
+	if t.current != "" {
+		t.stages = append(t.stages, syncStageDuration{t.current, now.Sub(t.started)})
+	}
+	t.current = stage
+	t.started = now
+}
+
+func (t *syncStageTimings) finish(now time.Time) {
+	if t.current == "" {
+		return
+	}
+	t.stages = append(t.stages, syncStageDuration{t.current, now.Sub(t.started)})
+	t.current = ""
+}
+
+func (t *syncStageTimings) String() string {
+	parts := make([]string, 0, len(t.stages))
+	for _, stage := range t.stages {
+		parts = append(parts, fmt.Sprintf("%s %s", stage.name, stage.duration.Round(time.Millisecond)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 type syncTargetReport struct {
