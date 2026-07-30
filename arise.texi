@@ -36,7 +36,7 @@ This manual is for arise version @value{VERSION}.
 * Invocation::                  Command-line syntax
 * Commands::                    All subcommands
 ** Package Management::         install, update, uninstall, depclean, prune
-** Query and Information::      search, query, info, equery
+** Query and Information::      search, query, info, installed inspection
 ** System Maintenance::         sync, index, audit, preserved-rebuild
 ** Configuration::              dispatch-conf, env-update, ldconfig, news
 ** Binary Packages::            quickpkg
@@ -118,17 +118,18 @@ $ arise --repo-url https://anongit.gentoo.org/git/repo/gentoo.git sync
 # Index metadata for fast queries
 $ arise index
 
-# Search packages (replaces eix)
+# Search packages
 $ arise search gcc
 $ arise search --installed --category dev-lang
 $ arise search --versions --json python
 
-# Package queries (replaces equery)
-$ arise equery belongs /usr/bin/gcc
-$ arise equery files sys-devel/gcc
-$ arise equery size sys-devel/gcc
-$ arise equery uses sys-devel/gcc
-$ arise equery check sys-devel/gcc
+# Installed package inspection
+$ arise installed --owner /usr/bin/gcc
+$ arise installed --contents sys-devel/gcc
+$ arise installed --size sys-devel/gcc
+$ arise installed --uses sys-devel/gcc
+$ arise installed --check sys-devel/gcc
+$ arise query --ebuild sys-devel/gcc
 
 # Resolve an install without mutation
 $ arise --pretend install app-editors/vim
@@ -251,8 +252,10 @@ snapshot, and differential workflows.
 Display system information: arise version, Go runtime, portage configuration,
 active profile, and repository status.
 
-@item equery @var{subcommand} [@var{args}]
-Package queries replacing @command{equery}.
+@item installed [@var{inspection-option}] [@var{argument}]
+List or inspect installed packages. Inspection options cover ownership,
+contents, USE flags, installed size, integrity, atom matching, presence, and
+best installed versions.
 Subcommands:
 
 @table @command
@@ -679,7 +682,7 @@ XPAK binary package read/write with USE compatibility checking.
 @item internal/search
 eix-style package search with 30+ filter options.
 
-@item internal/equery
+@item internal/packagequery
 Package query: belongs, files, uses, size, check, which, list.
 @end table
 

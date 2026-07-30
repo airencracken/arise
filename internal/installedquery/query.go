@@ -23,31 +23,21 @@ type Package struct {
 }
 
 func Match(vdbDir, query string, callerUse map[string]bool) (bool, error) {
-	rule, err := atom.ParsePackageAtom(query)
-	if err != nil {
-		return false, err
-	}
-	packages, err := candidates(vdbDir, rule)
-	if err != nil {
-		return false, err
-	}
-	for _, installed := range packages {
-		if portage.PackageAtomMatches(queryWithoutUse(*rule), installed.CPV, installed.Slot, installed.Repository) &&
-			useDependenciesMatch(rule.UseFlags, installed.Use, installed.IUse, callerUse) {
-			return true, nil
-		}
-	}
-	return false, nil
+	matches, err := Matches(vdbDir, query, callerUse)
+	return len(matches) != 0, err
 }
 
-func Best(vdbDir, query string, callerUse map[string]bool) (string, error) {
+// Matches returns every installed CPV satisfying a PMS package atom in
+// ascending version order. It is the shared primitive for presence, match,
+// and best-version queries so their atom semantics cannot drift.
+func Matches(vdbDir, query string, callerUse map[string]bool) ([]string, error) {
 	rule, err := atom.ParsePackageAtom(query)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	packages, err := candidates(vdbDir, rule)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var matches []Package
 	for _, installed := range packages {
@@ -57,12 +47,28 @@ func Best(vdbDir, query string, callerUse map[string]bool) (string, error) {
 		}
 	}
 	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].Version.Compare(matches[j].Version) > 0
+		cmp := matches[i].Version.Compare(matches[j].Version)
+		if cmp != 0 {
+			return cmp < 0
+		}
+		return matches[i].CPV < matches[j].CPV
 	})
+	result := make([]string, len(matches))
+	for index := range matches {
+		result[index] = matches[index].CPV
+	}
+	return result, nil
+}
+
+func Best(vdbDir, query string, callerUse map[string]bool) (string, error) {
+	matches, err := Matches(vdbDir, query, callerUse)
+	if err != nil {
+		return "", err
+	}
 	if len(matches) == 0 {
 		return "", nil
 	}
-	return matches[0].CPV, nil
+	return matches[len(matches)-1], nil
 }
 
 func candidates(vdbDir string, rule *atom.Atom) ([]Package, error) {

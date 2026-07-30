@@ -46,23 +46,10 @@ func TestHelpRequestContractIsExactAndAdversarial(t *testing.T) {
 	}
 }
 
-func TestEqueryListIsRemovedInFavorOfInstalled(t *testing.T) {
-	var output bytes.Buffer
-	if !writeCommandHelp(&output, "equery") {
-		t.Fatal("equery help unavailable")
-	}
-	help := output.String()
-	if strings.Contains(help, "\n  list ") || !strings.Contains(help, "arise installed [pattern]") {
-		t.Fatalf("equery help did not direct list users to installed:\n%s", help)
-	}
-	if writeEquerySubcommandHelp(&bytes.Buffer{}, "list") {
-		t.Fatal("equery list remains a supported subcommand")
-	}
-	for _, subcommand := range []string{"belongs", "files", "uses", "size", "check", "which"} {
-		output.Reset()
-		if !writeEquerySubcommandHelp(&output, subcommand) ||
-			!strings.HasPrefix(output.String(), "Usage: arise equery "+subcommand) {
-			t.Fatalf("%s help = %q", subcommand, output.String())
+func TestExternalToolNamesAreNotAriseRoutes(t *testing.T) {
+	for _, command := range []string{"equery", "portageq", "qlist", "q", "eix", "emerge"} {
+		if knownCommand(command) {
+			t.Errorf("external tool name %q remains an Arise route", command)
 		}
 	}
 }

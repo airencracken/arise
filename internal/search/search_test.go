@@ -99,6 +99,41 @@ func TestSearch_PackageName(t *testing.T) {
 	}
 }
 
+func TestSearchMaintainerAndOrphanedFilters(t *testing.T) {
+	db := openTestDB(t)
+	ingestTestData(t, db, []*metadata.PackageMetadata{
+		{Category: "cat", Package: "owned", Version: "1", Maintainers: []string{"dev@gentoo.org"}},
+		{Category: "cat", Package: "orphan", Version: "1", Maintainers: []string{"maintainer-needed@gentoo.org"}, MaintainerNeeded: true},
+	})
+	results, err := Search(db, SearchConfig{Maintainer: "DEV@GENTOO.ORG"})
+	if err != nil || len(results) != 1 || results[0].Package != "owned" {
+		t.Fatalf("maintainer search = %#v, %v", results, err)
+	}
+	results, err = Search(db, SearchConfig{Orphaned: true})
+	if err != nil || len(results) != 1 || results[0].Package != "orphan" {
+		t.Fatalf("orphaned search = %#v, %v", results, err)
+	}
+	results, err = Search(db, SearchConfig{Maintainer: `^dev@`, Regex: true})
+	if err != nil || len(results) != 1 || results[0].Package != "owned" {
+		t.Fatalf("maintainer regex = %#v, %v", results, err)
+	}
+	if _, err := Search(db, SearchConfig{Maintainer: `[`, Regex: true}); err == nil {
+		t.Fatal("malformed maintainer regex accepted")
+	}
+}
+
+func TestSearchMaintainerMutationOrphanPredicateCannotInvert(t *testing.T) {
+	db := openTestDB(t)
+	ingestTestData(t, db, []*metadata.PackageMetadata{
+		{Category: "cat", Package: "maintained", Version: "1", Maintainers: []string{"dev@gentoo.org"}},
+		{Category: "cat", Package: "orphan", Version: "1", Maintainers: []string{"maintainer-needed@gentoo.org"}, MaintainerNeeded: true},
+	})
+	results, err := Search(db, SearchConfig{Orphaned: true})
+	if err != nil || len(results) != 1 || !results[0].Orphaned {
+		t.Fatalf("orphan predicate inverted: %#v, %v", results, err)
+	}
+}
+
 func TestSearch_Category(t *testing.T) {
 	db := seedTestDB(t)
 	results, err := Search(db, SearchConfig{Query: "dev-lang"})

@@ -11,7 +11,7 @@ import (
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/benchmark"
 	"github.com/airencracken/arise/internal/depstring"
-	"github.com/airencracken/arise/internal/equery"
+	"github.com/airencracken/arise/internal/packagequery"
 	"github.com/airencracken/arise/internal/search"
 )
 
@@ -136,7 +136,7 @@ func runBenchmarks(iterations int, withCompare bool, filter string) []benchmark.
 				targetFile = "/etc/hostname"
 			}
 			r := benchmark.RunComparisonNoTB("equery-belongs", func() error {
-				_, err := equery.Belongs(vdbPath, targetFile)
+				_, err := packagequery.Belongs(vdbPath, targetFile)
 				return err
 			}, func() (string, error) {
 				out, err := exec.Command("equery", "belongs", targetFile).Output()
@@ -153,7 +153,7 @@ func runBenchmarks(iterations int, withCompare bool, filter string) []benchmark.
 		} else {
 			defer os.RemoveAll(vdbPath)
 			r := benchmark.RunComparisonNoTB("equery-files", func() error {
-				_, err := equery.Files(vdbPath, "app-admin/pkg-0-1.0")
+				_, err := packagequery.Files(vdbPath, "app-admin/pkg-0-1.0")
 				return err
 			}, func() (string, error) {
 				out, err := exec.Command("equery", "files", "app-admin/pkg-0-1.0").Output()

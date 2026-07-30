@@ -124,21 +124,23 @@ var (
 	getbinpkg                = flag.Bool("getbinpkg", false, "-g, fetch binary packages from remote binhost")
 	getbinpkgOnly            = flag.Bool("getbinpkgonly", false, "-G, only use binary packages from remote binhost")
 
-	searchNameOnly  = flag.Bool("name-only", false, "--name-only, search only package/category names")
-	searchDesc      = flag.Bool("desc", false, "--desc, search descriptions")
-	searchInstalled = flag.Bool("search-installed", false, "--installed, only show installed packages")
-	searchExact     = flag.Bool("exact", false, "--exact, exact match instead of substring")
-	searchRegex     = flag.Bool("regex", false, "--regex, use regex patterns")
-	searchCategory  = flag.String("search-category", "", "--category, filter by category")
-	searchName      = flag.String("search-name", "", "--name, filter by package name")
-	searchSlot      = flag.String("search-slot", "", "--slot, filter by SLOT")
-	searchUse       = flag.String("search-use", "", "--use, USE flag filter (+flag, -flag)")
-	searchKeywords  = flag.String("search-keywords", "", "--keywords, filter by KEYWORDS")
-	searchLicense   = flag.String("search-license", "", "--license, filter by LICENSE")
-	searchStable    = flag.Bool("search-stable", false, "--stable, only stable-keyworded packages")
-	searchTesting   = flag.Bool("search-testing", false, "--testing, only testing-keyworded packages")
-	searchSort      = flag.String("search-sort", "", "--sort, sort by: category, name, version, slot")
-	searchCompact   = flag.Bool("compact", false, "--compact, compact output")
+	searchNameOnly   = flag.Bool("name-only", false, "--name-only, search only package/category names")
+	searchDesc       = flag.Bool("desc", false, "--desc, search descriptions")
+	searchInstalled  = flag.Bool("search-installed", false, "--installed, only show installed packages")
+	searchExact      = flag.Bool("exact", false, "--exact, exact match instead of substring")
+	searchRegex      = flag.Bool("regex", false, "--regex, use regex patterns")
+	searchCategory   = flag.String("search-category", "", "--category, filter by category")
+	searchName       = flag.String("search-name", "", "--name, filter by package name")
+	searchSlot       = flag.String("search-slot", "", "--slot, filter by SLOT")
+	searchUse        = flag.String("search-use", "", "--use, USE flag filter (+flag, -flag)")
+	searchKeywords   = flag.String("search-keywords", "", "--keywords, filter by KEYWORDS")
+	searchLicense    = flag.String("search-license", "", "--license, filter by LICENSE")
+	searchMaintainer = flag.String("search-maintainer", "", "--maintainer, filter by maintainer email")
+	searchOrphaned   = flag.Bool("search-orphaned", false, "--orphaned, packages maintained by maintainer-needed")
+	searchStable     = flag.Bool("search-stable", false, "--stable, only stable-keyworded packages")
+	searchTesting    = flag.Bool("search-testing", false, "--testing, only testing-keyworded packages")
+	searchSort       = flag.String("search-sort", "", "--sort, sort by: category, name, version, slot")
+	searchCompact    = flag.Bool("compact", false, "--compact, compact output")
 
 	searchVersions   = flag.Bool("search-versions", false, "--versions, show all versions of matching packages")
 	searchFormat     = flag.String("search-format", "", "--format, custom format string")
@@ -265,7 +267,9 @@ func main() {
 	case "index":
 		runIndex(*dbPath, *repoPath)
 	case "query":
-		runQuery(cmdArgs, *dbPath)
+		if code := runQuery(cmdArgs, *dbPath); code != 0 {
+			os.Exit(code)
+		}
 	case "state":
 		runState(cmdArgs, *dbPath, *vdbDir)
 	case "install":
@@ -304,9 +308,13 @@ func main() {
 			os.Exit(code)
 		}
 	case "installed":
-		runInstalled(cmdArgs, *vdbDir)
+		if code := runInstalled(cmdArgs, *dbPath, *vdbDir); code != 0 {
+			os.Exit(code)
+		}
 	case "info":
-		runInfo()
+		if code := runInfoQuery(cmdArgs); code != 0 {
+			os.Exit(code)
+		}
 	case "preserved-rebuild":
 		runPreservedRebuild()
 	case "revdep-rebuild":
@@ -331,8 +339,6 @@ func main() {
 			os.Exit(1)
 		}
 		runSelect(cmdArgs[0])
-	case "equery":
-		runEquery(cmdArgs, *dbPath, *repoPath, *vdbDir)
 	case "bench":
 		runBench()
 	case "perl-cleaner":

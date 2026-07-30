@@ -15,9 +15,9 @@ import (
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/binpkg"
 	"github.com/airencracken/arise/internal/depstring"
-	"github.com/airencracken/arise/internal/equery"
 	"github.com/airencracken/arise/internal/graph"
 	"github.com/airencracken/arise/internal/metadata"
+	"github.com/airencracken/arise/internal/packagequery"
 	"github.com/airencracken/arise/internal/resolve"
 	"github.com/airencracken/arise/internal/search"
 	"github.com/airencracken/arise/internal/walker"
@@ -294,7 +294,7 @@ func BenchmarkEqueryBelongs(b *testing.B) {
 	filePath := refFiles[0]
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = equery.Belongs(vdbPath, filePath)
+		_, _ = packagequery.Belongs(vdbPath, filePath)
 	}
 }
 
@@ -307,7 +307,7 @@ func BenchmarkEqueryFiles(b *testing.B) {
 	atomStr := "app-admin/pkg-1.0"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = equery.Files(vdbPath, atomStr)
+		_, _ = packagequery.Files(vdbPath, atomStr)
 	}
 }
 
@@ -323,7 +323,7 @@ func BenchmarkEquerySize(b *testing.B) {
 	atomStr := "app-admin/pkg-1.0"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = equery.Size(vdbPath, atomStr)
+		_, _ = packagequery.Size(vdbPath, atomStr)
 	}
 }
 
@@ -339,7 +339,7 @@ func BenchmarkEqueryCheck(b *testing.B) {
 	atomStr := "app-admin/pkg-1.0"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = equery.Check(vdbPath, atomStr)
+		_, _ = packagequery.Check(vdbPath, atomStr)
 	}
 }
 
@@ -667,7 +667,7 @@ func liveCompareEqueryBelongs(t *testing.T) {
 
 	Comparison := RunComparisonN(t, "equery-belongs", 1,
 		func() error {
-			_, err := equery.Belongs(vdbPath, filePath)
+			_, err := packagequery.Belongs(vdbPath, filePath)
 			return err
 		},
 		func() (string, error) {
@@ -817,7 +817,7 @@ func liveCompareEqueryFiles(t *testing.T) {
 
 	Comparison := RunComparisonN(t, "equery-files", 1,
 		func() error {
-			_, err := equery.Files(vdbPath, atomStr)
+			_, err := packagequery.Files(vdbPath, atomStr)
 			return err
 		},
 		func() (string, error) {

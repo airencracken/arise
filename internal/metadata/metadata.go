@@ -42,6 +42,8 @@ type PackageMetadata struct {
 	DESCRIPTION        string
 	HOMEPAGE           string
 	INHERITED          string
+	Maintainers        []string
+	MaintainerNeeded   bool
 	_md5_              string
 	_mtime_            string
 	Unknown            map[string]string

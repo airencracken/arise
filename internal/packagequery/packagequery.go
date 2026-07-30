@@ -1,4 +1,4 @@
-package equery
+package packagequery
 
 import (
 	"crypto/md5"
@@ -91,11 +91,30 @@ func extractVersion(name string) string {
 }
 
 func Belongs(vdbPath string, filePath string) (string, error) {
+	owners, err := Owners(vdbPath, []string{filePath})
+	if err != nil {
+		return "", err
+	}
+	if len(owners) == 0 {
+		return "", fmt.Errorf("no installed package owns the file %q", filePath)
+	}
+	return owners[0].Package, nil
+}
+
+type Ownership struct {
+	Package string
+	Path    string
+}
+
+// Owners returns every installed owner for each requested absolute path or
+// basename. Results are deterministic and retain shared-file ownership.
+func Owners(vdbPath string, filePaths []string) ([]Ownership, error) {
 	categories, err := os.ReadDir(vdbPath)
 	if err != nil {
-		return "", fmt.Errorf("could not read installed package database at %s: %w", vdbPath, err)
+		return nil, fmt.Errorf("could not read installed package database at %s: %w", vdbPath, err)
 	}
 
+	var result []Ownership
 	for _, catEntry := range categories {
 		if !catEntry.IsDir() {
 			continue
@@ -128,25 +147,45 @@ func Belongs(vdbPath string, filePath string) (string, error) {
 					continue
 				}
 
-				if entry.path == filePath {
-					return category + "/" + pv, nil
-				}
-
-				if filepath.Base(entry.path) == filePath {
-					return category + "/" + pv, nil
-				}
-
-				if strings.HasSuffix(filePath, entry.path) || strings.HasSuffix(entry.path, filePath) {
-					return category + "/" + pv, nil
+				for _, requested := range filePaths {
+					if entry.path == requested || (!filepath.IsAbs(requested) && filepath.Base(entry.path) == requested) {
+						result = append(result, Ownership{Package: category + "/" + pv, Path: entry.path})
+					}
 				}
 			}
 		}
 	}
-
-		return "", fmt.Errorf("no installed package owns the file %q", filePath)
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Package != result[j].Package {
+			return result[i].Package < result[j].Package
+		}
+		return result[i].Path < result[j].Path
+	})
+	return result, nil
 }
 
 func Files(vdbPath string, atomStr string) ([]string, error) {
+	entries, err := Contents(vdbPath, atomStr)
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, entry := range entries {
+		if entry.Type == "obj" {
+			files = append(files, entry.Path)
+		}
+	}
+	return files, nil
+}
+
+type Content struct {
+	Type string
+	Path string
+}
+
+// Contents returns every recorded object, symlink, and directory for the
+// selected installed package.
+func Contents(vdbPath string, atomStr string) ([]Content, error) {
 	a, err := atom.Parse(atomStr)
 	if err != nil {
 		return nil, fmt.Errorf("could not parse package name %q: %w", atomStr, err)
@@ -172,18 +211,17 @@ func Files(vdbPath string, atomStr string) ([]string, error) {
 		return nil, fmt.Errorf("could not read file list for %s/%s: %w", category, pvDir, err)
 	}
 
-	var files []string
+	var entries []Content
 	for _, line := range strings.Split(string(data), "\n") {
 		entry, ok := parseContentsLine(line)
 		if !ok {
 			continue
 		}
-		if entry.typ == "obj" && entry.path != "" {
-			files = append(files, entry.path)
+		if entry.path != "" {
+			entries = append(entries, Content{Type: entry.typ, Path: entry.path})
 		}
 	}
-
-	return files, nil
+	return entries, nil
 }
 
 func Uses(db *badger.DB, vdbPath string, atomStr string) (string, string, error) {

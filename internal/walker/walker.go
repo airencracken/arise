@@ -1,6 +1,7 @@
 package walker
 
 import (
+	"encoding/xml"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +13,53 @@ import (
 	"github.com/airencracken/arise/internal/ebuild"
 	"github.com/airencracken/arise/internal/metadata"
 )
+
+type packageMetadataXML struct {
+	Maintainers []struct {
+		Email string `xml:"email"`
+	} `xml:"maintainer"`
+}
+
+type maintainerRecord struct {
+	emails []string
+	needed bool
+}
+
+var maintainerCache sync.Map
+
+func attachPackageMaintainers(record *metadata.PackageMetadata) {
+	if record == nil || record.RepositoryPath == "" {
+		return
+	}
+	path := filepath.Join(record.RepositoryPath, record.Category, record.Package, "metadata.xml")
+	var maintainers maintainerRecord
+	if cached, ok := maintainerCache.Load(path); ok {
+		maintainers = cached.(maintainerRecord)
+	} else {
+		if data, err := os.ReadFile(path); err == nil {
+			var document packageMetadataXML
+			if xml.Unmarshal(data, &document) == nil {
+				seen := make(map[string]bool)
+				for _, maintainer := range document.Maintainers {
+					email := strings.TrimSpace(maintainer.Email)
+					if email == "" || seen[email] {
+						continue
+					}
+					seen[email] = true
+					maintainers.emails = append(maintainers.emails, email)
+					if email == "maintainer-needed@gentoo.org" {
+						maintainers.needed = true
+					}
+				}
+				sort.Strings(maintainers.emails)
+			}
+		}
+		actual, _ := maintainerCache.LoadOrStore(path, maintainers)
+		maintainers = actual.(maintainerRecord)
+	}
+	record.Maintainers = append([]string(nil), maintainers.emails...)
+	record.MaintainerNeeded = maintainers.needed
+}
 
 const errBufSize = 128
 
@@ -51,6 +99,7 @@ func WalkCacheRoots(roots []string) (<-chan *metadata.PackageMetadata, <-chan er
 				result.RepositoryPriority = overlayIndex
 				result.EAPIBanned = banned[result.EAPI]
 				result.EAPIDeprecated = deprecated[result.EAPI]
+				attachPackageMaintainers(result)
 				results <- result
 			}
 		}()
@@ -131,6 +180,7 @@ func WalkUncachedEbuildRootsWithPortageCache(cacheRoots []string, portageCacheRo
 					m.RepositoryMasters = readRepositoryMasters(repo)
 					m.EAPIBanned = banned[m.EAPI]
 					m.EAPIDeprecated = deprecated[m.EAPI]
+					attachPackageMaintainers(m)
 					results <- m
 					continue
 				}
@@ -161,6 +211,7 @@ func WalkUncachedEbuildRootsWithPortageCache(cacheRoots []string, portageCacheRo
 				m.RepositoryMasters = readRepositoryMasters(repo)
 				m.EAPIBanned = banned[m.EAPI]
 				m.EAPIDeprecated = deprecated[m.EAPI]
+				attachPackageMaintainers(m)
 				if m.Unknown == nil {
 					m.Unknown = map[string]string{}
 				}

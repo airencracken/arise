@@ -1420,3 +1420,28 @@ func TestWalkCacheDir_FilepathRelError(t *testing.T) {
 	}
 	_ = errs
 }
+
+func TestAttachPackageMaintainersParsesAndCachesMetadataXML(t *testing.T) {
+	repository := t.TempDir()
+	directory := filepath.Join(repository, "cat", "pkg")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	document := `<pkgmetadata><maintainer><email>dev@gentoo.org</email></maintainer><maintainer><email>maintainer-needed@gentoo.org</email></maintainer></pkgmetadata>`
+	if err := os.WriteFile(filepath.Join(directory, "metadata.xml"), []byte(document), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := &metadata.PackageMetadata{RepositoryPath: repository, Category: "cat", Package: "pkg"}
+	attachPackageMaintainers(record)
+	if !reflect.DeepEqual(record.Maintainers, []string{"dev@gentoo.org", "maintainer-needed@gentoo.org"}) || !record.MaintainerNeeded {
+		t.Fatalf("maintainers = %v, needed=%t", record.Maintainers, record.MaintainerNeeded)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "metadata.xml"), []byte("<invalid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := &metadata.PackageMetadata{RepositoryPath: repository, Category: "cat", Package: "pkg"}
+	attachPackageMaintainers(second)
+	if !reflect.DeepEqual(second.Maintainers, record.Maintainers) {
+		t.Fatalf("cached maintainers = %v, want %v", second.Maintainers, record.Maintainers)
+	}
+}

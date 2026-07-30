@@ -25,7 +25,9 @@ func TestCommandCompletion(t *testing.T) {
 		{name: "perl cleaner modes", words: []string{"arise", "perl-cleaner", "--all"}, want: []string{"--allmodules", "--all"}},
 		{name: "python cleaner command", words: []string{"arise", "python-c"}, want: []string{"python-cleaner"}},
 		{name: "python cleaner modes", words: []string{"arise", "python-cleaner", "--"}, want: []string{"--check", "--pretend", "--fix", "--resume"}},
-		{name: "removed equery list", words: []string{"arise", "equery", "l"}, want: nil},
+		{name: "installed inspection modes", words: []string{"arise", "installed", "--o"}, want: []string{"--owner"}},
+		{name: "query visible mode", words: []string{"arise", "query", "--best"}, want: []string{"--best-visible"}},
+		{name: "info repository modes", words: []string{"arise", "info", "--repo"}, want: []string{"--repositories", "--repo-path", "--repository-config"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -1,4 +1,4 @@
-package equery
+package packagequery
 
 import (
 	"bytes"
@@ -148,6 +148,42 @@ func TestBelongs_MultiplePackagesSameFile(t *testing.T) {
 	}
 	if pkg != "app-misc/first-1.0" && pkg != "app-misc/second-1.0" {
 		t.Errorf("expected one of the packages, got %q", pkg)
+	}
+}
+
+func TestOwnersRetainsEverySharedOwnerAndRejectsSuffixGuessing(t *testing.T) {
+	vdbDir := t.TempDir()
+	makeFlatVDB(t, vdbDir, map[string]map[string]string{
+		"app-misc/first-1.0":  {"CONTENTS": "obj /usr/bin/shared digest 1\n"},
+		"app-misc/second-1.0": {"CONTENTS": "sym /usr/bin/shared -> target 1\n"},
+	})
+	owners, err := Owners(vdbDir, []string{"/usr/bin/shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owners) != 2 || owners[0].Package != "app-misc/first-1.0" || owners[1].Package != "app-misc/second-1.0" {
+		t.Fatalf("Owners = %#v", owners)
+	}
+	owners, err = Owners(vdbDir, []string{"bin/shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owners) != 0 {
+		t.Fatalf("suffix-only query produced owners: %#v", owners)
+	}
+}
+
+func TestContentsIncludesObjectsSymlinksAndDirectories(t *testing.T) {
+	vdbDir := t.TempDir()
+	makeFlatVDB(t, vdbDir, map[string]map[string]string{
+		"app-misc/demo-1": {"CONTENTS": "dir /usr/share/demo\nobj /usr/bin/demo digest 1\nsym /usr/bin/demo-link -> demo 1\n"},
+	})
+	entries, err := Contents(vdbDir, "app-misc/demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 || entries[0].Type != "dir" || entries[1].Type != "obj" || entries[2].Type != "sym" {
+		t.Fatalf("Contents = %#v", entries)
 	}
 }
 
