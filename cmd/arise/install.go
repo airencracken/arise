@@ -475,6 +475,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	if err == nil {
 		result, err = resolve.ResolveContext(resolveCtx, rg, targets, cfg)
 	}
+	if result != nil && len(result.Conflicts) != 0 {
+		progress.setStatus("Validating conflict alternatives...")
+		validateConflictAlternatives(resolveCtx, rg, targets, cfg, result)
+	}
 	solverDuration := time.Since(stageStarted)
 	if closeErr := db.Close(); closeErr != nil {
 		progress.stop()
@@ -602,6 +606,23 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 						fmt.Printf("    candidate %s (%s%s): satisfies [%s], rejects [%s]\n",
 							candidate.CPV, candidate.State, visibility,
 							strings.Join(candidate.Satisfies, ", "), strings.Join(candidate.Rejects, ", "))
+					}
+				}
+			}
+			for _, detail := range result.ConflictDetails {
+				if detail.Message != c {
+					continue
+				}
+				for _, alternative := range detail.Alternatives {
+					if !alternative.Validated {
+						continue
+					}
+					fmt.Printf("    validated alternative: %s\n", alternative.Summary)
+					switch alternative.Kind {
+					case "package-use", "requester-use":
+						fmt.Printf("      add to package.use: %s\n", alternative.Command)
+					case "remove-requester":
+						fmt.Printf("      command: %s\n", alternative.Command)
 					}
 				}
 			}

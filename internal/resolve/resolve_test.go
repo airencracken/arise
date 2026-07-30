@@ -7009,6 +7009,79 @@ func TestResolve_CompleteGraphPreservesUseChangeFromRepair(t *testing.T) {
 	}
 }
 
+func TestResolveUseConflictPreservesPolicyAlternatives(t *testing.T) {
+	g := makeGraph()
+	consumer := pkg(g, "x11-misc/redshift", "1", "0", "0", false, map[string]bool{"gtk": true})
+	consumer.Rdepend = "gtk? ( dev-libs/libdbusmenu[gtk3] )"
+	pkg(g, "dev-libs/libdbusmenu", "1", "0", "0", false, map[string]bool{"gtk3": false})
+
+	result, err := Resolve(g, []string{"x11-misc/redshift"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ConflictDetails) != 1 {
+		t.Fatalf("conflict details = %#v", result.ConflictDetails)
+	}
+	detail := result.ConflictDetails[0]
+	if detail.Kind != "use-change" || detail.Package != "dev-libs/libdbusmenu" || len(detail.Alternatives) != 3 {
+		t.Fatalf("structured USE conflict = %#v", detail)
+	}
+	if got := detail.Alternatives[1]; got.Kind != "requester-use" || got.Package != "x11-misc/redshift" ||
+		!slices.Equal(got.UseChanges, []string{"-gtk"}) || got.Validated {
+		t.Fatalf("requester alternative = %#v", got)
+	}
+	if got := detail.Alternatives[2]; got.Kind != "remove-requester" || got.Requester != "x11-misc/redshift" {
+		t.Fatalf("removal alternative = %#v", got)
+	}
+}
+
+func TestDeactivateSimpleUseConditionRejectsAmbiguousInput(t *testing.T) {
+	tests := []struct {
+		condition string
+		want      []string
+		ok        bool
+	}{
+		{condition: "gtk", want: []string{"-gtk"}, ok: true},
+		{condition: "!gtk", want: []string{"gtk"}, ok: true},
+		{condition: "gtk,dbus", ok: false},
+		{condition: "", ok: false},
+		{condition: "gtk?", ok: false},
+	}
+	for _, test := range tests {
+		got, ok := deactivateSimpleUseCondition(test.condition)
+		if ok != test.ok || !slices.Equal(got, test.want) {
+			t.Errorf("deactivateSimpleUseCondition(%q) = %v, %t; want %v, %t", test.condition, got, ok, test.want, test.ok)
+		}
+	}
+}
+
+func TestResolveUseConflictTracesConditionalDirectTarget(t *testing.T) {
+	g := makeGraph()
+	target := pkg(g, "x11-misc/redshift", "1", "0", "0", false, map[string]bool{"gtk": true})
+	target.Rdepend = "gtk? ( dev-libs/appindicator )"
+	indicator := pkg(g, "dev-libs/appindicator", "1", "0", "0", false, nil)
+	indicator.Rdepend = "dev-libs/libdbusmenu[gtk3]"
+	pkg(g, "dev-libs/libdbusmenu", "1", "0", "0", false, map[string]bool{"gtk3": false})
+
+	result, err := Resolve(g, []string{"x11-misc/redshift"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disableRoot, removeRoot bool
+	for _, alternative := range result.ConflictDetails[0].Alternatives {
+		if alternative.Package == "x11-misc/redshift" && alternative.Kind == "requester-use" &&
+			slices.Equal(alternative.UseChanges, []string{"-gtk"}) {
+			disableRoot = true
+		}
+		if alternative.Package == "x11-misc/redshift" && alternative.Kind == "remove-requester" {
+			removeRoot = true
+		}
+	}
+	if !disableRoot || !removeRoot {
+		t.Fatalf("direct-target alternatives missing: %#v", result.ConflictDetails[0].Alternatives)
+	}
+}
+
 func TestResolve_CompleteGraphRepairUsesCurrentUse(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "dev-libs/library", "1", "0", "0", true, nil)

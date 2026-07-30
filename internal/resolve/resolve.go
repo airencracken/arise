@@ -194,6 +194,20 @@ type ConflictDetail struct {
 	Message      string                `json:"message"`
 	Requirements []ConflictRequirement `json:"requirements,omitempty"`
 	Candidates   []ConflictCandidate   `json:"candidates,omitempty"`
+	Alternatives []ConflictAlternative `json:"alternatives,omitempty"`
+}
+
+// ConflictAlternative is a policy change which may resolve a conflict. The
+// resolver records provenance-backed candidates; callers must re-resolve and
+// independently validate them before setting Validated.
+type ConflictAlternative struct {
+	Kind       string   `json:"kind"`
+	Package    string   `json:"package"`
+	UseChanges []string `json:"use_changes,omitempty"`
+	Requester  string   `json:"requester,omitempty"`
+	Validated  bool     `json:"validated"`
+	Command    string   `json:"command,omitempty"`
+	Summary    string   `json:"summary,omitempty"`
 }
 
 type ConflictRequirement struct {
@@ -216,6 +230,10 @@ func cloneConflictDetails(src []ConflictDetail) []ConflictDetail {
 	for i := range dst {
 		dst[i].Requirements = append([]ConflictRequirement(nil), src[i].Requirements...)
 		dst[i].Candidates = append([]ConflictCandidate(nil), src[i].Candidates...)
+		dst[i].Alternatives = append([]ConflictAlternative(nil), src[i].Alternatives...)
+		for j := range dst[i].Alternatives {
+			dst[i].Alternatives[j].UseChanges = append([]string(nil), src[i].Alternatives[j].UseChanges...)
+		}
 	}
 	return dst
 }
@@ -986,6 +1004,7 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 		selectedCPs:           make(map[string]bool),
 		explicitTargets:       make(map[string]bool),
 		directTargets:         make(map[string]bool),
+		dependencyProvenance:  make(map[string][]dependencyOrigin),
 		worldTargets:          make(map[string]bool),
 		onlyDepsTargets:       make(map[string]bool),
 		constraints:           make(map[string][]*atom.Atom),
@@ -1359,30 +1378,31 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 		return nil, fmt.Errorf("resolve: no dependency graph provided (internal error)")
 	}
 	r := &resolver{
-		graph:               g,
-		config:              config,
-		installed:           make(map[string]*PkgAction),
-		toInstall:           make(map[string]*PkgAction),
-		actionOwners:        make(map[string]map[string]bool),
-		rootActionKeys:      make(map[string]bool),
-		toUninstall:         make(map[string]*PkgAction),
-		seenDeps:            make(map[string]bool),
-		activeDeps:          make(map[string]int),
-		selectedCPs:         make(map[string]bool),
-		explicitTargets:     make(map[string]bool),
-		directTargets:       make(map[string]bool),
-		worldTargets:        make(map[string]bool),
-		constraints:         make(map[string][]*atom.Atom),
-		constraintCauses:    make(map[string][]ConflictRequirement),
-		useOverrides:        make(map[string]map[string]bool),
-		useChangeSeen:       make(map[string]bool),
-		maskCache:           make(map[string]portage.MaskStatus),
-		keywordCache:        make(map[string]bool),
-		implicitUsePrefixes: normalizedImplicitUsePrefixes(config.PortageConfig),
-		portageConfig:       config.PortageConfig,
-		worldSet:            config.WorldSet,
-		systemSet:           config.SystemSet,
-		strictWholeState:    true,
+		graph:                g,
+		config:               config,
+		installed:            make(map[string]*PkgAction),
+		toInstall:            make(map[string]*PkgAction),
+		actionOwners:         make(map[string]map[string]bool),
+		rootActionKeys:       make(map[string]bool),
+		toUninstall:          make(map[string]*PkgAction),
+		seenDeps:             make(map[string]bool),
+		activeDeps:           make(map[string]int),
+		selectedCPs:          make(map[string]bool),
+		explicitTargets:      make(map[string]bool),
+		directTargets:        make(map[string]bool),
+		dependencyProvenance: make(map[string][]dependencyOrigin),
+		worldTargets:         make(map[string]bool),
+		constraints:          make(map[string][]*atom.Atom),
+		constraintCauses:     make(map[string][]ConflictRequirement),
+		useOverrides:         make(map[string]map[string]bool),
+		useChangeSeen:        make(map[string]bool),
+		maskCache:            make(map[string]portage.MaskStatus),
+		keywordCache:         make(map[string]bool),
+		implicitUsePrefixes:  normalizedImplicitUsePrefixes(config.PortageConfig),
+		portageConfig:        config.PortageConfig,
+		worldSet:             config.WorldSet,
+		systemSet:            config.SystemSet,
+		strictWholeState:     true,
 	}
 	for i := range installs {
 		action := installs[i]
@@ -1474,6 +1494,7 @@ type resolver struct {
 	selectedCPs           map[string]bool // final target/dependency closure
 	explicitTargets       map[string]bool // root targets, including generated rebuild sets
 	directTargets         map[string]bool // package atoms named directly by the user
+	dependencyProvenance  map[string][]dependencyOrigin
 	worldTargets          map[string]bool // atoms selected by the user world set
 	onlyDepsTargets       map[string]bool // argument packages receiving --onlydeps policy
 	backtrackRemaining    int
@@ -1503,6 +1524,11 @@ type resolver struct {
 	transactions          []*resolverTransaction
 	setScoped             bool // @world/@system excludes unrelated installed orphans
 	strictWholeState      bool // explicit transaction verification cannot downgrade breakage to depclean advice
+}
+
+type dependencyOrigin struct {
+	parent    string
+	condition string
 }
 
 func (r *resolver) warnRetainedInstalled(cp, version string) {
@@ -3150,6 +3176,7 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 		parentFlags = edge.UseFlags
 	}
 	depAtom = resolveUseDependencies(depAtom, parentFlags)
+	r.recordDependencyOrigin(depAtom.CP(), edge.From.Atom.CP(), edge.UseCond)
 
 	toNode := edge.To
 	if toNode == nil {
@@ -3253,7 +3280,7 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 	// find best version that satisfies dep
 	best := r.findMatchingVersion(toNode, depAtom)
 	if best == nil {
-		best = r.findMatchingVersionWithUseChanges(toNode, depAtom)
+		best = r.findMatchingVersionWithUseChanges(toNode, depAtom, edge.From.Atom.CP(), edge.UseCond)
 	}
 
 	if best == nil && len(r.graph.ProvidersOf[depAtom.CP()]) > 0 {
@@ -3273,6 +3300,50 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 	reason := fmt.Sprintf("dependency of %s", edge.From.Atom.CP())
 	bestAt := versionedDependencyAtom(toNode, depAtom, best)
 	return r.planDependencyInDomain(bestAt, depAtom, reason, depth, edge.Domain)
+}
+
+func (r *resolver) recordDependencyOrigin(child, parent, condition string) {
+	if child == "" || parent == "" || child == parent {
+		return
+	}
+	if r.dependencyProvenance == nil {
+		r.dependencyProvenance = make(map[string][]dependencyOrigin)
+	}
+	origin := dependencyOrigin{parent: parent, condition: condition}
+	for _, existing := range r.dependencyProvenance[child] {
+		if existing == origin {
+			return
+		}
+	}
+	r.dependencyProvenance[child] = append(r.dependencyProvenance[child], origin)
+}
+
+func (r *resolver) directTargetPath(requester string) (string, []string, bool) {
+	type step struct {
+		cp         string
+		conditions []string
+	}
+	queue := []step{{cp: requester}}
+	seen := map[string]bool{requester: true}
+	for len(queue) != 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if r.directTargets[current.cp] {
+			return current.cp, current.conditions, true
+		}
+		for _, origin := range r.dependencyProvenance[current.cp] {
+			if seen[origin.parent] {
+				continue
+			}
+			seen[origin.parent] = true
+			conditions := append([]string(nil), current.conditions...)
+			if strings.TrimSpace(origin.condition) != "" {
+				conditions = append(conditions, origin.condition)
+			}
+			queue = append(queue, step{cp: origin.parent, conditions: conditions})
+		}
+	}
+	return "", nil, false
 }
 
 func (r *resolver) scheduledReplacement(node *PkgNode, installed *VersionInfo, domain DependencyDomain) (*VersionInfo, bool) {
@@ -3634,7 +3705,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 				}
 			} else {
 				if chosenMember.needsUseChange {
-					chosenMember.best = r.findMatchingVersionWithUseChanges(toNode, chosenMember.depAtom.Atom)
+					chosenMember.best = r.findMatchingVersionWithUseChanges(toNode, chosenMember.depAtom.Atom, node.Atom.CP(), chosenMember.depAtom.UseCond)
 				}
 				if chosenMember.best == nil {
 					err = fmt.Errorf("no installable version found for any-of dependency %s", chosenMember.depAtom.Atom.CP())
@@ -4279,7 +4350,7 @@ func (r *resolver) verifyPlannedStatePass() (bool, []string) {
 		node := r.graph.Packages[dep.CP()]
 		best := r.findMatchingVersion(node, dep)
 		if best == nil {
-			best = r.findMatchingVersionWithUseChanges(node, dep)
+			best = r.findMatchingVersionWithUseChanges(node, dep, "", "")
 		}
 		if best == nil {
 			return false
@@ -6089,7 +6160,7 @@ func policyContainsFlag(flags []string, name string) bool {
 // hypothetical plan when its only mismatch is a mutable dependency USE flag.
 // The plan remains blocked by an actionable conflict until the user accepts
 // the package.use change.
-func (r *resolver) findMatchingVersionWithUseChanges(node *PkgNode, constraint *atom.Atom) *VersionInfo {
+func (r *resolver) findMatchingVersionWithUseChanges(node *PkgNode, constraint *atom.Atom, requester, useCondition string) *VersionInfo {
 	best, bestChanges := r.matchingVersionUseChanges(node, constraint)
 	if best == nil {
 		return nil
@@ -6121,9 +6192,66 @@ func (r *resolver) findMatchingVersionWithUseChanges(node *PkgNode, constraint *
 	changeKey := node.Atom.CP() + ":" + strings.Join(rendered, ",")
 	if !r.useChangeSeen[changeKey] {
 		r.setUseChangeSeen(changeKey, true)
-		r.conflicts = append(r.conflicts, fmt.Sprintf("USE changes are necessary to proceed: %s %s", node.Atom.CP(), strings.Join(rendered, " ")))
+		message := fmt.Sprintf("USE changes are necessary to proceed: %s %s", node.Atom.CP(), strings.Join(rendered, " "))
+		r.conflicts = append(r.conflicts, message)
+		alternatives := []ConflictAlternative{{
+			Kind: "package-use", Package: node.Atom.CP(),
+			UseChanges: append([]string(nil), rendered...),
+			Summary:    fmt.Sprintf("change USE for %s", node.Atom.CP()),
+		}}
+		if changes, ok := deactivateSimpleUseCondition(useCondition); ok && requester != "" {
+			alternatives = append(alternatives, ConflictAlternative{
+				Kind: "requester-use", Package: requester, Requester: requester,
+				UseChanges: changes, Summary: fmt.Sprintf("disable the dependency in %s", requester),
+			})
+		}
+		if requester != "" {
+			alternatives = append(alternatives, ConflictAlternative{
+				Kind: "remove-requester", Package: requester, Requester: requester,
+				Summary: fmt.Sprintf("remove %s instead", requester),
+			})
+		}
+		if root, conditions, ok := r.directTargetPath(requester); ok && root != requester {
+			for _, condition := range conditions {
+				if changes, valid := deactivateSimpleUseCondition(condition); valid {
+					alternatives = append(alternatives, ConflictAlternative{
+						Kind: "requester-use", Package: root, Requester: root,
+						UseChanges: changes, Summary: fmt.Sprintf("disable the dependency path in %s", root),
+					})
+				}
+			}
+			alternatives = append(alternatives, ConflictAlternative{
+				Kind: "remove-requester", Package: root, Requester: root,
+				Summary: fmt.Sprintf("remove %s instead", root),
+			})
+		}
+		r.conflictDetails = append(r.conflictDetails, ConflictDetail{
+			Kind: "use-change", Package: node.Atom.CP(), Message: message,
+			Requirements: []ConflictRequirement{{Atom: constraint.String(), Reason: "dependency of " + requester}},
+			Alternatives: alternatives,
+		})
 	}
 	return best
+}
+
+func deactivateSimpleUseCondition(condition string) ([]string, bool) {
+	parts := strings.Split(condition, ",")
+	if len(parts) != 1 {
+		return nil, false
+	}
+	raw := strings.TrimSpace(parts[0])
+	if raw == "" {
+		return nil, false
+	}
+	negated := strings.HasPrefix(raw, "!")
+	name := strings.TrimPrefix(raw, "!")
+	if name == "" || strings.ContainsAny(name, " \t!?(),") {
+		return nil, false
+	}
+	if negated {
+		return []string{name}, true
+	}
+	return []string{"-" + name}, true
 }
 
 // matchingVersionUseChanges previews a mutable USE repair without changing
