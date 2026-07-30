@@ -1342,57 +1342,23 @@ func PackageAtomMatches(rawRule, cpv, slot, repo string) bool {
 	if rawRule == "*/*" {
 		return true
 	}
-	candidate, valid := cachedPolicyAtom(cpv)
-	if !valid {
+	rule, err := gentooling.ParseAtom(rawRule)
+	if err != nil {
 		return false
 	}
-	rule, valid := cachedPolicyAtom(rawRule)
-	if !valid {
-		return false
-	}
-	if rule.Category != "*" && rule.Category != candidate.Category {
-		return false
-	}
-	if rule.Package != "*" && rule.Package != candidate.Package {
-		return false
-	}
-	if rule.Repo != "" && rule.Repo != repo {
+	candidate, err := gentooling.ParsePackageVersion(cpv)
+	if err != nil {
 		return false
 	}
 	candidateSlot, candidateSubslot := slot, ""
 	if before, after, found := strings.Cut(slot, "/"); found {
 		candidateSlot, candidateSubslot = before, after
 	}
-	if rule.Slot != "" && rule.Slot != candidateSlot {
-		return false
-	}
-	if rule.Subslot != "" && rule.Subslot != candidateSubslot {
-		return false
-	}
-	if rule.Version == nil {
-		return true
-	}
-	if candidate.Version == nil {
-		return false
-	}
-	cmp := candidate.Version.Compare(rule.Version)
-	switch rule.Op {
-	case atom.OpLess:
-		return cmp < 0
-	case atom.OpLessEq:
-		return cmp <= 0
-	case atom.OpGt:
-		return cmp > 0
-	case atom.OpGtEq:
-		return cmp >= 0
-	case atom.OpTilde:
-		return strings.TrimSuffix(candidate.Version.Raw, fmt.Sprintf("-r%d", candidate.Version.Revision)) ==
-			strings.TrimSuffix(rule.Version.Raw, fmt.Sprintf("-r%d", rule.Version.Revision))
-	case atom.OpEqGlob:
-		return strings.HasPrefix(candidate.Version.Raw, strings.TrimSuffix(rule.Version.Raw, "*"))
-	default:
-		return cmp == 0
-	}
+	matched, err := rule.Matches(gentooling.PackageID{
+		Category: candidate.Category, Name: candidate.Package, Version: candidate.Version.Raw,
+		Slot: candidateSlot, Subslot: candidateSubslot, Repository: repo,
+	}, gentooling.UseState{})
+	return err == nil && matched
 }
 
 // PackageMaskStatus evaluates administrator masks for a concrete candidate.
