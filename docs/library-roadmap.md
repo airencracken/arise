@@ -51,6 +51,24 @@ command environment. It retains policy layers and source provenance without
 reading process state implicitly. Arise search now consumes this API for its
 installed USE-expansion presentation.
 
+Gentooling `v0.4.0` adds public atom and version parsing plus package-specific
+effective USE evaluation with ordered provenance. Gentooling `v0.5.0` adds
+world/system selections and combined system snapshots which observe the shared
+Portage/Arise VDB and world locks and require consecutive agreeing
+observations. Gentooling `v0.6.0` adds prospective keyword and package
+visibility evaluation, including repository/profile/user mask policy and
+typed explanation trails. Arise consumes each of these boundaries in
+production paths and carries downstream integration tests.
+
+After Maize adopts the current package-state boundary, pause public extraction
+long enough to run an Arise stabilization campaign. That gate must include the
+complete automated suite, race detection, vet, stored parity fixtures,
+representative live-root query and world-update planning, and manual
+install/uninstall/search/configuration workflows. Regressions found there are
+library-boundary defects, not downstream exceptions. Once that campaign is
+clean, publish a `dev-go/gentooling` overlay package at the deliberate stable
+baseline rather than packaging every rapidly changing pre-1.0 carveout.
+
 Code remains in Arise until its boundary passes the stability and
 downstream-consumer gates below. New code should follow a dependency direction
 that permits cohesive packages to move into `gentooling` without importing
