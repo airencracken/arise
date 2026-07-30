@@ -38,6 +38,17 @@ const (
 	ansiBrightCyan     = "\033[96m"
 )
 
+// Palette returns Arise's stable semantic ANSI palette. Callers can build
+// alternate frontends without scraping terminal output.
+func Palette() map[string]string {
+	return map[string]string{
+		"bad": ansiBrightRed, "bracket": ansiBrightBlue, "error": ansiBrightRed,
+		"good": ansiBrightGreen, "highlight": ansiCyan, "info": ansiGreen,
+		"log": ansiBrightGreen, "normal": ansiReset, "qa-warning": ansiYellow,
+		"warning": ansiBrightYellow,
+	}
+}
+
 func Green(s string) string {
 	if s == "" {
 		return s

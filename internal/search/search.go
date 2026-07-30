@@ -31,6 +31,8 @@ type SearchResult struct {
 	Keywords    string
 	IUSE        string
 	License     string
+	Maintainers []string
+	Orphaned    bool
 	Installed   bool
 	Stable      bool
 	Testing     bool
@@ -87,6 +89,8 @@ type SearchConfig struct {
 	Use         string
 	Keywords    string
 	License     string
+	Maintainer  string
+	Orphaned    bool
 	Installed   bool
 	Stable      bool
 	Testing     bool
@@ -226,10 +230,37 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 	}
 
 	var allEntries []collectedEntry
+	var maintainerPattern *regexp.Regexp
+	if cfg.Maintainer != "" && cfg.Regex {
+		maintainerPattern, err = regexp.Compile(cfg.Maintainer)
+		if err != nil {
+			return nil, fmt.Errorf("invalid maintainer regex %q: %w", cfg.Maintainer, err)
+		}
+	}
 
 	collect := func(m *metadata.PackageMetadata) error {
 		res := toSearchResult(m, installed[m.Key()])
 
+		if cfg.Orphaned && !m.MaintainerNeeded {
+			return nil
+		}
+		if cfg.Maintainer != "" {
+			matched := false
+			for _, email := range m.Maintainers {
+				if maintainerPattern != nil {
+					matched = maintainerPattern.MatchString(email)
+				} else {
+					matched = strings.EqualFold(email, cfg.Maintainer) ||
+						strings.Contains(strings.ToLower(email), strings.ToLower(cfg.Maintainer))
+				}
+				if matched {
+					break
+				}
+			}
+			if !matched {
+				return nil
+			}
+		}
 		if !matchesSearchResult(res, cfg, rx, queryLower, parsedUse) {
 			return nil
 		}
@@ -925,6 +956,8 @@ func toSearchResult(m *metadata.PackageMetadata, installedVersions []InstalledVe
 		Keywords:          m.KEYWORDS,
 		IUSE:              m.IUSE,
 		License:           m.LICENSE,
+		Maintainers:       append([]string(nil), m.Maintainers...),
+		Orphaned:          m.MaintainerNeeded,
 		Installed:         installed,
 		Stable:            stable,
 		Testing:           testing,

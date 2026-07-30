@@ -642,6 +642,12 @@ func QueryRange(db *badger.DB, prefix string, fn func(*metadata.PackageMetadata)
 	})
 }
 
+// QueryAll iterates over every primary package record while excluding schema,
+// fingerprint, and secondary-index keys.
+func QueryAll(db *badger.DB, fn func(*metadata.PackageMetadata) error) error {
+	return QueryRange(db, keyPrefix, fn)
+}
+
 // QueryRangeParallel retains database iterator order while decoding values in
 // parallel. Repository metadata decoding is CPU-heavy and independent per CPV;
 // callbacks remain serial and deterministic.

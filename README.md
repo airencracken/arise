@@ -122,10 +122,19 @@ Inspect the installed system:
 
 ```sh
 arise installed
-arise equery belongs /usr/bin/gcc
-arise equery files sys-devel/gcc
+arise installed --owner /usr/bin/gcc
+arise installed --contents sys-devel/gcc
+arise installed --uses sys-devel/gcc
+arise installed --check sys-devel/gcc
+arise query --ebuild sys-devel/gcc
 arise info
 ```
+
+Arise is a self-contained alternative with capabilities that overlap
+`emerge`, `eix`, `equery`, `portageq`, and the `q` tools. It does not replace
+them or clone their command names. If diagnosing package state or a failed
+Arise operation requires one of those tools, that is uncovered Arise surface
+and should be reported as a bug.
 
 Preview changes before allowing a live transaction:
 

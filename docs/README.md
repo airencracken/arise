@@ -24,6 +24,10 @@ configuration files together with their enforcement status.
 
 Maintained reader guides extracted from the project overview:
 
+- [`tool-equivalents.md`](tool-equivalents.md) — native command equivalents,
+  coexistence, and package-tooling interoperability.
+- [`library-roadmap.md`](library-roadmap.md) — boundaries that preserve a path
+  to importable public APIs and alternate user interfaces.
 - [`performance-results.md`](performance-results.md) — comparison tables,
   methodology, evidence, and claim boundaries.
 - [`development.md`](development.md) — build/test commands, architecture,

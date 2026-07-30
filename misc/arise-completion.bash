@@ -6,11 +6,10 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install update uninstall select deselect recover query state search installed info audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild equery bench"
+    local commands="sync index install update uninstall select deselect recover query state search installed info audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench"
 
     local audit_sub="python perl"
     local news_sub="list read display"
-    local equery_sub="belongs files uses size check which"
 
     if [[ $cword -eq 1 ]]; then
         if [[ $cur == -* ]]; then
@@ -24,22 +23,25 @@ _arise() {
     local cmd="${words[1]}"
 
     case "$cmd" in
-        install|uninstall|update|query|config|select|deselect|quickpkg)
+        install|uninstall|update|config|select|deselect|quickpkg)
             if [[ $cur == -* ]]; then
                 _arise_flags
             else
                 _arise_pkg_atoms "$cur"
             fi
             ;;
-        equery)
-            if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "$equery_sub" -- "$cur"))
-            elif [[ $cword -eq 3 ]]; then
-                case "${words[2]}" in
-                    belongs|files|uses|size|check|which)
-                        _arise_pkg_atoms "$cur"
-                        ;;
-                esac
+        query)
+            if [[ $cur == -* ]]; then
+                COMPREPLY=($(compgen -W "--versions --ebuild --best-visible --all-best-visible --metadata= --expand-virtual --type=ebuild --type=binary --type=installed" -- "$cur"))
+            else
+                _arise_pkg_atoms "$cur"
+            fi
+            ;;
+        installed)
+            if [[ $cur == -* ]]; then
+                COMPREPLY=($(compgen -W "--versions --cpv --match --has --best --contents --owner --uses --size --check --null" -- "$cur"))
+            else
+                _arise_pkg_atoms "$cur"
             fi
             ;;
         audit)
@@ -72,10 +74,10 @@ _arise() {
                 _arise_pkg_atoms "$cur"
             fi
             ;;
-        installed)
-            COMPREPLY=($(compgen -W "all repo no-repo buildtime no-buildtime --versions --cpv --null -0 -= -q -a" -- "$cur"))
+        info)
+            COMPREPLY=($(compgen -W "--value --repositories --repo-path --repository-config --masters --eclasses --eclass-path --license-path --preserved-libs --is-protected --filter-protected --colors" -- "$cur"))
             ;;
-        sync|index|state|info|bug-report|dispatch-conf|depclean|prune|env-update|ldconfig|preserved-rebuild|revdep-rebuild|bench)
+        sync|index|state|bug-report|dispatch-conf|depclean|prune|env-update|ldconfig|preserved-rebuild|revdep-rebuild|bench)
             _arise_flags
             ;;
         recover)
@@ -106,6 +108,7 @@ _arise_flags() {
         --search-count-only --search-depends-on --search-dump --search-duplicates
         --search-format --search-has-use --search-has-version --search-installed
         --search-json --search-keywords --search-license --search-masked
+        --search-maintainer --search-orphaned
         --search-name --search-not --search-only-names --search-overflow
         --search-print --search-required-by --search-slot --search-sort
         --search-stable --search-system --search-testing --search-use

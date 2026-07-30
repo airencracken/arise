@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+func TestPaletteReturnsIndependentStableSemanticMap(t *testing.T) {
+	first := Palette()
+	if first["bad"] != "\033[91m" || first["normal"] != "\033[0m" || len(first) != 10 {
+		t.Fatalf("Palette = %#v", first)
+	}
+	first["bad"] = "changed"
+	if Palette()["bad"] != "\033[91m" {
+		t.Fatal("Palette returned shared mutable state")
+	}
+}
+
 func TestGreen(t *testing.T) {
 	UseColor = true
 	got := Green("ok")

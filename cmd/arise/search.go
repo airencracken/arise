@@ -51,6 +51,8 @@ func runSearch(args []string, dbPath string) int {
 		Use:         *searchUse,
 		Keywords:    *searchKeywords,
 		License:     *searchLicense,
+		Maintainer:  *searchMaintainer,
+		Orphaned:    *searchOrphaned,
 		Installed:   *searchInstalled,
 		Stable:      *searchStable,
 		Testing:     *searchTesting,
@@ -273,7 +275,8 @@ func canUseNameIndex(query string) bool {
 	return *searchOnlyNames && !strings.ContainsAny(query, "*?[") && !*searchRegex && !*searchDesc &&
 		!*searchInstalled && *searchCategory == "" && *searchName == "" &&
 		*searchSlot == "" && *searchUse == "" && *searchKeywords == "" &&
-		*searchLicense == "" && !*searchStable && !*searchTesting &&
+		*searchLicense == "" && *searchMaintainer == "" && !*searchOrphaned &&
+		!*searchStable && !*searchTesting &&
 		*searchSort == "" && !*searchVersions && *searchFormat == "" &&
 		*searchPrint == "" && !*searchJSON && !*searchBrief && !*searchCountOnly &&
 		!*searchAnd && *searchNot == "" && !*searchWorld && !*searchSystem &&

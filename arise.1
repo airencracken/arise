@@ -419,31 +419,17 @@ Display system information: arise version, Go runtime, portage configuration
 Equivalent to \fBemerge \-\-info\fR.
 
 .TP
-\fBequery\fR \fIsubcommand\fR [\fIargs\fR]
-Package query tool replacing \fBequery\fR(1). Subcommands:
-.RS
-.TP
-\fBbelongs\fR \fIfile\fR
-Find which installed package owns a file.
-.TP
-\fBfiles\fR \fIatom\fR
-List files installed by a package.
-.TP
-\fBuses\fR \fIatom\fR
-Show IUSE and active USE flags for a package.
-.TP
-\fBsize\fR \fIatom\fR
-Show total installed size of a package.
-.TP
-\fBcheck\fR \fIatom\fR
-Verify installed files against recorded checksums.
-.TP
-\fBwhich\fR \fIatom\fR
-Find the ebuild path for a package.
-.TP
-\fBlist\fR [\fIpattern\fR]
-List installed packages matching a pattern.
-.RE
+\fBinstalled\fR [\fIinspection-option\fR] [\fIargument\fR]
+List or inspect installed packages. Inspection options include
+\fB\-\-owner\fR, \fB\-\-contents\fR, \fB\-\-uses\fR, \fB\-\-size\fR,
+\fB\-\-check\fR, \fB\-\-match\fR, \fB\-\-has\fR, and \fB\-\-best\fR.
+
+.PP
+Arise is a self-contained alternative with capabilities that overlap
+\fBemerge\fR, \fBeix\fR, \fBequery\fR, \fBportageq\fR, and the \fBq\fR
+tools. It neither replaces them nor clones their command names. Requiring one
+of those tools to diagnose package state or a failed Arise operation indicates
+missing Arise diagnostic surface.
 
 .SS Maintenance
 
