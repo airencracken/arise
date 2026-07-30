@@ -9,7 +9,7 @@ import (
 func TestReleaseVersionReferencesAgree(t *testing.T) {
 	t.Parallel()
 
-	const want = "0.0.10"
+	const want = "0.0.11"
 	checks := []struct {
 		path    string
 		pattern string
@@ -19,7 +19,7 @@ func TestReleaseVersionReferencesAgree(t *testing.T) {
 		{"../cmd/arise/version_test.go", `want := version, "` + regexp.QuoteMeta(want) + `"`},
 		{"../arise.texi", `@set VERSION ` + regexp.QuoteMeta(want)},
 		{"../README.md", `=sys-apps/arise-` + regexp.QuoteMeta(want)},
-		{"../docs/releases/0.0.10.md", `# Arise ` + regexp.QuoteMeta(want)},
+		{"../docs/releases/0.0.11.md", `# Arise ` + regexp.QuoteMeta(want)},
 	}
 
 	for _, check := range checks {
