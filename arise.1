@@ -466,7 +466,16 @@ directory in parallel and ingests all package metadata into BadgerDB.
 Audit installed packages for outdated Python or Perl site-packages.
 With \fB\-\-fix \-\-pretend\fR, list the affected rebuild set. Non-pretend
 \fB\-\-fix\fR remains gated and fails explicitly.
-Replaces \fBpython-updater\fR and \fBperl-cleaner\fR.
+
+.TP
+\fBperl-cleaner \-\-modules|\-\-allmodules|\-\-libperl|\-\-all|\-\-reallyall\fR
+Audit and repair installed Perl modules and libperl consumers without invoking
+Perl or Portage's Python runtime. Modes retain perl-cleaner semantics:
+\fB\-\-all\fR includes perl-core world cleanup and virtual updates, while
+\fB\-\-reallyall\fR forces all modules. Pretend plans are resolved through
+Arise with typed evidence. Successful repairs are independently re-audited;
+known generated leftovers are removed through a rollback journal and unknown
+files are reported.
 
 .TP
 \fBmaintain world \-\-check|\-\-fix\fR

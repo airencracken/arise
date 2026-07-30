@@ -2430,9 +2430,17 @@ Acceptance gate:
   filtering and resumable sessions—without duplicating protected-file policy
   or granting the UI a path around journaling and apply validation.
 - [ ] Wire preserved-rebuild and revdep-rebuild through the safe planner/executor.
-- [ ] Supplant `perl-cleaner`: detect Perl subslot/ABI transitions, stale module
-  files and packages linked to obsolete libperl instances; produce one
-  resolver-backed pretend/rebuild plan with explicit reasons.
+- [~] Supplant `perl-cleaner`: `arise perl-cleaner` now preserves the
+  `--modules`, `--allmodules`, `--libperl`, `--all`, and `--reallyall` mode
+  distinctions; derives the active version, architecture, and libperl SONAME
+  from VDB state without executing Perl; emits typed module/linkage reasons and
+  versioned JSON; models perl-core deselection and installed virtual updates;
+  routes repair through the verified resolver; independently re-audits final
+  state; and confines known-leftover deletion to a rollback journal while
+  reporting unknown files. Unit, route, mode, adversarial, fuzz, rollback,
+  alternate-root, and live `perl-cleaner 2.31 --modules` differential tests are
+  present. Complete the known-leftover corpus and disposable-root differentials
+  for libperl, preclean, every mode union, and interrupted/resumed execution.
 - [ ] Add a Python repair/cleaner workflow: detect stale interpreter targets,
   invalid shebangs, orphaned site-packages, extension modules linked against
   removed libpython ABIs and packages whose installed PYTHON_TARGETS no longer

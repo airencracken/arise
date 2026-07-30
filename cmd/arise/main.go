@@ -329,6 +329,10 @@ func main() {
 		runEquery(cmdArgs, *dbPath, *repoPath, *vdbDir)
 	case "bench":
 		runBench()
+	case "perl-cleaner":
+		if code := runPerlCleaner(cmdArgs); code != 0 {
+			os.Exit(code)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		fmt.Fprintf(os.Stderr, "Usage: arise [flags] <command> [args...]\n")
@@ -338,7 +342,7 @@ func main() {
 
 func writeUsage(w io.Writer, fs *flag.FlagSet) {
 	fmt.Fprintln(w, "Usage: arise [options] <command> [args...]")
-	fmt.Fprintln(w, "Commands: sync, index, install, update, uninstall, select, recover, query, state, search, installed, info, audit, maintain, bug-report, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench")
+	fmt.Fprintln(w, "Commands: sync, index, install, update, uninstall, select, recover, query, state, search, installed, info, audit, perl-cleaner, maintain, bug-report, dispatch-conf, quickpkg, depclean, prune, env-update, ldconfig, config, news, deselect, preserved-rebuild, revdep-rebuild, equery, bench")
 	fmt.Fprintln(w, "Options:")
 	var rendered bytes.Buffer
 	original := fs.Output()
@@ -487,7 +491,7 @@ func selectCommand(args []string) (string, []string) {
 		"dispatch-conf": true, "quickpkg": true, "depclean": true, "prune": true,
 		"search": true, "installed": true, "info": true, "preserved-rebuild": true,
 		"revdep-rebuild": true, "env-update": true, "ldconfig": true, "config": true,
-		"news": true, "deselect": true, "equery": true, "bench": true,
+		"news": true, "deselect": true, "equery": true, "bench": true, "perl-cleaner": true,
 	}
 	if commands[args[0]] {
 		return args[0], args[1:]

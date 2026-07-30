@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/perl-cleaner-report-v1.schema.json",
+  "title": "Arise Perl cleaner report version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "operation", "complete", "report", "targets", "leftovers"],
+  "properties": {
+    "schema": {"const": 1},
+    "operation": {"const": "perl-cleaner"},
+    "complete": {"const": true},
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "abi", "preclean", "actions"],
+      "properties": {
+        "mode": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["modules", "all_modules", "libperl", "preclean", "leftovers"],
+          "properties": {
+            "modules": {"type": "boolean"},
+            "all_modules": {"type": "boolean"},
+            "libperl": {"type": "boolean"},
+            "preclean": {"type": "boolean"},
+            "leftovers": {"type": "boolean"}
+          }
+        },
+        "abi": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "arch", "libperl_sonames", "source_cpv"],
+          "properties": {
+            "version": {"type": "string"},
+            "arch": {"type": "string"},
+            "libperl_sonames": {"type": "array", "items": {"type": "string"}},
+            "source_cpv": {"type": "string"}
+          }
+        },
+        "preclean": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["perl_core", "virtuals"],
+          "properties": {
+            "perl_core": {"type": "array", "items": {"type": "string"}},
+            "virtuals": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["cpv", "atom", "reasons"],
+            "properties": {
+              "cpv": {"type": "string"},
+              "atom": {"type": "string"},
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["kind", "evidence"],
+                  "properties": {
+                    "kind": {"enum": ["stale-module", "all-modules", "libperl"]},
+                    "evidence": {"type": "string"}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "targets": {"type": "array", "items": {"type": "string"}},
+    "leftovers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "known"],
+        "properties": {
+          "path": {"type": "string"},
+          "known": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}
