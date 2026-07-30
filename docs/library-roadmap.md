@@ -33,6 +33,12 @@ choose partial inspection with typed issues or strict validation that promotes
 incomplete evidence to an error. Arise consumes this API for its VDB scans,
 while preserving typed diagnostics for inspection paths.
 
+Gentooling `v0.1.0` hardens that boundary with validated integrity modes,
+structured IUSE defaults, symlink-safe metadata reads, opt-in CONTENTS loading,
+bounded concurrent record scans, and final mutation revalidation. Its
+pre-1.0 compatibility policy permits documented breaking changes in minor
+releases while keeping patch releases compatible.
+
 Code remains in Arise until its boundary passes the stability and
 downstream-consumer gates below. New code should follow a dependency direction
 that permits cohesive packages to move into `gentooling` without importing

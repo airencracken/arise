@@ -77,7 +77,7 @@ func ScanWithIssues(ctx context.Context, root string, includeContents bool) ([]P
 		packages = append(packages, Package{
 			Category: installed.ID.Category, Package: installed.ID.Name, Version: installed.ID.Version,
 			Slot: installed.ID.Slot, Subslot: installed.ID.Subslot, Repository: installed.ID.Repository,
-			Use: append([]string(nil), installed.EnabledUse...), IUse: append([]string(nil), installed.DeclaredUse...),
+			Use: append([]string(nil), installed.EnabledUse...), IUse: renderUseDeclarations(installed.DeclaredUse),
 			Depend: installed.Dependencies.Depend, RDepend: installed.Dependencies.RDepend,
 			BDepend: installed.Dependencies.BDepend, IDepend: installed.Dependencies.IDepend,
 			PDepend: installed.Dependencies.PDepend, EAPI: installed.EAPI,
@@ -87,4 +87,12 @@ func ScanWithIssues(ctx context.Context, root string, includeContents bool) ([]P
 		})
 	}
 	return packages, inventory.Issues, nil
+}
+
+func renderUseDeclarations(declarations []gentooling.UseDeclaration) []string {
+	rendered := make([]string, len(declarations))
+	for index, declaration := range declarations {
+		rendered[index] = declaration.String()
+	}
+	return rendered
 }

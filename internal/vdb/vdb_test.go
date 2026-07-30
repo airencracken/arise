@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/airencracken/gentooling"
@@ -93,6 +94,33 @@ func TestScanResolverStateOmitsContentsButPreservesResolutionMetadata(t *testing
 	}
 	if len(full) != 1 || full[0].Contents == "" {
 		t.Fatal("full VDB scan no longer retains CONTENTS")
+	}
+}
+
+func TestScanPreservesStructuredIUseDefaultsThroughCompatibilityAdapter(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "app-misc", "example-1")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"CONTENTS": "", "EAPI": "8\n", "SLOT": "0\n", "repository": "gentoo\n",
+		"IUSE": "+enabled -disabled neutral\n",
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	packages, err := ScanResolverState(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 1 {
+		t.Fatalf("packages = %+v", packages)
+	}
+	want := []string{"+enabled", "-disabled", "neutral"}
+	if !reflect.DeepEqual(packages[0].IUse, want) {
+		t.Fatalf("IUSE = %v, want %v", packages[0].IUse, want)
 	}
 }
 
