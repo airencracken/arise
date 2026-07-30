@@ -274,13 +274,6 @@ func updateGitRepoCommand(ctx context.Context, cfg SyncConfig) error {
 	if err != nil {
 		return err
 	}
-	dirty, err := gitOutput(ctx, "-C", cfg.TargetDir, "status", "--porcelain")
-	if err != nil {
-		return err
-	}
-	if dirty != "" {
-		return errors.New("repository has local changes; refusing to overwrite them")
-	}
 
 	branch, err := gitOutput(ctx, "-C", cfg.TargetDir, "branch", "--show-current")
 	if err != nil {
@@ -301,6 +294,15 @@ func updateGitRepoCommand(ctx context.Context, cfg SyncConfig) error {
 	if oldRevision == remoteRevision {
 		cfg.progress("unchanged", "Already up to date")
 		return nil
+	}
+
+	cfg.progress("validate", "Checking working tree for local changes")
+	dirty, err := gitOutput(ctx, "-C", cfg.TargetDir, "status", "--porcelain")
+	if err != nil {
+		return err
+	}
+	if dirty != "" {
+		return errors.New("repository has local changes; refusing to overwrite them")
 	}
 
 	cfg.progress("update", "Updating working tree")
@@ -673,18 +675,6 @@ func updateGitRepo(ctx context.Context, cfg SyncConfig) error {
 		return fmt.Errorf("could not open the local repository: %w", err)
 	}
 
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("could not check repository working tree status: %w", err)
-	}
-	status, err := worktree.Status()
-	if err != nil {
-		return fmt.Errorf("could not check repository working tree status: %w", err)
-	}
-	if !status.IsClean() {
-		return errDirtyWorktree
-	}
-
 	head, err := repo.Reference(plumbing.HEAD, false)
 	if err != nil {
 		return fmt.Errorf("could not inspect repository HEAD: %w", err)
@@ -721,6 +711,19 @@ func updateGitRepo(ctx context.Context, cfg SyncConfig) error {
 	if *oldRevision == *newRevision {
 		cfg.progress("unchanged", "Already up to date")
 		return nil
+	}
+
+	cfg.progress("validate", "Checking working tree for local changes")
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("could not check repository working tree status: %w", err)
+	}
+	status, err := worktree.Status()
+	if err != nil {
+		return fmt.Errorf("could not check repository working tree status: %w", err)
+	}
+	if !status.IsClean() {
+		return errDirtyWorktree
 	}
 
 	cfg.progress("update", "Updating working tree")

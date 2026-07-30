@@ -928,7 +928,7 @@ func TestSyncCommandReportsExactEbuildChangesAndProgress(t *testing.T) {
 	if err := Sync(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(stages, []string{"check", "fetch", "update", "changes"}) {
+	if !reflect.DeepEqual(stages, []string{"check", "fetch", "validate", "update", "changes"}) {
 		t.Fatalf("progress stages = %v", stages)
 	}
 	want := ChangeSummary{

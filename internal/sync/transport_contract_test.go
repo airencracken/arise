@@ -221,15 +221,22 @@ func TestPropertyNativeChangeSummaryMatchesSystemGitNameStatus(t *testing.T) {
 
 func TestSyncDoesNotBypassBuiltInSafetyPolicyWithSystemFallback(t *testing.T) {
 	remote := initSyncRemote(t)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repoURL := startTestGitDaemon(t, gitPath, remote)
 	target := filepath.Join(t.TempDir(), "target")
 	if err := cloneGitRepo(context.Background(), SyncConfig{
-		RepoURL: remote, TargetDir: target, Depth: 2, Output: os.Stderr,
+		RepoURL: repoURL, TargetDir: target, Depth: 2, Output: os.Stderr,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(target, "README"), []byte("dirty\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeSyncFile(t, remote, "app-misc/new/new-2.ebuild", "EAPI=8\n")
+	commitSyncRemote(t, remote, "remote update requiring mutation")
 	marker := filepath.Join(t.TempDir(), "system-git-invoked")
 	fakeBin := t.TempDir()
 	fakeGit := filepath.Join(fakeBin, "git")
@@ -239,14 +246,44 @@ func TestSyncDoesNotBypassBuiltInSafetyPolicyWithSystemFallback(t *testing.T) {
 	}
 	t.Setenv("PATH", fakeBin)
 
-	err := Sync(context.Background(), SyncConfig{
-		RepoURL: remote, TargetDir: target, SyncType: "git", Depth: 2,
+	err = Sync(context.Background(), SyncConfig{
+		RepoURL: repoURL, TargetDir: target, SyncType: "git", Depth: 2,
 	})
 	if !errors.Is(err, errDirtyWorktree) {
 		t.Fatalf("Sync() error = %v, want dirty-worktree policy error", err)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("system fallback bypassed built-in safety policy: %v", err)
+	}
+}
+
+func TestUnchangedRepositoryDoesNotWalkOrRejectDirtyWorktree(t *testing.T) {
+	remote := initSyncRemote(t)
+	target := filepath.Join(t.TempDir(), "target")
+	if err := cloneGitRepo(context.Background(), SyncConfig{
+		RepoURL: remote, TargetDir: target, Depth: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dirtyPath := filepath.Join(target, "README")
+	if err := os.WriteFile(dirtyPath, []byte("local and untouched\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stages []string
+	if err := Sync(context.Background(), SyncConfig{
+		RepoURL: remote, TargetDir: target, SyncType: "git", Depth: 2,
+		Progress: func(stage, _ string) {
+			stages = append(stages, stage)
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(stages, ",") != "check,fetch,unchanged" {
+		t.Fatalf("unchanged stages = %v, want no worktree validation", stages)
+	}
+	data, err := os.ReadFile(dirtyPath)
+	if err != nil || string(data) != "local and untouched\n" {
+		t.Fatalf("unchanged sync modified local file: data=%q err=%v", data, err)
 	}
 }
 
