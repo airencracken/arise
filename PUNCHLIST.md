@@ -2344,6 +2344,15 @@ Acceptance gate:
   differential tests cover moves, masks, redundant constraints, concurrent
   changes, interrupted repair, idempotence and alternate
   ROOT/PORTAGE_CONFIGROOT isolation.
+- [x] Implement `arise maintain moveinst --check` and `--fix` as the
+  installed-package counterpart to `emaint moveinst`. Apply ordered repository
+  `move` and `slotmove` updates to VDB identities, SLOT, and all five installed
+  dependency metadata classes with repository scoping and main-repository
+  fallback. Check and pretend are read-only; fix takes the Portage VDB lock,
+  revalidates a state-bound plan, preserves metadata modes/ownership, and
+  commits through a rollback journal. Unit, adversarial, atomicity,
+  interruption, concurrent-change, alternate-ROOT, released-CLI, idempotence
+  and disposable-root `emaint` differential tests cover the supported surface.
 - [~] Before public testing, implement a built-in, strictly read-only
   `arise bug-report` command backed by an isolated `internal/bugreport`
   collector and a versioned report schema. Generate a reviewable `report.md`

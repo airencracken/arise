@@ -477,6 +477,13 @@ Portage world lock, and publishes atomically while preserving file mode and
 ownership.
 
 .TP
+\fBmaintain moveinst \-\-check|\-\-fix\fR
+Check or apply repository package moves to installed VDB entries. Updates
+package/category identity, SLOT, and installed BDEPEND, DEPEND, IDEPEND,
+PDEPEND, and RDEPEND metadata. Fix mode takes the Portage VDB lock, revalidates
+the state-bound plan, and uses a rollback journal.
+
+.TP
 \fBbug-report\fR [\fB\-\-output\fR \fIdirectory\fR]
 Create private, reviewable Markdown and versioned JSON diagnostics without
 uploading anything. Optional \fB\-\-archive\fR creates a deterministic

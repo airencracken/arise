@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/maintain-moveinst-plan-v1.schema.json",
+  "title": "Arise installed package move plan version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation",
+    "complete",
+    "state_sha256",
+    "plan_sha256",
+    "vdb",
+    "issues",
+    "actions"
+  ],
+  "properties": {
+    "schema": {"const": 1},
+    "operation": {"const": "maintain-moveinst"},
+    "complete": {"const": true},
+    "state_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plan_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "vdb": {"type": "string"},
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cpv", "kind", "message"],
+        "properties": {
+          "cpv": {"type": "string"},
+          "kind": {"enum": ["move", "slotmove", "metadata"]},
+          "message": {"type": "string"}
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["cpv", "result_cpv", "from", "to", "files", "reasons"],
+        "properties": {
+          "cpv": {"type": "string"},
+          "result_cpv": {"type": "string"},
+          "from": {"type": "string"},
+          "to": {"type": "string"},
+          "files": {"type": "object", "additionalProperties": {"type": "string"}},
+          "reasons": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  }
+}

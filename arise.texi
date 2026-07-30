@@ -299,6 +299,11 @@ repository. Check mode supports deterministic text and versioned JSON. Fix
 mode requires a state-bound approved plan, revalidates beneath the Portage
 world lock, and atomically preserves file mode and ownership.
 
+@item maintain moveinst --check|--fix
+Check or apply ordered repository package moves to installed VDB identities,
+slots, and dependency metadata. Fix mode locks and revalidates the VDB and
+commits through a rollback journal.
+
 @item bug-report [--output @var{directory}]
 Create private, reviewable Markdown and versioned JSON diagnostics without
 uploading anything. @option{--archive} adds a deterministic @file{.tar.zst}

@@ -122,6 +122,7 @@ Important `make.conf` variables are tracked independently from file parsing:
 | installed `pkg_config` phase | `arise config ATOM` | supported subset | persisted lifecycle and legacy installed-environment tests; wider EAPI/package differential corpus remains open |
 | `dispatch-conf` | `arise dispatch-conf` | partial | recursive/explicit discovery, decisions, safe three-way premerge, atomic confined archives, hooks, mixed-file diffs, metadata, cancellation, ROOT/config-root, schema, property, adversarial and installed-Portage archive differentials; session rollback/recovery and full command differential corpus remain open |
 | `emaint --check/--fix world` | `arise maintain world --check/--fix` | supported subset | deterministic text/JSON checks, configured-repository coverage, direct explicit repair, optional state-bound saved plans, constrained package moves, mask handling, provably redundant constraint cleanup, lock-time revalidation, interruption-safe atomic repair, alternate-root isolation and disposable-root Portage repair parity |
+| `emaint --check/--fix moveinst` | `arise maintain moveinst --check/--fix` | supported subset | ordered move/slotmove and five dependency-class updates, repository scoping/main fallback, VDB locking, state revalidation, journal rollback, alternate-root isolation and disposable-root Portage parity |
 
 ## Maintenance rules
 

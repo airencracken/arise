@@ -40,8 +40,11 @@ type maintainWorldSummary struct {
 var maintainWorldBeforeLock = func() error { return nil }
 
 func runMaintain(args []string) int {
+	if len(args) != 0 && args[0] == "moveinst" {
+		return runMaintainMoveInst(args[1:])
+	}
 	if len(args) == 0 || args[0] != "world" {
-		fmt.Fprintln(os.Stderr, "maintain: expected `world --check` or `world --fix`")
+		fmt.Fprintln(os.Stderr, "maintain: expected `world|moveinst --check|--fix`")
 		return 2
 	}
 	check, fix := false, false
