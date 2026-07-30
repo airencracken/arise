@@ -94,3 +94,28 @@ func TestColorEncodesProperly(t *testing.T) {
 		}
 	}
 }
+
+func TestPortageSemanticPaletteMatchesNamedANSIColors(t *testing.T) {
+	previous := UseColor
+	UseColor = true
+	t.Cleanup(func() { UseColor = previous })
+	tests := []struct {
+		got  string
+		code string
+	}{
+		{PortageRed("x"), "\x1b[91m"},
+		{PortageGreen("x"), "\x1b[92m"},
+		{PortageYellow("x"), "\x1b[93m"},
+		{PortageBlue("x"), "\x1b[94m"},
+		{PortageFuchsia("x"), "\x1b[95m"},
+		{PortageTurquoise("x"), "\x1b[96m"},
+		{PortageDarkGreen("x"), "\x1b[32m"},
+		{PortagePurple("x"), "\x1b[35m"},
+		{PortageTeal("x"), "\x1b[36m"},
+	}
+	for _, test := range tests {
+		if test.got != test.code+"x\x1b[0m" {
+			t.Errorf("style = %q, want prefix %q", test.got, test.code)
+		}
+	}
+}

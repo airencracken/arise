@@ -11,21 +11,22 @@ import (
 )
 
 type jsonPlan struct {
-	Schema                int                        `json:"schema"`
-	Operation             string                     `json:"operation"`
-	Targets               []string                   `json:"targets"`
-	Options               planOptions                `json:"options"`
-	Complete              bool                       `json:"complete"`
-	Resolution            jsonResolution             `json:"resolution"`
-	Actions               []jsonAction               `json:"actions"`
-	Uninstall             []jsonAction               `json:"uninstall,omitempty"`
-	Conflicts             []string                   `json:"conflicts"`
-	Details               []resolve.ConflictDetail   `json:"conflict_details,omitempty"`
-	Warnings              []string                   `json:"warnings"`
-	Error                 string                     `json:"error,omitempty"`
-	PlanSHA256            string                     `json:"plan_sha256,omitempty"`
-	StateSHA256           string                     `json:"state_sha256,omitempty"`
-	IndependentValidation *jsonIndependentValidation `json:"independent_validation,omitempty"`
+	Schema                int                         `json:"schema"`
+	Operation             string                      `json:"operation"`
+	Targets               []string                    `json:"targets"`
+	Options               planOptions                 `json:"options"`
+	Complete              bool                        `json:"complete"`
+	Resolution            jsonResolution              `json:"resolution"`
+	Actions               []jsonAction                `json:"actions"`
+	Uninstall             []jsonAction                `json:"uninstall,omitempty"`
+	Conflicts             []string                    `json:"conflicts"`
+	Details               []resolve.ConflictDetail    `json:"conflict_details,omitempty"`
+	Warnings              []string                    `json:"warnings"`
+	WarningDiagnostics    []resolve.WarningDiagnostic `json:"warning_diagnostics,omitempty"`
+	Error                 string                      `json:"error,omitempty"`
+	PlanSHA256            string                      `json:"plan_sha256,omitempty"`
+	StateSHA256           string                      `json:"state_sha256,omitempty"`
+	IndependentValidation *jsonIndependentValidation  `json:"independent_validation,omitempty"`
 }
 
 type jsonIndependentValidation struct {
@@ -135,7 +136,8 @@ func writePlanJSON(w io.Writer, targets []string, cfg resolve.ResolveConfig, res
 		},
 		Actions: jsonActions(result.Install), Uninstall: jsonActions(result.Uninstall),
 		Conflicts: append([]string(nil), result.Conflicts...), Details: append([]resolve.ConflictDetail(nil), result.ConflictDetails...),
-		Warnings: append([]string(nil), result.Warnings...),
+		Warnings:           append([]string(nil), result.Warnings...),
+		WarningDiagnostics: append([]resolve.WarningDiagnostic(nil), result.WarningDiagnostics...),
 	}
 	document.StateSHA256 = timings.StateSHA256
 	if timings.Validation != nil {

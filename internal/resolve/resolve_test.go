@@ -6303,6 +6303,16 @@ func TestResolve_WarnsWhenDependencyConstraintSkipsVisibleUpdate(t *testing.T) {
 	for _, warning := range r.warnings {
 		if strings.Contains(warning, "skipped update dev-python/docutils-0.23") &&
 			strings.Contains(warning, "<dev-python/docutils-0.23[python_targets_python3_14(-)]") {
+			if len(r.warningDiagnostics) != 1 {
+				t.Fatalf("warning diagnostics = %#v", r.warningDiagnostics)
+			}
+			detail := r.warningDiagnostics[0]
+			if detail.Summary != warning ||
+				detail.Source[detail.Start:detail.End] != "python_targets_python3_14(-)" ||
+				detail.Message != "dev-python/docutils-0.23 was skipped because an installed dependency requires:" ||
+				detail.Annotation != "required by dev-python/sphinx" {
+				t.Fatalf("warning diagnostic = %#v", detail)
+			}
 			return
 		}
 	}

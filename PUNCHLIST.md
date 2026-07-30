@@ -2279,20 +2279,27 @@ Acceptance gate:
 
 ## P10 — remaining emerge and maintenance behavior
 
-- [ ] Replace low-information plan lines with emerge-density package records.
+- [~] Replace low-information plan lines with emerge-density package records.
   The data-model and rendering contract in
   `docs/planning/PACKAGE_OUTPUT_UX_PLAN.md` covers artifact/action markers,
   selected and installed CPV/slot/subslot/repository identities, complete USE
   and USE_EXPAND state with provenance markers, rebuild causes, per-package
   download size, deterministic wrapping, colorless parity and versioned JSON.
+  Default plans now suppress verbose USE state, verbose plans group ordinary
+  and implicit USE_EXPAND domains while honoring USE_EXPAND_HIDDEN, and
+  resolver-only reasons remain behind `--debug`. Skipped dependency updates
+  carry structured source spans and compiler-style caret annotations in both
+  terminal and JSON output.
 
-- [ ] Centralize all terminal styling in one semantic presentation library.
+- [~] Centralize all terminal styling in one semantic presentation library.
   Replace physical helpers and mutable global color state with immutable
   renderers and named roles; prohibit raw ANSI escapes, terminal detection and
   color policy in command call sites. Support Portage `color.map`, explainable
   configuration provenance, accessibility themes and colorless informational
   parity as specified in
   [`docs/planning/COLOR_CONFIGURATION_PLAN.md`](docs/planning/COLOR_CONFIGURATION_PLAN.md).
+  The Portage named palette and reusable source-span diagnostic renderer are
+  centralized; command-local styling and mutable global color policy remain.
 
 - [~] Preserve emerge operator muscle memory alongside Arise's explicit
   subcommands. Bare atoms and sets now default to install resolution, and the

@@ -18,6 +18,7 @@ import (
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/binpkg"
 	"github.com/airencracken/arise/internal/color"
+	"github.com/airencracken/arise/internal/diagnostic"
 	"github.com/airencracken/arise/internal/distfiles"
 	"github.com/airencracken/arise/internal/executor"
 	"github.com/airencracken/arise/internal/features"
@@ -128,15 +129,16 @@ func colorActionAtom(action resolve.PkgAction) string {
 		version = "-" + action.Atom.Version.Raw
 	}
 	atomText := cp + version
-	switch action.Action {
-	case "install":
-		atomText = color.BoldGreen(atomText)
-	case "update":
-		atomText = color.BoldCyan(atomText)
-	case "reinstall":
-		atomText = color.BoldYellow(atomText)
-	default:
-		atomText = color.Bold(atomText)
+	if action.MergeType == "binary" {
+		if strings.Contains(action.Reason, "world target") {
+			atomText = color.PortageFuchsia(atomText)
+		} else {
+			atomText = color.PortagePurple(atomText)
+		}
+	} else if strings.Contains(action.Reason, "world target") {
+		atomText = color.PortageGreen(atomText)
+	} else {
+		atomText = color.PortageDarkGreen(atomText)
 	}
 	if action.Slot != "" {
 		slot := action.Slot
@@ -609,7 +611,24 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	if len(displayWarnings) > 0 && !cfg.Quiet {
 		fmt.Println("\nWarnings:")
 		for _, warning := range displayWarnings {
-			fmt.Printf("  %s\n", warning)
+			details := warningDiagnostics(result.WarningDiagnostics, warning)
+			if len(details) == 0 {
+				fmt.Printf("  %s\n", warning)
+				continue
+			}
+			for index, detail := range details {
+				summary := ""
+				if index == 0 {
+					summary = detail.Message
+					if summary == "" {
+						summary = warning
+					}
+				}
+				diagnostic.Render(os.Stdout, diagnostic.SourceSpan{
+					Summary: summary, Source: detail.Source, Start: detail.Start,
+					End: detail.End, Annotation: detail.Annotation,
+				})
+			}
 		}
 	}
 
@@ -632,12 +651,12 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				if estimate, ok := estimates.forAction(a); ok {
 					fmt.Printf("  (estimated %s)", formatEstimate(estimate))
 				}
-				if use := portageUseDisplay(a); use != "" {
+				if use := portageUseDisplayForVerbosity(a, cfg.Verbose); use != "" {
 					fmt.Printf(" %s", use)
 				}
 				fmt.Printf(" %s KiB", formatInteger((downloadSizes[resolve.ActionIdentity(a)]+1023)/1024))
 				fmt.Println()
-				if cfg.Verbose {
+				if *debugOutput {
 					if a.Reason != "" {
 						fmt.Printf("           reason: %s\n", a.Reason)
 					}
@@ -1144,26 +1163,26 @@ func portageActionHeader(action resolve.PkgAction, fetchOnly bool) string {
 	if action.MergeType == "binary" {
 		kind = "binary"
 	}
-	coloredKind := color.Green(kind)
+	coloredKind := color.PortageDarkGreen(kind)
 	if kind == "binary" {
-		coloredKind = color.Magenta(kind)
+		coloredKind = color.PortagePurple(kind)
 	}
 	attributes := []string{" ", " ", " ", " ", " ", " ", " "}
 	switch action.Action {
 	case "install":
-		attributes[1] = color.Green("N")
+		attributes[1] = color.PortageGreen("N")
 	case "reinstall":
-		attributes[2] = color.Yellow("R")
+		attributes[2] = color.PortageYellow("R")
 	case "update":
 		if action.InstalledVersion != "" && action.Atom != nil && action.Atom.Version != nil {
 			installed, installedErr := atom.ParseVersion(action.InstalledVersion)
 			if installedErr == nil && action.Atom.Version.Compare(installed) < 0 {
-				attributes[5] = color.Blue("D")
+				attributes[5] = color.PortageBlue("D")
 			} else {
-				attributes[4] = color.Cyan("U")
+				attributes[4] = color.PortageTurquoise("U")
 			}
 		} else {
-			attributes[4] = color.Cyan("U")
+			attributes[4] = color.PortageTurquoise("U")
 		}
 	}
 	return fmt.Sprintf("[%s %s]", coloredKind, strings.Join(attributes, ""))
@@ -1209,11 +1228,13 @@ func portageUseDisplay(action resolve.PkgAction) string {
 	sort.Strings(flags)
 	hidden := make(map[string]bool, len(action.UseExpandHidden))
 	for _, name := range action.UseExpandHidden {
-		hidden[name] = true
+		hidden[strings.ToLower(name)] = true
 	}
+	expandGroups := append([]string(nil), action.UseExpand...)
+	expandGroups = append(expandGroups, action.UseExpandImplicit...)
 	buckets := map[string]*useBucket{"USE": {}}
 	groupFlag := func(flag string) (string, string) {
-		for _, name := range action.UseExpand {
+		for _, name := range expandGroups {
 			prefix := strings.ToLower(name) + "_"
 			if strings.HasPrefix(flag, prefix) {
 				return name, strings.TrimPrefix(flag, prefix)
@@ -1223,7 +1244,7 @@ func portageUseDisplay(action resolve.PkgAction) string {
 	}
 	for _, flag := range flags {
 		group, displayFlag := groupFlag(flag)
-		if hidden[group] {
+		if hidden[strings.ToLower(group)] {
 			continue
 		}
 		bucket := buckets[group]
@@ -1237,7 +1258,7 @@ func portageUseDisplay(action resolve.PkgAction) string {
 		old := action.InstalledUseFlags[flag]
 		forced := action.ForcedUseFlags[flag] || action.MaskedUseFlags[flag]
 		if !currentDomain {
-			marker := color.Yellow("-"+displayFlag) + "%"
+			marker := color.PortageYellow("-"+displayFlag) + "%"
 			if old {
 				marker += "*"
 			}
@@ -1248,23 +1269,23 @@ func portageUseDisplay(action resolve.PkgAction) string {
 		if current {
 			switch {
 			case action.InstalledVersion == "" || oldDomain && old:
-				marker = color.Red(displayFlag)
+				marker = color.PortageRed(displayFlag)
 			case !oldDomain:
-				marker = color.Yellow(displayFlag) + "%*"
+				marker = color.PortageYellow(displayFlag) + "%*"
 			default:
-				marker = color.Green(displayFlag) + "*"
+				marker = color.PortageGreen(displayFlag) + "*"
 			}
 		} else {
 			switch {
 			case action.InstalledVersion == "" || oldDomain && !old:
-				marker = color.Blue("-" + displayFlag)
+				marker = color.PortageBlue("-" + displayFlag)
 			case !oldDomain:
-				marker = color.Yellow("-" + displayFlag)
+				marker = color.PortageYellow("-" + displayFlag)
 				if !forced {
 					marker += "%"
 				}
 			default:
-				marker = color.Green("-"+displayFlag) + "*"
+				marker = color.PortageGreen("-"+displayFlag) + "*"
 			}
 		}
 		if forced {
@@ -1295,6 +1316,13 @@ func portageUseDisplay(action resolve.PkgAction) string {
 	return strings.Join(displays, " ")
 }
 
+func portageUseDisplayForVerbosity(action resolve.PkgAction, verbose bool) string {
+	if !verbose {
+		return ""
+	}
+	return portageUseDisplay(action)
+}
+
 func printExecutionInterrupted(w io.Writer) {
 	fmt.Fprintln(w, "arise: interrupted by user")
 	fmt.Fprintln(w)
@@ -1317,6 +1345,16 @@ func warningsForDisplay(warnings []string, verbose bool) []string {
 		visible = append(visible, warning)
 	}
 	return visible
+}
+
+func warningDiagnostics(details []resolve.WarningDiagnostic, summary string) []resolve.WarningDiagnostic {
+	var result []resolve.WarningDiagnostic
+	for _, detail := range details {
+		if detail.Summary == summary {
+			result = append(result, detail)
+		}
+	}
+	return result
 }
 
 func printExecutionError(w io.Writer, err error) {

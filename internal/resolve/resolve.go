@@ -95,20 +95,32 @@ func (c *ResolveConfig) Defaults() {
 
 // ResolveResult holds the result of a dependency resolution.
 type ResolveResult struct {
-	Install           []PkgAction // packages to install/update
-	Uninstall         []PkgAction // packages to remove (blocks)
-	Conflicts         []string    // list of unresolvable conflicts
-	Warnings          []string    // non-fatal state requiring user attention
-	BacktrackLevel    int         // how many backtrack levels were used
-	DecisionHistory   []BacktrackDecision
-	BranchEvaluations []BranchEvaluation
-	Metrics           ResolveMetrics
-	ConflictDetails   []ConflictDetail
-	DecisionLedger    DecisionLedger
-	Verified          bool             // final installed-state overlay passed whole-state verification
-	Verification      string           // verified, failed, skipped-nodeps, or incomplete
-	Incomplete        *IncompleteCause `json:"incomplete,omitempty"`
-	retryChoices      []replayDecision
+	Install            []PkgAction // packages to install/update
+	Uninstall          []PkgAction // packages to remove (blocks)
+	Conflicts          []string    // list of unresolvable conflicts
+	Warnings           []string    // non-fatal state requiring user attention
+	WarningDiagnostics []WarningDiagnostic
+	BacktrackLevel     int // how many backtrack levels were used
+	DecisionHistory    []BacktrackDecision
+	BranchEvaluations  []BranchEvaluation
+	Metrics            ResolveMetrics
+	ConflictDetails    []ConflictDetail
+	DecisionLedger     DecisionLedger
+	Verified           bool             // final installed-state overlay passed whole-state verification
+	Verification       string           // verified, failed, skipped-nodeps, or incomplete
+	Incomplete         *IncompleteCause `json:"incomplete,omitempty"`
+	retryChoices       []replayDecision
+}
+
+// WarningDiagnostic attaches a stable source span to a human warning. Columns
+// are zero-based byte offsets into Source; dependency atoms are ASCII.
+type WarningDiagnostic struct {
+	Summary    string `json:"summary"`
+	Message    string `json:"message"`
+	Source     string `json:"source"`
+	Start      int    `json:"start"`
+	End        int    `json:"end"`
+	Annotation string `json:"annotation"`
 }
 
 const (
@@ -238,6 +250,7 @@ type PkgAction struct {
 	InstalledIUseFlags  map[string]bool
 	UseExpand           []string
 	UseExpandHidden     []string
+	UseExpandImplicit   []string
 	ForcedUseFlags      map[string]bool
 	MaskedUseFlags      map[string]bool
 	MergeType           string // source or binary
@@ -1166,6 +1179,7 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 	phaseStarted = time.Now()
 	r.phase = "plan-ordering"
 	install := r.sortPlannedActions(mapToSlice(r.toInstall))
+	r.decorateActionsForDisplay(install)
 	r.validatePlanOrder(install)
 	r.metrics.Sort = time.Since(phaseStarted)
 	if ctx.Err() != nil {
@@ -1175,16 +1189,17 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 	uninstall := mapToSlice(r.toUninstall)
 
 	return &ResolveResult{
-		Install:         install,
-		Uninstall:       uninstall,
-		Conflicts:       r.conflicts,
-		Warnings:        r.warnings,
-		BacktrackLevel:  config.Backtrack - r.backtrackRemaining,
-		DecisionHistory: append([]BacktrackDecision(nil), r.decisionHistory...),
-		Metrics:         r.metrics,
-		ConflictDetails: r.conflictDetails,
-		DecisionLedger:  r.buildDecisionLedger(install, uninstall),
-		Verified:        len(r.conflicts) == 0,
+		Install:            install,
+		Uninstall:          uninstall,
+		Conflicts:          r.conflicts,
+		Warnings:           r.warnings,
+		WarningDiagnostics: append([]WarningDiagnostic(nil), r.warningDiagnostics...),
+		BacktrackLevel:     config.Backtrack - r.backtrackRemaining,
+		DecisionHistory:    append([]BacktrackDecision(nil), r.decisionHistory...),
+		Metrics:            r.metrics,
+		ConflictDetails:    r.conflictDetails,
+		DecisionLedger:     r.buildDecisionLedger(install, uninstall),
+		Verified:           len(r.conflicts) == 0,
 		Verification: func() string {
 			if len(r.conflicts) == 0 {
 				return VerificationVerified
@@ -1248,11 +1263,44 @@ func (r *resolver) warnSkippedUpdatesDueToConstraints() {
 			continue
 		}
 		sort.Strings(rejected)
-		r.warnings = append(r.warnings, fmt.Sprintf(
-			"skipped update %s-%s::%s: conflicts with %s",
-			cp, best.Version.Raw, best.Repository, strings.Join(rejected, "; "),
-		))
+		candidate := cp + "-" + best.Version.Raw
+		if best.Repository != "" {
+			candidate += "::" + best.Repository
+		}
+		summary := fmt.Sprintf("skipped update %s: conflicts with %s",
+			candidate, strings.Join(rejected, "; "))
+		r.warnings = append(r.warnings, summary)
+		for index, constraint := range r.constraints[key] {
+			if versionAtomMatches(node.Atom, constraint, best, flags) {
+				continue
+			}
+			source := constraint.String()
+			start, end := warningAtomSpan(source)
+			annotation := "dependency constraint excludes this update"
+			if index < len(r.constraintCauses[key]) && r.constraintCauses[key][index].Reason != "" {
+				reason := r.constraintCauses[key][index].Reason
+				if after, ok := strings.CutPrefix(reason, "dependency of "); ok {
+					annotation = "required by " + after
+				} else {
+					annotation = "required by " + reason
+				}
+			}
+			r.warningDiagnostics = append(r.warningDiagnostics, WarningDiagnostic{
+				Summary: summary,
+				Message: candidate + " was skipped because an installed dependency requires:",
+				Source:  source, Start: start, End: end, Annotation: annotation,
+			})
+		}
 	}
+}
+
+func warningAtomSpan(source string) (int, int) {
+	start := strings.IndexByte(source, '[')
+	end := strings.LastIndexByte(source, ']')
+	if start >= 0 && end > start+1 {
+		return start + 1, end
+	}
+	return 0, len(source)
 }
 
 func (r *resolver) checkContext() error {
@@ -1288,14 +1336,15 @@ func (r *resolver) incompleteResult(cause error) *ResolveResult {
 		kind = "timeout"
 	}
 	return &ResolveResult{
-		Conflicts:       []string{fmt.Sprintf("resolver %s during %s: %v", kind, r.phase, cause)},
-		Warnings:        append([]string(nil), r.warnings...),
-		BacktrackLevel:  backtracks,
-		DecisionHistory: append([]BacktrackDecision(nil), r.decisionHistory...),
-		Metrics:         r.metrics,
-		ConflictDetails: append([]ConflictDetail(nil), r.conflictDetails...),
-		Verified:        false,
-		Verification:    VerificationIncomplete,
+		Conflicts:          []string{fmt.Sprintf("resolver %s during %s: %v", kind, r.phase, cause)},
+		Warnings:           append([]string(nil), r.warnings...),
+		WarningDiagnostics: append([]WarningDiagnostic(nil), r.warningDiagnostics...),
+		BacktrackLevel:     backtracks,
+		DecisionHistory:    append([]BacktrackDecision(nil), r.decisionHistory...),
+		Metrics:            r.metrics,
+		ConflictDetails:    append([]ConflictDetail(nil), r.conflictDetails...),
+		Verified:           false,
+		Verification:       VerificationIncomplete,
 		Incomplete: &IncompleteCause{Kind: kind, Phase: r.phase, Elapsed: time.Since(r.started),
 			DecisionsUsed: len(r.decisionHistory), BacktracksUsed: backtracks, Message: cause.Error()},
 	}
@@ -1357,7 +1406,8 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 	return &ResolveResult{
 		Install: installs, Uninstall: removals,
 		Conflicts: r.conflicts, Warnings: r.warnings,
-		ConflictDetails: r.conflictDetails, Metrics: r.metrics,
+		WarningDiagnostics: append([]WarningDiagnostic(nil), r.warningDiagnostics...),
+		ConflictDetails:    r.conflictDetails, Metrics: r.metrics,
 		DecisionLedger: r.buildDecisionLedger(installs, removals),
 		Verified:       len(r.conflicts) == 0,
 		Verification: func() string {
@@ -1417,6 +1467,7 @@ type resolver struct {
 	rootActionKeys        map[string]bool            // exact actions selected at target depth
 	conflicts             []string
 	warnings              []string
+	warningDiagnostics    []WarningDiagnostic
 	seenDeps              map[string]bool
 	activeDeps            map[string]int
 	dependencyPath        []string
@@ -2108,42 +2159,6 @@ func (r *resolver) refreshPlannedParentNewUseDependencies() error {
 		if node == nil {
 			continue
 		}
-		if r.portageConfig != nil {
-			action.UseExpand = append([]string(nil), r.portageConfig.UseExpand...)
-			action.UseExpandHidden = append([]string(nil), r.portageConfig.UseExpandHidden...)
-			action.ForcedUseFlags = make(map[string]bool)
-			action.MaskedUseFlags = make(map[string]bool)
-			cpv := action.Atom.CP()
-			if action.Atom.Version != nil {
-				cpv += "-" + action.Atom.Version.Raw
-			}
-			stable := false
-			arch := r.portageConfig.MakeConf["ARCH"]
-			if arch == "" {
-				arch = gentooRuntimeArch(runtime.GOARCH)
-			}
-			for _, candidate := range node.Versions {
-				if candidate == nil || candidate.Version == nil || action.Atom.Version == nil || candidate.Version.Raw != action.Atom.Version.Raw || candidate.Slot != action.Slot || (action.Repository != "" && candidate.Repository != action.Repository) {
-					continue
-				}
-				for _, keyword := range strings.Fields(candidate.Keywords) {
-					stable = stable || keyword == arch
-				}
-				break
-			}
-			for _, raw := range strings.Fields(action.IUse) {
-				flag := strings.TrimLeft(raw, "+-")
-				if flag == "" {
-					continue
-				}
-				if r.portageConfig.UseForcedFor(cpv, action.Slot, action.Repository, flag, stable) {
-					action.ForcedUseFlags[flag] = true
-				}
-				if r.portageConfig.UseMaskedFor(cpv, action.Slot, action.Repository, flag, stable) {
-					action.MaskedUseFlags[flag] = true
-				}
-			}
-		}
 		parent := r.findMatchingVersion(node, action.Atom)
 		if parent == nil {
 			continue
@@ -2184,6 +2199,58 @@ func (r *resolver) refreshPlannedParentNewUseDependencies() error {
 		r.dependencyPath = r.dependencyPath[:len(r.dependencyPath)-1]
 	}
 	return nil
+}
+
+func (r *resolver) decorateActionsForDisplay(actions []PkgAction) {
+	if r.portageConfig == nil {
+		return
+	}
+	for index := range actions {
+		action := &actions[index]
+		action.UseExpand = append([]string(nil), r.portageConfig.UseExpand...)
+		action.UseExpandHidden = append([]string(nil), r.portageConfig.UseExpandHidden...)
+		action.UseExpandImplicit = append([]string(nil), r.portageConfig.UseExpandImplicit...)
+		action.ForcedUseFlags = make(map[string]bool)
+		action.MaskedUseFlags = make(map[string]bool)
+		if action.Atom == nil {
+			continue
+		}
+		cpv := action.Atom.CP()
+		if action.Atom.Version != nil {
+			cpv += "-" + action.Atom.Version.Raw
+		}
+		stable := false
+		arch := r.portageConfig.MakeConf["ARCH"]
+		if arch == "" {
+			arch = gentooRuntimeArch(runtime.GOARCH)
+		}
+		node := r.graph.Packages[action.Atom.CP()]
+		if node != nil {
+			for _, candidate := range node.Versions {
+				if candidate == nil || candidate.Version == nil || action.Atom.Version == nil ||
+					candidate.Version.Raw != action.Atom.Version.Raw || candidate.Slot != action.Slot ||
+					(action.Repository != "" && candidate.Repository != action.Repository) {
+					continue
+				}
+				for _, keyword := range strings.Fields(candidate.Keywords) {
+					stable = stable || keyword == arch
+				}
+				break
+			}
+		}
+		for _, raw := range strings.Fields(action.IUse) {
+			flag := strings.TrimLeft(raw, "+-")
+			if flag == "" {
+				continue
+			}
+			if r.portageConfig.UseForcedFor(cpv, action.Slot, action.Repository, flag, stable) {
+				action.ForcedUseFlags[flag] = true
+			}
+			if r.portageConfig.UseMaskedFor(cpv, action.Slot, action.Repository, flag, stable) {
+				action.MaskedUseFlags[flag] = true
+			}
+		}
+	}
 }
 
 func (r *resolver) resolveTargets(targetAtoms []*atom.Atom) error {
@@ -6159,17 +6226,18 @@ func (r *resolver) buildResult() (*ResolveResult, error) {
 		verification = VerificationSkippedNoDeps
 	}
 	return &ResolveResult{
-		Install:         install,
-		Uninstall:       uninstall,
-		Conflicts:       r.conflicts,
-		Warnings:        r.warnings,
-		DecisionHistory: append([]BacktrackDecision(nil), r.decisionHistory...),
-		BacktrackLevel:  r.config.Backtrack - r.backtrackRemaining,
-		Metrics:         r.metrics,
-		ConflictDetails: r.conflictDetails,
-		DecisionLedger:  r.buildDecisionLedger(install, uninstall),
-		Verification:    verification,
-		retryChoices:    append([]replayDecision(nil), r.replayChoices...),
+		Install:            install,
+		Uninstall:          uninstall,
+		Conflicts:          r.conflicts,
+		Warnings:           r.warnings,
+		WarningDiagnostics: append([]WarningDiagnostic(nil), r.warningDiagnostics...),
+		DecisionHistory:    append([]BacktrackDecision(nil), r.decisionHistory...),
+		BacktrackLevel:     r.config.Backtrack - r.backtrackRemaining,
+		Metrics:            r.metrics,
+		ConflictDetails:    r.conflictDetails,
+		DecisionLedger:     r.buildDecisionLedger(install, uninstall),
+		Verification:       verification,
+		retryChoices:       append([]replayDecision(nil), r.replayChoices...),
 	}, nil
 }
 

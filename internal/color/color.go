@@ -30,6 +30,12 @@ const (
 	ansiMagenta        = "\033[35m"
 	ansiReverse        = "\033[7m"
 	ansiBlueBackground = "\033[44m"
+	ansiBrightRed      = "\033[91m"
+	ansiBrightGreen    = "\033[92m"
+	ansiBrightYellow   = "\033[93m"
+	ansiBrightBlue     = "\033[94m"
+	ansiBrightMagenta  = "\033[95m"
+	ansiBrightCyan     = "\033[96m"
 )
 
 func Green(s string) string {
@@ -92,6 +98,19 @@ func Cyan(s string) string {
 func Blue(s string) string { return styled(s, ansiBlue) }
 
 func Magenta(s string) string { return styled(s, ansiMagenta) }
+
+// Portage's named palette distinguishes the normal ANSI colors from their
+// bright variants. Keep these explicit so emerge-compatible output does not
+// depend on terminal bold semantics.
+func PortageRed(s string) string       { return styled(s, ansiBrightRed) }
+func PortageGreen(s string) string     { return styled(s, ansiBrightGreen) }
+func PortageYellow(s string) string    { return styled(s, ansiBrightYellow) }
+func PortageBlue(s string) string      { return styled(s, ansiBrightBlue) }
+func PortageFuchsia(s string) string   { return styled(s, ansiBrightMagenta) }
+func PortageTurquoise(s string) string { return styled(s, ansiBrightCyan) }
+func PortageDarkGreen(s string) string { return styled(s, ansiGreen) }
+func PortagePurple(s string) string    { return styled(s, ansiMagenta) }
+func PortageTeal(s string) string      { return styled(s, ansiCyan) }
 
 func Bold(s string) string {
 	if s == "" {
