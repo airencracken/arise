@@ -552,7 +552,7 @@ func normalizeEmergeArgs(args []string) []string {
 	}
 
 	commandAt := -1
-	commands := map[string]bool{"install": true, "update": true, "uninstall": true}
+	commands := map[string]bool{"install": true, "update": true, "uninstall": true, "search": true}
 	for i := 1; i < len(expanded); i++ {
 		if commands[expanded[i]] {
 			commandAt = i
@@ -573,10 +573,19 @@ func normalizeEmergeArgs(args []string) []string {
 			continue
 		}
 		name := strings.TrimLeft(arg, "-")
+		valueSuffix := ""
 		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			valueSuffix = name[eq:]
 			name = name[:eq]
 		}
 		f := flag.Lookup(name)
+		if f == nil && command == "search" {
+			if searchFlag := flag.Lookup("search-" + name); searchFlag != nil {
+				name = "search-" + name
+				arg = "--" + name + valueSuffix
+				f = searchFlag
+			}
+		}
 		if f == nil {
 			operands = append(operands, arg)
 			continue

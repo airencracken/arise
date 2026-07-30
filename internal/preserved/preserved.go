@@ -672,7 +672,7 @@ func packageOwnsELFWithoutLinkageMetadata(vdbRoot, installedCPV string) (bool, e
 		var magic [4]byte
 		count, readErr := io.ReadFull(file, magic[:])
 		closeErr := file.Close()
-		if readErr != nil && readErr != io.ErrUnexpectedEOF {
+		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
 			return false, readErr
 		}
 		if closeErr != nil {

@@ -307,6 +307,21 @@ func TestNormalizeEmergeArgs(t *testing.T) {
 			in:   []string{"arise", "update", "--backtrack", "20", "@world"},
 			want: []string{"arise", "--backtrack", "20", "update", "@world"},
 		},
+		{
+			name: "search options after command",
+			in:   []string{"arise", "search", "--exact", "--versions", "dev-python/sphinx"},
+			want: []string{"arise", "--exact", "--search-versions", "search", "dev-python/sphinx"},
+		},
+		{
+			name: "search option value after command",
+			in:   []string{"arise", "search", "--installed", "--category", "dev-python", "sphinx"},
+			want: []string{"arise", "--search-installed", "--search-category", "dev-python", "search", "sphinx"},
+		},
+		{
+			name: "search option equals value after command",
+			in:   []string{"arise", "search", "--maintainer=python@gentoo.org", "sphinx"},
+			want: []string{"arise", "--search-maintainer=python@gentoo.org", "search", "sphinx"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

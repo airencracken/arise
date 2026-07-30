@@ -832,6 +832,43 @@ func TestReverseELFConsumersAllowsMissingMetadataOnlyForNonELFOwners(t *testing.
 	}
 }
 
+func TestReverseELFConsumersAllowsEmptyOwnedFilesWithoutLinkageMetadata(t *testing.T) {
+	root := t.TempDir()
+	vdb := filepath.Join(root, "var", "db", "pkg")
+	cpv := "dev-python/data-only-1"
+	dir := filepath.Join(vdb, filepath.FromSlash(cpv))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var contents strings.Builder
+	for name, data := range map[string][]byte{
+		"empty": nil,
+		"short": {0x7f, 'E', 'L'},
+		"text":  []byte("not an ELF file"),
+	} {
+		path := filepath.Join(root, "usr", "share", cpv, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&contents, "obj /usr/share/%s/%s digest 1\n", cpv, name)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "CONTENTS"), []byte(contents.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	consumers, err := ReverseELFConsumers(vdb, cpv)
+	if err != nil {
+		t.Fatalf("non-ELF package without linkage metadata: %v", err)
+	}
+	if len(consumers) != 0 {
+		t.Fatalf("non-ELF consumers = %v", consumers)
+	}
+}
+
 func TestReverseELFConsumersRespectsOriginRunpath(t *testing.T) {
 	vdb := t.TempDir()
 	write := func(cpv, metadata string) {

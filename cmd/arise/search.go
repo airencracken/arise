@@ -87,6 +87,7 @@ func runSearch(args []string, dbPath string) int {
 
 		Dump:     *searchDump,
 		RepoPath: *repoPath,
+		VDBPath:  *vdbDir,
 	}
 	defaultOutput := !cfg.JSON && !cfg.Brief && !cfg.OnlyNames && !cfg.CountOnly && cfg.Format == "" && len(cfg.Print) == 0 && !cfg.Dump
 	if defaultOutput {
