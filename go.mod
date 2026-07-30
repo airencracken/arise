@@ -11,6 +11,8 @@ require (
 	golang.org/x/term v0.42.0
 )
 
+require github.com/airencracken/gentooling v0.0.0-20260730194649-4bc935797792
+
 require (
 	dario.cat/mergo v1.0.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect

@@ -1,9 +1,13 @@
 package vdb
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/airencracken/gentooling"
 )
 
 func TestScanPreservesInstalledVersionsSlotsAndState(t *testing.T) {
@@ -130,6 +134,36 @@ func TestScanIgnoresInterruptedPartialRecord(t *testing.T) {
 	}
 }
 
+func TestScanWithIssuesReportsInterruptedRecordWithoutAddingItToState(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "sys-kernel", "gentoo-sources-7.1.3")
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "SLOT"), []byte("7.1.3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	packages, issues, err := ScanWithIssues(context.Background(), root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 0 || len(issues) != 1 {
+		t.Fatalf("packages = %+v, issues = %+v", packages, issues)
+	}
+	if issues[0].Code != gentooling.IssueInterruptedRecord || !errors.Is(issues[0], gentooling.ErrInterruptedRecord) {
+		t.Fatalf("interrupted record lost its typed diagnostic: %+v", issues[0])
+	}
+}
+
+func TestScanWithIssuesHonorsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := ScanWithIssues(ctx, t.TempDir(), false)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestScanRejectsStructurallyInvalidCommittedRecords(t *testing.T) {
 	for _, test := range []struct {
 		name        string
@@ -183,6 +217,13 @@ func TestScanRejectsStructurallyInvalidCommittedRecords(t *testing.T) {
 			}
 			if len(packages) != 0 {
 				t.Fatalf("invalid record treated as installed: %+v", packages)
+			}
+			_, issues, err := ScanWithIssues(context.Background(), root, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(issues) != 1 || issues[0].Code != gentooling.IssueCorruptRecord {
+				t.Fatalf("invalid record lacks corruption diagnostic: %+v", issues)
 			}
 		})
 	}

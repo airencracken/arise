@@ -1,12 +1,12 @@
 # Public library direction
 
-Arise does not yet promise a public Go API. Packages beneath `internal/` cannot
-be imported by downstream applications, and moving them merely to make them
-importable would freeze immature boundaries too early.
+Arise's application internals remain private, but the first public Go API now
+lives in `gentooling`. Further extraction must follow demonstrated consumer
+needs rather than making internal packages importable wholesale.
 
-## Intended shared module: gentooling
+## Shared module: gentooling
 
-The working name for the eventual shared library project is **gentooling**:
+The shared library project is **gentooling**:
 
 > Reusable Go libraries for Gentoo system and package tooling.
 
@@ -27,11 +27,16 @@ gentooling
 └── future Gentoo tools
 ```
 
-This naming decision does not initialize a public API or require immediate
-repository extraction. Code remains in Arise until its boundary passes the
-stability and downstream-consumer gates below. New code should nevertheless
-follow a dependency direction that permits cohesive packages to move into
-`gentooling` without importing Arise command, terminal, or execution concerns.
+The first extracted surface provides explicit system paths, stable package
+identities, and root-aware installed-package inventory. Inventory consumers
+choose partial inspection with typed issues or strict validation that promotes
+incomplete evidence to an error. Arise consumes this API for its VDB scans,
+while preserving typed diagnostics for inspection paths.
+
+Code remains in Arise until its boundary passes the stability and
+downstream-consumer gates below. New code should follow a dependency direction
+that permits cohesive packages to move into `gentooling` without importing
+Arise command, terminal, or execution concerns.
 
 New work should nevertheless preserve a direct path to public libraries:
 
@@ -56,7 +61,7 @@ help generate hardware- and package-informed "optimal" kernel configurations
 and to assist with custom-kernel upgrades. It is a concrete future consumer of
 Arise libraries, not a requirement to merge kernel tooling into Arise.
 
-Maize should eventually be able to import Arise packages to answer questions
+Maize should be able to import Gentooling packages to answer questions
 such as:
 
 - which kernel features are required by installed or proposed packages;
@@ -122,3 +127,8 @@ compatibility policy, examples, and downstream import tests.
 Public-library work is not required for the current query-parity release. Code
 that unnecessarily couples new core behavior to `cmd/arise`, global flags, or
 terminal output is still considered architectural regression.
+
+A future kernel build and installation tool may also consume Gentooling. Maize
+should own kernel-policy decisions; that build tool should own reproducible
+configuration, compilation, installation, initramfs, bootloader, and rollback
+operations. Neither concern belongs in Gentooling's package-state contracts.

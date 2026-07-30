@@ -15,11 +15,14 @@ func TestLibraryRoadmapRecordsExternalConsumerBoundary(t *testing.T) {
 	}
 	roadmap := string(data)
 	for _, fragment := range []string{
-		"Intended shared module: gentooling",
+		"Shared module: gentooling",
 		"github.com/airencracken/gentooling",
 		"Reusable Go libraries for Gentoo system and package tooling.",
 		"Arise and Maize should become peer applications",
-		"does not initialize a public API or require immediate",
+		"first extracted surface provides explicit system paths",
+		"partial inspection with typed issues",
+		"strict validation",
+		"Arise consumes this API for its VDB scans",
 		"Concrete downstream consumer: Maize",
 		"hardware- and package-informed",
 		"not a requirement to merge kernel tooling into Arise",
@@ -31,6 +34,8 @@ func TestLibraryRoadmapRecordsExternalConsumerBoundary(t *testing.T) {
 		"remain usable with `CGO_ENABLED=0`",
 		"the Arise executable",
 		"downstream compile test",
+		"future kernel build and installation tool",
+		"Neither concern belongs in Gentooling",
 	} {
 		if !strings.Contains(roadmap, fragment) {
 			t.Errorf("library roadmap omits external-consumer contract %q", fragment)

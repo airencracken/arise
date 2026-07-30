@@ -3,14 +3,11 @@
 package vdb
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
+	"context"
 	"strings"
 
 	"github.com/airencracken/arise/internal/metadata"
+	"github.com/airencracken/gentooling"
 )
 
 // Package is the package-manager state retained for one installed CPV.
@@ -51,91 +48,43 @@ func (p Package) Metadata() *metadata.PackageMetadata {
 
 // Scan returns every valid installed CPV in deterministic CPV order.
 func Scan(root string) ([]Package, error) {
-	return scan(root, true)
+	packages, _, err := ScanWithIssues(context.Background(), root, true)
+	return packages, err
 }
 
 // ScanResolverState returns installed package identity and dependency policy
 // without retaining CONTENTS payloads. It still requires a regular CONTENTS
 // file as part of the minimum committed VDB record.
 func ScanResolverState(root string) ([]Package, error) {
-	return scan(root, false)
+	packages, _, err := ScanWithIssues(context.Background(), root, false)
+	return packages, err
 }
 
-func scan(root string, includeContents bool) ([]Package, error) {
-	categories, err := os.ReadDir(root)
+// ScanWithIssues retains Gentooling's typed evidence diagnostics for callers
+// that need to distinguish interrupted merges from corrupt or unreadable VDB
+// records. Resolver scans intentionally use partial mode because uncommitted
+// records must not enter package state.
+func ScanWithIssues(ctx context.Context, root string, includeContents bool) ([]Package, []gentooling.Issue, error) {
+	inventory, err := gentooling.ReadInstalled(ctx, gentooling.SystemPaths{VDB: root}, gentooling.InstalledOptions{
+		Integrity:       gentooling.AllowPartial,
+		IncludeContents: includeContents,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("vdb: read root: %w", err)
+		return nil, nil, err
 	}
-	var packages []Package
-	for _, category := range categories {
-		if !category.IsDir() {
-			continue
-		}
-		entries, err := os.ReadDir(filepath.Join(root, category.Name()))
-		if err != nil {
-			return nil, fmt.Errorf("vdb: read category %s: %w", category.Name(), err)
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-			cat, pn, version, err := metadata.ParseCPV(category.Name() + "/" + entry.Name())
-			if err != nil || version == "" {
-				continue
-			}
-			dir := filepath.Join(root, category.Name(), entry.Name())
-			// A directory name is not an installed package. Interrupted merges may
-			// leave an empty or partial VDB directory before journal rollback. Only
-			// records with the minimum committed Portage metadata are authoritative.
-			valid := true
-			for _, required := range []string{"CONTENTS", "EAPI", "SLOT", "repository"} {
-				if info, statErr := os.Lstat(filepath.Join(dir, required)); statErr != nil || !info.Mode().IsRegular() {
-					valid = false
-					break
-				}
-			}
-			if !valid {
-				continue
-			}
-			read := func(name string) string {
-				data, err := os.ReadFile(filepath.Join(dir, name))
-				if err != nil {
-					return ""
-				}
-				return strings.TrimSpace(string(data))
-			}
-			slotValue, eapi, repository := read("SLOT"), read("EAPI"), read("repository")
-			if slotValue == "" || eapi == "" || repository == "" {
-				continue
-			}
-			slot, subslot := splitSlot(slotValue)
-			contents := ""
-			if includeContents {
-				contents = read("CONTENTS")
-			}
-			packages = append(packages, Package{
-				Category: cat, Package: pn, Version: version, Slot: slot, Subslot: subslot,
-				Repository: repository, Use: strings.Fields(read("USE")), IUse: strings.Fields(read("IUSE")),
-				Depend: read("DEPEND"), RDepend: read("RDEPEND"), BDepend: read("BDEPEND"),
-				IDepend: read("IDEPEND"), PDepend: read("PDEPEND"), EAPI: eapi,
-				BuildTime: parseInt(read("BUILD_TIME")), BuildID: read("BUILD_ID"),
-				PhaseEnvABI: read("ARISE_PHASE_ENV_ABI"), Counter: parseInt(read("COUNTER")),
-				Contents: contents,
-			})
-		}
+	packages := make([]Package, 0, len(inventory.Packages))
+	for _, installed := range inventory.Packages {
+		packages = append(packages, Package{
+			Category: installed.ID.Category, Package: installed.ID.Name, Version: installed.ID.Version,
+			Slot: installed.ID.Slot, Subslot: installed.ID.Subslot, Repository: installed.ID.Repository,
+			Use: append([]string(nil), installed.EnabledUse...), IUse: append([]string(nil), installed.DeclaredUse...),
+			Depend: installed.Dependencies.Depend, RDepend: installed.Dependencies.RDepend,
+			BDepend: installed.Dependencies.BDepend, IDepend: installed.Dependencies.IDepend,
+			PDepend: installed.Dependencies.PDepend, EAPI: installed.EAPI,
+			BuildTime: installed.Build.Time, BuildID: installed.Build.ID,
+			PhaseEnvABI: installed.Build.PhaseEnvABI, Counter: installed.Build.Counter,
+			Contents: installed.Contents,
+		})
 	}
-	sort.Slice(packages, func(i, j int) bool { return packages[i].CPV() < packages[j].CPV() })
-	return packages, nil
-}
-
-func splitSlot(value string) (string, string) {
-	if before, after, ok := strings.Cut(value, "/"); ok {
-		return before, after
-	}
-	return value, ""
-}
-
-func parseInt(value string) int64 {
-	n, _ := strconv.ParseInt(value, 10, 64)
-	return n
+	return packages, inventory.Issues, nil
 }
