@@ -199,7 +199,7 @@ docs: man info
 #   5. On the Gentoo host: emerge --sync arise-overlay && emerge -av arise
 #
 
-PROJECT_VERSION := 0.0.8
+PROJECT_VERSION := 0.0.9
 VERSION ?= $(PROJECT_VERSION)
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
 check-release-version:
