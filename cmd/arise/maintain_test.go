@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -179,6 +180,67 @@ func TestMaintainWorldRejectsStaleApprovedPlan(t *testing.T) {
 	}
 	if string(data) != "cat/missing\ncat/other\n" {
 		t.Fatalf("stale repair mutated world: %q", data)
+	}
+}
+
+func TestMaintainWorldRejectsConcurrentChangeAtLockBoundary(t *testing.T) {
+	root := t.TempDir()
+	worldPath, vdbRoot := filepath.Join(root, "world"), filepath.Join(root, "vdb")
+	repoRoot, configRoot, plans := filepath.Join(root, "repo"), filepath.Join(root, "config"), filepath.Join(root, "plans")
+	for _, directory := range []string{vdbRoot, filepath.Join(repoRoot, "metadata", "md5-cache"), configRoot, plans} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(worldPath, []byte("cat/missing\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	restore := setMaintainGlobals(t, worldPath, vdbRoot, repoRoot, configRoot, plans)
+	defer restore()
+	previousHook := maintainWorldBeforeLock
+	maintainWorldBeforeLock = func() error {
+		return os.WriteFile(worldPath, []byte("cat/missing\ncat/concurrent\n"), 0o640)
+	}
+	defer func() { maintainWorldBeforeLock = previousHook }()
+	if code := runMaintain([]string{"world", "--fix"}); code == 0 {
+		t.Fatal("concurrent change was accepted")
+	}
+	data, err := os.ReadFile(worldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "cat/missing\ncat/concurrent\n" {
+		t.Fatalf("concurrent state was overwritten: %q", data)
+	}
+}
+
+func TestMaintainWorldInterruptionBeforeLockHasZeroMutation(t *testing.T) {
+	root := t.TempDir()
+	worldPath, vdbRoot := filepath.Join(root, "world"), filepath.Join(root, "vdb")
+	repoRoot, configRoot, plans := filepath.Join(root, "repo"), filepath.Join(root, "config"), filepath.Join(root, "plans")
+	for _, directory := range []string{vdbRoot, filepath.Join(repoRoot, "metadata", "md5-cache"), configRoot, plans} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := []byte("cat/missing\n")
+	if err := os.WriteFile(worldPath, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	restore := setMaintainGlobals(t, worldPath, vdbRoot, repoRoot, configRoot, plans)
+	defer restore()
+	previousHook := maintainWorldBeforeLock
+	maintainWorldBeforeLock = func() error { return errors.New("interrupted") }
+	defer func() { maintainWorldBeforeLock = previousHook }()
+	if code := runMaintain([]string{"world", "--fix"}); code == 0 {
+		t.Fatal("interruption was ignored")
+	}
+	data, err := os.ReadFile(worldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(data, original) {
+		t.Fatalf("interrupted repair mutated world: %q", data)
 	}
 }
 

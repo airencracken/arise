@@ -2327,7 +2327,7 @@ Acceptance gate:
   traps/signals and nested sourcing on every supported Bash version.
 
 - [ ] Implement accurate `emerge --info`-equivalent output.
-- [~] Implement `arise maintain world --check` and `--fix` as the
+- [x] Implement `arise maintain world --check` and `--fix` as the
   Portage-compatible counterpart to `emaint --check world` and
   `emaint --fix world`. Deterministic check and repair, versioned state-bound
   plans, direct explicit `--fix`, optional saved-plan approval, lock-time
@@ -2337,10 +2337,13 @@ Acceptance gate:
   uninstalled entries against one immutable repository/profile/VDB/world
   snapshot. Fix mode emits an exact state-bound repair plan, explains each
   action, takes the Portage world lock, revalidates the snapshot fingerprint,
-  and publishes by mode-preserving atomic rename and fsync. Wider differential
-  fixtures for package moves, masks, redundant version/slot constraints,
-  concurrent world changes, interrupted repair, and alternate
-  ROOT/PORTAGE_CONFIGROOT remain before this item is complete.
+  and publishes by mode-preserving atomic rename and fsync. Package moves
+  preserve version, slot, repository and USE constraints; constrained entries
+  are removed as redundant only when the same world set already contains the
+  broader plain package atom. Unit, released-CLI and disposable-root Portage
+  differential tests cover moves, masks, redundant constraints, concurrent
+  changes, interrupted repair, idempotence and alternate
+  ROOT/PORTAGE_CONFIGROOT isolation.
 - [ ] Before public testing, implement a built-in, strictly read-only
   `arise bug-report` command backed by an isolated `internal/bugreport`
   collector and a versioned report schema. Generate a reviewable `report.md`

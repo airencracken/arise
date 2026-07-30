@@ -37,6 +37,8 @@ type maintainWorldSummary struct {
 	Actions int `json:"actions"`
 }
 
+var maintainWorldBeforeLock = func() error { return nil }
+
 func runMaintain(args []string) int {
 	if len(args) == 0 || args[0] != "world" {
 		fmt.Fprintln(os.Stderr, "maintain: expected `world --check` or `world --fix`")
@@ -123,6 +125,10 @@ func runMaintain(args []string) int {
 			fmt.Fprintf(os.Stderr, "Generate a reviewable plan with --pretend --save-plan NAME.\n")
 			return 1
 		}
+	}
+	if err := maintainWorldBeforeLock(); err != nil {
+		fmt.Fprintf(os.Stderr, "maintain world: interrupted before repair: %v\n", err)
+		return 1
 	}
 	lock, err := oplock.TryAcquirePath(*worldFile)
 	if err != nil {

@@ -20,6 +20,7 @@ const (
 	Invalid      Kind = "invalid"
 	Duplicate    Kind = "duplicate"
 	Moved        Kind = "moved"
+	Redundant    Kind = "redundant"
 	Unavailable  Kind = "unavailable"
 	Masked       Kind = "masked"
 	NotInstalled Kind = "not_installed"
@@ -80,6 +81,13 @@ func CheckRepositories(worldPath, vdbRoot string, repoRoots []string, config *po
 	}
 
 	report := Report{Entries: append([]string(nil), entries...)}
+	plainEntries := make(map[string]bool)
+	for _, entry := range entries {
+		parsed, parseErr := atom.ParsePackageAtom(entry)
+		if parseErr == nil && isPlainCP(parsed) {
+			plainEntries[parsed.CP()] = true
+		}
+	}
 	for _, duplicate := range duplicates {
 		report.Issues = append(report.Issues, Issue{Entry: duplicate, Kind: Duplicate, Message: fmt.Sprintf("%q appears more than once", duplicate)})
 		report.Actions = append(report.Actions, Action{Action: "deduplicate", Entry: duplicate, Reason: Duplicate})
@@ -95,10 +103,22 @@ func CheckRepositories(worldPath, vdbRoot string, repoRoots []string, config *po
 			report.Actions = append(report.Actions, Action{Action: "remove", Entry: entry, Reason: Invalid})
 			continue
 		}
+		if !isPlainCP(parsed) && plainEntries[parsed.CP()] {
+			report.Issues = append(report.Issues, Issue{
+				Entry: entry, Kind: Redundant,
+				Message: fmt.Sprintf("%q is redundant because %q is already selected", entry, parsed.CP()),
+			})
+			report.Actions = append(report.Actions, Action{Action: "remove", Entry: entry, Reason: Redundant})
+			continue
+		}
 		matchingAvailable := matchCandidates(parsed, available)
 		matchingInstalled := matchInstalled(parsed, installed)
 		if len(matchingAvailable) == 0 {
-			if replacement := moves[parsed.CP()]; replacement != "" && isPlainCP(parsed) {
+			if movedCP := moves[parsed.CP()]; movedCP != "" {
+				replacement, replacementErr := replaceAtomCP(parsed, movedCP)
+				if replacementErr != nil {
+					return Report{}, replacementErr
+				}
 				report.Issues = append(report.Issues, Issue{Entry: entry, Kind: Moved, Replacement: replacement, Message: fmt.Sprintf("%q moved to %q", entry, replacement)})
 				report.Actions = append(report.Actions, Action{Action: "replace", Entry: entry, Value: replacement, Reason: Moved})
 			} else {
@@ -345,6 +365,16 @@ func matchInstalled(rule *atom.Atom, packages []vdb.Package) []vdb.Package {
 
 func isPlainCP(value *atom.Atom) bool {
 	return value != nil && value.Op == atom.OpNone && value.Version == nil && value.Slot == "" && value.Repo == "" && len(value.UseFlags) == 0
+}
+
+func replaceAtomCP(value *atom.Atom, replacement string) (string, error) {
+	target, err := atom.ParsePackageAtom(replacement)
+	if err != nil || !isPlainCP(target) {
+		return "", fmt.Errorf("invalid package move target %q", replacement)
+	}
+	updated := *value
+	updated.Category, updated.Package = target.Category, target.Package
+	return updated.String(), nil
 }
 
 func removeAll(values []string, target string) []string {

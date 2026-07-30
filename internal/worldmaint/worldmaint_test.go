@@ -91,6 +91,53 @@ func TestApplyIsDeterministicAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestCheckMovesConstrainedAtomsAndRemovesOnlyProvablyRedundantConstraints(t *testing.T) {
+	root := t.TempDir()
+	worldPath := filepath.Join(root, "world")
+	vdbRoot := filepath.Join(root, "vdb")
+	repoRoot := filepath.Join(root, "repo")
+	writeFixture(t, worldPath, "cat/pkg\n=cat/pkg-1\n=cat/old-2:3::test\n")
+	writeInstalled(t, vdbRoot, "cat/pkg-1", "0", "test")
+	writeInstalled(t, vdbRoot, "cat/old-2", "3", "test")
+	writeCache(t, repoRoot, "cat/pkg-1", "0")
+	writeCache(t, repoRoot, "new/renamed-2", "3")
+	writeFixture(t, filepath.Join(repoRoot, "profiles", "repo_name"), "test\n")
+	writeFixture(t, filepath.Join(repoRoot, "profiles", "updates", "1Q-2026"), "move cat/old new/renamed\n")
+
+	report, err := Check(worldPath, vdbRoot, repoRoot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"=new/renamed-2:3::test", "cat/pkg"}
+	if got := Apply(report.Entries, report.Actions); !reflect.DeepEqual(got, want) {
+		t.Fatalf("repair = %v, want %v; issues=%#v", got, want, report.Issues)
+	}
+	kinds := map[string]Kind{}
+	for _, issue := range report.Issues {
+		kinds[issue.Entry] = issue.Kind
+	}
+	if kinds["=cat/pkg-1"] != Redundant || kinds["=cat/old-2:3::test"] != Moved {
+		t.Fatalf("constraint classifications = %#v", kinds)
+	}
+}
+
+func TestCheckDoesNotBroadenSoleConstrainedSelection(t *testing.T) {
+	root := t.TempDir()
+	worldPath := filepath.Join(root, "world")
+	vdbRoot := filepath.Join(root, "vdb")
+	repoRoot := filepath.Join(root, "repo")
+	writeFixture(t, worldPath, "=cat/pkg-1:0\n")
+	writeInstalled(t, vdbRoot, "cat/pkg-1", "0", "test")
+	writeCache(t, repoRoot, "cat/pkg-1", "0")
+	report, err := Check(worldPath, vdbRoot, repoRoot, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Issues) != 0 || len(report.Actions) != 0 {
+		t.Fatalf("intentional constraint was changed: %#v", report)
+	}
+}
+
 func writeInstalled(t *testing.T, root, cpv, slot, repo string) {
 	t.Helper()
 	category, packageVersion, ok := strings.Cut(cpv, "/")
