@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 
 exec 3>&1
-sequence_file=$(mktemp)
+sequence_file=
+log_file=
+cleanup_worker_temporaries() {
+  [[ -z $sequence_file ]] || rm -f -- "$sequence_file"
+  [[ -z $log_file ]] || rm -f -- "$log_file"
+}
+trap cleanup_worker_temporaries EXIT
+sequence_file=$(mktemp) || {
+  printf 'phase worker: cannot create sequence file\n' >&2
+  exit 1
+}
 printf '0\n' > "$sequence_file"
 declare -A ARISE_INHERITING=()
 declare -A ARISE_INHERITED=()
@@ -840,7 +850,10 @@ arise_run_install_qa_checks() {
 	done <<< "${ARISE_INSTALL_QA_CHECKS-}"
 	return 0
 }
-log_file=$(mktemp)
+log_file=$(mktemp) || {
+  printf 'phase worker: cannot create log file\n' >&2
+  exit 1
+}
 status=0
 ARISE_DECLARED_S=
 readonly ARISE_SAVED_CATEGORY=${CATEGORY-} ARISE_SAVED_P=${P-} ARISE_SAVED_PF=${PF-} ARISE_SAVED_PN=${PN-}
@@ -1031,7 +1044,9 @@ while IFS= read -r line; do
   escaped=$(escape_json "$line")
   emit '"kind":"log","stream":"stdout","message":"'"$escaped"'"'
 done <"$log_file"
-rm -f "$log_file"
+rm -f -- "$log_file"
+log_file=
 emit '"kind":"result","exit_code":'"$status"
-rm -f "$sequence_file"
+rm -f -- "$sequence_file"
+sequence_file=
 exit "$status"

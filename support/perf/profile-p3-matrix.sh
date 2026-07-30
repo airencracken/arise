@@ -55,7 +55,19 @@ fi
 }
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-output_dir=$(mktemp -d /tmp/arise-p3-matrix.XXXXXX)
+output_dir=$(mktemp -d /tmp/arise-p3-matrix.XXXXXX) || {
+  echo "error: cannot create profile output directory" >&2
+  exit 1
+}
+cache_dir=$(mktemp -d /tmp/arise-p3-cache.XXXXXX) || {
+  echo "error: cannot create profile cache directory" >&2
+  rmdir -- "$output_dir" 2>/dev/null || :
+  exit 1
+}
+cleanup() {
+  [[ -z $cache_dir ]] || rm -rf -- "$cache_dir"
+}
+trap cleanup EXIT
 binary=$output_dir/arise-profile
 emerge_path=$(command -v emerge)
 portage_python=$(command -v python3)
@@ -109,7 +121,7 @@ if $probe_only; then
   exit 0
 fi
 
-if ! (cd "$repo_dir" && env GOCACHE=/tmp/arise-p3-go-cache-root \
+if ! (cd "$repo_dir" && env GOCACHE="$cache_dir" \
   go build -buildvcs=false -trimpath -o "$binary" ./cmd/arise); then
   echo "error: Arise build failed; evidence remains in $output_dir" >&2
   exit 1

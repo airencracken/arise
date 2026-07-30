@@ -228,11 +228,12 @@ func CreateTempVDB() (string, []string, error) {
 		}
 	}
 	if len(contents) == 0 {
-		tmpF, err := os.CreateTemp("", "arise-bench-file")
+		tmpF, err := os.CreateTemp(vdbPath, "reference-")
 		if err == nil {
-			tmpF.WriteString("benchmark data\n")
-			tmpF.Close()
-			contents = append(contents, fmt.Sprintf("obj %s 15 0", tmpF.Name()))
+			if _, writeErr := tmpF.WriteString("benchmark data\n"); writeErr == nil {
+				contents = append(contents, fmt.Sprintf("obj %s 15 0", tmpF.Name()))
+			}
+			_ = tmpF.Close()
 		}
 	}
 	contentsStr := strings.Join(contents, "\n") + "\n"

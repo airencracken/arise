@@ -346,11 +346,7 @@ func BenchmarkEqueryCheck(b *testing.B) {
 // ── Binpkg benchmarks ──────────────────────────────────────────────────────
 
 func BenchmarkBinpkgReadInfo(b *testing.B) {
-	pkgDir, err := os.MkdirTemp("", "arise-bench-binpkg-")
-	if err != nil {
-		b.Fatalf("mktemp: %v", err)
-	}
-	defer os.RemoveAll(pkgDir)
+	pkgDir := b.TempDir()
 
 	vdbPath, _, err := CreateTempVDB()
 	if err != nil {
@@ -373,11 +369,7 @@ func BenchmarkBinpkgReadInfo(b *testing.B) {
 }
 
 func BenchmarkBinpkgExtract(b *testing.B) {
-	pkgDir, err := os.MkdirTemp("", "arise-bench-binpkg-")
-	if err != nil {
-		b.Fatalf("mktemp: %v", err)
-	}
-	defer os.RemoveAll(pkgDir)
+	pkgDir := b.TempDir()
 
 	vdbPath, _, err := CreateTempVDB()
 	if err != nil {
@@ -393,8 +385,7 @@ func BenchmarkBinpkgExtract(b *testing.B) {
 		b.Skipf("binpkg.Create failed: %v", err)
 		return
 	}
-	destDir, _ := os.MkdirTemp("", "arise-bench-extract-")
-	defer os.RemoveAll(destDir)
+	destDir := b.TempDir()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = binpkg.Extract(ctx, outPath, destDir)
@@ -408,33 +399,17 @@ func BenchmarkBinpkgCreate(b *testing.B) {
 	}
 	defer os.RemoveAll(vdbPath)
 	vdbEntry := filepath.Join(vdbPath, "app-admin", "pkg-1.0")
-	pkgDir, err := os.MkdirTemp("", "arise-bench-create-")
-	if err != nil {
-		b.Fatalf("mktemp: %v", err)
-	}
-	defer os.RemoveAll(pkgDir)
+	pkgDir := b.TempDir()
 	rootDir := "/"
 	ctx := context.Background()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
-		tmpDir, err := os.MkdirTemp("", "arise-bench-create-run-")
+		outPath, err := binpkg.Create(ctx, vdbEntry, rootDir, pkgDir)
 		if err != nil {
-			b.Fatalf("mktemp: %v", err)
-		}
-		b.StartTimer()
-		outPath, err := binpkg.Create(ctx, vdbEntry, rootDir, tmpDir)
-		b.StopTimer()
-		if err != nil {
-			_ = os.RemoveAll(tmpDir)
 			b.Fatalf("binpkg.Create: %v", err)
 		}
 		if outPath == "" {
-			_ = os.RemoveAll(tmpDir)
 			b.Fatal("binpkg.Create returned an empty path")
-		}
-		if err := os.RemoveAll(tmpDir); err != nil {
-			b.Fatalf("cleanup: %v", err)
 		}
 	}
 }
@@ -475,11 +450,7 @@ func BenchmarkMetadataParse(b *testing.B) {
 }
 
 func BenchmarkWalkerWalk(b *testing.B) {
-	cacheDir, err := os.MkdirTemp("", "arise-bench-cache-")
-	if err != nil {
-		b.Fatalf("mktemp: %v", err)
-	}
-	defer os.RemoveAll(cacheDir)
+	cacheDir := b.TempDir()
 
 	const fileCount = 200
 	for i := 0; i < fileCount; i++ {
