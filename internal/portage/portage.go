@@ -1350,12 +1350,16 @@ func PackageAtomMatches(rawRule, cpv, slot, repo string) bool {
 	if err != nil {
 		return false
 	}
+	candidateVersion := ""
+	if candidate.Version != nil {
+		candidateVersion = candidate.Version.Raw
+	}
 	candidateSlot, candidateSubslot := slot, ""
 	if before, after, found := strings.Cut(slot, "/"); found {
 		candidateSlot, candidateSubslot = before, after
 	}
 	matched, err := rule.Matches(gentooling.PackageID{
-		Category: candidate.Category, Name: candidate.Package, Version: candidate.Version.Raw,
+		Category: candidate.Category, Name: candidate.Package, Version: candidateVersion,
 		Slot: candidateSlot, Subslot: candidateSubslot, Repository: repo,
 	}, gentooling.UseState{})
 	return err == nil && matched

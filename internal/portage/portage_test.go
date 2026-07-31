@@ -628,6 +628,15 @@ func TestPackageAtomMatchesSubslot(t *testing.T) {
 	}
 }
 
+func TestPackageAtomMatchesRejectsUnversionedCandidateWithoutPanic(t *testing.T) {
+	if !PackageAtomMatches("virtual/libc", "virtual/libc", "", "") {
+		t.Fatal("unversioned package rule did not match an unversioned synthetic candidate")
+	}
+	if PackageAtomMatches(">=virtual/libc-1", "virtual/libc", "", "") {
+		t.Fatal("versioned package rule matched an unversioned synthetic candidate")
+	}
+}
+
 func TestEffectiveUseForPackagePolicyCanRemoveGlobalMask(t *testing.T) {
 	cfg := &Config{
 		UseStableMask: []string{"future-target", "still-masked"},

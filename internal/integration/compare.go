@@ -21,6 +21,7 @@ import (
 	"github.com/airencracken/arise/internal/eclass"
 	"github.com/airencracken/arise/internal/metadata"
 	ariseportage "github.com/airencracken/arise/internal/portage"
+	"github.com/airencracken/gentooling"
 )
 
 func liveCommand(t *testing.T, name string, args ...string) *exec.Cmd {
@@ -949,6 +950,28 @@ func AnalyzeBrokenState(t *testing.T) []BrokenState {
 	RequirePortage(t)
 
 	var states []BrokenState
+	paths := gentooling.DefaultSystemPaths("/")
+	configuration, err := gentooling.ReadEffectiveConfig(t.Context(), paths, gentooling.ConfigOptions{
+		Environment: os.Environ(),
+	})
+	if err != nil {
+		t.Fatalf("read effective package configuration: %v", err)
+	}
+	t.Log("loaded effective package configuration")
+	inventory, err := gentooling.ReadRepositoryCandidates(t.Context(), []gentooling.Repository{{
+		Name: "gentoo", Location: "/var/db/repos/gentoo",
+	}}, gentooling.CandidateOptions{Integrity: gentooling.AllowPartial})
+	if err != nil {
+		t.Fatalf("read Gentoo repository candidates: %v", err)
+	}
+	t.Logf("loaded %d Gentoo repository candidates", len(inventory.Candidates))
+	for _, issue := range inventory.Issues {
+		t.Logf("candidate evidence: %v", issue)
+	}
+	candidatesByPackage := make(map[string][]gentooling.RepositoryCandidate)
+	for _, candidate := range inventory.Candidates {
+		candidatesByPackage[candidate.ID.CP()] = append(candidatesByPackage[candidate.ID.CP()], candidate)
+	}
 
 	vdbDir := "/var/db/pkg"
 	categories, err := os.ReadDir(vdbDir)
@@ -971,38 +994,51 @@ func AnalyzeBrokenState(t *testing.T) []BrokenState {
 				continue
 			}
 			cpv := catEntry.Name() + "/" + pkgEntry.Name()
-
-			// Check if this package exists in the Gentoo repository
-			best := runPortageqBestVersion(t, cpv)
-			if best == "" {
-				catSlashPkg := cpv[:strings.LastIndex(cpv, "-")]
-				if idx := strings.LastIndex(catSlashPkg, "-"); idx > strings.IndexByte(catSlashPkg, '/') {
-					// try again with the category/package
-					catPkg := catSlashPkg[:idx]
-					best = runPortageqBestVersion(t, catPkg)
+			installed, parseErr := gentooling.ParsePackageID(cpv)
+			if parseErr != nil {
+				t.Logf("skip malformed installed identity %q: %v", cpv, parseErr)
+				continue
+			}
+			var exact bool
+			var newestVisible *gentooling.RepositoryCandidate
+			for index := range candidatesByPackage[installed.CP()] {
+				candidate := candidatesByPackage[installed.CP()][index]
+				if candidate.ID.Version == installed.Version {
+					exact = true
+				}
+				visibility, visibilityErr := configuration.EvaluateVisibility(t.Context(), gentooling.PackageVisibilityContext{
+					ID: candidate.ID, Keywords: candidate.Keywords,
+				})
+				if visibilityErr != nil {
+					t.Logf("skip visibility for %s: %v", candidate.ID.CPV(), visibilityErr)
+					continue
+				}
+				if visibility.Visible {
+					candidateCopy := candidate
+					newestVisible = &candidateCopy
 				}
 			}
-
-			if best == "" {
+			if !exact {
 				states = append(states, BrokenState{
 					Package:    cpv,
 					Issue:      "not available in gentoo repository",
-					Suggestion: "may have been removed from the tree; consider removing with emerge --deselect " + cpv,
+					Suggestion: "may have been removed from the tree; inspect with arise search --exact --versions " + installed.CP(),
 				})
 				continue
 			}
-
-			// Check if a newer version is available
-			catPkg := cpv[:strings.LastIndex(cpv, "-")]
-			if idx := strings.LastIndex(catPkg, "-"); idx > strings.IndexByte(catPkg, '/') {
-				catPkg = catPkg[:idx]
+			installedVersion, parseErr := gentooling.ParseVersion(installed.Version)
+			if parseErr != nil {
+				continue
 			}
-			newestVisible := runPortageqBestVersion(t, catPkg)
-			if newestVisible != "" && newestVisible != best && newestVisible != "="+cpv {
+			if newestVisible != nil {
+				candidateVersion, versionErr := gentooling.ParseVersion(newestVisible.ID.Version)
+				if versionErr != nil || candidateVersion.Compare(installedVersion) <= 0 {
+					continue
+				}
 				states = append(states, BrokenState{
 					Package:    cpv,
-					Issue:      fmt.Sprintf("newer version available: %s", newestVisible),
-					Suggestion: fmt.Sprintf("emerge -1 %s", catPkg),
+					Issue:      fmt.Sprintf("newer version available: %s", newestVisible.ID.CPV()),
+					Suggestion: fmt.Sprintf("arise --pretend install %s", installed.CP()),
 				})
 			}
 		}

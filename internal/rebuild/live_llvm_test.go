@@ -12,6 +12,13 @@ import (
 )
 
 func TestLiveLLVM19ClusterPreflight(t *testing.T) {
+	for _, cpv := range []string{"llvm-core/llvm-19.1.7", "llvm-core/clang-19.1.7"} {
+		if _, err := os.Stat(filepath.Join("/var/db/pkg", filepath.FromSlash(cpv))); os.IsNotExist(err) {
+			t.Skipf("installed parity fixture %s is no longer present", cpv)
+		} else if err != nil {
+			t.Fatalf("inspect installed parity fixture %s: %v", cpv, err)
+		}
+	}
 	configuration, err := portage.LoadEffectiveConfig("/etc/portage")
 	if err != nil {
 		t.Fatal(err)
