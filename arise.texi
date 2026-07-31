@@ -256,6 +256,15 @@ snapshot, and differential workflows.
 @item info [@var{information-option}] [@var{argument}]
 Display system, repository, path, eclass, license, protected-configuration,
 preserved-library, and color information.
+
+@item inspect [--json] [--strict] [--locked] [--target-kernel=@var{release}] @var{atom}
+Explain installed and prospective package state from one stabilized snapshot.
+The report includes visibility and USE provenance, dependency and reverse
+dependency context, kernel requirements, out-of-tree module rebuild state, and
+typed incomplete-evidence diagnostics. The default lockless mode works for
+unprivileged users and requires two agreeing observations. @option{--locked}
+also observes Portage locks, while @option{--strict} rejects partial evidence.
+JSON output uses the @code{arise.package-inspect.v1} contract.
 @end table
 
 @subheading Native Package Query Examples
@@ -288,6 +297,11 @@ $ arise query --metadata=SLOT,KEYWORDS llvm-core/clang
 $ arise query --metadata=KEYWORDS,RDEPEND '=dev-python/sphinx-9.1.0-r1'
 $ arise query --expand-virtual virtual/libc
 $ arise query --ebuild llvm-core/clang
+
+# Unified package-state explanation
+$ arise inspect llvm-core/clang
+$ arise inspect --target-kernel="$(uname -r)" sys-fs/zfs-kmod
+$ arise inspect --json dev-python/sphinx
 
 # Portage configuration and repository paths
 $ arise info --value DISTDIR PKGDIR

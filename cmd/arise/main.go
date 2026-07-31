@@ -316,6 +316,10 @@ func main() {
 		if code := runInfoQuery(cmdArgs); code != 0 {
 			os.Exit(code)
 		}
+	case "inspect":
+		if code := runInspect(cmdArgs); code != 0 {
+			os.Exit(code)
+		}
 	case "preserved-rebuild":
 		runPreservedRebuild()
 	case "revdep-rebuild":

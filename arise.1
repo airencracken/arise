@@ -422,6 +422,18 @@ Display system information: arise version, Go runtime, portage configuration
 Equivalent to \fBemerge \-\-info\fR.
 
 .TP
+\fBinspect\fR [\fB\-\-json\fR] [\fB\-\-strict\fR] [\fB\-\-locked\fR]
+[\fB\-\-target-kernel=\fIRELEASE\fR] \fIatom\fR
+Explain installed and available versions, effective visibility and USE
+provenance, dependencies and installed reverse dependencies, static and
+indeterminate kernel requirements, out-of-tree module rebuild state, and
+incomplete evidence from one stabilized system snapshot. The default
+unprivileged mode verifies two agreeing observations without reading Portage
+lock files. \fB\-\-locked\fR also observes Portage state locks;
+\fB\-\-strict\fR rejects incomplete VDB or repository evidence.
+\fB\-\-json\fR emits the \fBarise.package-inspect.v1\fR contract.
+
+.TP
 \fBinstalled\fR [\fIinspection-option\fR] [\fIargument\fR]
 List or inspect installed packages. Inspection options include
 \fB\-\-owner\fR, \fB\-\-contents\fR, \fB\-\-uses\fR, \fB\-\-size\fR,
@@ -469,6 +481,9 @@ arise query \-\-metadata=SLOT,KEYWORDS llvm-core/clang
 arise query \-\-metadata=KEYWORDS,RDEPEND '=dev-python/sphinx\-9.1.0\-r1'
 arise query \-\-expand-virtual virtual/libc
 arise query \-\-ebuild llvm-core/clang
+arise inspect llvm-core/clang
+arise inspect \-\-target-kernel="$(uname \-r)" sys-fs/zfs-kmod
+arise inspect \-\-json dev-python/sphinx
 .EE
 
 .PP

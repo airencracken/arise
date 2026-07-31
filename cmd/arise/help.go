@@ -23,6 +23,7 @@ var commandHelp = map[string]commandHelpEntry{
 	"search":            {"arise search [options] <term>...", "Search indexed packages."},
 	"installed":         {"arise installed [--versions|--match|--has|--best|--contents|--owner|--uses|--size|--check] [argument...]", "Inspect installed packages."},
 	"info":              {"arise info [--value|--repositories|--repo-path|--repository-config|--masters|--eclasses|--eclass-path|--license-path|--preserved-libs|--is-protected|--filter-protected|--colors] [argument...]", "Show system, repository, and Arise configuration information."},
+	"inspect":           {"arise inspect [--json] [--strict] [--locked] [--target-kernel=RELEASE] <atom>", "Explain installed and prospective package state from one consistent snapshot."},
 	"audit":             {"arise audit <python|perl> [options]", "Audit language package state."},
 	"perl-cleaner":      {"arise perl-cleaner <mode> [options]", "Repair packages affected by Perl transitions."},
 	"python-cleaner":    {"arise python-cleaner <--check|--pretend|--fix|--resume>", "Plan or apply validated Python recovery."},
@@ -44,7 +45,7 @@ var commandHelp = map[string]commandHelpEntry{
 
 var commandOrder = []string{
 	"sync", "index", "install", "update", "uninstall", "select", "recover",
-	"query", "state", "search", "installed", "info", "audit", "perl-cleaner",
+	"query", "state", "search", "installed", "info", "inspect", "audit", "perl-cleaner",
 	"python-cleaner", "maintain", "bug-report", "dispatch-conf", "quickpkg",
 	"depclean", "prune", "env-update", "ldconfig", "config", "news", "deselect",
 	"preserved-rebuild", "revdep-rebuild", "bench",

@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/package-inspect-v1.schema.json",
+  "title": "Arise package inspection report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "query", "consistency", "installed", "candidates", "required_by", "kernel_modules", "diagnostics"],
+  "properties": {
+    "schema": { "const": "arise.package-inspect.v1" },
+    "query": { "type": "string", "minLength": 1 },
+    "consistency": { "enum": ["locked-and-stabilized", "stabilized-lockless"] },
+    "installed": { "type": "array", "items": { "$ref": "#/$defs/installed" } },
+    "candidates": { "type": "array", "items": { "$ref": "#/$defs/candidate" } },
+    "required_by": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "kernel_modules": { "type": "array", "items": { "type": "object" } },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "path": { "type": "string" },
+          "package": { "type": "string" },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "installed": {
+      "type": "object",
+      "required": ["package", "eapi", "enabled_use", "declared_use", "dependencies", "dependency_atoms"],
+      "properties": {
+        "package": { "type": "object" },
+        "eapi": { "type": "string" },
+        "enabled_use": { "type": "array", "items": { "type": "string" } },
+        "declared_use": { "type": "array" },
+        "dependencies": { "type": "object" },
+        "dependency_atoms": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["package", "eapi", "keywords", "dependencies", "dependency_atoms", "visibility", "use", "kernel_requirements"],
+      "properties": {
+        "package": { "type": "object" },
+        "eapi": { "type": "string" },
+        "keywords": { "type": "array", "items": { "type": "string" } },
+        "required_use": { "type": "string" },
+        "dependencies": { "type": "object" },
+        "dependency_atoms": { "type": "array", "items": { "type": "string" } },
+        "visibility": { "type": "object" },
+        "use": { "type": "object" },
+        "kernel_requirements": { "type": "object" }
+      }
+    }
+  }
+}

@@ -127,8 +127,16 @@ arise installed --contents sys-devel/gcc
 arise installed --uses sys-devel/gcc
 arise installed --check sys-devel/gcc
 arise query --ebuild sys-devel/gcc
+arise inspect sys-devel/gcc
+arise inspect --json dev-python/sphinx
 arise info
 ```
+
+`inspect` combines installed and available versions, visibility and effective
+USE provenance, dependencies and reverse dependencies, kernel requirements,
+out-of-tree module state, and incomplete-evidence diagnostics from one
+stabilized snapshot. Its versioned JSON report is suitable for Maize, future
+TUIs, and other tools that work alongside Arise.
 
 Arise is a self-contained alternative with capabilities that overlap
 `emerge`, `eix`, `equery`, `portageq`, and the `q` tools. It does not replace
