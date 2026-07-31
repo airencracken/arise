@@ -2,6 +2,7 @@ package world
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/oplock"
 	"github.com/airencracken/arise/internal/preserved"
+	"github.com/airencracken/gentooling"
 )
 
 type WorldSet struct {
@@ -269,40 +271,19 @@ func ExpandSet(setName, root, vdbRoot string) ([]string, error) {
 	}
 }
 
-// expandModuleRebuild finds packages with installed kernel modules
-// by scanning /lib/modules for .ko files and mapping them to VDB packages.
+// expandModuleRebuild finds installed out-of-tree kernel-module packages from
+// VDB ownership and inherited-eclass evidence.
 func expandModuleRebuild(vdbRoot string) ([]string, error) {
-	modulesDirs := []string{"/lib/modules"}
-	var moduleFiles []string
-	for _, dir := range modulesDirs {
-		filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			if !d.IsDir() && strings.HasSuffix(path, ".ko") {
-				moduleFiles = append(moduleFiles, path)
-			}
-			return nil
-		})
-	}
-
-	if len(moduleFiles) == 0 {
-		return nil, nil
-	}
-
-	owners, err := preserved.FindOwningPackages(vdbRoot, moduleFiles)
+	inventory, err := gentooling.ReadInstalledKernelModules(context.Background(), gentooling.SystemPaths{VDB: vdbRoot},
+		gentooling.InstalledKernelModuleOptions{Integrity: gentooling.AllowPartial})
 	if err != nil {
 		return nil, fmt.Errorf("world: could not determine module-rebuild packages: %w", err)
 	}
-
-	seen := make(map[string]bool)
-	var atoms []string
-	for _, pkg := range owners {
-		if !seen[pkg] {
-			seen[pkg] = true
-			atoms = append(atoms, pkg)
-		}
+	atoms := make([]string, 0, len(inventory.Packages))
+	for _, pkg := range inventory.Packages {
+		atoms = append(atoms, pkg.Package.CPV())
 	}
+	sort.Strings(atoms)
 	return atoms, nil
 }
 

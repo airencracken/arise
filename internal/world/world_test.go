@@ -482,6 +482,33 @@ func TestExpandSet_KnownSets(t *testing.T) {
 	}
 }
 
+func TestExpandModuleRebuildUsesRootAwareVDBEvidence(t *testing.T) {
+	vdbRoot := filepath.Join(t.TempDir(), "vdb")
+	writeModuleRecord := func(cpv, contents, inherited string) {
+		t.Helper()
+		record := filepath.Join(vdbRoot, filepath.FromSlash(cpv))
+		if err := os.MkdirAll(record, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range map[string]string{
+			"CONTENTS": contents, "EAPI": "8\n", "SLOT": "0\n", "repository": "gentoo\n", "INHERITED": inherited,
+		} {
+			if err := os.WriteFile(filepath.Join(record, name), []byte(value), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	writeModuleRecord("sys-fs/zfs-kmod-2.3", "obj /lib/modules/6.12/extra/zfs.ko.zst hash 1\n", "linux-info linux-mod-r1\n")
+	writeModuleRecord("sys-kernel/gentoo-kernel-6.12", "obj /lib/modules/6.12/kernel/fs/ext4/ext4.ko.zst hash 1\n", "")
+	atoms, err := expandModuleRebuild(vdbRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(atoms) != 1 || atoms[0] != "sys-fs/zfs-kmod-2.3" {
+		t.Fatalf("module rebuild atoms = %v", atoms)
+	}
+}
+
 func TestExpandLiveRebuild(t *testing.T) {
 	tmp := t.TempDir()
 	vdbRoot := filepath.Join(tmp, "vdb")
