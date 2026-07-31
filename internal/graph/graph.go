@@ -529,6 +529,7 @@ func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
 			}
 			vi.InstalledDepend, vi.InstalledRdepend = installed.Depend, installed.RDepend
 			vi.InstalledBdepend, vi.InstalledIdepend, vi.InstalledPdepend = installed.BDepend, installed.IDepend, installed.PDepend
+			vi.InstalledRequiredUse = installed.RequiredUse
 			vi.DependencyMetadataKnown = true
 			if vi.Depend == "" && vi.Rdepend == "" && vi.Bdepend == "" && vi.Idepend == "" && vi.Pdepend == "" {
 				vi.Depend, vi.Rdepend = installed.Depend, installed.RDepend

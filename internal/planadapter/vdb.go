@@ -36,7 +36,7 @@ func StateFromVDB(packages []vdb.Package) planvalidate.State {
 		result.Packages[index] = planvalidate.Package{
 			CPV: installed.CPV(), Slot: installed.Slot, Subslot: installed.Subslot,
 			Repository: installed.Repository, Authority: planvalidate.AuthorityVDB,
-			Use: use, IUse: iuse, Dependencies: dependencies, EAPI: installed.EAPI,
+			Use: use, IUse: iuse, Dependencies: dependencies, RequiredUse: installed.RequiredUse, EAPI: installed.EAPI,
 		}
 	}
 	return result

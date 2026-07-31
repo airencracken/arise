@@ -11,7 +11,7 @@
       "arise": {
         "tool": "arise",
         "path": "./arise",
-        "args": ["--json", "--color=n", "--pretend", "--deep", "--newuse", "update", "@world"],
+        "args": ["--json", "--color=n", "--pretend", "--update", "--deep", "--newuse", "@world"],
         "version_args": ["--version"]
       },
       "reference": {

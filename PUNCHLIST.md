@@ -2304,7 +2304,8 @@ Acceptance gate:
 - [~] Preserve emerge operator muscle memory alongside Arise's explicit
   subcommands. Bare atoms and sets now default to install resolution, and the
   familiar `-u/--update` path makes `arise -uDN @world` valid while explicit
-  `install` and `update` remain available. Hermetic tests cover clustered short
+  `install` remains available. The ambiguous `update` subcommand was removed.
+  Hermetic tests cover clustered short
   switches, option placement and default-command selection; a tagged live gate
   verifies every claimed advertised spelling against the installed
   `emerge --help`. Expand this into behavioral switch, action, exit-status and

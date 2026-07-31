@@ -23,6 +23,7 @@ func TestScanPreservesInstalledVersionsSlotsAndState(t *testing.T) {
 			"DEPEND": "dev-libs/libfoo", "RDEPEND": "dev-libs/libbar", "BDEPEND": "sys-devel/make",
 			"IDEPEND": "app-alternatives/python", "PDEPEND": "app-misc/post", "BUILD_TIME": "1700000000",
 			"BUILD_ID": "7", "COUNTER": "42", "EAPI": "8", "CONTENTS": "obj /usr/bin/python abc 1\n",
+			"REQUIRED_USE": "ssl? ( !test )",
 		}
 		for name, value := range files {
 			if err := os.WriteFile(filepath.Join(dir, name), []byte(value+"\n"), 0644); err != nil {
@@ -49,6 +50,9 @@ func TestScanPreservesInstalledVersionsSlotsAndState(t *testing.T) {
 	}
 	if got.Depend == "" || got.RDepend == "" || got.BDepend == "" || got.IDepend == "" || got.PDepend == "" {
 		t.Fatalf("dependency state lost: %+v", got)
+	}
+	if got.RequiredUse != "ssl? ( !test )" {
+		t.Fatalf("installed REQUIRED_USE = %q", got.RequiredUse)
 	}
 }
 

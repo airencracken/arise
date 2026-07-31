@@ -303,11 +303,6 @@ func TestNormalizeEmergeArgs(t *testing.T) {
 			want: []string{"arise", "--pretend", "-j", "4", "install", "net-im/signal-desktop-bin"},
 		},
 		{
-			name: "long option value after command",
-			in:   []string{"arise", "update", "--backtrack", "20", "@world"},
-			want: []string{"arise", "--backtrack", "20", "update", "@world"},
-		},
-		{
 			name: "search options after command",
 			in:   []string{"arise", "search", "--exact", "--versions", "dev-python/sphinx"},
 			want: []string{"arise", "--exact", "--search-versions", "search", "dev-python/sphinx"},

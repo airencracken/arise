@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"strings"
 	"testing"
 )
@@ -51,5 +52,20 @@ func TestExternalToolNamesAreNotAriseRoutes(t *testing.T) {
 		if knownCommand(command) {
 			t.Errorf("external tool name %q remains an Arise route", command)
 		}
+	}
+}
+
+func TestUpdateIsNotASubcommand(t *testing.T) {
+	if knownCommand("update") {
+		t.Fatal("removed update subcommand remains routable")
+	}
+	command, operands := selectCommand([]string{"update"})
+	if command != "install" || len(operands) != 1 || operands[0] != "update" {
+		t.Fatalf("bare update route = %q %v", command, operands)
+	}
+	var output bytes.Buffer
+	writeUsage(&output, flag.CommandLine)
+	if strings.Contains(output.String(), "\n  update ") {
+		t.Fatalf("removed update subcommand remains advertised:\n%s", output.String())
 	}
 }

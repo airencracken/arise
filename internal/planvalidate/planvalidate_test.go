@@ -311,6 +311,13 @@ func TestRequiredUseCardinalityAndConditionals(t *testing.T) {
 		{"?? ( a b )", map[string]bool{"a": true, "b": true}, false},
 		{"feature? ( child )", map[string]bool{"feature": false}, true},
 		{"feature? ( child )", map[string]bool{"feature": true, "child": false}, false},
+		{"enabled !disabled", map[string]bool{"enabled": true, "disabled": false}, true},
+		{"enabled !disabled", map[string]bool{"enabled": true, "disabled": true}, false},
+		{
+			"ech? ( || ( openssl rustls ) ) httpsrr? ( adns ) quic? ( ^^ ( openssl gnutls ) !mbedtls !rustls http3 ssl ) ssl? ( ^^ ( curl_ssl_gnutls curl_ssl_mbedtls curl_ssl_openssl curl_ssl_rustls ) ) curl_ssl_openssl? ( openssl ) http3? ( alt-svc httpsrr quic )",
+			map[string]bool{"adns": true, "alt-svc": true, "curl_ssl_openssl": true, "http3": true, "httpsrr": true, "openssl": true, "quic": true, "ssl": true},
+			true,
+		},
 	}
 	for _, test := range cases {
 		owner := pkg("app-misc/client-1", nil)

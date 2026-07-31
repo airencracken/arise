@@ -614,6 +614,8 @@ func requiredUseSatisfied(node depstring.DepNode, use map[string]bool) bool {
 	switch item := node.(type) {
 	case *depstring.AtomDep:
 		return use[item.Atom]
+	case *depstring.Block:
+		return !use[item.Atom]
 	case *depstring.AllOfGroup:
 		for _, child := range item.Children {
 			if !requiredUseSatisfied(child, use) {

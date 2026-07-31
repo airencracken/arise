@@ -4603,6 +4603,37 @@ func TestCheckRequiredUse_SingleFlagDisabled(t *testing.T) {
 	}
 }
 
+func TestCheckRequiredUse_NegatedLeaf(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		flags map[string]bool
+		valid bool
+	}{
+		{name: "disabled", flags: map[string]bool{"feature": false}, valid: true},
+		{name: "absent", flags: map[string]bool{}, valid: true},
+		{name: "enabled", flags: map[string]bool{"feature": true}, valid: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := CheckRequiredUse("!feature", test.flags)
+			if (err == nil) != test.valid {
+				t.Fatalf("CheckRequiredUse() error = %v, want valid %v", err, test.valid)
+			}
+		})
+	}
+}
+
+func TestCheckRequiredUse_CurlCardinalityWithNegatedLeaves(t *testing.T) {
+	expression := "ech? ( || ( openssl rustls ) ) httpsrr? ( adns ) quic? ( ^^ ( openssl gnutls ) !mbedtls !rustls http3 ssl ) ssl? ( ^^ ( curl_ssl_gnutls curl_ssl_mbedtls curl_ssl_openssl curl_ssl_rustls ) ) curl_ssl_openssl? ( openssl ) http3? ( alt-svc httpsrr quic )"
+	flags := map[string]bool{"adns": true, "alt-svc": true, "curl_ssl_openssl": true, "http3": true, "httpsrr": true, "openssl": true, "quic": true, "ssl": true}
+	if err := CheckRequiredUse(expression, flags); err != nil {
+		t.Fatalf("valid curl REQUIRED_USE rejected: %v", err)
+	}
+	flags["rustls"] = true
+	if err := CheckRequiredUse(expression, flags); err == nil {
+		t.Fatal("curl REQUIRED_USE accepted conflicting rustls backend")
+	}
+}
+
 func TestCheckRequiredUse_AnyOfSatisfied(t *testing.T) {
 	err := CheckRequiredUse(
 		"|| ( python_targets_python3_11 python_targets_python3_12 )",

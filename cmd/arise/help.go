@@ -14,7 +14,6 @@ var commandHelp = map[string]commandHelpEntry{
 	"sync":              {"arise sync [repository...]", "Synchronize repositories and refresh the resolver index."},
 	"index":             {"arise index", "Refresh the resolver metadata index."},
 	"install":           {"arise install [options] <atom|set>...", "Resolve and install packages."},
-	"update":            {"arise update [options] [atom|set]...", "Update packages; defaults to @world."},
 	"uninstall":         {"arise uninstall [options] <exact-cpv>...", "Verify and remove exact installed packages."},
 	"select":            {"arise select <installed-atom>", "Add an installed package to the world set."},
 	"recover":           {"arise recover <status|rollback|inspect-set|restore-set|verify-set|prune-sets> ...", "Inspect or apply journal and recovery-set operations."},
@@ -44,7 +43,7 @@ var commandHelp = map[string]commandHelpEntry{
 }
 
 var commandOrder = []string{
-	"sync", "index", "install", "update", "uninstall", "select", "recover",
+	"sync", "index", "install", "uninstall", "select", "recover",
 	"query", "state", "search", "installed", "info", "inspect", "audit", "perl-cleaner",
 	"python-cleaner", "maintain", "bug-report", "dispatch-conf", "quickpkg",
 	"depclean", "prune", "env-update", "ldconfig", "config", "news", "deselect",

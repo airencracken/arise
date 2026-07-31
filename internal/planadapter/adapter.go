@@ -185,6 +185,7 @@ func packageFromVersion(cp string, version *resolve.VersionInfo, installed bool,
 		"BDEPEND": version.Bdepend, "IDEPEND": version.Idepend, "PDEPEND": version.Pdepend,
 	}
 	eapi := version.EAPI
+	requiredUse := version.RequiredUse
 	authority := planvalidate.AuthorityEvaluated
 	if installed {
 		use = version.InstalledUseFlags
@@ -194,6 +195,7 @@ func packageFromVersion(cp string, version *resolve.VersionInfo, installed bool,
 			"BDEPEND": version.InstalledBdepend, "IDEPEND": version.InstalledIdepend, "PDEPEND": version.InstalledPdepend,
 		}
 		eapi = version.InstalledEAPI
+		requiredUse = version.InstalledRequiredUse
 		authority = planvalidate.AuthorityVDB
 	} else if !version.DependencyMetadataKnown {
 		authority = ""
@@ -205,7 +207,7 @@ func packageFromVersion(cp string, version *resolve.VersionInfo, installed bool,
 		CPV: cpv(cp, version), Slot: version.Slot, Subslot: version.Subslot,
 		Repository: version.Repository, Authority: authority,
 		Use: cloneBoolMap(use), IUse: cloneBoolMap(iuse),
-		Dependencies: dependencies, RequiredUse: version.RequiredUse,
+		Dependencies: dependencies, RequiredUse: requiredUse,
 		EAPI: eapi, Keywords: strings.Fields(version.Keywords), License: version.License,
 	}
 	// Package policy is consumed only by validateActionPolicy, so freeze it

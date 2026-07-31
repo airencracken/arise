@@ -6,7 +6,7 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install update uninstall select deselect recover query state search installed info inspect audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench"
+    local commands="sync index install uninstall select deselect recover query state search installed info inspect audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench"
 
     local audit_sub="python perl"
     local news_sub="list read display"
@@ -23,7 +23,7 @@ _arise() {
     local cmd="${words[1]}"
 
     case "$cmd" in
-        install|uninstall|update|config|select|deselect|quickpkg)
+        install|uninstall|config|select|deselect|quickpkg)
             if [[ $cur == -* ]]; then
                 _arise_flags
             else

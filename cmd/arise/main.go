@@ -25,7 +25,7 @@ import (
 )
 
 // version is replaced by release builds with -ldflags "-X main.version=...".
-var version = "0.0.14"
+var version = "0.0.15"
 var commandContext = context.Background()
 
 func versionLine() string {
@@ -275,11 +275,6 @@ func main() {
 		runState(cmdArgs, *dbPath, *vdbDir)
 	case "install":
 		runInstall(cmdArgs, *dbPath, *repoPath)
-	case "update":
-		if len(cmdArgs) == 0 {
-			cmdArgs = []string{"@world"}
-		}
-		runResolveAndRebuild(cmdArgs, *dbPath, *repoPath, true, false)
 	case "uninstall":
 		runUninstall(cmdArgs, *dbPath, *repoPath)
 	case "recover":
@@ -556,7 +551,7 @@ func normalizeEmergeArgs(args []string) []string {
 	}
 
 	commandAt := -1
-	commands := map[string]bool{"install": true, "update": true, "uninstall": true, "search": true}
+	commands := map[string]bool{"install": true, "uninstall": true, "search": true}
 	for i := 1; i < len(expanded); i++ {
 		if commands[expanded[i]] {
 			commandAt = i

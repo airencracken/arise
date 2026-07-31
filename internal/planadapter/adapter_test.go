@@ -57,6 +57,47 @@ func TestFreezeMutationMissingActionIsRejected(t *testing.T) {
 	}
 }
 
+func TestFreezeDoesNotApplyRepositoryRequiredUseToUnchangedInstalledPackage(t *testing.T) {
+	graph := resolve.NewDepGraph()
+	installed := graph.AddVersionFromRepository("net-misc/curl", "8.21.0", "0", "0", true,
+		map[string]bool{"quic": true, "openssl": true, "curl_ssl_openssl": false}, "amd64", "gentoo")
+	installed.Available = true
+	installed.DependencyMetadataKnown = true
+	installed.EAPI, installed.InstalledEAPI = "8", "8"
+	installed.RequiredUse = "quic? ( ^^ ( openssl gnutls ) !mbedtls !rustls http3 ssl ) ssl? ( ^^ ( curl_ssl_gnutls curl_ssl_mbedtls curl_ssl_openssl curl_ssl_rustls ) )"
+	installed.InstalledRequiredUse = ""
+
+	fixture, plan, err := Freeze(graph, &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified}, Options{
+		Operation: "update", Targets: []string{}, DomainsAliasToRoot: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Installed) != 1 || fixture.Installed[0].RequiredUse != "" {
+		t.Fatalf("installed package inherited repository REQUIRED_USE: %#v", fixture.Installed)
+	}
+	if validation := planvalidate.ValidateFinalState(fixture, plan); !validation.Valid {
+		t.Fatalf("unchanged installed package rejected against repository REQUIRED_USE: %#v", validation)
+	}
+}
+
+func TestFreezeValidatesInstalledPackageAgainstInstalledRequiredUse(t *testing.T) {
+	graph := resolve.NewDepGraph()
+	installed := graph.AddVersionFromRepository("app-misc/example", "1", "0", "0", true,
+		map[string]bool{"left": true, "right": true}, "amd64", "gentoo")
+	installed.DependencyMetadataKnown = true
+	installed.InstalledEAPI = "8"
+	installed.InstalledRequiredUse = "^^ ( left right )"
+	fixture, plan, err := Freeze(graph, &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified}, Options{DomainsAliasToRoot: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation := planvalidate.ValidateFinalState(fixture, plan)
+	if validation.Valid || !containsViolation(validation, "required-use-violation") {
+		t.Fatalf("invalid installed REQUIRED_USE was not independently detected: %#v", validation)
+	}
+}
+
 func TestFreezeRejectsSelectedIncompleteMetadata(t *testing.T) {
 	graph, result := upgradeGraph(t)
 	for _, version := range graph.Packages["dev-libs/library"].Versions {

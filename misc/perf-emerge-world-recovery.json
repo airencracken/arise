@@ -9,7 +9,7 @@
       "arise": {
         "tool": "arise",
         "path": "./arise",
-        "args": ["--json", "--color=n", "--db", "/tmp/arise-perf-data", "--repo", "/var/db/repos/gentoo", "--pretend", "--deep", "--newuse", "--keep-going", "--with-bdeps=y", "--complete-graph", "--backtrack=1000", "update", "@world"],
+        "args": ["--json", "--color=n", "--db", "/tmp/arise-perf-data", "--repo", "/var/db/repos/gentoo", "--pretend", "--update", "--deep", "--newuse", "--keep-going", "--with-bdeps=y", "--complete-graph", "--backtrack=1000", "@world"],
         "version_args": ["--version"]
       },
       "reference": {

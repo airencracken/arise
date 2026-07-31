@@ -25,6 +25,7 @@ type Package struct {
 	BDepend     string
 	IDepend     string
 	PDepend     string
+	RequiredUse string
 	BuildTime   int64
 	BuildID     string
 	PhaseEnvABI string
@@ -80,7 +81,7 @@ func ScanWithIssues(ctx context.Context, root string, includeContents bool) ([]P
 			Use: append([]string(nil), installed.EnabledUse...), IUse: renderUseDeclarations(installed.DeclaredUse),
 			Depend: installed.Dependencies.Depend, RDepend: installed.Dependencies.RDepend,
 			BDepend: installed.Dependencies.BDepend, IDepend: installed.Dependencies.IDepend,
-			PDepend: installed.Dependencies.PDepend, EAPI: installed.EAPI,
+			PDepend: installed.Dependencies.PDepend, RequiredUse: installed.RequiredUse, EAPI: installed.EAPI,
 			BuildTime: installed.Build.Time, BuildID: installed.Build.ID,
 			PhaseEnvABI: installed.Build.PhaseEnvABI, Counter: installed.Build.Counter,
 			Contents: installed.Contents,

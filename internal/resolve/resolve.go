@@ -328,6 +328,7 @@ type VersionInfo struct {
 	InstalledBdepend        string
 	InstalledIdepend        string
 	InstalledPdepend        string
+	InstalledRequiredUse    string
 	DependencyMetadataKnown bool // empty dependency strings are authoritative, not a package-edge fallback
 	InstalledEAPI           string
 	InstalledPhaseEnvABI    string
@@ -6630,12 +6631,19 @@ func CheckRequiredUse(requiredUse string, useFlags map[string]bool) error {
 func checkRequiredUseNode(node depstring.DepNode, useFlags map[string]bool) error {
 	switch n := node.(type) {
 	case *depstring.AtomDep:
-		enabled, ok := useFlags[n.Atom]
+		flag := n.Atom
+		enabled, ok := useFlags[flag]
 		if !ok {
-			return fmt.Errorf("resolve: this package requires the USE flag %q to be enabled", n.Atom)
+			return fmt.Errorf("resolve: this package requires the USE flag %q to be enabled", flag)
 		}
 		if !enabled {
-			return fmt.Errorf("resolve: this package requires the USE flag %q to be enabled, but it is currently disabled", n.Atom)
+			return fmt.Errorf("resolve: this package requires the USE flag %q to be enabled, but it is currently disabled", flag)
+		}
+		return nil
+
+	case *depstring.Block:
+		if useFlags[n.Atom] {
+			return fmt.Errorf("resolve: this package requires the USE flag %q to be disabled, but it is currently enabled", n.Atom)
 		}
 		return nil
 
@@ -6703,7 +6711,7 @@ func checkRequiredUseNode(node depstring.DepNode, useFlags map[string]bool) erro
 		}
 		return nil
 
-	case *depstring.Block, *depstring.WeakBlock:
+	case *depstring.WeakBlock:
 		return nil
 
 	default:
