@@ -61,6 +61,9 @@ func ReadNews(newsDir string) ([]NewsItem, error) {
 			continue
 		}
 		item.Path = dirPath
+		if item.Date == "" && len(name) >= 10 {
+			item.Date = name[:10]
+		}
 
 		items = append(items, *item)
 	}
@@ -243,7 +246,10 @@ func MarkRead(readMarkerDir string, item NewsItem) error {
 		}
 		return fmt.Errorf("news: could not mark news item %s as read: %w", markerName, err)
 	}
-	defer func() { if cerr := f.Close(); cerr != nil { /* Best effort */ } }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil { /* Best effort */
+		}
+	}()
 
 	_, err = f.WriteString(fmt.Sprintf("%s\n", item.Title))
 	return err

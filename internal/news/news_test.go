@@ -177,8 +177,8 @@ Body without many headers.
 	if items[0].Author != "" {
 		t.Errorf("Author: got %q, want empty", items[0].Author)
 	}
-	if items[0].Date != "" {
-		t.Errorf("Date: got %q, want empty", items[0].Date)
+	if items[0].Date != "2021-01-01" {
+		t.Errorf("Date: got %q, want directory-derived date", items[0].Date)
 	}
 }
 

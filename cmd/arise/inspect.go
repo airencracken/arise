@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/packageinspect"
 	"github.com/airencracken/gentooling"
 )
@@ -61,10 +62,20 @@ func runInspect(args []string) int {
 		Query: query, Repositories: snapshot.Repositories, TargetKernel: options.TargetKernel,
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "inspect: %v\n", err)
-		if packageinspect.IsNotFound(err) {
-			return 1
+		if packageinspect.IsNotFound(err) && len(report.Diagnostics) != 0 {
+			if options.JSON || *jsonOutput {
+				encoder := json.NewEncoder(os.Stdout)
+				encoder.SetIndent("", "  ")
+				encoder.SetEscapeHTML(false)
+				if encodeErr := encoder.Encode(report); encodeErr != nil {
+					fmt.Fprintf(os.Stderr, "inspect: encode partial JSON report: %v\n", encodeErr)
+					return 1
+				}
+			} else {
+				writeInspectReport(os.Stdout, report)
+			}
 		}
+		fmt.Fprintf(os.Stderr, "inspect: %v\n", err)
 		return 1
 	}
 	if options.JSON || *jsonOutput {
@@ -99,20 +110,21 @@ func parseInspectOptions(args []string) (inspectOptions, string, error) {
 }
 
 func writeInspectReport(writer io.Writer, report packageinspect.Report) {
-	fmt.Fprintf(writer, "Package inspection: %s\n", report.Query)
-	fmt.Fprintf(writer, "Snapshot: %s\n", report.Consistency)
+	fmt.Fprintf(writer, "%s %s\n", color.BoldCyan("Package inspection:"), color.Bold(report.Query))
+	fmt.Fprintf(writer, "%s %s\n", color.Bold("Snapshot:"), color.Cyan(report.Consistency))
 	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "Installed:")
+	fmt.Fprintln(writer, color.BoldCyan("Installed:"))
 	if len(report.Installed) == 0 {
 		fmt.Fprintln(writer, "  none")
 	}
 	for _, installed := range report.Installed {
-		fmt.Fprintf(writer, "  %s:%s::%s (EAPI %s)\n", installed.Package.CPV(), installed.Package.Slot, installed.Package.Repository, installed.EAPI)
-		fmt.Fprintf(writer, "    USE: %s\n", strings.Join(installed.EnabledUse, " "))
+		identity := fmt.Sprintf("%s:%s::%s", installed.Package.CPV(), installed.Package.Slot, installed.Package.Repository)
+		fmt.Fprintf(writer, "  %s (EAPI %s)\n", color.InstalledVersion(identity), installed.EAPI)
+		fmt.Fprintf(writer, "    %s %s\n", color.Bold("USE:"), color.Green(strings.Join(installed.EnabledUse, " ")))
 		writeDependencySummary(writer, installed.DependencyAtoms, "    ")
 	}
 	fmt.Fprintln(writer)
-	fmt.Fprintln(writer, "Available candidates:")
+	fmt.Fprintln(writer, color.BoldCyan("Available candidates:"))
 	if len(report.Candidates) == 0 {
 		fmt.Fprintln(writer, "  none")
 	}
@@ -121,8 +133,13 @@ func writeInspectReport(writer io.Writer, report packageinspect.Report) {
 		if candidate.Visibility.Visible {
 			status = "visible"
 		}
-		fmt.Fprintf(writer, "  %s:%s::%s (EAPI %s, %s)\n", candidate.Package.CPV(), candidate.Package.Slot, candidate.Package.Repository, candidate.EAPI, status)
-		fmt.Fprintf(writer, "    KEYWORDS: %s\n", strings.Join(candidate.Keywords, " "))
+		identity := fmt.Sprintf("%s:%s::%s", candidate.Package.CPV(), candidate.Package.Slot, candidate.Package.Repository)
+		statusDisplay := color.Green(status)
+		if !candidate.Visibility.Visible {
+			statusDisplay = color.Yellow(status)
+		}
+		fmt.Fprintf(writer, "  %s (EAPI %s, %s)\n", color.Bold(identity), candidate.EAPI, statusDisplay)
+		fmt.Fprintf(writer, "    %s %s\n", color.Bold("KEYWORDS:"), color.Cyan(strings.Join(candidate.Keywords, " ")))
 		var enabled, disabled []string
 		for _, decision := range candidate.Use.Decisions {
 			value := decision.Name
@@ -138,16 +155,16 @@ func writeInspectReport(writer io.Writer, report packageinspect.Report) {
 				disabled = append(disabled, value)
 			}
 		}
-		fmt.Fprintf(writer, "    USE enabled: %s\n", listOrNone(enabled))
-		fmt.Fprintf(writer, "    USE disabled: %s\n", listOrNone(disabled))
+		fmt.Fprintf(writer, "    %s %s\n", color.Bold("USE enabled:"), color.Green(listOrNone(enabled)))
+		fmt.Fprintf(writer, "    %s %s\n", color.Bold("USE disabled:"), color.Red(listOrNone(disabled)))
 		for _, evidence := range candidate.Visibility.Evidence {
-			fmt.Fprintf(writer, "    Visibility evidence: %s %s at %s:%d\n",
+			fmt.Fprintf(writer, "    %s %s %s at %s:%d\n", color.Bold("Visibility evidence:"),
 				evidence.Kind, evidence.Value, evidence.Source.Path, evidence.Source.Line)
 		}
 		writeDependencySummary(writer, candidate.DependencyAtoms, "    ")
 		requirements := candidate.KernelRequirements
 		if len(requirements.Requirements) != 0 || len(requirements.Dynamic) != 0 {
-			fmt.Fprintln(writer, "    Kernel requirements:")
+			fmt.Fprintln(writer, color.Bold("    Kernel requirements:"))
 			for _, requirement := range requirements.Requirements {
 				expectation := "enabled"
 				if requirement.Expectation == gentooling.KernelConfigDisabled {
@@ -157,21 +174,21 @@ func writeInspectReport(writer io.Writer, report packageinspect.Report) {
 				if requirement.Severity == gentooling.KernelRequirementWarning {
 					severity = "recommended"
 				}
-				fmt.Fprintf(writer, "      CONFIG_%s=%s (%s)\n", requirement.Symbol, expectation, severity)
+				fmt.Fprintf(writer, "      %s=%s (%s)\n", color.Cyan("CONFIG_"+requirement.Symbol), expectation, severity)
 			}
 			for _, dynamic := range requirements.Dynamic {
-				fmt.Fprintf(writer, "      indeterminate: %s (%s)\n", dynamic.Expression, dynamic.Reason)
+				fmt.Fprintf(writer, "      %s %s (%s)\n", color.Yellow("indeterminate:"), dynamic.Expression, dynamic.Reason)
 			}
 		}
 	}
 	fmt.Fprintln(writer)
-	fmt.Fprintf(writer, "Required by: %s\n", listOrNone(report.RequiredBy))
-	fmt.Fprintln(writer, "Kernel module state:")
+	fmt.Fprintf(writer, "%s %s\n", color.BoldCyan("Required by:"), listOrNone(report.RequiredBy))
+	fmt.Fprintln(writer, color.BoldCyan("Kernel module state:"))
 	if len(report.Modules) == 0 {
 		fmt.Fprintln(writer, "  not an installed out-of-tree module package")
 	}
 	for _, module := range report.Modules {
-		fmt.Fprintf(writer, "  %s: %s", module.Package.CPV(), module.Rebuild)
+		fmt.Fprintf(writer, "  %s: %s", color.Bold(module.Package.CPV()), module.Rebuild)
 		if module.NeedsRebuild {
 			fmt.Fprint(writer, " (rebuild required)")
 		}
@@ -181,23 +198,23 @@ func writeInspectReport(writer io.Writer, report packageinspect.Report) {
 		}
 	}
 	if len(report.Diagnostics) != 0 {
-		fmt.Fprintln(writer, "Diagnostics:")
+		fmt.Fprintln(writer, color.BoldYellow("Diagnostics:"))
 		for _, diagnostic := range report.Diagnostics {
 			location := diagnostic.Path
 			if location == "" {
 				location = diagnostic.Package
 			}
 			if location == "" {
-				fmt.Fprintf(writer, "  %s: %s\n", diagnostic.Code, diagnostic.Message)
+				fmt.Fprintf(writer, "  %s: %s\n", color.Yellow(diagnostic.Code), diagnostic.Message)
 			} else {
-				fmt.Fprintf(writer, "  %s: %s: %s\n", diagnostic.Code, location, diagnostic.Message)
+				fmt.Fprintf(writer, "  %s: %s: %s\n", color.Yellow(diagnostic.Code), location, diagnostic.Message)
 			}
 		}
 	}
 }
 
 func writeDependencySummary(writer io.Writer, atoms []string, indent string) {
-	fmt.Fprintf(writer, "%sDependencies: %s\n", indent, listOrNone(atoms))
+	fmt.Fprintf(writer, "%s%s %s\n", indent, color.Bold("Dependencies:"), listOrNone(atoms))
 }
 
 func listOrNone(values []string) string {

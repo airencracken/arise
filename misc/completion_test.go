@@ -1,8 +1,11 @@
 package misc_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -28,6 +31,9 @@ func TestCommandCompletion(t *testing.T) {
 		{name: "installed inspection modes", words: []string{"arise", "installed", "--o"}, want: []string{"--owner"}},
 		{name: "query visible mode", words: []string{"arise", "query", "--best"}, want: []string{"--best-visible"}},
 		{name: "info repository modes", words: []string{"arise", "info", "--repo"}, want: []string{"--repositories", "--repo-path", "--repository-config"}},
+		{name: "inspect command", words: []string{"arise", "inspe"}, want: []string{"inspect"}},
+		{name: "inspect modes", words: []string{"arise", "inspect", "--"}, want: []string{"--json", "--strict", "--locked", "--target-kernel="}},
+		{name: "news read all", words: []string{"arise", "news", "read", "a"}, want: []string{"all"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -42,6 +48,33 @@ func TestCommandCompletion(t *testing.T) {
 				t.Fatalf("completion = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestCompletionCommandsMatchCLIRegistry(t *testing.T) {
+	help, err := os.ReadFile("../cmd/arise/help.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completion, err := os.ReadFile("arise-completion.bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entryPattern := regexp.MustCompile(`(?m)^\s*"([^"]+)":\s+\{`)
+	var registered []string
+	for _, match := range entryPattern.FindAllStringSubmatch(string(help), -1) {
+		registered = append(registered, match[1])
+	}
+	commandPattern := regexp.MustCompile(`local commands="([^"]+)"`)
+	match := commandPattern.FindStringSubmatch(string(completion))
+	if len(match) != 2 {
+		t.Fatal("completion command registry not found")
+	}
+	completed := strings.Fields(match[1])
+	sort.Strings(registered)
+	sort.Strings(completed)
+	if strings.Join(registered, "\n") != strings.Join(completed, "\n") {
+		t.Fatalf("completion commands = %v, CLI commands = %v", completed, registered)
 	}
 }
 

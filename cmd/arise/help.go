@@ -36,7 +36,7 @@ var commandHelp = map[string]commandHelpEntry{
 	"env-update":        {"arise env-update", "Regenerate the system environment."},
 	"ldconfig":          {"arise ldconfig", "Refresh the dynamic linker cache."},
 	"config":            {"arise config <installed-atom>", "Run an installed package's pkg_config phase."},
-	"news":              {"arise news <list|read|display>", "List, mark, or display repository news."},
+	"news":              {"arise news <list|read NUMBER|read all|display NUMBER>", "List numbered news, mark items read, or display an item."},
 	"deselect":          {"arise deselect <atom>", "Remove a package from the world set."},
 	"preserved-rebuild": {"arise preserved-rebuild", "Rebuild consumers of preserved libraries."},
 	"revdep-rebuild":    {"arise revdep-rebuild", "Find and rebuild broken reverse dependencies."},

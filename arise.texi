@@ -428,8 +428,15 @@ Update the shared library linker cache.
 @item config @var{atom}
 Run the @code{pkg_config} phase.
 
-@item news [list|read|display]
-Display Gentoo news items (GLEP 42).
+@item news list
+List Gentoo news items (GLEP 42) with stable selection numbers and unread
+status.
+
+@item news read @var{number}|all
+Mark one numbered news item, or every item, as read.
+
+@item news display @var{number}
+Display one numbered news item and mark it read.
 @end table
 
 @node Binary Packages

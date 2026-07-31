@@ -6,7 +6,7 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install update uninstall select deselect recover query state search installed info audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench"
+    local commands="sync index install update uninstall select deselect recover query state search installed info inspect audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench"
 
     local audit_sub="python perl"
     local news_sub="list read display"
@@ -44,6 +44,13 @@ _arise() {
                 _arise_pkg_atoms "$cur"
             fi
             ;;
+        inspect)
+            if [[ $cur == -* ]]; then
+                COMPREPLY=($(compgen -W "--json --strict --locked --target-kernel=" -- "$cur"))
+            else
+                _arise_pkg_atoms "$cur"
+            fi
+            ;;
         audit)
             if [[ $cword -eq 2 ]]; then
                 COMPREPLY=($(compgen -W "$audit_sub" -- "$cur"))
@@ -65,6 +72,8 @@ _arise() {
         news)
             if [[ $cword -eq 2 ]]; then
                 COMPREPLY=($(compgen -W "$news_sub" -- "$cur"))
+            elif [[ $cword -eq 3 && ${words[2]} == read ]]; then
+                COMPREPLY=($(compgen -W "all" -- "$cur"))
             fi
             ;;
         search)

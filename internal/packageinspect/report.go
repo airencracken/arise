@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -81,6 +84,8 @@ type Options struct {
 	TargetKernel string
 }
 
+var packageNamePattern = regexp.MustCompile(`^[A-Za-z0-9+_][A-Za-z0-9+_.-]*$`)
+
 func Build(ctx context.Context, snapshot gentooling.SystemSnapshot, options Options) (Report, error) {
 	if err := ctx.Err(); err != nil {
 		return Report{}, err
@@ -88,9 +93,9 @@ func Build(ctx context.Context, snapshot gentooling.SystemSnapshot, options Opti
 	if strings.TrimSpace(options.Query) == "" {
 		return Report{}, fmt.Errorf("inspect: package query is empty")
 	}
-	query, err := gentooling.ParseAtom(options.Query)
+	selector, err := newSelector(options.Query)
 	if err != nil {
-		return Report{}, fmt.Errorf("inspect: parse package query: %w", err)
+		return Report{}, err
 	}
 	if len(options.Repositories) == 0 {
 		options.Repositories = snapshot.Repositories
@@ -101,11 +106,11 @@ func Build(ctx context.Context, snapshot gentooling.SystemSnapshot, options Opti
 		Installed:   []Installed{}, Candidates: []Candidate{}, RequiredBy: []string{},
 		Modules: []gentooling.InstalledKernelModulePackage{}, Diagnostics: []Diagnostic{},
 	}
-	report.Diagnostics = append(report.Diagnostics, diagnostics(snapshot.Installed.Issues)...)
-	report.Diagnostics = append(report.Diagnostics, diagnostics(snapshot.Candidates.Issues)...)
+	report.Diagnostics = append(report.Diagnostics, selectedDiagnostics(snapshot.Installed.Issues, selector, options.Repositories)...)
+	report.Diagnostics = append(report.Diagnostics, selectedDiagnostics(snapshot.Candidates.Issues, selector, options.Repositories)...)
 
 	for _, installed := range snapshot.Installed.Packages {
-		matched, matchErr := query.Matches(installed.ID, installedUseState(installed))
+		matched, matchErr := selector.matches(installed.ID, installedUseState(installed))
 		if matchErr != nil {
 			return Report{}, fmt.Errorf("inspect: match installed package %s: %w", installed.ID.CPV(), matchErr)
 		}
@@ -118,7 +123,7 @@ func Build(ctx context.Context, snapshot gentooling.SystemSnapshot, options Opti
 		}
 	}
 	for _, candidate := range snapshot.Candidates.Candidates {
-		matched, matchErr := query.Matches(candidate.ID, gentooling.UseState{})
+		matched, matchErr := selector.matches(candidate.ID, gentooling.UseState{})
 		if matchErr != nil {
 			return Report{}, fmt.Errorf("inspect: match repository candidate %s: %w", candidate.ID.CPV(), matchErr)
 		}
@@ -203,14 +208,23 @@ func reverseDependencies(packages []gentooling.InstalledPackage, installed []Ins
 		targets = append(targets, item.Package)
 	}
 	var result []string
-	skippedAtoms := 0
 	for _, pkg := range packages {
-		atoms := dependencyAtoms(pkg.Dependencies, issues, pkg.ID.CPV())
+		isTarget := false
+		for _, target := range targets {
+			if pkg.ID.CP() == target.CP() {
+				isTarget = true
+				break
+			}
+		}
+		if isTarget {
+			continue
+		}
+		var ignored []Diagnostic
+		atoms := dependencyAtoms(pkg.Dependencies, &ignored, pkg.ID.CPV())
 		found := false
 		for _, raw := range atoms {
 			parsed, err := gentooling.ParseAtom(strings.TrimLeft(raw, "!"))
 			if err != nil {
-				skippedAtoms++
 				continue
 			}
 			for _, target := range targets {
@@ -226,13 +240,80 @@ func reverseDependencies(packages []gentooling.InstalledPackage, installed []Ins
 			}
 		}
 	}
-	if skippedAtoms != 0 {
-		*issues = append(*issues, Diagnostic{
-			Code:    "reverse_dependency_incomplete",
-			Message: fmt.Sprintf("%d installed dependency atoms contained unresolved metadata expansions or unsupported legacy syntax", skippedAtoms),
-		})
-	}
 	return unique(result)
+}
+
+type querySelector struct {
+	name string
+	atom *gentooling.Atom
+}
+
+func newSelector(raw string) (querySelector, error) {
+	if !strings.Contains(raw, "/") {
+		if !packageNamePattern.MatchString(raw) {
+			return querySelector{}, fmt.Errorf("inspect: invalid package name %q", raw)
+		}
+		return querySelector{name: raw}, nil
+	}
+	parsed, err := gentooling.ParseAtom(raw)
+	if err != nil {
+		return querySelector{}, fmt.Errorf("inspect: parse package query: %w", err)
+	}
+	return querySelector{atom: &parsed}, nil
+}
+
+func (selector querySelector) matches(id gentooling.PackageID, use gentooling.UseState) (bool, error) {
+	if selector.atom == nil {
+		return id.Name == selector.name, nil
+	}
+	return selector.atom.Matches(id, use)
+}
+
+func selectedDiagnostics(issues []gentooling.Issue, selector querySelector, repositories []gentooling.Repository) []Diagnostic {
+	var selected []gentooling.Issue
+	for _, issue := range issues {
+		if issue.Package != nil {
+			matched, err := selector.matches(*issue.Package, gentooling.UseState{})
+			if err == nil && matched {
+				selected = append(selected, issue)
+			}
+			continue
+		}
+		if repositoryCacheIssueRelevant(issue, selector, repositories) {
+			selected = append(selected, issue)
+		}
+	}
+	return diagnostics(selected)
+}
+
+func repositoryCacheIssueRelevant(issue gentooling.Issue, selector querySelector, repositories []gentooling.Repository) bool {
+	if filepath.Base(issue.Path) != "md5-cache" || filepath.Base(filepath.Dir(issue.Path)) != "metadata" {
+		return false
+	}
+	for _, repository := range repositories {
+		if filepath.Clean(issue.Path) != filepath.Join(repository.Location, "metadata", "md5-cache") {
+			continue
+		}
+		if selector.atom != nil {
+			path := filepath.Join(repository.Location, selector.atom.Category, selector.atom.Package)
+			info, err := os.Stat(path)
+			return err == nil && info.IsDir()
+		}
+		categories, err := os.ReadDir(repository.Location)
+		if err != nil {
+			return false
+		}
+		for _, category := range categories {
+			if !category.IsDir() {
+				continue
+			}
+			path := filepath.Join(repository.Location, category.Name(), selector.name)
+			if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func diagnostics(issues []gentooling.Issue) []Diagnostic {

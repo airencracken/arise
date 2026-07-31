@@ -110,7 +110,7 @@ func TestReportJSONHasStableNonNullCollections(t *testing.T) {
 	}
 }
 
-func TestBuildSummarizesUnsupportedReverseDependencyAtoms(t *testing.T) {
+func TestBuildDoesNotLeakUnrelatedUnsupportedReverseDependencyAtoms(t *testing.T) {
 	snapshot, repository := inspectFixture(t)
 	snapshot.Installed.Packages[0].Dependencies.RDepend = "${RUNTIME_DEPS}"
 	report, err := Build(context.Background(), snapshot, Options{
@@ -119,17 +119,41 @@ func TestBuildSummarizesUnsupportedReverseDependencyAtoms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	count := 0
 	for _, issue := range report.Diagnostics {
-		if issue.Code == "reverse_dependency_incomplete" {
-			count++
-		}
-		if issue.Code == "dependency_atom" {
-			t.Fatalf("per-atom diagnostic leaked: %+v", issue)
+		if issue.Code == "reverse_dependency_incomplete" || issue.Code == "dependency_atom" {
+			t.Fatalf("unrelated reverse-dependency diagnostic leaked: %+v", issue)
 		}
 	}
-	if count != 1 {
-		t.Fatalf("summary diagnostics = %+v", report.Diagnostics)
+}
+
+func TestBuildAcceptsUnqualifiedExactPackageName(t *testing.T) {
+	snapshot, repository := inspectFixture(t)
+	report, err := Build(context.Background(), snapshot, Options{
+		Query: "zfs-kmod", Repositories: []gentooling.Repository{repository},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Installed) != 1 || len(report.Candidates) != 1 ||
+		report.Candidates[0].Package.CP() != "sys-fs/zfs-kmod" {
+		t.Fatalf("unqualified matches = %+v", report)
+	}
+}
+
+func TestBuildScopesMissingRepositoryCacheToQueriedPackage(t *testing.T) {
+	snapshot, repository := inspectFixture(t)
+	otherRoot := t.TempDir()
+	snapshot.Repositories = append(snapshot.Repositories, gentooling.Repository{Name: "other", Location: otherRoot})
+	snapshot.Candidates.Issues = []gentooling.Issue{
+		{Code: gentooling.IssueUnreadableRecord, Path: filepath.Join(repository.Location, "metadata", "md5-cache"), Message: "cache unavailable"},
+		{Code: gentooling.IssueUnreadableRecord, Path: filepath.Join(otherRoot, "metadata", "md5-cache"), Message: "cache unavailable"},
+	}
+	report, err := Build(context.Background(), snapshot, Options{Query: "zfs-kmod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Diagnostics) != 1 || report.Diagnostics[0].Path != filepath.Join(repository.Location, "metadata", "md5-cache") {
+		t.Fatalf("scoped diagnostics = %+v", report.Diagnostics)
 	}
 }
 
@@ -179,6 +203,7 @@ func inspectFixture(t *testing.T) (gentooling.SystemSnapshot, gentooling.Reposit
 		ID:   gentooling.PackageID{Category: "app-admin", Name: "consumer", Version: "1"},
 		EAPI: "8", Dependencies: gentooling.DependencyMetadata{RDepend: "sys-fs/zfs-kmod"},
 	}
+	installed.Dependencies.PDepend = "sys-fs/zfs-kmod"
 	candidate := gentooling.RepositoryCandidate{
 		ID: id, EAPI: "8", Keywords: []string{"~amd64"},
 		DeclaredUse:  []gentooling.UseDeclaration{{Name: "modules", Default: gentooling.UseDefaultEnabled}},

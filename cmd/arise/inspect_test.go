@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/packageinspect"
 	"github.com/airencracken/gentooling"
 )
@@ -53,6 +54,24 @@ func TestWriteInspectReportHumanContract(t *testing.T) {
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("output missing %q:\n%s", expected, output.String())
+		}
+	}
+}
+
+func TestWriteInspectReportUsesSemanticColor(t *testing.T) {
+	previous := color.UseColor
+	color.UseColor = true
+	t.Cleanup(func() { color.UseColor = previous })
+	var output bytes.Buffer
+	writeInspectReport(&output, packageinspect.Report{
+		Query: "firefox", Consistency: "stabilized-lockless",
+		Installed: []packageinspect.Installed{}, Candidates: []packageinspect.Candidate{},
+		RequiredBy: []string{}, Modules: []gentooling.InstalledKernelModulePackage{},
+		Diagnostics: []packageinspect.Diagnostic{{Code: "unreadable_record", Message: "evidence unavailable"}},
+	})
+	for _, sequence := range []string{"\x1b[1m\x1b[36m", "\x1b[1m\x1b[33m"} {
+		if !strings.Contains(output.String(), sequence) {
+			t.Fatalf("color sequence %q missing from %q", sequence, output.String())
 		}
 	}
 }
