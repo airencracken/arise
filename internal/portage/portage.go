@@ -2019,7 +2019,9 @@ func ReadReposConf(path string) ([]RepoEntry, error) {
 // and returns the sync-uri for the repo whose location matches targetDir.
 // If targetDir is empty, returns the sync-uri for the first repo found.
 func ParseReposConf(reposConfPath, targetDir string) string {
-	entries, err := parseReposConfDir(reposConfPath)
+	entries, err := gentooling.ReadRepositories(context.Background(), gentooling.SystemPaths{
+		Root: string(filepath.Separator), ReposConf: reposConfPath,
+	})
 	if err != nil || len(entries) == 0 {
 		return ""
 	}
