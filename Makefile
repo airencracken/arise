@@ -9,7 +9,7 @@ INFODIR ?= $(PREFIX)/share/info
 DOCDIR ?= $(PREFIX)/share/doc/arise
 
 GO ?= go
-GOFLAGS ?= -trimpath -ldflags="-s -w"
+GOFLAGS ?= -buildvcs=false -trimpath -ldflags="-s -w"
 COVERAGE_CORE_PKGS := $(shell $(GO) list ./cmd/... ./internal/... | grep -Ev '/(benchmark|binpkg|fetch|integration)$$')
 
 all: build test vet
@@ -186,7 +186,7 @@ arise.info: arise.texi
 docs: man info
 	@echo "Documentation built."
 
-PROJECT_VERSION := 0.0.15
+PROJECT_VERSION := 0.0.16
 VERSION ?= $(PROJECT_VERSION)
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
 check-release-version:

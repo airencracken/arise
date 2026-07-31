@@ -25,14 +25,14 @@ pkg_setup() {
 	candidate := gentooling.RepositoryCandidate{
 		ID: gentooling.PackageID{Category: "sys-fs", Name: "module", Version: "1", Repository: "test"},
 	}
-	result, err := gentooling.ReadKernelRequirements(context.Background(), candidate,
+	result, err := gentooling.EvaluateKernelRequirements(context.Background(), candidate,
 		[]gentooling.Repository{{Name: "test", Location: repository}},
-		gentooling.KernelRequirementOptions{Integrity: gentooling.AllowPartial})
+		gentooling.KernelRequirementContext{Phase: "pkg_setup", KernelRelease: "7.1.5", EffectiveUSE: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(result.Requirements) != 2 || result.Requirements[0].Symbol != "MODULES" ||
-		len(result.Invocations) != 1 {
+		result.Requirements[0].Applicability != gentooling.Applicable || !result.Complete {
 		t.Fatalf("kernel requirements = %+v", result)
 	}
 }

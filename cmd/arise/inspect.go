@@ -163,9 +163,12 @@ func writeInspectReport(writer io.Writer, report packageinspect.Report) {
 		}
 		writeDependencySummary(writer, candidate.DependencyAtoms, "    ")
 		requirements := candidate.KernelRequirements
-		if len(requirements.Requirements) != 0 || len(requirements.Dynamic) != 0 {
+		if len(requirements.Requirements) != 0 || len(requirements.Unresolved) != 0 {
 			fmt.Fprintln(writer, color.Bold("    Kernel requirements:"))
 			for _, requirement := range requirements.Requirements {
+				if requirement.Applicability == gentooling.Inapplicable {
+					continue
+				}
 				expectation := "enabled"
 				if requirement.Expectation == gentooling.KernelConfigDisabled {
 					expectation = "disabled"
@@ -174,10 +177,13 @@ func writeInspectReport(writer io.Writer, report packageinspect.Report) {
 				if requirement.Severity == gentooling.KernelRequirementWarning {
 					severity = "recommended"
 				}
-				fmt.Fprintf(writer, "      %s=%s (%s)\n", color.Cyan("CONFIG_"+requirement.Symbol), expectation, severity)
+				fmt.Fprintf(writer, "      %s=%s (%s, %s)\n", color.Cyan("CONFIG_"+requirement.Symbol), expectation, severity, requirement.Applicability)
 			}
-			for _, dynamic := range requirements.Dynamic {
-				fmt.Fprintf(writer, "      %s %s (%s)\n", color.Yellow("indeterminate:"), dynamic.Expression, dynamic.Reason)
+			for _, unresolved := range requirements.Unresolved {
+				if unresolved.Applicability == gentooling.Inapplicable {
+					continue
+				}
+				fmt.Fprintf(writer, "      %s %s (%s)\n", color.Yellow("indeterminate:"), unresolved.DeveloperText, unresolved.OperatorText)
 			}
 		}
 	}

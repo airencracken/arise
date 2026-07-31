@@ -16,7 +16,7 @@ import (
 	"github.com/airencracken/gentooling"
 )
 
-const Schema = "arise.package-inspect.v1"
+const Schema = "arise.package-inspect.v2"
 
 type Report struct {
 	Schema      string                                    `json:"schema"`
@@ -60,15 +60,15 @@ type Installed struct {
 }
 
 type Candidate struct {
-	Package            gentooling.PackageID            `json:"package"`
-	EAPI               string                          `json:"eapi"`
-	Keywords           []string                        `json:"keywords"`
-	RequiredUse        string                          `json:"required_use,omitempty"`
-	Dependencies       gentooling.DependencyMetadata   `json:"dependencies"`
-	DependencyAtoms    []string                        `json:"dependency_atoms"`
-	Visibility         gentooling.VisibilityResult     `json:"visibility"`
-	Use                gentooling.UseEvaluation        `json:"use"`
-	KernelRequirements gentooling.KernelRequirementSet `json:"kernel_requirements"`
+	Package            gentooling.PackageID                   `json:"package"`
+	EAPI               string                                 `json:"eapi"`
+	Keywords           []string                               `json:"keywords"`
+	RequiredUse        string                                 `json:"required_use,omitempty"`
+	Dependencies       gentooling.DependencyMetadata          `json:"dependencies"`
+	DependencyAtoms    []string                               `json:"dependency_atoms"`
+	Visibility         gentooling.VisibilityResult            `json:"visibility"`
+	Use                gentooling.UseEvaluation               `json:"use"`
+	KernelRequirements gentooling.EvaluatedKernelRequirements `json:"kernel_requirements"`
 }
 
 type Diagnostic struct {
@@ -134,13 +134,17 @@ func Build(ctx context.Context, snapshot gentooling.SystemSnapshot, options Opti
 		if evaluationErr != nil {
 			return Report{}, fmt.Errorf("inspect: evaluate %s: %w", candidate.ID.CPV(), evaluationErr)
 		}
-		requirements, requirementErr := gentooling.ReadKernelRequirements(ctx, candidate, options.Repositories,
-			gentooling.KernelRequirementOptions{Integrity: gentooling.AllowPartial})
+		requirements, requirementErr := gentooling.EvaluateKernelRequirements(ctx, candidate, options.Repositories,
+			gentooling.KernelRequirementContext{
+				Phase: "pkg_setup", KernelRelease: options.TargetKernel,
+				Architecture: snapshot.Config.Variables["ARCH"], MergeType: gentooling.MergeSource,
+				EffectiveUSE: enabledUse(evaluation.Use),
+			})
 		if requirementErr != nil {
 			report.Diagnostics = append(report.Diagnostics, Diagnostic{
 				Code: "kernel_requirements_unavailable", Package: candidate.ID.CPV(), Message: requirementErr.Error(),
 			})
-			requirements = gentooling.KernelRequirementSet{Package: candidate.ID}
+			requirements = gentooling.EvaluatedKernelRequirements{Package: candidate.ID, Complete: false}
 		}
 		report.Candidates = append(report.Candidates, Candidate{
 			Package: candidate.ID, EAPI: candidate.EAPI, Keywords: clone(candidate.Keywords),
@@ -165,6 +169,16 @@ func Build(ctx context.Context, snapshot gentooling.SystemSnapshot, options Opti
 		return report, fmt.Errorf("%w: %s", gentooling.ErrCandidateNotFound, options.Query)
 	}
 	return report, nil
+}
+
+func enabledUse(evaluation gentooling.UseEvaluation) []string {
+	enabled := make([]string, 0, len(evaluation.Decisions))
+	for _, decision := range evaluation.Decisions {
+		if decision.Enabled {
+			enabled = append(enabled, decision.Name)
+		}
+	}
+	return enabled
 }
 
 func installedUseState(pkg gentooling.InstalledPackage) gentooling.UseState {

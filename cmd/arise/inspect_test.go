@@ -39,8 +39,8 @@ func TestWriteInspectReportHumanContract(t *testing.T) {
 		}, EAPI: "8", Keywords: []string{"amd64"}, Visibility: gentooling.VisibilityResult{
 			Visible: true, Status: gentooling.VisibilityVisible,
 		}, Use: gentooling.UseEvaluation{Decisions: []gentooling.UseDecision{{Name: "kernel-builtin", Enabled: true}}},
-			KernelRequirements: gentooling.KernelRequirementSet{Requirements: []gentooling.KernelConfigRequirement{{
-				Symbol: "ZFS", Expectation: gentooling.KernelConfigDisabled, Severity: gentooling.KernelRequirementWarning,
+			KernelRequirements: gentooling.EvaluatedKernelRequirements{Complete: true, Requirements: []gentooling.EvaluatedKernelRequirement{{
+				Symbol: "ZFS", Expectation: gentooling.KernelConfigDisabled, Severity: gentooling.KernelRequirementWarning, Applicability: gentooling.Applicable,
 			}}},
 		}},
 		RequiredBy: []string{}, Modules: []gentooling.InstalledKernelModulePackage{}, Diagnostics: []packageinspect.Diagnostic{},
@@ -50,7 +50,7 @@ func TestWriteInspectReportHumanContract(t *testing.T) {
 	for _, expected := range []string{
 		"Package inspection: sys-fs/zfs", "Snapshot: stabilized-lockless",
 		"sys-fs/zfs-2.3:0::gentoo", "USE enabled: kernel-builtin",
-		"CONFIG_ZFS=disabled (recommended)", "Required by: none",
+		"CONFIG_ZFS=disabled (recommended, applicable)", "Required by: none",
 	} {
 		if !strings.Contains(output.String(), expected) {
 			t.Fatalf("output missing %q:\n%s", expected, output.String())

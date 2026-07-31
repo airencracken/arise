@@ -35,7 +35,9 @@ func TestBuildUnifiedReport(t *testing.T) {
 		t.Fatalf("USE decision = %+v, found %v", decision, found)
 	}
 	if len(candidate.KernelRequirements.Requirements) != 1 ||
-		candidate.KernelRequirements.Requirements[0].Symbol != "MODULES" {
+		candidate.KernelRequirements.Requirements[0].Symbol != "MODULES" ||
+		candidate.KernelRequirements.Requirements[0].Applicability != gentooling.Applicable ||
+		!candidate.KernelRequirements.Complete {
 		t.Fatalf("kernel requirements = %+v", candidate.KernelRequirements)
 	}
 	if !reflect.DeepEqual(report.RequiredBy, []string{"app-admin/consumer-1"}) {
@@ -188,7 +190,7 @@ func inspectFixture(t *testing.T) (gentooling.SystemSnapshot, gentooling.Reposit
 	if err := os.MkdirAll(filepath.Dir(ebuild), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(ebuild, []byte("CONFIG_CHECK=\"MODULES\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(ebuild, []byte("inherit linux-info\nCONFIG_CHECK=\"MODULES\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	id := gentooling.PackageID{Category: "sys-fs", Name: "zfs-kmod", Version: "2.3", Slot: "0", Repository: "gentoo"}
@@ -206,6 +208,7 @@ func inspectFixture(t *testing.T) (gentooling.SystemSnapshot, gentooling.Reposit
 	installed.Dependencies.PDepend = "sys-fs/zfs-kmod"
 	candidate := gentooling.RepositoryCandidate{
 		ID: id, EAPI: "8", Keywords: []string{"~amd64"},
+		Inherited:    []string{"linux-info"},
 		DeclaredUse:  []gentooling.UseDeclaration{{Name: "modules", Default: gentooling.UseDefaultEnabled}},
 		Dependencies: gentooling.DependencyMetadata{RDepend: "sys-kernel/gentoo-kernel"},
 	}
