@@ -3,7 +3,7 @@
 @setfilename arise.info
 @settitle arise -- Gentoo Package Manager
 @documentencoding UTF-8
-@set VERSION 0.0.12
+@set VERSION 0.0.13
 
 @copying
 arise is an experimental recovery-oriented package manager for Gentoo Linux.
