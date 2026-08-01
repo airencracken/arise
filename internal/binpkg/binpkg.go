@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -178,6 +179,67 @@ func ReadInfo(path string) (*BinPkgInfo, error) {
 }
 
 func readXPAKMetadata(f *os.File, size int64) (map[string]string, error) {
+	metadata, recognized, err := readStandardXPAKMetadata(f, size)
+	if recognized || err != nil {
+		return metadata, err
+	}
+	return readLegacyXPAKMetadata(f, size)
+}
+
+func readStandardXPAKMetadata(f *os.File, size int64) (map[string]string, bool, error) {
+	if size < 24 {
+		return nil, false, nil
+	}
+	trailer := make([]byte, 16)
+	if _, err := f.ReadAt(trailer, size-16); err != nil {
+		return nil, true, err
+	}
+	if string(trailer[:8]) != "XPAKSTOP" || string(trailer[12:]) != "STOP" {
+		return nil, false, nil
+	}
+	segmentSize := int64(binary.BigEndian.Uint32(trailer[8:12]))
+	if segmentSize < 24 || segmentSize > maxXPAKMetadataBytes || segmentSize+8 > size {
+		return nil, true, fmt.Errorf("binpkg: invalid XPAK segment size")
+	}
+	segment := make([]byte, segmentSize)
+	if _, err := f.ReadAt(segment, size-segmentSize-8); err != nil {
+		return nil, true, err
+	}
+	if string(segment[:8]) != "XPAKPACK" || string(segment[len(segment)-8:]) != "XPAKSTOP" {
+		return nil, true, fmt.Errorf("binpkg: invalid XPAK framing")
+	}
+	indexSize, dataSize := int(binary.BigEndian.Uint32(segment[8:12])), int(binary.BigEndian.Uint32(segment[12:16]))
+	if 16+indexSize+dataSize+8 != len(segment) {
+		return nil, true, fmt.Errorf("binpkg: invalid XPAK lengths")
+	}
+	index, data := segment[16:16+indexSize], segment[16+indexSize:16+indexSize+dataSize]
+	result := make(map[string]string)
+	for position := 0; position < len(index); {
+		if len(index)-position < 12 {
+			return nil, true, fmt.Errorf("binpkg: truncated XPAK index")
+		}
+		nameLength := int(binary.BigEndian.Uint32(index[position : position+4]))
+		position += 4
+		if nameLength <= 0 || nameLength > len(index)-position-8 {
+			return nil, true, fmt.Errorf("binpkg: invalid XPAK name length")
+		}
+		name := string(index[position : position+nameLength])
+		position += nameLength
+		offset := int(binary.BigEndian.Uint32(index[position : position+4]))
+		length := int(binary.BigEndian.Uint32(index[position+4 : position+8]))
+		position += 8
+		if filepath.Base(name) != name || strings.ContainsAny(name, "/\\\x00") || length > len(data) || offset > len(data)-length {
+			return nil, true, fmt.Errorf("binpkg: invalid XPAK index entry")
+		}
+		if _, exists := result[name]; exists {
+			return nil, true, fmt.Errorf("binpkg: duplicate XPAK metadata entry")
+		}
+		result[name] = strings.TrimSuffix(string(data[offset:offset+length]), "\n")
+	}
+	return result, true, nil
+}
+
+func readLegacyXPAKMetadata(f *os.File, size int64) (map[string]string, error) {
 	readSize := int64(xpakTrailerLen)
 	if size < readSize {
 		readSize = size
@@ -251,6 +313,15 @@ func parseMetadataLines(data []byte) map[string]string {
 
 func Extract(ctx context.Context, pkgPath string, destDir string) error {
 	return ExtractWithPolicy(ctx, pkgPath, destDir, DefaultExtractionPolicy)
+}
+
+// ExtractWithGPKGPolicy applies signature and extraction policy to GPKG
+// packages while retaining the normal extraction policy for legacy XPAK.
+func ExtractWithGPKGPolicy(ctx context.Context, pkgPath, destDir string, policy GPKGPolicy) error {
+	if IsGPKG(pkgPath) {
+		return ExtractGPKG(ctx, pkgPath, destDir, policy)
+	}
+	return ExtractWithPolicy(ctx, pkgPath, destDir, policy.Extraction)
 }
 
 func ExtractWithPolicy(ctx context.Context, pkgPath string, destDir string, policy ExtractionPolicy) error {
@@ -329,6 +400,19 @@ func extractWithXz(ctx context.Context, pkgPath, destDir string, policy Extracti
 }
 
 func findXPAKStart(f *os.File, size int64) (int64, error) {
+	if size >= 16 {
+		trailer := make([]byte, 16)
+		if _, err := f.ReadAt(trailer, size-16); err != nil {
+			return 0, err
+		}
+		if string(trailer[:8]) == "XPAKSTOP" && string(trailer[12:]) == "STOP" {
+			segmentSize := int64(binary.BigEndian.Uint32(trailer[8:12]))
+			if segmentSize < 24 || segmentSize > maxXPAKMetadataBytes || segmentSize+8 > size {
+				return 0, fmt.Errorf("binpkg: invalid XPAK segment size")
+			}
+			return size - segmentSize - 8, nil
+		}
+	}
 	readSize := int64(xpakTrailerLen)
 	if size < readSize {
 		readSize = size
@@ -851,28 +935,6 @@ func CreateRecoveryArtifact(ctx context.Context, request CaptureRequest) (string
 		return "", fmt.Errorf("binpkg: could not write package metadata: %w", err)
 	}
 
-	offset := len(xpakMeta) + len(xpakMagic) + 1
-	offsetStr := strconv.Itoa(offset + len(strconv.Itoa(offset)) + 1)
-
-	for {
-		testOffset := len(xpakMeta) + len(xpakMagic) + 1 + len(offsetStr) + 1
-		newOffsetStr := strconv.Itoa(testOffset)
-		if newOffsetStr == offsetStr {
-			offset = testOffset
-			offsetStr = newOffsetStr
-			break
-		}
-		offsetStr = newOffsetStr
-		offset = testOffset
-	}
-
-	trailer := xpakMagic + "\n" + offsetStr + "\n"
-	if _, err := tmpF.WriteString(trailer); err != nil {
-		if cerr := tmpF.Close(); cerr != nil { /* Best effort */
-		}
-		return "", fmt.Errorf("binpkg: could not write package footer: %w", err)
-	}
-
 	if err := tmpF.Sync(); err != nil {
 		_ = tmpF.Close()
 		return "", fmt.Errorf("binpkg: could not sync the temporary package file: %w", err)
@@ -961,20 +1023,41 @@ func installedContentPath(rootDir, recorded string) (string, string, error) {
 }
 
 func buildXPAKMetadata(meta map[string]string) []byte {
-	var buf bytes.Buffer
+	values := make(map[string][]byte)
 	for _, key := range []string{
 		"CATEGORY", "PF", "PACKAGE", "VERSION", "SLOT", "USE", "EAPI", "BUILD_TIME", "CHOST", "repository",
 		"BUILD_ID", "ABI", "CBUILD", "CTARGET",
 		recoveryManifestKey, recoveryManifestSHA256Key,
 	} {
 		if v, ok := meta[key]; ok {
-			buf.WriteString(key)
-			buf.WriteByte('=')
-			buf.WriteString(v)
-			buf.WriteByte('\n')
+			values[key] = []byte(v + "\n")
 		}
 	}
-	return buf.Bytes()
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var index, data bytes.Buffer
+	for _, key := range keys {
+		_ = binary.Write(&index, binary.BigEndian, uint32(len(key)))
+		index.WriteString(key)
+		_ = binary.Write(&index, binary.BigEndian, uint32(data.Len()))
+		_ = binary.Write(&index, binary.BigEndian, uint32(len(values[key])))
+		data.Write(values[key])
+	}
+	var segment bytes.Buffer
+	segment.WriteString("XPAKPACK")
+	_ = binary.Write(&segment, binary.BigEndian, uint32(index.Len()))
+	_ = binary.Write(&segment, binary.BigEndian, uint32(data.Len()))
+	segment.Write(index.Bytes())
+	segment.Write(data.Bytes())
+	segment.WriteString("XPAKSTOP")
+	var framed bytes.Buffer
+	framed.Write(segment.Bytes())
+	_ = binary.Write(&framed, binary.BigEndian, uint32(segment.Len()))
+	framed.WriteString("STOP")
+	return framed.Bytes()
 }
 
 func readVDBMetadata(vdbPath string) (map[string]string, error) {
@@ -1443,7 +1526,7 @@ func downloadFromBinhost(ctx context.Context, httpClient *http.Client, binhostUR
 	}
 	if indexResponse.StatusCode == http.StatusNotFound {
 		_ = indexResponse.Body.Close()
-		return downloadLegacyBinhost(ctx, httpClient, binhostURL, validTargets, destDir)
+		return nil, fmt.Errorf("binpkg: binhost has no Packages index; refusing unverifiable legacy download")
 	}
 	if indexResponse.StatusCode < 200 || indexResponse.StatusCode >= 300 {
 		_ = indexResponse.Body.Close()
@@ -1609,90 +1692,6 @@ func downloadIndexedPackage(ctx context.Context, client *http.Client, binhostURL
 		return "", err
 	}
 	return destination, nil
-}
-
-func downloadLegacyBinhost(ctx context.Context, httpClient *http.Client, binhostURL string, atomStrs []string, destDir string) ([]string, error) {
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return nil, fmt.Errorf("binpkg: could not create download destination directory: %w", err)
-	}
-
-	var downloaded []string
-
-	for _, atomStr := range atomStrs {
-		a, err := atom.Parse(atomStr)
-		if err != nil {
-			continue
-		}
-
-		catDir := filepath.Join(destDir, a.Category)
-		if err := os.MkdirAll(catDir, 0755); err != nil {
-			return downloaded, fmt.Errorf("binpkg: could not create download directory for category %s: %w", catDir, err)
-		}
-
-		version := ""
-		if a.Version != nil {
-			version = a.Version.Raw
-		}
-
-		var pkgName string
-		if version != "" {
-			pkgName = a.Package + "-" + version + ".tbz2"
-		} else {
-			pkgName = a.Package + ".tbz2"
-		}
-
-		url := strings.TrimRight(binhostURL, "/") + "/" + a.Category + "/" + pkgName
-		destPath := filepath.Join(catDir, pkgName)
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return downloaded, fmt.Errorf("binpkg: could not prepare download request for %s: %w", url, err)
-		}
-
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			return downloaded, fmt.Errorf("binpkg: could not download from %s: %w", url, err)
-		}
-
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			resp.Body.Close()
-			return downloaded, fmt.Errorf("binpkg: server returned error %d when downloading %s", resp.StatusCode, url)
-		}
-
-		tmpPath := destPath + ".part"
-		fh, err := os.Create(tmpPath)
-		if err != nil {
-			resp.Body.Close()
-			return downloaded, fmt.Errorf("binpkg: could not create temporary download file: %w", err)
-		}
-
-		if _, err := io.Copy(fh, resp.Body); err != nil {
-			if cerr := fh.Close(); cerr != nil { /* cleanup on error */
-			}
-			if cerr := resp.Body.Close(); cerr != nil { /* cleanup on error */
-			}
-			if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) { /* cleanup on error */
-			}
-			return downloaded, fmt.Errorf("binpkg: download from %s failed: %w", url, err)
-		}
-		if err := fh.Close(); err != nil {
-			resp.Body.Close()
-			return downloaded, fmt.Errorf("binpkg: could not finalize downloaded file: %w", err)
-		}
-		if err := resp.Body.Close(); err != nil {
-			return downloaded, fmt.Errorf("binpkg: could not close network connection: %w", err)
-		}
-
-		if err := os.Rename(tmpPath, destPath); err != nil {
-			if rerr := os.Remove(tmpPath); rerr != nil && !os.IsNotExist(rerr) { /* cleanup on error */
-			}
-			return downloaded, fmt.Errorf("binpkg: could not save downloaded file: %w", err)
-		}
-
-		downloaded = append(downloaded, destPath)
-	}
-
-	return downloaded, nil
 }
 
 func cleanup(closers ...io.Closer) {

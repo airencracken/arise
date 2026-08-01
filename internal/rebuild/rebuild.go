@@ -35,14 +35,16 @@ import (
 
 // RebuildConfig holds the configuration for rebuilding packages.
 type RebuildConfig struct {
-	RepoDir           string
-	DistfilesDir      string
-	SourceURI         string // resolved metadata, including eclass-derived SRC_URI
-	BinaryPackagePath string
-	PackageDir        string
-	BuildPackage      bool
-	BuildOnly         bool
-	RootDir           string
+	RepoDir                       string
+	DistfilesDir                  string
+	SourceURI                     string // resolved metadata, including eclass-derived SRC_URI
+	BinaryPackagePath             string
+	PackageDir                    string
+	BinaryPackageRequireSignature bool
+	BinaryPackageTrustedKeyring   string
+	BuildPackage                  bool
+	BuildOnly                     bool
+	RootDir                       string
 	// SysrootDir supplies target build dependencies. It defaults to RootDir.
 	// BrootDir supplies build-host dependencies. It defaults to RootDir.
 	// Keeping these distinct is required for cross-root/disposable image builds.

@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -82,6 +84,49 @@ func TestCreate(t *testing.T) {
 	expected := filepath.Join(pkgDir, "sys-devel", "mockpkg-1.0.tbz2")
 	if outPath != expected {
 		t.Errorf("Create() path = %s, want %s", outPath, expected)
+	}
+}
+
+func TestAriseXPAKIsReadableByInstalledPortage(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 unavailable")
+	}
+	baseDir := t.TempDir()
+	vdbPath, rootDir := createMockVDB(t, baseDir)
+	path, err := Create(context.Background(), vdbPath, rootDir, filepath.Join(baseDir, "binpkgs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "import sys,portage.xpak\np=portage.xpak.tbz2(sys.argv[1])\nd=p.get_data()\nprint(d[b'CATEGORY'].decode().strip(),d[b'PF'].decode().strip(),d[b'SLOT'].decode().strip())\n"
+	output, err := exec.Command("python3", "-c", script, path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("Portage rejected Arise XPAK: %v\n%s", err, output)
+	}
+	if strings.TrimSpace(string(output)) != "sys-devel mockpkg-1.0 0/1.0" {
+		t.Fatalf("Portage XPAK metadata = %q", output)
+	}
+}
+
+func TestPortageRewrittenXPAKIsReadableByArise(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 unavailable")
+	}
+	baseDir := t.TempDir()
+	vdbPath, rootDir := createMockVDB(t, baseDir)
+	path, err := Create(context.Background(), vdbPath, rootDir, filepath.Join(baseDir, "binpkgs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "import sys,portage.xpak\np=portage.xpak.tbz2(sys.argv[1])\nd=p.get_data()\nd[b'EAPI']=b'9'\np.recompose_mem(portage.xpak.xpak_mem(d))\n"
+	if output, err := exec.Command("python3", "-c", script, path).CombinedOutput(); err != nil {
+		t.Fatalf("Portage could not rewrite XPAK: %v\n%s", err, output)
+	}
+	info, err := ReadInfo(path)
+	if err != nil {
+		t.Fatalf("Arise rejected Portage XPAK: %v", err)
+	}
+	if info.EAPI != "9" || info.CPV() != "sys-devel/mockpkg-1.0" {
+		t.Fatalf("Arise XPAK info = %+v", info)
 	}
 }
 
@@ -431,20 +476,9 @@ func TestCorruptPackage_InvalidOffset(t *testing.T) {
 		t.Fatalf("read package: %v", err)
 	}
 
-	lastXPAK := bytes.LastIndex(data, []byte(xpakMagic+"\n"))
-	if lastXPAK < 0 {
-		t.Fatal("no XPAKSTOP in package")
-	}
-
-	trailerStart := lastXPAK + len(xpakMagic) + 1
-	nlIdx := bytes.IndexByte(data[trailerStart:], '\n')
-	if nlIdx < 0 {
-		t.Fatal("no offset newline after XPAKSTOP")
-	}
-
 	corruptData := make([]byte, len(data))
 	copy(corruptData, data)
-	copy(corruptData[trailerStart:], []byte("99999999\n"))
+	binary.BigEndian.PutUint32(corruptData[len(corruptData)-8:len(corruptData)-4], ^uint32(0))
 
 	corruptPath := filepath.Join(baseDir, "corrupt_offset.tbz2")
 	if err := os.WriteFile(corruptPath, corruptData, 0644); err != nil {
@@ -902,17 +936,52 @@ func TestXPAKMetadataKeys(t *testing.T) {
 		"BUILD_TIME": "1700000000",
 	}
 	result := buildXPAKMetadata(meta)
-	resultStr := string(result)
-
-	if !strings.Contains(resultStr, "CATEGORY=sys-devel") {
+	category, ok := xpakValueForTest(result, "CATEGORY")
+	if !ok || strings.TrimSpace(string(category)) != "sys-devel" {
 		t.Error("missing CATEGORY in metadata")
 	}
-	if !strings.Contains(resultStr, "PF=gcc-13.2.0") {
+	pf, ok := xpakValueForTest(result, "PF")
+	if !ok || strings.TrimSpace(string(pf)) != "gcc-13.2.0" {
 		t.Error("missing PF in metadata")
 	}
-	if !strings.Contains(resultStr, "SLOT=13/13.2") {
+	slot, ok := xpakValueForTest(result, "SLOT")
+	if !ok || strings.TrimSpace(string(slot)) != "13/13.2" {
 		t.Error("missing SLOT in metadata")
 	}
+}
+
+func xpakValueForTest(segment []byte, wanted string) ([]byte, bool) {
+	if len(segment) < 32 || string(segment[:8]) != "XPAKPACK" {
+		return nil, false
+	}
+	indexSize := int(binary.BigEndian.Uint32(segment[8:12]))
+	dataSize := int(binary.BigEndian.Uint32(segment[12:16]))
+	if 16+indexSize+dataSize+16 != len(segment) {
+		return nil, false
+	}
+	index, data := segment[16:16+indexSize], segment[16+indexSize:16+indexSize+dataSize]
+	for position := 0; position < len(index); {
+		if len(index)-position < 12 {
+			return nil, false
+		}
+		nameLength := int(binary.BigEndian.Uint32(index[position : position+4]))
+		position += 4
+		if nameLength > len(index)-position-8 {
+			return nil, false
+		}
+		name := string(index[position : position+nameLength])
+		position += nameLength
+		offset := int(binary.BigEndian.Uint32(index[position : position+4]))
+		length := int(binary.BigEndian.Uint32(index[position+4 : position+8]))
+		position += 8
+		if offset > len(data)-length {
+			return nil, false
+		}
+		if name == wanted {
+			return data[offset : offset+length], true
+		}
+	}
+	return nil, false
 }
 
 func TestParseMetadataLines(t *testing.T) {
@@ -1669,24 +1738,14 @@ func TestDownloadFromBinhost_HTTP(t *testing.T) {
 	url := "https://binhost.invalid/"
 
 	downloaded, err := downloadFromBinhost(context.Background(), client, url, []string{"=sys-devel/testpkg-1.0"}, destDir)
-	if err != nil {
-		t.Fatalf("DownloadFromBinhost error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no Packages index") {
+		t.Fatalf("legacy refusal = %v", err)
 	}
-	if len(downloaded) != 1 {
-		t.Fatalf("expected 1 downloaded, got %d", len(downloaded))
+	if len(downloaded) != 0 {
+		t.Fatalf("downloaded = %v", downloaded)
 	}
-
-	expectedPath := filepath.Join(destDir, "sys-devel", "testpkg-1.0.tbz2")
-	if downloaded[0] != expectedPath {
-		t.Errorf("path = %q, want %q", downloaded[0], expectedPath)
-	}
-
-	data, err := os.ReadFile(downloaded[0])
-	if err != nil {
-		t.Fatalf("read downloaded file: %v", err)
-	}
-	if !bytes.Equal(data, pkgContent) {
-		t.Errorf("content mismatch")
+	if _, statErr := os.Stat(destDir); !os.IsNotExist(statErr) {
+		t.Fatalf("destination mutated: %v", statErr)
 	}
 }
 
@@ -1801,16 +1860,11 @@ func TestDownloadFromBinhost_NoVersion(t *testing.T) {
 	url := "https://binhost.invalid/"
 
 	downloaded, err := downloadFromBinhost(context.Background(), client, url, []string{"sys-devel/testpkg"}, destDir)
-	if err != nil {
-		t.Fatalf("DownloadFromBinhost error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no Packages index") {
+		t.Fatalf("legacy refusal = %v", err)
 	}
-	if len(downloaded) != 1 {
-		t.Fatalf("expected 1 downloaded, got %d", len(downloaded))
-	}
-
-	expectedPath := filepath.Join(destDir, "sys-devel", "testpkg.tbz2")
-	if downloaded[0] != expectedPath {
-		t.Errorf("path = %q, want %q", downloaded[0], expectedPath)
+	if len(downloaded) != 0 {
+		t.Fatalf("downloaded = %v", downloaded)
 	}
 }
 

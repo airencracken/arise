@@ -60,6 +60,8 @@ var (
 	vdbDir                     = flag.String("vdb-dir", commandRootPath("/var/db/pkg"), "path to VDB (var/db/pkg)")
 	workDir                    = flag.String("work-dir", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise"), "path to working directory")
 	binpkgDir                  = flag.String("binpkg-dir", commandEnv("PKGDIR", "/var/cache/binpkgs"), "path to binary package directory")
+	binpkgRequireSignature     = flag.Bool("binpkg-require-signature", false, "require trusted OpenPGP signatures on GPKG binary packages")
+	binpkgTrustedKeyring       = flag.String("binpkg-trusted-keyring", "", "absolute gpgv keyring used to verify signed GPKG manifests")
 	portageConfigRoot          = flag.String("portage-config-root", commandConfigRoot(), "path to portage configuration directory")
 	worldFile                  = flag.String("world-file", commandRootPath("/var/lib/portage/world"), "path to world set file")
 	resumeFile                 = flag.String("resume-file", filepath.Join(commandEnv("PORTAGE_TMPDIR", "/var/tmp"), "arise", "resume"), "path to resume state file")

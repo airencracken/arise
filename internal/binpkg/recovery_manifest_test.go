@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -131,12 +132,10 @@ func TestReadRecoveryManifestRejectsTampering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	marker := []byte(recoveryManifestKey + "=")
-	start := bytes.Index(data, marker)
-	if start < 0 {
+	value, start, ok := xpakValueRangeForTest(data, recoveryManifestKey)
+	if !ok || len(value) == 0 {
 		t.Fatal("artifact omits manifest metadata")
 	}
-	start += len(marker)
 	data[start] = differentBase64Byte(data[start])
 	tampered := filepath.Join(base, "tampered.tbz2")
 	if err := os.WriteFile(tampered, data, 0644); err != nil {
@@ -158,7 +157,11 @@ func TestReadRecoveryManifestRejectsMetadataIdentityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = bytes.Replace(data, []byte("CATEGORY=sys-devel\n"), []byte("CATEGORY=app-devel\n"), 1)
+	value, start, ok := xpakValueRangeForTest(data, "CATEGORY")
+	if !ok || string(value) != "sys-devel\n" {
+		t.Fatal("artifact omits CATEGORY")
+	}
+	copy(data[start:start+len(value)], []byte("app-devel\n"))
 	tampered := filepath.Join(base, "identity-mismatch.tbz2")
 	if err := os.WriteFile(tampered, data, 0644); err != nil {
 		t.Fatal(err)
@@ -166,6 +169,28 @@ func TestReadRecoveryManifestRejectsMetadataIdentityMismatch(t *testing.T) {
 	if _, err := ReadRecoveryManifest(tampered); err == nil || !strings.Contains(err.Error(), "identity disagrees") {
 		t.Fatalf("ReadRecoveryManifest() identity error = %v", err)
 	}
+}
+
+func xpakValueRangeForTest(packageData []byte, key string) ([]byte, int, bool) {
+	if len(packageData) < 16 {
+		return nil, 0, false
+	}
+	segmentSize := int(binary.BigEndian.Uint32(packageData[len(packageData)-8 : len(packageData)-4]))
+	start := len(packageData) - segmentSize - 8
+	if start < 0 {
+		return nil, 0, false
+	}
+	segment := packageData[start : start+segmentSize+8]
+	value, ok := xpakValueForTest(segment, key)
+	if !ok {
+		return nil, 0, false
+	}
+	for offset := 16 + int(binary.BigEndian.Uint32(segment[8:12])); offset <= len(segment)-len(value); offset++ {
+		if bytes.Equal(segment[offset:offset+len(value)], value) {
+			return value, start + offset, true
+		}
+	}
+	return nil, 0, false
 }
 
 func TestRecoveryManifestSchemaValidation(t *testing.T) {
