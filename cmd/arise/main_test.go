@@ -512,6 +512,26 @@ func TestRestrictionSuffix(t *testing.T) {
 	}
 }
 
+func TestPropertiesSuffixMatchesEixMarkers(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties string
+		want       string
+	}{
+		{name: "none", want: ""},
+		{name: "live", properties: "live", want: "*l"},
+		{name: "all in canonical order", properties: "set live interactive", want: "*ils"},
+		{name: "conditional metadata", properties: "test? ( interactive ) || ( live set )", want: "*ils"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := propertiesSuffix(test.properties); got != test.want {
+				t.Fatalf("propertiesSuffix(%q) = %q, want %q", test.properties, got, test.want)
+			}
+		})
+	}
+}
+
 func snapshotFlags() struct {
 	backtrackVal       int
 	deep               bool

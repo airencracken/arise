@@ -59,7 +59,7 @@ func TestInstalledSearchStylesAreVisuallyDistinct(t *testing.T) {
 			t.Fatalf("%s lacks installed styling: %q", name, value)
 		}
 	}
-	if !strings.Contains(version, "\x1b[44m") || !strings.Contains(version, "\x1b[92m") {
-		t.Fatalf("installed version lacks contrasting foreground/background: %q", version)
+	if !strings.Contains(version, "\x1b[44m") || !strings.Contains(version, "\x1b[30m") {
+		t.Fatalf("installed version does not match eix's black-on-blue styling: %q", version)
 	}
 }

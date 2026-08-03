@@ -53,12 +53,13 @@ type SearchResult struct {
 }
 
 type VersionInfo struct {
-	Version  string
-	Slot     string
-	Stable   bool
-	Testing  bool
-	Masked   bool
-	Restrict string
+	Version    string
+	Slot       string
+	Stable     bool
+	Testing    bool
+	Masked     bool
+	Restrict   string
+	Properties string
 }
 
 type InstalledVersion struct {
@@ -785,7 +786,7 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig, installed map[s
 					if data, readErr := os.ReadFile(cachePath); readErr == nil {
 						if m, parseErr := metadata.ParseCacheEntry(r.Category+"/"+r.Package+"-"+ver, data); parseErr == nil {
 							status := toSearchResult(m, installed[m.Key()])
-							versionInfo = append(versionInfo, VersionInfo{Version: ver, Slot: m.SLOT, Stable: status.Stable, Testing: status.Testing, Masked: status.IsMasked, Restrict: m.RESTRICT})
+							versionInfo = append(versionInfo, VersionInfo{Version: ver, Slot: m.SLOT, Stable: status.Stable, Testing: status.Testing, Masked: status.IsMasked, Restrict: m.RESTRICT, Properties: m.PROPERTIES})
 							if bestMetadata == nil || compareVersionStrings(ver, bestMetadata.Version) > 0 {
 								bestMetadata = m
 							}

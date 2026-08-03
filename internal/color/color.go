@@ -22,6 +22,7 @@ func init() {
 const (
 	ansiReset          = "\033[0m"
 	ansiBold           = "\033[1m"
+	ansiBlack          = "\033[30m"
 	ansiRed            = "\033[31m"
 	ansiGreen          = "\033[32m"
 	ansiYellow         = "\033[33m"
@@ -67,9 +68,9 @@ func BoldBlue(s string) string        { return styled(s, ansiBold, ansiBlue) }
 func BoldMagenta(s string) string     { return styled(s, ansiBold, ansiMagenta) }
 func ReverseBoldCyan(s string) string { return styled(s, ansiBold, ansiReverse, ansiCyan) }
 func ReverseBoldBlue(s string) string { return styled(s, ansiBold, ansiReverse, ansiBlue) }
-func InstalledMarker(s string) string { return styled(s, ansiBold, ansiReverse, ansiCyan) }
+func InstalledMarker(s string) string { return styled(s, ansiBold, ansiReverse, ansiGreen) }
 func InstalledVersion(s string) string {
-	return styled(s, ansiBold, ansiBrightGreen, ansiBlueBackground)
+	return styled(s, ansiBlack, ansiBlueBackground)
 }
 
 func styled(s string, codes ...string) string {
