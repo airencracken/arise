@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/fetch"
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/resolve"
@@ -509,6 +510,26 @@ func TestRestrictionSuffix(t *testing.T) {
 	}
 	if got := restrictionSuffix(""); got != "" {
 		t.Fatalf("empty restriction suffix = %q", got)
+	}
+}
+
+func TestConfigureColorOutput(t *testing.T) {
+	previous := color.UseColor
+	t.Cleanup(func() { color.UseColor = previous })
+
+	color.UseColor = false
+	if err := configureColorOutput("y"); err != nil || !color.UseColor {
+		t.Fatalf("--color=y did not force color: enabled=%v err=%v", color.UseColor, err)
+	}
+	if err := configureColorOutput("n"); err != nil || color.UseColor {
+		t.Fatalf("--color=n did not disable color: enabled=%v err=%v", color.UseColor, err)
+	}
+	color.UseColor = true
+	if err := configureColorOutput("auto"); err != nil || !color.UseColor {
+		t.Fatalf("--color=auto changed terminal detection: enabled=%v err=%v", color.UseColor, err)
+	}
+	if err := configureColorOutput("sometimes"); err == nil {
+		t.Fatal("invalid color mode was accepted")
 	}
 }
 

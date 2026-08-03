@@ -11,9 +11,6 @@ import (
 var UseColor = true
 
 func init() {
-	if os.Getenv("NO_COLOR") != "" {
-		UseColor = false
-	}
 	if !term.IsTerminal(int(os.Stdout.Fd())) {
 		UseColor = false
 	}
@@ -68,6 +65,7 @@ func BoldBlue(s string) string        { return styled(s, ansiBold, ansiBlue) }
 func BoldMagenta(s string) string     { return styled(s, ansiBold, ansiMagenta) }
 func ReverseBoldCyan(s string) string { return styled(s, ansiBold, ansiReverse, ansiCyan) }
 func ReverseBoldBlue(s string) string { return styled(s, ansiBold, ansiReverse, ansiBlue) }
+func Reverse(s string) string         { return styled(s, ansiReverse) }
 func InstalledMarker(s string) string { return styled(s, ansiBold, ansiReverse, ansiGreen) }
 func InstalledVersion(s string) string {
 	return styled(s, ansiBlack, ansiBlueBackground)

@@ -55,6 +55,8 @@ type SearchResult struct {
 type VersionInfo struct {
 	Version    string
 	Slot       string
+	Keywords   string
+	IUSE       string
 	Stable     bool
 	Testing    bool
 	Masked     bool
@@ -786,7 +788,7 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig, installed map[s
 					if data, readErr := os.ReadFile(cachePath); readErr == nil {
 						if m, parseErr := metadata.ParseCacheEntry(r.Category+"/"+r.Package+"-"+ver, data); parseErr == nil {
 							status := toSearchResult(m, installed[m.Key()])
-							versionInfo = append(versionInfo, VersionInfo{Version: ver, Slot: m.SLOT, Stable: status.Stable, Testing: status.Testing, Masked: status.IsMasked, Restrict: m.RESTRICT, Properties: m.PROPERTIES})
+							versionInfo = append(versionInfo, VersionInfo{Version: ver, Slot: m.SLOT, Keywords: m.KEYWORDS, IUSE: m.IUSE, Stable: status.Stable, Testing: status.Testing, Masked: status.IsMasked, Restrict: m.RESTRICT, Properties: m.PROPERTIES})
 							if bestMetadata == nil || compareVersionStrings(ver, bestMetadata.Version) > 0 {
 								bestMetadata = m
 							}
@@ -814,7 +816,7 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig, installed map[s
 			if bestMetadata != nil {
 				r.Description = bestMetadata.DESCRIPTION
 				r.Homepage = bestMetadata.HOMEPAGE
-				r.IUSE = bestMetadata.IUSE
+				r.IUSE = collectedVersionIUSE(versionInfo)
 				r.Keywords = bestMetadata.KEYWORDS
 			}
 			if len(versions) > 0 {
@@ -835,6 +837,23 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig, installed map[s
 		}
 	}
 	return expanded
+}
+
+func collectedVersionIUSE(versions []VersionInfo) string {
+	seen := make(map[string]bool)
+	var flags []string
+	for _, version := range versions {
+		for _, flag := range strings.Fields(version.IUSE) {
+			if !seen[flag] {
+				seen[flag] = true
+				flags = append(flags, flag)
+			}
+		}
+	}
+	sort.SliceStable(flags, func(i, j int) bool {
+		return strings.TrimLeft(flags[i], "+-") < strings.TrimLeft(flags[j], "+-")
+	})
+	return strings.Join(flags, " ")
 }
 
 func compareVersionStrings(a, b string) int {

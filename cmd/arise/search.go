@@ -161,10 +161,12 @@ func runSearch(args []string, dbPath string) int {
 	}
 
 	var useExpand, useExpandHidden []string
+	arch := ""
 	if effective, configErr := searchEffectiveConfig(); configErr == nil {
 		useExpand = append(useExpand, effective.UseExpand...)
 		useExpand = append(useExpand, effective.UseExpandImplicit...)
 		useExpandHidden = append(useExpandHidden, effective.UseExpandHidden...)
+		arch = effective.Variables["ARCH"]
 	}
 
 	overlays := make(map[int]search.SearchResult)
@@ -183,23 +185,18 @@ func runSearch(args []string, dbPath string) int {
 		}
 		fmt.Println()
 		if len(r.VersionInfo) > 0 {
-			fmt.Printf("     %s", color.Green("Available versions:"))
+			fmt.Printf("     %s ", color.Green("Available versions:"))
 			lastSlot := ""
 			for _, v := range r.VersionInfo {
 				if v.Slot != "" && v.Slot != "0" && v.Slot != lastSlot {
 					fmt.Printf("  %s", color.BoldRed("("+v.Slot+")"))
 					lastSlot = v.Slot
 				}
-				label := v.Version
-				switch {
-				case v.Masked:
-					label = color.Red("**" + label)
-				case v.Stable:
-					label = color.Green(label)
-				case v.Testing:
-					label = color.Yellow("~" + label)
-				}
+				label := availableVersionDisplay(v, arch, r.InstalledVersions)
 				fmt.Printf(" %s%s%s", label, color.Cyan(propertiesSuffix(v.Properties)), color.Red(restrictionSuffix(v.Restrict)))
+			}
+			if r.IUSE != "" {
+				fmt.Printf(" %s", declaredUseDisplay(r.IUSE, useExpand, useExpandHidden))
 			}
 			fmt.Println()
 		} else {
@@ -207,10 +204,14 @@ func runSearch(args []string, dbPath string) int {
 			if len(versions) == 0 && r.Version != "" {
 				versions = []string{r.Version}
 			}
-			fmt.Printf("     %s %s\n", color.Green("Available versions:"), strings.Join(versions, " "))
+			fmt.Printf("     %s  %s", color.Green("Available versions:"), strings.Join(versions, " "))
+			if r.IUSE != "" {
+				fmt.Printf(" %s", declaredUseDisplay(r.IUSE, useExpand, useExpandHidden))
+			}
+			fmt.Println()
 		}
 		if len(r.InstalledVersions) > 0 {
-			fmt.Printf("     %s ", color.Green("Installed versions:"))
+			fmt.Printf("     %s  ", color.Green("Installed versions:"))
 			for i, installed := range r.InstalledVersions {
 				if i > 0 {
 					fmt.Printf("\n                          ")
@@ -221,16 +222,13 @@ func runSearch(args []string, dbPath string) int {
 				}
 				fmt.Print(color.Red(restrictionSuffix(installed.Restrict)))
 				if installed.BuildTime > 0 {
-					fmt.Print(color.BoldMagenta(time.Unix(installed.BuildTime, 0).Format("(03:04:05 PM 01/02/2006)")))
+					fmt.Print(color.BoldMagenta(time.Unix(installed.BuildTime, 0).Format("(15:04:05 01/02/06)")))
 				}
 				if len(installed.EnabledUSE)+len(installed.DisabledUSE) > 0 {
 					fmt.Printf(" %s", installedUseDisplay(installed, useExpand, useExpandHidden))
 				}
 			}
 			fmt.Println()
-		}
-		if r.IUSE != "" {
-			fmt.Printf("     %s %s%s%s\n", color.Green("Declared USE flags:"), color.BoldYellow("{"), r.IUSE, color.BoldYellow("}"))
 		}
 		if r.Homepage != "" {
 			fmt.Printf("     %s            %s\n", color.Green("Homepage:"), r.Homepage)
@@ -333,14 +331,65 @@ func installedUseDisplay(installed search.InstalledVersion, expandGroups, hidden
 
 	parts := make([]string, 0, len(groups)+1)
 	if len(ordinary) > 0 {
-		parts = append(parts, `USE="`+colorInstalledUseFlags(ordinary)+`"`)
+		parts = append(parts, colorInstalledUseFlags(ordinary))
 	}
 	for _, group := range groups {
 		if len(group.flags) > 0 {
 			parts = append(parts, group.name+`="`+colorInstalledUseFlags(group.flags)+`"`)
 		}
 	}
-	return strings.Join(parts, " ")
+	if len(parts) == 0 {
+		return ""
+	}
+	return "(" + strings.Join(parts, " ") + ")"
+}
+
+func declaredUseDisplay(iuse string, expandGroups, hiddenGroups []string) string {
+	hidden := make(map[string]bool, len(hiddenGroups))
+	for _, group := range hiddenGroups {
+		hidden[strings.ToUpper(strings.TrimSpace(group))] = true
+	}
+	type useGroup struct {
+		name   string
+		prefix string
+		flags  []string
+	}
+	groups := make([]useGroup, 0, len(expandGroups))
+	seen := make(map[string]bool, len(expandGroups))
+	for _, raw := range expandGroups {
+		name := strings.ToUpper(strings.TrimSpace(raw))
+		if name == "" || seen[name] || hidden[name] {
+			continue
+		}
+		seen[name] = true
+		groups = append(groups, useGroup{name: name, prefix: strings.ToLower(name) + "_"})
+	}
+	ordinary := make([]string, 0, len(strings.Fields(iuse)))
+	for _, flag := range strings.Fields(iuse) {
+		marker := ""
+		name := flag
+		if strings.HasPrefix(name, "+") || strings.HasPrefix(name, "-") {
+			marker, name = name[:1], name[1:]
+		}
+		grouped := false
+		for index := range groups {
+			if strings.HasPrefix(name, groups[index].prefix) {
+				groups[index].flags = append(groups[index].flags, marker+strings.TrimPrefix(name, groups[index].prefix))
+				grouped = true
+				break
+			}
+		}
+		if !grouped {
+			ordinary = append(ordinary, flag)
+		}
+	}
+	parts := append([]string(nil), ordinary...)
+	for _, group := range groups {
+		if len(group.flags) > 0 {
+			parts = append(parts, group.name+`="`+strings.Join(group.flags, " ")+`"`)
+		}
+	}
+	return color.BoldYellow("{") + strings.Join(parts, " ") + color.BoldYellow("}")
 }
 
 func colorInstalledUseFlags(flags []string) string {
@@ -402,6 +451,61 @@ func propertiesSuffix(properties string) string {
 		return ""
 	}
 	return "*" + suffix.String()
+}
+
+func availableVersionDisplay(version search.VersionInfo, arch string, installed []search.InstalledVersion) string {
+	decorateInstalled := func(rendered string) string {
+		for _, current := range installed {
+			if current.Version == version.Version && normalizedSearchSlot(current.Slot) == normalizedSearchSlot(version.Slot) {
+				return color.Reverse(rendered)
+			}
+		}
+		return rendered
+	}
+	if arch == "" {
+		switch {
+		case version.Masked:
+			return color.Red("**" + version.Version)
+		case version.Stable:
+			return decorateInstalled(color.Green(version.Version))
+		case version.Testing:
+			return decorateInstalled(color.Yellow("~" + version.Version))
+		default:
+			return version.Version
+		}
+	}
+	stable, testing, anyTesting := false, false, false
+	keywords := strings.Fields(version.Keywords)
+	for _, keyword := range keywords {
+		switch keyword {
+		case arch:
+			stable = true
+		case "~" + arch:
+			testing = true
+		}
+		if strings.HasPrefix(keyword, "~") {
+			anyTesting = true
+		}
+	}
+	switch {
+	case stable:
+		return decorateInstalled(color.Green(version.Version))
+	case testing:
+		return decorateInstalled(color.Yellow("~" + version.Version))
+	case len(keywords) == 0:
+		return color.Red("**" + version.Version)
+	case anyTesting:
+		return color.Red("~*" + version.Version)
+	default:
+		return color.Red("*" + version.Version)
+	}
+}
+
+func normalizedSearchSlot(slot string) string {
+	if slot == "" {
+		return "0"
+	}
+	return slot
 }
 
 func searchUpgradeAvailable(result search.SearchResult) bool {
