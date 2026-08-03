@@ -13,12 +13,10 @@ import (
 
 type terminalProgress struct {
 	output            bool
-	enabled           bool // animation is reserved for work with measured progress events
+	enabled           bool // activity frames are reserved for callers that report real events
 	terminal          bool
 	animate           bool
 	displayed         bool
-	done              chan struct{}
-	wait              sync.WaitGroup
 	mu                sync.Mutex
 	writer            io.Writer
 	label             string
@@ -28,6 +26,7 @@ type terminalProgress struct {
 	progressBucket    int
 	concurrent        bool
 	completedProgress map[string]bool
+	frame             int
 }
 
 var progressFrames = [...]string{"|", "/", "-", "\\"}
@@ -43,37 +42,13 @@ func startTerminalProgressMode(label string, output, animate bool) *terminalProg
 
 func startTerminalProgressWriter(label string, output, animate, terminal bool, writer io.Writer) *terminalProgress {
 	p := &terminalProgress{output: output, enabled: terminal && animate, terminal: terminal, animate: animate, writer: writer, label: label, progressBucket: -1}
-	if !p.terminal || !p.animate {
-		return p
+	if p.terminal && p.animate {
+		p.renderLocked()
 	}
-	p.done = make(chan struct{})
-	p.wait.Add(1)
-	go func() {
-		defer p.wait.Done()
-		ticker := time.NewTicker(80 * time.Millisecond)
-		defer ticker.Stop()
-		frame := 0
-		p.render(frame)
-		for {
-			select {
-			case <-ticker.C:
-				frame = (frame + 1) % len(progressFrames)
-				p.render(frame)
-			case <-p.done:
-				return
-			}
-		}
-	}()
 	return p
 }
 
-func (p *terminalProgress) render(frame int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.renderLocked(frame)
-}
-
-func (p *terminalProgress) renderLocked(frame int) {
+func (p *terminalProgress) renderLocked() {
 	if !p.terminal {
 		return
 	}
@@ -82,7 +57,7 @@ func (p *terminalProgress) renderLocked(frame int) {
 		line = p.status
 	}
 	if line == "" && p.animate {
-		line = progressFrames[frame] + " " + p.label
+		line = progressFrames[p.frame] + " " + p.label
 	}
 	if line == "" {
 		return
@@ -103,6 +78,12 @@ func (p *terminalProgress) renderLocked(frame int) {
 	p.renderedLine = line
 }
 
+func (p *terminalProgress) advanceActivityLocked() {
+	if p.animate {
+		p.frame = (p.frame + 1) % len(progressFrames)
+	}
+}
+
 func (p *terminalProgress) setLabel(label string) {
 	if p == nil || !p.output {
 		return
@@ -110,12 +91,13 @@ func (p *terminalProgress) setLabel(label string) {
 	p.mu.Lock()
 	p.label = label
 	if p.terminal {
-		p.renderLocked(0)
+		p.advanceActivityLocked()
+		p.renderLocked()
 	}
 	p.mu.Unlock()
 }
 
-// setActivity replaces the animated terminal label, or writes a durable stage
+// setActivity advances and replaces the terminal activity label, or writes a durable stage
 // line when output is redirected. It is intended for work that has meaningful
 // stages but no measurable item count.
 func (p *terminalProgress) setActivity(activity string) {
@@ -127,7 +109,8 @@ func (p *terminalProgress) setActivity(activity string) {
 	p.status = ""
 	p.transient = ""
 	if p.terminal {
-		p.renderLocked(0)
+		p.advanceActivityLocked()
+		p.renderLocked()
 	} else {
 		fmt.Fprintln(p.writer, activity)
 	}
@@ -141,7 +124,7 @@ func (p *terminalProgress) setStatus(status string) {
 	p.mu.Lock()
 	p.status = status
 	if p.terminal {
-		p.renderLocked(0)
+		p.renderLocked()
 	} else {
 		fmt.Fprintln(p.writer, status)
 	}
@@ -193,7 +176,7 @@ func (p *terminalProgress) setProgress(message string, current, total int) {
 		}
 		fmt.Fprintln(p.writer, message)
 		if p.terminal && p.status != "" {
-			p.renderLocked(0)
+			p.renderLocked()
 		}
 		return
 	}
@@ -204,7 +187,7 @@ func (p *terminalProgress) setProgress(message string, current, total int) {
 	}
 	p.progressBucket = bucket
 	if p.terminal {
-		p.renderLocked(0)
+		p.renderLocked()
 		return
 	}
 	fmt.Fprintln(p.writer, message)
@@ -218,7 +201,7 @@ func (p *terminalProgress) clearProgress() {
 	p.transient = ""
 	p.progressBucket = -1
 	if p.terminal {
-		p.renderLocked(0)
+		p.renderLocked()
 	}
 	p.mu.Unlock()
 }
@@ -236,7 +219,7 @@ func (p *terminalProgress) message(message string) {
 	}
 	fmt.Fprintln(p.writer, message)
 	if p.terminal && p.status != "" {
-		p.renderLocked(0)
+		p.renderLocked()
 	}
 }
 
@@ -254,10 +237,6 @@ func (p *terminalProgress) stopAndClear() {
 func (p *terminalProgress) stopMode(newline bool) {
 	if p == nil || !p.terminal {
 		return
-	}
-	if p.done != nil {
-		close(p.done)
-		p.wait.Wait()
 	}
 	p.mu.Lock()
 	if p.displayed {

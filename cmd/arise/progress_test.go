@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/airencracken/arise/internal/fetch"
 )
@@ -162,8 +163,8 @@ func TestConcurrentNonTerminalPackageProgressDeduplicatesCompletionCallbacks(t *
 func TestNonAnimatedTerminalProgressHasNoBackgroundRedraw(t *testing.T) {
 	var output bytes.Buffer
 	progress := startTerminalProgressWriter("package transaction", true, false, true, &output)
-	if progress.done != nil {
-		t.Fatal("non-animated terminal progress started a redraw loop")
+	if output.Len() != 0 {
+		t.Fatalf("non-animated terminal progress rendered without an event: %q", output.String())
 	}
 	progress.setStatus(">>> Jobs: 0 of 1 complete")
 	progress.setProgress(">>> Installing package contents (1 of 1) cat/pkg-1", 1, 1)
@@ -187,8 +188,8 @@ func TestAnimatedTerminalProgressDoesNotRedrawUnchangedMeasuredProgress(t *testi
 	}
 	message := ">>> Installing package contents: 110/110 entries (100%) (2 of 14) dev-go/gopls-0.22.0:0"
 	progress.setProgress(message, 110, 110)
-	for frame := range 100 {
-		progress.render(frame % len(progressFrames))
+	for range 100 {
+		progress.setProgress(message, 110, 110)
 	}
 	progress.message(">>> Syncing package contents (2 of 14) dev-go/gopls-0.22.0:0::gentoo")
 
@@ -198,6 +199,28 @@ func TestAnimatedTerminalProgressDoesNotRedrawUnchangedMeasuredProgress(t *testi
 	}
 	if !strings.Contains(got, "\r\033[K"+message+"\r\033[K>>> Syncing package contents (2 of 14) dev-go/gopls-0.22.0:0::gentoo\n") {
 		t.Fatalf("next stage did not replace completion with a clean line: %q", got)
+	}
+}
+
+func TestAnimatedTerminalProgressAdvancesOnlyOnActivity(t *testing.T) {
+	var output bytes.Buffer
+	progress := startTerminalProgressWriter("starting", true, true, true, &output)
+	initial := output.String()
+	if !strings.Contains(initial, "| starting") {
+		t.Fatalf("initial activity frame = %q", initial)
+	}
+
+	// No clock-driven renderer exists: without an event, output stays byte-for-byte stable.
+	time.Sleep(200 * time.Millisecond)
+	if got := output.String(); got != initial {
+		t.Fatalf("progress advanced without activity: before=%q after=%q", initial, got)
+	}
+
+	progress.setActivity("checking repository")
+	progress.setActivity("fetching main")
+	got := output.String()
+	if !strings.Contains(got, "/ checking repository") || !strings.Contains(got, "- fetching main") {
+		t.Fatalf("activity did not advance frames: %q", got)
 	}
 }
 
