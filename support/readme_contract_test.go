@@ -26,7 +26,7 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"acceptance gates",
 	)
 	assertPresent(t, readme,
-		"arise sync\narise -1 --reinstall =sys-apps/arise-0.0.21",
+		"arise sync\narise -1 --reinstall =sys-apps/arise-0.0.22",
 		"sys-apps/arise ~amd64",
 		"| Workload | Arise | Compared with | Other tool | Arise speedup |",
 		"| Plan a deep/newuse `@world` update | 3.25 s | `emerge` | 17.98 s | **5.54x** |",
