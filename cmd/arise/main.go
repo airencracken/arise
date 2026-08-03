@@ -120,7 +120,7 @@ var (
 	usePkgOnly               = flag.Bool("usepkgonly", false, "-K, only use binary packages")
 	fetchOnly                = flag.Bool("fetchonly", false, "-f, only fetch sources")
 	noreplace                = flag.Bool("noreplace", false, "--noreplace, skip packages with exact same version installed")
-	colors                   = flag.String("color", "y", "--color=y|n, enable or disable color output")
+	colors                   = flag.String("color", "auto", "--color=auto|y|n, control color output")
 	deselectArg              = flag.String("deselect", "", "--deselect, remove atom from world set")
 	binpkgRespectUse         = flag.Bool("binpkg-respect-use", false, "--binpkg-respect-use, respect USE flags when searching binary packages")
 	ignoreBuiltSlotOps       = flag.String("ignore-built-slot-operator-deps", "n", "--ignore-built-slot-operator-deps=y|n")
@@ -232,8 +232,9 @@ func main() {
 
 	log.SetLevelString(*logLevel)
 
-	if *colors == "n" || *colors == "no" || *colors == "false" || *colors == "0" {
-		color.UseColor = false
+	if err := configureColorOutput(*colors); err != nil {
+		fmt.Fprintf(os.Stderr, "arise: %v\n", err)
+		os.Exit(2)
 	}
 	if *jsonOutput {
 		color.UseColor = false
@@ -355,6 +356,21 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		fmt.Fprintf(os.Stderr, "Usage: arise [flags] <command> [args...]\n")
 		os.Exit(1)
+	}
+}
+
+func configureColorOutput(mode string) error {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "auto", "":
+		return nil
+	case "y", "yes", "true", "1", "always":
+		color.UseColor = true
+		return nil
+	case "n", "no", "false", "0", "never":
+		color.UseColor = false
+		return nil
+	default:
+		return fmt.Errorf("invalid --color value %q; use auto, y, or n", mode)
 	}
 }
 

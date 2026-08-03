@@ -27,6 +27,17 @@ func openTestDB(t *testing.T) *badger.DB {
 	return db
 }
 
+func TestCollectedVersionIUSEUnionsAndSortsFlags(t *testing.T) {
+	versions := []VersionInfo{
+		{IUSE: "+seccomp test python_targets_python3_13"},
+		{IUSE: "+filecaps test python_targets_python3_12"},
+	}
+	want := "+filecaps python_targets_python3_12 python_targets_python3_13 +seccomp test"
+	if got := collectedVersionIUSE(versions); got != want {
+		t.Fatalf("collectedVersionIUSE() = %q, want %q", got, want)
+	}
+}
+
 func ingestTestData(t *testing.T, db *badger.DB, entries []*metadata.PackageMetadata) {
 	t.Helper()
 	ch := make(chan *metadata.PackageMetadata, len(entries))
