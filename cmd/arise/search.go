@@ -193,13 +193,13 @@ func runSearch(args []string, dbPath string) int {
 				label := v.Version
 				switch {
 				case v.Masked:
-					label = color.Red("!" + label)
+					label = color.Red("**" + label)
 				case v.Stable:
 					label = color.Green(label)
 				case v.Testing:
 					label = color.Yellow("~" + label)
 				}
-				fmt.Printf(" %s%s", label, color.Red(restrictionSuffix(v.Restrict)))
+				fmt.Printf(" %s%s%s", label, color.Cyan(propertiesSuffix(v.Properties)), color.Red(restrictionSuffix(v.Restrict)))
 			}
 			fmt.Println()
 		} else {
@@ -388,6 +388,20 @@ func restrictionSuffix(restrict string) string {
 		return ""
 	}
 	return "^" + suffix.String()
+}
+
+func propertiesSuffix(properties string) string {
+	tags := []struct{ word, tag string }{{"interactive", "i"}, {"live", "l"}, {"set", "s"}}
+	var suffix strings.Builder
+	for _, item := range tags {
+		if strings.Contains(properties, item.word) {
+			suffix.WriteString(item.tag)
+		}
+	}
+	if suffix.Len() == 0 {
+		return ""
+	}
+	return "*" + suffix.String()
 }
 
 func searchUpgradeAvailable(result search.SearchResult) bool {

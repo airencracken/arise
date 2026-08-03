@@ -130,3 +130,16 @@ func TestPortageSemanticPaletteMatchesNamedANSIColors(t *testing.T) {
 		}
 	}
 }
+
+func TestInstalledSearchPaletteMatchesEix(t *testing.T) {
+	previous := UseColor
+	UseColor = true
+	t.Cleanup(func() { UseColor = previous })
+
+	if got, want := InstalledMarker("I"), "\x1b[1m\x1b[7m\x1b[32mI\x1b[0m"; got != want {
+		t.Fatalf("InstalledMarker = %q, want eix-equivalent %q", got, want)
+	}
+	if got, want := InstalledVersion("3.0.81.2"), "\x1b[30m\x1b[44m3.0.81.2\x1b[0m"; got != want {
+		t.Fatalf("InstalledVersion = %q, want eix-equivalent %q", got, want)
+	}
+}
