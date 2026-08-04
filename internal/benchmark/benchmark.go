@@ -209,7 +209,9 @@ func CreateTempVDB() (string, []string, error) {
 		return "", nil, fmt.Errorf("mkdir pv dir: %w", err)
 	}
 
-	candidates := []string{"/bin/ls", "/etc/hostname", "/etc/os-release"}
+	// Prefer the canonical merged-usr location. A CONTENTS entry below a
+	// symlinked /bin parent is correctly rejected by binary-package capture.
+	candidates := []string{"/usr/bin/ls", "/etc/hostname", "/etc/os-release"}
 	refFiles := make([]string, 0, 2)
 	for _, candidate := range candidates {
 		info, statErr := os.Lstat(candidate)
