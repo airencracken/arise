@@ -1902,6 +1902,9 @@ The larger set gates additionally require:
   Define Arise package USE flags for optional compiled recovery capabilities
   (for example native `zstd`/`xz` and archive extraction) only when the resulting
   binary capability set is introspectable and recorded in executable plans.
+  Gate optional bubblewrap-enhanced isolation behind an explicit `bwrap` USE
+  flag and dependency; the default Portage `sandbox` backend must remain fully
+  supported when bubblewrap is absent.
   Keep host-tool providers as a small default where appropriate. Do not describe
   a limited Go command runner as a shell replacement: ebuild/eclass execution
   requires real Bash compatibility, and a preserved static Bash is preferable

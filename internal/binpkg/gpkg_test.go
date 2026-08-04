@@ -101,7 +101,8 @@ func TestGPKGManifestTamperingAndSignaturePolicyFailClosed(t *testing.T) {
 	if err := os.MkdirAll(image, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(image, "payload"), []byte("data"), 0644); err != nil {
+	payload := filepath.Join(image, "payload")
+	if err := os.WriteFile(payload, []byte("data"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	unsigned := filepath.Join(base, "unsigned.gpkg.tar")
@@ -154,17 +155,27 @@ func TestCreateGPKGIsDeterministicAndSigningFailureIsAtomic(t *testing.T) {
 	if err := os.MkdirAll(image, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(image, "payload"), []byte("data"), 0644); err != nil {
+	payload := filepath.Join(image, "payload")
+	if err := os.WriteFile(payload, []byte("data"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	modTime := time.Unix(1_700_000_000, 0)
 	first, second := filepath.Join(base, "first.gpkg.tar"), filepath.Join(base, "second.gpkg.tar")
-	for _, path := range []string{first, second} {
+	for index, path := range []string{first, second} {
 		if err := CreateGPKG(context.Background(), GPKGCreateRequest{
 			Path: path, Basename: "fixture-1", ImageRoot: image,
 			Metadata: map[string][]byte{"PF": []byte("fixture-1\n")}, ModTime: modTime,
 		}); err != nil {
 			t.Fatal(err)
+		}
+		if index == 0 {
+			info, err := os.Stat(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(payload, modTime.Add(time.Hour), info.ModTime()); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	firstData, err := os.ReadFile(first)
@@ -195,6 +206,32 @@ func TestCreateGPKGIsDeterministicAndSigningFailureIsAtomic(t *testing.T) {
 	temporaries, globErr := filepath.Glob(filepath.Join(base, ".failed.gpkg.tar.tmp-*"))
 	if globErr != nil || len(temporaries) != 0 {
 		t.Fatalf("failed GPKG retained temporaries %v: %v", temporaries, globErr)
+	}
+}
+
+func TestInstalledGPKGImageIgnoresAccessTime(t *testing.T) {
+	root := t.TempDir()
+	payload := filepath.Join(root, "payload")
+	if err := os.WriteFile(payload, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := buildInstalledGPKGImageArchive(context.Background(), root, []contentEntry{{Type: "obj", Path: "/payload"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(payload, time.Unix(1_800_000_000, 0), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	second, err := buildInstalledGPKGImageArchive(context.Background(), root, []contentEntry{{Type: "obj", Path: "/payload"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("installed GPKG image changed with access time")
 	}
 }
 

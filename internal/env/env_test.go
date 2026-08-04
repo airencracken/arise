@@ -474,9 +474,13 @@ func TestUpdateEnvEmptyEnvDir(t *testing.T) {
 }
 
 func TestUpdateEnvDefaultPaths(t *testing.T) {
-	err := UpdateEnv("", "")
-	if err == nil {
-		t.Error("expected error with empty default paths on non-Gentoo system, got nil")
+	envDir, outputDir := updateEnvPaths("", "")
+	if envDir != "/etc/env.d" || outputDir != "/etc" {
+		t.Fatalf("default paths = %q, %q", envDir, outputDir)
+	}
+	envDir, outputDir = updateEnvPaths("/custom/env.d", "/custom/etc")
+	if envDir != "/custom/env.d" || outputDir != "/custom/etc" {
+		t.Fatalf("explicit paths = %q, %q", envDir, outputDir)
 	}
 }
 

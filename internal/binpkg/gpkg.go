@@ -820,6 +820,10 @@ func buildGPKGImageArchive(ctx context.Context, root string, modTime time.Time) 
 			return err
 		}
 		hdr.Name, hdr.ModTime, hdr.Format = name, modTime, tar.FormatPAX
+		// FileInfoHeader imports host atime/ctime on Unix. Reading the image can
+		// update atime between otherwise identical builds, and ctime is not a
+		// reproducible input. Neither timestamp describes package payload state.
+		hdr.AccessTime, hdr.ChangeTime = time.Time{}, time.Time{}
 		if info.Mode().IsRegular() {
 			if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
 				key := inodeKey{dev: uint64(stat.Dev), ino: stat.Ino}
@@ -902,6 +906,10 @@ func buildInstalledGPKGImageArchive(ctx context.Context, root string, entries []
 			return nil, err
 		}
 		hdr.Name, hdr.Format = "image/"+archivePath, tar.FormatPAX
+		// Access and change timestamps are host observations, not package
+		// payload identity, and can change merely because this builder reads the
+		// file. Preserve the installed mtime but omit both volatile timestamps.
+		hdr.AccessTime, hdr.ChangeTime = time.Time{}, time.Time{}
 		if info.Mode().IsRegular() {
 			if entry.Type != "obj" {
 				return nil, fmt.Errorf("binpkg: installed path %s changed type", entry.Path)

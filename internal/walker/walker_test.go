@@ -192,6 +192,9 @@ func TestWalkCacheDir_BadFileStillWalksRemaining(t *testing.T) {
 }
 
 func TestWalkCacheDir_FileReadError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read mode-000 files")
+	}
 	root := t.TempDir()
 
 	writeCacheEntry(t, root, "sys-apps", "portage-3.0.51", cachePayload("8", "0", "Portage"))

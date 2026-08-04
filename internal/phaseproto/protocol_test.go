@@ -2114,6 +2114,9 @@ func TestPortageWorkerStartsOutsideInaccessibleCallerDirectory(t *testing.T) {
 	}
 
 	base := t.TempDir()
+	if err := os.Chmod(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	caller := filepath.Join(base, "caller")
 	work := filepath.Join(base, "work")
 	if err := os.Mkdir(caller, 0o700); err != nil {
@@ -2315,6 +2318,9 @@ func TestFilesystemSandboxBindsPackageFilesReadOnly(t *testing.T) {
 }
 
 func TestBubblewrapMakesRootReadOnlyAndLeavesImageWritable(t *testing.T) {
+	if _, err := exec.LookPath("bwrap"); err != nil {
+		t.Skip("bubblewrap is unavailable")
+	}
 	directory := t.TempDir()
 	root := filepath.Join(directory, "root")
 	image := filepath.Join(directory, "image")

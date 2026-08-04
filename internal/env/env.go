@@ -13,13 +13,23 @@ type EnvEntry struct {
 	Value string
 }
 
-func UpdateEnv(envDir string, outputDir string) error {
+const (
+	defaultEnvDir    = "/etc/env.d"
+	defaultOutputDir = "/etc"
+)
+
+func updateEnvPaths(envDir, outputDir string) (string, string) {
 	if envDir == "" {
-		envDir = "/etc/env.d"
+		envDir = defaultEnvDir
 	}
 	if outputDir == "" {
-		outputDir = "/etc"
+		outputDir = defaultOutputDir
 	}
+	return envDir, outputDir
+}
+
+func UpdateEnv(envDir string, outputDir string) error {
+	envDir, outputDir = updateEnvPaths(envDir, outputDir)
 
 	entries, err := ReadEnvDir(envDir)
 	if err != nil {
