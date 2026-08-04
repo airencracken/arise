@@ -1092,7 +1092,9 @@ func TestSyncCommandDoesNotResetUnchangedRepository(t *testing.T) {
 
 func TestSyncRsyncCancellationStopsTransport(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "rsync")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+	// Replace the shell so context cancellation kills the only process holding
+	// the test binary's inherited output descriptors.
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

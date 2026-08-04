@@ -2113,7 +2113,11 @@ func TestPortageWorkerStartsOutsideInaccessibleCallerDirectory(t *testing.T) {
 		t.Skip("portage account is unavailable")
 	}
 
-	base := t.TempDir()
+	base, err := os.MkdirTemp("", "arise-phaseproto-inaccessible-cwd-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
 	if err := os.Chmod(base, 0o755); err != nil {
 		t.Fatal(err)
 	}
