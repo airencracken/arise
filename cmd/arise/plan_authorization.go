@@ -384,8 +384,14 @@ func savePlanDocument(reference, directory string, data []byte) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return "", err
+	// Publish through a same-directory hard link so an existing plan is never
+	// replaced. The synced temporary inode is already complete; linking it is
+	// atomic and preserves the old plan on EEXIST.
+	if err := os.Link(temporaryPath, path); err != nil {
+		return "", fmt.Errorf("publish saved plan without overwrite: %w", err)
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		return "", fmt.Errorf("remove saved-plan staging link: %w", err)
 	}
 	directoryHandle, err := os.Open(dir)
 	if err != nil {

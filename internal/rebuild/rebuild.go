@@ -1,7 +1,6 @@
 package rebuild
 
 import (
-	"bufio"
 	stdbzip2 "compress/bzip2"
 	"context"
 	"errors"
@@ -622,25 +621,7 @@ func materializeInstalledEnvironment(vdbPath, directory string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	scanner := bufio.NewScanner(stdbzip2.NewReader(input))
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	writer := bufio.NewWriter(output)
-	var copyErr error
-	for scanner.Scan() {
-		line := scanner.Text()
-		if installedEnvironmentOverridesIsolation(line) {
-			continue
-		}
-		if _, copyErr = writer.WriteString(line + "\n"); copyErr != nil {
-			break
-		}
-	}
-	if copyErr == nil {
-		copyErr = scanner.Err()
-	}
-	if copyErr == nil {
-		copyErr = writer.Flush()
-	}
+	_, copyErr := io.Copy(output, stdbzip2.NewReader(input))
 	closeErr := output.Close()
 	if copyErr != nil {
 		return "", copyErr
@@ -649,25 +630,6 @@ func materializeInstalledEnvironment(vdbPath, directory string) (string, error) 
 		return "", closeErr
 	}
 	return path, nil
-}
-
-func installedEnvironmentOverridesIsolation(line string) bool {
-	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) == 0 {
-		return false
-	}
-	index := 0
-	if fields[0] == "export" {
-		index = 1
-	} else if fields[0] == "declare" {
-		for index = 1; index < len(fields) && strings.HasPrefix(fields[index], "-"); index++ {
-		}
-	}
-	if index >= len(fields) {
-		return false
-	}
-	name := strings.SplitN(fields[index], "=", 2)[0]
-	return name == "LD_PRELOAD" || strings.HasPrefix(name, "SANDBOX_")
 }
 
 func inheritsEclass(eb *ebuild.Ebuild, name string) bool {

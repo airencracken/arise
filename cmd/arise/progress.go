@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/fetch"
 	"golang.org/x/term"
 )
@@ -254,14 +255,15 @@ type fetchProgress struct {
 	mu       sync.Mutex
 	writer   io.Writer
 	terminal bool
+	verbose  bool
 	started  map[string]time.Time
 	last     map[string]time.Time
 	active   bool
 	line     func(string)
 }
 
-func newFetchProgress(enabled bool, writer io.Writer) *fetchProgress {
-	progress := &fetchProgress{writer: writer, started: make(map[string]time.Time), last: make(map[string]time.Time)}
+func newFetchProgress(enabled, verbose bool, writer io.Writer) *fetchProgress {
+	progress := &fetchProgress{writer: writer, verbose: verbose, started: make(map[string]time.Time), last: make(map[string]time.Time)}
 	if file, ok := writer.(*os.File); ok {
 		progress.terminal = enabled && term.IsTerminal(int(file.Fd()))
 	}
@@ -281,18 +283,21 @@ func (p *fetchProgress) setConcurrent(concurrent bool) {
 }
 
 func (p *fetchProgress) Report(event fetch.Progress) {
+	if !p.verbose {
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
 	switch event.Stage {
 	case fetch.ProgressChecking:
-		p.writeLine(">>> Checking %s", event.Artifact)
+		p.writeLine("%s %s %s", color.PortageGreen(">>>"), color.Bold("Checking"), event.Artifact)
 	case fetch.ProgressCached:
-		p.writeLine(">>> Using verified distfile %s", event.Artifact)
+		p.writeLine("%s %s %s", color.PortageGreen(">>>"), color.Bold("Using verified distfile"), event.Artifact)
 	case fetch.ProgressDownload:
 		if p.started[event.Artifact].IsZero() {
 			p.started[event.Artifact] = now
-			p.writeLine(">>> Downloading %s", event.Source)
+			p.writeLine("%s %s %s", color.PortageGreen(">>>"), color.Bold("Downloading"), event.Source)
 		}
 		if !p.terminal || (event.Downloaded < event.Total && now.Sub(p.last[event.Artifact]) < 100*time.Millisecond) {
 			return
@@ -311,10 +316,10 @@ func (p *fetchProgress) Report(event fetch.Progress) {
 		p.active = true
 	case fetch.ProgressVerifying:
 		p.finishLine()
-		p.writeLine(">>> Verifying %s against Manifest", event.Artifact)
+		p.writeLine("%s %s %s against Manifest", color.PortageGreen(">>>"), color.Bold("Verifying"), event.Artifact)
 	case fetch.ProgressComplete:
 		p.finishLine()
-		p.writeLine(">>> Fetched and verified %s", event.Artifact)
+		p.writeLine("%s %s %s", color.PortageGreen(">>>"), color.Bold("Fetched and verified"), event.Artifact)
 	}
 }
 

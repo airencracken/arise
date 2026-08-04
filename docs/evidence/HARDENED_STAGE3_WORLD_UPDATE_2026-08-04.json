@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "kind": "manual-live-package-observation",
+  "recorded_at": "2026-08-04",
+  "source": "qlop",
+  "environment": {
+    "distribution": "Gentoo",
+    "architecture": "amd64",
+    "profile_class": "hardened",
+    "virtualization": "VPS",
+    "cpu": null,
+    "logical_cores": null,
+    "memory_bytes": null,
+    "storage_class": null,
+    "makeopts": null,
+    "cache_state": null
+  },
+  "transaction": {
+    "command": "arise -avuDN @world",
+    "planned_actions": 65,
+    "action_position": 58,
+    "outcome": "committed"
+  },
+  "final_state": {
+    "portage_command": "emerge -pavuDN @world",
+    "portage_actions": 0,
+    "portage_backtrack_used": 0,
+    "arise_command": "/root/arise-test -pavuDN @world",
+    "arise_actions": 0,
+    "arise_conflicts": 0,
+    "arise_backtrack_used": 0,
+    "backtrack_limit": 20,
+    "news_items": 21
+  },
+  "package": {
+    "cpv": "sys-devel/gcc-15.3.0",
+    "slot": "15",
+    "repository": "gentoo",
+    "outcome": "committed",
+    "duration_seconds": 8312
+  },
+  "limitations": [
+    "CPU, memory, storage, MAKEOPTS, cache state, effective USE digest, toolchain identity, phase durations, artifact sizes, and peak resources were not captured.",
+    "This single package observation is not a calibrated prediction baseline or cross-version bloat comparison."
+  ]
+}

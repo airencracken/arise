@@ -68,7 +68,7 @@ Implementation details that are obvious from one package do not need an ADR.
 | `PORTDIR` | Default repository path; overridden by `--repo` |
 | `PORTAGE_CONFIGROOT`, `ROOT`, `SYSROOT`, `BROOT` | Portage root selectors |
 | `DISTDIR`, `PKGDIR`, `PORTAGE_TMPDIR` | Storage and build paths |
-| `NO_COLOR` | Disable colored output |
+| `NO_COLOR`, `NOCOLOR`, `TERM=dumb` | Disable automatic colored output; `TERM=dumb` also disables animated terminal progress |
 | `USE`, `FEATURES`, policy and toolchain variables | Allowlisted one-shot Portage configuration |
 
 Arise evaluates the declarative shell-assignment subset used by normal Portage

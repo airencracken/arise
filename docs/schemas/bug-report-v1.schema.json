@@ -62,6 +62,7 @@
       }
     },
     "logs": {"type": "object", "additionalProperties": {"type": "string"}},
+    "resolver_trace": {"$ref": "resolver-trace-v1.schema.json"},
     "warnings": {"type": "array", "items": {"type": "string"}}
   }
 }

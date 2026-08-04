@@ -418,6 +418,22 @@ lower fixed per-package latency while preserving stronger transaction evidence.
 7. Updated benchmark matrix and README claims only after correctness-gated,
    reproducible results exist.
 
+## Host provenance gate
+
+Non-Gentoo development hosts may run pure-Go microbenchmarks, allocation and
+profile regressions, and relative before/after experiments. Those results are
+development evidence only. They must not be published as Arise-versus-Portage
+or Gentoo parity claims.
+
+An authoritative comparison requires a Gentoo execution host and records the
+kernel, libc, architecture, CPU/memory/storage identity, power policy,
+toolchains, Portage and Arise revisions, repository snapshot, profile,
+configuration, VDB/world state, distfiles, compiler cache, job/load settings
+and output modes. Arise and Portage must consume the same frozen inputs, and
+the report must distinguish cold, warm-distfile and warm-compiler-cache trials
+with repeated samples. CachyOS workstation measurements remain useful for
+development but cannot satisfy this gate.
+
 ## First profiling session checklist
 
 After the current correctness run and clean installation of profiling tools:

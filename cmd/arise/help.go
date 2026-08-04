@@ -28,6 +28,8 @@ var commandHelp = map[string]commandHelpEntry{
 	"python-cleaner":    {"arise python-cleaner <--check|--pretend|--fix|--resume>", "Plan or apply validated Python recovery."},
 	"maintain":          {"arise maintain <world|moveinst|mergestate> ...", "Run installed-state maintenance operations."},
 	"bug-report":        {"arise bug-report [options]", "Create a reviewable local diagnostic bundle."},
+	"plan-diff":         {"arise plan-diff [--json] BEFORE AFTER", "Compare package actions in two saved plans."},
+	"doctor":            {"arise doctor <package-use|package-policy|world|all>", "Inspect effective Portage configuration without modifying it."},
 	"dispatch-conf":     {"arise dispatch-conf [options]", "Review protected configuration updates."},
 	"quickpkg":          {"arise quickpkg [--gpkg] <atom>", "Create a binary package from an installed package."},
 	"depclean":          {"arise depclean", "Plan removal of orphaned dependencies."},
@@ -45,7 +47,7 @@ var commandHelp = map[string]commandHelpEntry{
 var commandOrder = []string{
 	"sync", "index", "install", "uninstall", "select", "recover",
 	"query", "state", "search", "installed", "info", "inspect", "audit", "perl-cleaner",
-	"python-cleaner", "maintain", "bug-report", "dispatch-conf", "quickpkg",
+	"python-cleaner", "maintain", "bug-report", "plan-diff", "doctor", "dispatch-conf", "quickpkg",
 	"depclean", "prune", "env-update", "ldconfig", "config", "news", "deselect",
 	"preserved-rebuild", "revdep-rebuild", "bench",
 }

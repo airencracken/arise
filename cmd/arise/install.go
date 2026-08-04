@@ -17,6 +17,7 @@ import (
 
 	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/binpkg"
+	"github.com/airencracken/arise/internal/bugreport"
 	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/diagnostic"
 	"github.com/airencracken/arise/internal/distfiles"
@@ -31,6 +32,7 @@ import (
 	"github.com/airencracken/arise/internal/rebuild"
 	"github.com/airencracken/arise/internal/recoveryset"
 	"github.com/airencracken/arise/internal/resolve"
+	"github.com/airencracken/arise/internal/resolvertrace"
 	"github.com/airencracken/arise/internal/world"
 )
 
@@ -40,6 +42,28 @@ func runInstall(args []string, dbPath, repoDir string) {
 		os.Exit(1)
 	}
 	runResolveAndRebuild(args, dbPath, repoDir, *updateMode, false)
+}
+
+func writeResolverTrace(path string, trace resolvertrace.Trace) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("output path is empty")
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	writeErr := resolvertrace.Encode(file, trace)
+	if writeErr == nil {
+		writeErr = file.Sync()
+	}
+	if closeErr := file.Close(); writeErr == nil {
+		writeErr = closeErr
+	}
+	if writeErr != nil {
+		_ = os.Remove(path)
+		return writeErr
+	}
+	return nil
 }
 
 func recoveryPackagesForActions(vdbRoot string, actions []resolve.PkgAction) []recoveryset.Package {
@@ -562,6 +586,14 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			fmt.Fprintf(os.Stderr, "Saved plan to %s\n", path)
 		}
 	}
+	if *saveResolverTrace != "" {
+		trace := resolvertrace.New(targets, result, bugreport.NewRedactor())
+		if traceErr := writeResolverTrace(*saveResolverTrace, trace); traceErr != nil {
+			fmt.Fprintf(os.Stderr, "save resolver trace: %v\n", traceErr)
+			exitAfterRuntimeProfiles(1)
+		}
+		fmt.Fprintf(os.Stderr, "Saved private resolver trace to %s\n", *saveResolverTrace)
+	}
 	if !cfg.Quiet {
 		fmt.Printf("Dependency resolution took %.3f s (backtrack: %d/%d).\n",
 			resolutionDuration.Seconds(), result.BacktrackLevel, cfg.Backtrack)
@@ -685,7 +717,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 		printActionTotals(result.Install, downloadSizes, cfg.FetchOnly)
-		for _, line := range renderDebugDecisionLedger(*debugOutput, result.DecisionLedger, 10, warningBlockers(result.WarningDiagnostics)...) {
+		for _, line := range renderDebugDecisionLedger(*debugOutput && !*explainOutput, result.DecisionLedger, 10, warningBlockers(result.WarningDiagnostics)...) {
 			fmt.Println(line)
 		}
 		if *showEstimates {
@@ -704,6 +736,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 		printResolutionWarnings(os.Stdout, result, cfg.Verbose)
+	}
+	if *explainOutput {
+		for _, line := range renderExplanationLedger(result.DecisionLedger) {
+			fmt.Println(line)
+		}
 	}
 
 	if len(result.Conflicts) > 0 {
@@ -837,7 +874,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 	}
 	if cfg.FetchOnly {
-		progress := newFetchProgress(!cfg.Quiet, os.Stdout)
+		progress := newFetchProgress(!cfg.Quiet, cfg.Verbose, os.Stdout)
 		progress.setConcurrent(normalizedFetchJobs(*fetchJobs, len(result.Install)) > 1)
 		if err := fetchPlanActions(commandContext, result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: progress.Report}, &fetch.Fetcher{}, *fetchJobs); err != nil {
 			fmt.Fprintf(os.Stderr, "arise: fetch-only failed: %v\n", err)
@@ -857,7 +894,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		executionProgress.setConcurrent(cfg.Jobs > 1)
 		rebuildCfg := buildRebuildConfig(repoDir, cfg.Jobs, nil, nil)
 		rebuildCfg.Fetcher = &fetch.Fetcher{}
-		fetchProgress := newFetchProgress(!cfg.Quiet, os.Stdout)
+		fetchProgress := newFetchProgress(!cfg.Quiet, cfg.Verbose, os.Stdout)
 		// Fetch and package events share one terminal owner. Even a serial
 		// package job can have concurrent fetch workers, so disable the separate
 		// carriage-return display and route complete lines through that owner.
@@ -894,7 +931,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			executionEstimates = loadMergeEstimates(*emergeLog)
 		}
 		var completedActions atomic.Int64
-		initialStatus := fmt.Sprintf(">>> Jobs: 0 of %d complete", len(result.Install))
+		initialStatus := fmt.Sprintf("%s 0 of %d complete", colorExecutionStage("Jobs:"), len(result.Install))
 		if load := currentLoadAverages(); load != "" {
 			initialStatus += "    Load avg: " + load
 		}
@@ -954,7 +991,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		executionErr := executor.Execute(execCtx, result, executor.Config{
 			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation, PrepareMutation: prepareMutation,
 			OnSpaceWait: func(path string, available, required uint64) {
-				executionProgress.message(fmt.Sprintf(">>> %s has insufficient free space; package parallelism reduced (free: %s, required: %s)", path, formatSize(int64(available)), formatSize(int64(required))))
+				executionProgress.message(fmt.Sprintf("%s %s has insufficient free space; package parallelism reduced (free: %s, required: %s)", colorExecutionStage("Warning:"), path, formatSize(int64(available)), formatSize(int64(required))))
 			},
 			OnActionStart: func(index, total int, action resolve.PkgAction) {
 				message := fmt.Sprintf("Building package (%d of %d) %s", index, total, colorActionAtom(action))
@@ -963,29 +1000,23 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 						message += " (estimated " + formatEstimate(estimate) + ")"
 					}
 				}
+				message = colorExecutionStage("Building package") + strings.TrimPrefix(message, "Building package")
 				if executionProgress.enabled {
 					executionProgress.setLabel(message)
 				} else {
-					executionProgress.message(">>> " + message)
+					executionProgress.message(message)
 				}
 				if compatLog.event(false, index, total, action) != nil {
 					cancelExecution()
 				}
 			},
 			OnActionInstall: func(index, total int, action resolve.PkgAction) {
-				executionProgress.message(fmt.Sprintf(">>> Installing into image (%d of %d) %s", index, total, colorActionAtom(action)))
+				executionProgress.message(fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage("Installing into staging area"), index, total, colorActionAtom(action)))
 			},
 			OnActionStage: func(index, total int, action resolve.PkgAction, stage string) {
 				executionProgress.clearProgress()
-				labels := map[string]string{
-					"validate": "Validating package image",
-					"merge":    "Preparing package merge",
-					"sync":     "Syncing package contents",
-					"commit":   "Committing package transaction",
-					"finalize": "Finalizing package",
-				}
-				if label := labels[stage]; label != "" {
-					executionProgress.message(fmt.Sprintf(">>> %s (%d of %d) %s", label, index, total, colorActionAtom(action)))
+				if label := packageStageLabel(stage); label != "" {
+					executionProgress.message(fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage(label), index, total, colorActionAtom(action)))
 				}
 			},
 			OnActionProgress: func(index, total int, action resolve.PkgAction, stage string, current, stageTotal int) {
@@ -1006,9 +1037,9 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			},
 			OnActionComplete: func(index, total int, action resolve.PkgAction) {
 				executionProgress.clearProgress()
-				executionProgress.message(fmt.Sprintf(">>> Completed package (%d of %d) %s", index, total, colorActionAtom(action)))
+				executionProgress.message(fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage("Completed package"), index, total, colorActionAtom(action)))
 				completed := completedActions.Add(1)
-				status := fmt.Sprintf(">>> Jobs: %d of %d complete", completed, total)
+				status := fmt.Sprintf("%s %d of %d complete", colorExecutionStage("Jobs:"), completed, total)
 				if load := currentLoadAverages(); load != "" {
 					status += "    Load avg: " + load
 				}
@@ -1092,6 +1123,27 @@ func printResolutionWarnings(writer io.Writer, result *resolve.ResolveResult, ve
 	}
 }
 
+func colorExecutionStage(label string) string {
+	return color.PortageGreen(">>>") + " " + color.Bold(label)
+}
+
+func packageStageLabel(stage string) string {
+	switch stage {
+	case "validate":
+		return "Validating package contents"
+	case "merge":
+		return "Preparing package merge"
+	case "sync":
+		return "Syncing package contents"
+	case "commit":
+		return "Committing package transaction"
+	case "finalize":
+		return "Finalizing package"
+	default:
+		return ""
+	}
+}
+
 func renderResolverDiagnostics(enabled bool, timings planTimings, metrics resolve.ResolveMetrics) []string {
 	if !enabled {
 		return nil
@@ -1146,6 +1198,22 @@ func renderDebugDecisionLedger(enabled bool, ledger resolve.DecisionLedger, deta
 		return nil
 	}
 	return renderDecisionLedger(ledger, detailLimit, focusPackages...)
+}
+
+func renderExplanationLedger(ledger resolve.DecisionLedger) []string {
+	lines := renderDecisionLedger(ledger, 0)
+	for _, record := range ledger.Records {
+		reasons := strings.Join(record.Reasons, "; ")
+		if reasons == "" {
+			reasons = "no resolver reason recorded"
+		}
+		line := fmt.Sprintf("  %s %s:%s::%s — %s", record.Outcome, record.CPV, record.Slot, record.Repository, reasons)
+		if len(record.Requirements) != 0 {
+			line += " [requires: " + strings.Join(record.Requirements, ", ") + "]"
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 func warningBlockers(diagnostics []resolve.WarningDiagnostic) []string {

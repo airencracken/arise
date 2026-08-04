@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/resolver-trace-v1.schema.json",
+  "title": "Arise resolver trace version 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "targets", "verified", "verification", "backtracks", "branches", "candidates", "conflicts", "warnings", "truncated"],
+  "properties": {
+    "schema": {"const": 1},
+    "targets": {"type": "array", "items": {"type": "string"}},
+    "verified": {"type": "boolean"},
+    "verification": {"type": "string"},
+    "backtracks": {"type": "array", "maxItems": 4096, "items": {"type": "object"}},
+    "branches": {"type": "array", "maxItems": 4096, "items": {"type": "object"}},
+    "candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["records", "truncated", "omitted_records", "encoded_bytes"],
+      "properties": {
+        "records": {"type": "array", "maxItems": 4096, "items": {"type": "object"}},
+        "truncated": {"type": "boolean"},
+        "omitted_records": {"type": "integer", "minimum": 0},
+        "encoded_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "conflicts": {"type": "array", "maxItems": 256, "items": {"type": "string"}},
+    "warnings": {"type": "array", "maxItems": 256, "items": {"type": "string"}},
+    "truncated": {"type": "boolean"}
+  }
+}

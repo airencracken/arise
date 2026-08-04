@@ -202,6 +202,33 @@ func TestSavedPlanNameAndPathResolveToDigest(t *testing.T) {
 	}
 }
 
+func TestSavePlanRefusesOverwriteAndPreservesExistingEvidence(t *testing.T) {
+	directory := t.TempDir()
+	first := []byte(`{"schema":1,"evidence":"first"}`)
+	second := []byte(`{"schema":1,"evidence":"second"}`)
+	path, err := savePlanDocument("evidence", directory, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := savePlanDocument("evidence", directory, second); err == nil {
+		t.Fatal("existing saved plan was overwritten")
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(actual, first) {
+		t.Fatalf("existing evidence changed to %q", actual)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "evidence.json" {
+		t.Fatalf("staging residue = %v", entries)
+	}
+}
+
 func TestSavedPlanNameContainingVersionDotGetsJSONSuffix(t *testing.T) {
 	directory := t.TempDir()
 	path, err := resolvePlanPath("libsoup-slot-2.4-upgrade", directory)

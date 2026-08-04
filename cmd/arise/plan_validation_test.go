@@ -243,3 +243,18 @@ func TestDecisionLedgerHumanRenderingIsBounded(t *testing.T) {
 		t.Fatalf("decision rendering = %#v", lines)
 	}
 }
+
+func TestExplanationLedgerIncludesAcceptedRejectedAndRequirements(t *testing.T) {
+	ledger := resolve.DecisionLedger{Records: []resolve.CandidateDecision{
+		{Outcome: resolve.DecisionSelected, CPV: "app-misc/target-1", Slot: "0", Repository: "gentoo", Reasons: []string{"explicit target"}, Requirements: []string{"app-misc/target"}},
+		{Outcome: resolve.DecisionRetained, CPV: "dev-libs/kept-1", Slot: "0", Repository: "gentoo", Reasons: []string{"retained in final state"}},
+		{Outcome: resolve.DecisionRejected, CPV: "app-misc/target-2", Slot: "0", Repository: "gentoo", Reasons: []string{"masked"}},
+	}}
+	lines := renderExplanationLedger(ledger)
+	joined := strings.Join(lines, "\n")
+	for _, required := range []string{"1 selected", "1 retained", "1 rejected", "selected app-misc/target-1", "explicit target", "requires: app-misc/target", "retained dev-libs/kept-1", "rejected app-misc/target-2", "masked"} {
+		if !strings.Contains(joined, required) {
+			t.Errorf("explanation lost %q:\n%s", required, joined)
+		}
+	}
+}

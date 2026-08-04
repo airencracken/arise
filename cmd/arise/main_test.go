@@ -73,7 +73,7 @@ func TestTerminalProgressActivityIsTransientOnTerminal(t *testing.T) {
 
 func TestFetchProgressNonTerminalStages(t *testing.T) {
 	var output bytes.Buffer
-	progress := newFetchProgress(true, &output)
+	progress := newFetchProgress(true, true, &output)
 	progress.Report(fetch.Progress{Stage: fetch.ProgressChecking, Artifact: "source.tar", Total: 100})
 	progress.Report(fetch.Progress{Stage: fetch.ProgressDownload, Artifact: "source.tar", Source: "https://example/source.tar", Total: 100})
 	progress.Report(fetch.Progress{Stage: fetch.ProgressDownload, Artifact: "source.tar", Source: "https://example/source.tar", Downloaded: 100, Total: 100})
@@ -89,7 +89,7 @@ func TestFetchProgressNonTerminalStages(t *testing.T) {
 
 func TestFetchProgressQuietIsSilent(t *testing.T) {
 	var output bytes.Buffer
-	progress := newFetchProgress(false, &output)
+	progress := newFetchProgress(false, true, &output)
 	progress.Report(fetch.Progress{Stage: fetch.ProgressDownload, Artifact: "source.tar", Source: "https://example/source.tar", Downloaded: 50, Total: 100})
 	progress.Report(fetch.Progress{Stage: fetch.ProgressComplete, Artifact: "source.tar", Downloaded: 100, Total: 100})
 	if output.Len() != 0 {
@@ -515,7 +515,12 @@ func TestRestrictionSuffix(t *testing.T) {
 
 func TestConfigureColorOutput(t *testing.T) {
 	previous := color.UseColor
-	t.Cleanup(func() { color.UseColor = previous })
+	previousTerminal := stdoutIsTerminal
+	t.Cleanup(func() { color.UseColor, stdoutIsTerminal = previous, previousTerminal })
+	stdoutIsTerminal = func() bool { return true }
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("NOCOLOR", "")
 
 	color.UseColor = false
 	if err := configureColorOutput("y"); err != nil || !color.UseColor {
@@ -530,6 +535,38 @@ func TestConfigureColorOutput(t *testing.T) {
 	}
 	if err := configureColorOutput("sometimes"); err == nil {
 		t.Fatal("invalid color mode was accepted")
+	}
+}
+
+func TestConfigureColorOutputAutoHonorsTerminalAndNoColorPolicy(t *testing.T) {
+	previousColor, previousTerminal := color.UseColor, stdoutIsTerminal
+	t.Cleanup(func() { color.UseColor, stdoutIsTerminal = previousColor, previousTerminal })
+	t.Setenv("TERM", "xterm")
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("NOCOLOR", "")
+	stdoutIsTerminal = func() bool { return false }
+	if err := configureColorOutput("auto"); err != nil || color.UseColor {
+		t.Fatalf("redirected automatic output enabled color: enabled=%v err=%v", color.UseColor, err)
+	}
+	stdoutIsTerminal = func() bool { return true }
+	for _, variable := range []string{"NO_COLOR", "NOCOLOR"} {
+		t.Run(variable, func(t *testing.T) {
+			t.Setenv("NO_COLOR", "")
+			t.Setenv("NOCOLOR", "")
+			t.Setenv(variable, "1")
+			if err := configureColorOutput("auto"); err != nil || color.UseColor {
+				t.Fatalf("%s did not disable automatic color: enabled=%v err=%v", variable, color.UseColor, err)
+			}
+			if err := configureColorOutput("y"); err != nil || !color.UseColor {
+				t.Fatalf("explicit color did not override %s: enabled=%v err=%v", variable, color.UseColor, err)
+			}
+		})
+	}
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("NOCOLOR", "")
+	t.Setenv("TERM", "dumb")
+	if err := configureColorOutput("auto"); err != nil || color.UseColor {
+		t.Fatalf("TERM=dumb did not disable automatic color: enabled=%v err=%v", color.UseColor, err)
 	}
 }
 

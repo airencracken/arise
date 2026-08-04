@@ -396,6 +396,22 @@ Create private, reviewable Markdown and versioned JSON diagnostics without
 uploading anything. @option{--archive} adds a deterministic @file{.tar.zst}
 export. Collection is bounded and default-deny, and redacts local identity,
 credentials, tokens, proxy values, and private URL components.
+@option{--resolver-trace} strictly validates and redacts a saved resolver trace
+again before embedding it in the private JSON report and archive.
+
+@item plan-diff [--json] @var{before after}
+Compare package actions in two bounded, strictly decoded saved Arise plans.
+Version and USE changes appear as changes to one stable package action rather
+than an artificial removal and addition.
+
+@item doctor package-use|package-policy|world|all
+Read-only audit of effective ordered @file{package.use} policy. Reports invalid
+and stale atoms, duplicate rules, contradictory flags, and later exact-atom
+reversals. Package-policy mode audits package.accept_keywords, package.license,
+package.env, package.mask and package.unmask for invalid, stale and duplicate
+entries; all combines both passes. Global @option{--json} emits a versioned
+report. World mode reports invalid, duplicate and obsolete selected targets
+without treating package-set references as package atoms.
 
 @item preserved-rebuild [flags]
 Scan for broken shared library links and rebuild affected packages.
@@ -557,6 +573,9 @@ Verbose output.
 @item --debug
 Show resolver stage timings and the candidate decision ledger. These
 diagnostics are separate from verbose package and USE details.
+@item --explain
+Explain every bounded candidate decision, including selected, retained,
+rejected and skipped outcomes, reasons and committed requirements.
 @item -t, --tree
 Dependency tree display.
 @item -j @var{N}, --jobs @var{N}
@@ -581,6 +600,10 @@ Optionally require the current plan to match this canonical verified-plan
 digest, including its package state and policy fingerprint.
 @item --save-plan @var{path-or-name}
 Save the complete generated JSON plan for later inspection and approval.
+Existing paths are never overwritten.
+@item --save-resolver-trace @var{path}
+Save a bounded, redacted resolver decision trace with private permissions and
+without overwriting an existing path. Failed resolutions can also be traced.
 @item --approve-plan @var{path-or-name}
 Optionally require execution to match an exact saved plan after current state
 and policy are revalidated.
@@ -619,8 +642,11 @@ Resume last operation.
 Skip first in resume.
 @item --autounmask-write
 Write unmask entries.
-@item --color y|n
-Colored output.
+@item --color auto|y|n
+Control colored output. Automatic mode requires a capable terminal and honors
+@env{NO_COLOR}, Portage's @env{NOCOLOR}, and @code{TERM=dumb}. Explicit
+@option{--color=y} overrides those environment conventions; JSON remains
+uncolored.
 @item --unordered-display
 Unsorted display.
 @item --load-average @var{LOAD}

@@ -286,6 +286,69 @@ func TestPackageSuggestionsAreBoundedAndDeterministic(t *testing.T) {
 	}
 }
 
+func TestMissingTargetSuggestionsOrderAmbiguousPackageNames(t *testing.T) {
+	g := makeGraph()
+	for _, cp := range []string{
+		"app-editor/vim", "app-editors/vim", "app-editing/vim", "dev-util/vim",
+	} {
+		pkg(g, cp, "1", "0", "0", false, nil)
+	}
+	r := &resolver{graph: g}
+	got := r.packageSuggestions("app-edtor/vim", 3)
+	want := []string{"app-editor/vim", "app-editors/vim"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("ambiguous suggestions = %v, want %v", got, want)
+	}
+}
+
+func TestMissingVersionedTargetSuggestsWithoutSubstitution(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "app-editors/vim", "9.1", "0", "0", false, nil)
+
+	result, err := Resolve(g, []string{"=app-editor/vim-9.1"}, DefaultResolveConfig())
+	if err == nil {
+		t.Fatal("missing versioned target was accepted")
+	}
+	if !strings.Contains(err.Error(), "maybe you meant: app-editors/vim") {
+		t.Fatalf("versioned missing-target diagnostic = %q", err)
+	}
+	if result != nil && actionForCP(result.Install, "app-editors/vim") {
+		t.Fatalf("suggested package was silently installed: %#v", result.Install)
+	}
+}
+
+func TestExactUnavailableTargetDoesNotOfferTypoSuggestions(t *testing.T) {
+	g := makeGraph()
+	pkgKeywords(g, "app-editors/vim", "9.1", "0", "0", false, nil, "")
+	pkg(g, "app-editors/gvim", "9.1", "0", "0", false, nil)
+
+	cfg := DefaultResolveConfig()
+	cfg.PortageConfig = &portage.Config{ACCEPT_KEYWORDS: []string{"amd64"}}
+	_, err := Resolve(g, []string{"app-editors/vim"}, cfg)
+	if err == nil {
+		t.Fatal("keyword-masked exact target was accepted")
+	}
+	if strings.Contains(err.Error(), "maybe you meant") {
+		t.Fatalf("unavailable exact target was diagnosed as a typo: %q", err)
+	}
+	if !strings.Contains(err.Error(), "no installable version") {
+		t.Fatalf("unavailable exact-target diagnostic = %q", err)
+	}
+}
+
+func TestMissingTargetWithoutUsefulSuggestionStaysConcise(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-libs/openssl", "3", "0", "0", false, nil)
+
+	_, err := Resolve(g, []string{"app-editors/vim"}, DefaultResolveConfig())
+	if err == nil {
+		t.Fatal("missing target was accepted")
+	}
+	if strings.Contains(err.Error(), "maybe you meant") {
+		t.Fatalf("unrelated package was suggested: %q", err)
+	}
+}
+
 func TestDecisionLedgerDoesNotCallSoleOmittedCandidateLowerPreference(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "dev-util/xxd", "2025.08.24-r1", "0", "0", false, nil)
@@ -3927,21 +3990,56 @@ func TestCandidateUseFlagsExcludeUnrelatedGlobalFlags(t *testing.T) {
 	}
 }
 
-func TestCandidateUseFlagsIUSEDefaultOutranksProfileButNotUser(t *testing.T) {
+func TestCandidateUseFlagsPolicyOverridesIUSEDefault(t *testing.T) {
 	g := makeGraph()
 	vi := pkg(g, "dev-libs/libnl", "3.12.0", "3", "3", false, map[string]bool{"debug": true})
 	node := g.Packages["dev-libs/libnl"]
 
 	profile := &portage.Config{USE: []string{"-debug"}}
 	r := &resolver{portageConfig: profile, baseUseByVersion: make(map[*VersionInfo]map[string]bool), useOverrides: make(map[string]map[string]bool)}
-	if flags := r.candidateUseFlags(node, vi); !flags["debug"] {
-		t.Fatalf("profile default erased IUSE=+debug: %#v", flags)
+	if flags := r.candidateUseFlags(node, vi); flags["debug"] {
+		t.Fatalf("profile -debug did not override IUSE=+debug: %#v", flags)
 	}
 
 	user := &portage.Config{USE: []string{"-debug"}, UserUSE: []string{"-debug"}}
 	r = &resolver{portageConfig: user, baseUseByVersion: make(map[*VersionInfo]map[string]bool), useOverrides: make(map[string]map[string]bool)}
 	if flags := r.candidateUseFlags(node, vi); flags["debug"] {
 		t.Fatalf("explicit user -debug did not override IUSE=+debug: %#v", flags)
+	}
+
+	profileEnable := &portage.Config{USE: []string{"debug"}}
+	r = &resolver{portageConfig: profileEnable, baseUseByVersion: make(map[*VersionInfo]map[string]bool), useOverrides: make(map[string]map[string]bool)}
+	if flags := r.candidateUseFlags(node, vi); !flags["debug"] {
+		t.Fatalf("profile debug did not preserve IUSE=+debug: %#v", flags)
+	}
+}
+
+func TestResolveNewUseHonorsProfileDisableForInstalledIUSEDefault(t *testing.T) {
+	g := makeGraph()
+	installed := pkg(g, "dev-libs/libpcre2", "10.47", "0", "3", true, map[string]bool{"jit": true})
+	installed.Available = true
+	installed.Keywords = "amd64"
+	installed.Repository = "gentoo"
+	installed.IUse = "+jit"
+	installed.UseFlags = map[string]bool{"jit": true}
+	installed.InstalledUseFlags = map[string]bool{"jit": true}
+	installed.InstalledIUseFlags = map[string]bool{"jit": true}
+
+	cfg := DefaultResolveConfig()
+	cfg.Update, cfg.Deep, cfg.NewUse = true, true, true
+	cfg.PortageConfig = &portage.Config{
+		MakeConf: map[string]string{"ARCH": "amd64"},
+		USE:      []string{"-jit"},
+	}
+	result, err := Resolve(g, []string{"dev-libs/libpcre2"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Install) != 1 || result.Install[0].Action != "reinstall" {
+		t.Fatalf("--newuse retained profile-disabled installed USE: %#v", result.Install)
+	}
+	if result.Install[0].UseFlags["jit"] {
+		t.Fatalf("profile policy did not disable jit: %#v", result.Install[0].UseFlags)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/airencracken/arise/internal/bugreport"
 	"github.com/airencracken/arise/internal/phaseproto"
+	"github.com/airencracken/arise/internal/resolvertrace"
 )
 
 type repeatedString []string
@@ -31,6 +33,7 @@ func runBugReport(args []string) int {
 	pkg := options.String("package", "", "explicit package associated with the failure")
 	planDigest := options.String("plan-sha256", "", "approved plan digest associated with the failure")
 	latestFailure := options.Bool("latest-failure", true, "include the latest interrupted package log")
+	resolverTracePath := options.String("resolver-trace", "", "validated resolver trace to redact again and embed")
 	var logs repeatedString
 	options.Var(&logs, "log", "explicit durable log path (repeatable)")
 	if err := options.Parse(args); err != nil {
@@ -50,12 +53,36 @@ func runBugReport(args []string) int {
 			logs = append(logs, paths[len(paths)-1])
 		}
 	}
+	redactor := bugreport.NewRedactor()
 	report := bugreport.Collect(bugreport.Options{
 		Version: version, Package: *pkg, PlanSHA256: *planDigest, Invocation: os.Args,
 		ResumePath: *resumeFile, JournalDir: *journalDir,
 		FilesystemPaths: []string{commandEnv("ROOT", "/"), commandEnv("PORTAGE_TMPDIR", "/var/tmp"), commandEnv("DISTDIR", "/var/cache/distfiles")},
-		LogPaths:        logs,
+		LogPaths:        logs, Redactor: redactor,
 	})
+	if *resolverTracePath != "" {
+		traceFile, openErr := os.Open(*resolverTracePath)
+		if openErr != nil {
+			fmt.Fprintf(os.Stderr, "bug-report: open resolver trace: %v\n", openErr)
+			return 1
+		}
+		trace, decodeErr := resolvertrace.Decode(traceFile)
+		closeErr := traceFile.Close()
+		if decodeErr != nil {
+			fmt.Fprintf(os.Stderr, "bug-report: decode resolver trace: %v\n", decodeErr)
+			return 1
+		}
+		if closeErr != nil {
+			fmt.Fprintf(os.Stderr, "bug-report: close resolver trace: %v\n", closeErr)
+			return 1
+		}
+		var encoded strings.Builder
+		if encodeErr := resolvertrace.Encode(&encoded, resolvertrace.Sanitize(trace, redactor)); encodeErr != nil {
+			fmt.Fprintf(os.Stderr, "bug-report: encode resolver trace: %v\n", encodeErr)
+			return 1
+		}
+		report.ResolverTrace = json.RawMessage(encoded.String())
+	}
 	if err := bugreport.WriteDirectory(*output, report); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

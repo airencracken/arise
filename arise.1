@@ -100,6 +100,10 @@ Increase output verbosity.
 Show resolver stage timings and the candidate decision ledger. These
 diagnostics are separate from user-facing verbose package and USE details.
 .TP
+\fB\-\-explain\fR
+Explain every bounded candidate decision, including accepted, retained,
+rejected, and skipped outcomes, reasons, and committed requirements.
+.TP
 \fB\-t\fR, \fB\-\-tree\fR
 Display the dependency tree instead of a flat list.
 .TP
@@ -135,6 +139,11 @@ inherited eclasses; state drift before execution fails closed.
 .TP
 \fB\-\-save-plan\fR \fIPATH-OR-NAME\fR
 Save the complete generated JSON plan for later inspection and approval.
+Existing paths are never overwritten.
+.TP
+\fB\-\-save-resolver-trace\fR \fIPATH\fR
+Save a bounded, redacted resolver decision trace. The file is created privately
+and an existing path is never overwritten, including when resolution fails.
 .TP
 \fB\-\-approve-plan\fR \fIPATH-OR-NAME\fR
 Optionally require execution to match an exact saved plan. The current package
@@ -174,8 +183,10 @@ Skip the first package when resuming (used with \fB\-\-resume\fR).
 Write necessary package.unmask and package.license entries when resolution
 fails.
 .TP
-\fB\-\-color\fR \fIy|n\fR
-Enable or disable colored output (default: terminal auto-detect).
+\fB\-\-color\fR \fIauto|y|n\fR
+Control colored output (default: terminal auto-detect). Automatic mode honors
+\fBNO_COLOR\fR, Portage's \fBNOCOLOR\fR, and \fBTERM=dumb\fR. Explicit
+\fB\-\-color=y\fR overrides those environment conventions; JSON remains uncolored.
 .TP
 \fB\-\-unordered-display\fR
 Display results in resolution order rather than sorted.
@@ -597,6 +608,24 @@ uploading anything. Optional \fB\-\-archive\fR creates a deterministic
 \fI.tar.zst\fR export; \fB\-\-package\fR and repeatable \fB\-\-log\fR select
 failure evidence. Collection is bounded, default-deny, and redacts local
 identity, credentials, tokens, proxy values, and private URL components.
+\fB\-\-resolver-trace\fR strictly validates and redacts a saved trace again
+before embedding it in the private JSON report and archive.
+
+.TP
+\fBplan-diff\fR [\fB\-\-json\fR] \fIBEFORE AFTER\fR
+Compare package actions in two saved Arise JSON plans. Version and USE changes
+are reported as changes to one stable package action rather than an artificial
+removal and addition. Inputs are bounded and strictly decoded.
+
+.TP
+\fBdoctor package-use|package-policy|world|all\fR
+Read-only audit of effective ordered package.use policy. Reports invalid and
+stale atoms, duplicate rules, contradictory flags, and later exact-atom
+reversals. Package-policy mode audits package.accept_keywords, package.license,
+package.env, package.mask, and package.unmask for invalid, stale, and duplicate
+entries; all combines both passes. The global \fB\-\-json\fR option emits a
+versioned report. World mode reports invalid, duplicate, and obsolete selected
+targets without treating package-set references as package atoms.
 
 .TP
 \fBpreserved-rebuild\fR [\fIflags\fR]
@@ -713,6 +742,14 @@ Override the default repository path.
 .TP
 \fBNO_COLOR\fR
 Disable colored output when set to any non-empty value.
+
+.TP
+\fBNOCOLOR\fR
+Portage-compatible alias which disables automatic colored output when non-empty.
+
+.TP
+\fBTERM=dumb\fR
+Disable automatic colored output and animated terminal progress.
 
 .TP
 \fBCFLAGS\fR, \fBCXXFLAGS\fR, \fBMAKEOPTS\fR, \fBARCH\fR

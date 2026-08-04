@@ -40,17 +40,18 @@ type Filesystem struct {
 }
 
 type Report struct {
-	Schema      int               `json:"schema"`
-	Complete    bool              `json:"complete"`
-	Build       Build             `json:"build"`
-	Invocation  []string          `json:"invocation"`
-	Package     string            `json:"package,omitempty"`
-	PlanSHA256  string            `json:"plan_sha256,omitempty"`
-	ResumeAtoms []string          `json:"resume_atoms"`
-	Journals    []journal.Summary `json:"journals"`
-	Filesystems []Filesystem      `json:"filesystems"`
-	Logs        map[string]string `json:"logs"`
-	Warnings    []string          `json:"warnings"`
+	Schema        int               `json:"schema"`
+	Complete      bool              `json:"complete"`
+	Build         Build             `json:"build"`
+	Invocation    []string          `json:"invocation"`
+	Package       string            `json:"package,omitempty"`
+	PlanSHA256    string            `json:"plan_sha256,omitempty"`
+	ResumeAtoms   []string          `json:"resume_atoms"`
+	Journals      []journal.Summary `json:"journals"`
+	Filesystems   []Filesystem      `json:"filesystems"`
+	Logs          map[string]string `json:"logs"`
+	Warnings      []string          `json:"warnings"`
+	ResolverTrace json.RawMessage   `json:"resolver_trace,omitempty"`
 }
 
 type Options struct {
@@ -153,6 +154,9 @@ func Markdown(report Report) string {
 	}
 	fmt.Fprintf(&out, "\n## Invocation\n\n`%s`\n\n", markdownInline(strings.Join(report.Invocation, " ")))
 	fmt.Fprintf(&out, "## Recovery state\n\nResume entries: %d\nJournals: %d\n\n", len(report.ResumeAtoms), len(report.Journals))
+	if len(report.ResolverTrace) != 0 {
+		fmt.Fprint(&out, "## Resolver trace\n\nA bounded, redacted resolver trace is embedded in report.json.\n\n")
+	}
 	fmt.Fprintf(&out, "## Filesystems\n\n")
 	for _, fs := range report.Filesystems {
 		fmt.Fprintf(&out, "- `%s`: %d bytes and %d inodes free\n", fs.Path, fs.FreeBytes, fs.FreeInodes)

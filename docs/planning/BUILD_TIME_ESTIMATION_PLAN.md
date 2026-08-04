@@ -98,6 +98,104 @@ The Firefox continuation on 2026-07-24 made the limitations visible:
 - Mark the estimate partial when graph nodes lack compatible samples and show
   coverage by count and predicted work.
 
+### 6. Add opt-in distributed timing reports
+
+- Make reporting explicit opt-in. Building, installing, querying estimates,
+  and using the package farm must not silently enable telemetry.
+- Report one versioned observation per attempted package action with CPV, slot,
+  repository, USE/build-state digest, outcome, effective jobs, and monotonic
+  phase durations for fetch, unpack, compile, test, image install, validation,
+  and commit where those boundaries are available.
+- Describe hardware using estimation-relevant coarse features: architecture,
+  ABI, logical core count, memory class, storage class, virtualization class,
+  and a reproducible performance calibration score. Do not upload raw CPU
+  identifiers when a coarse capability or calibration bucket is sufficient.
+- Include compiler/toolchain identity, source-versus-binary mode, cache warmth,
+  and material build features such as LTO, PGO, tests, documentation, and
+  enabled language frontends.
+- Never report hostnames, IP addresses, usernames, raw filesystem paths,
+  environment contents, package configuration contents, or unrelated system
+  inventory. Publish and schema-test an allowlist rather than maintaining a
+  denylist of sensitive fields.
+- Sign reports with a locally generated reporting identity, rotate or reset it
+  on request, and ensure it is not also a package-farm account or machine
+  identity. Treat every submitted observation as untrusted input.
+- Rate-limit, size-bound, schema-validate, deduplicate by observation/build
+  identity, and reject impossible durations and resource values server-side.
+- Retain failed and interrupted observations for reliability analysis, but
+  exclude them from successful-duration predictions.
+
+### 7. Estimate from the package-farm corpus
+
+- Query the complete stored timing corpus and weight observations by similarity
+  rather than assigning clients to one rigid hardware bucket.
+- Prefer observations matching architecture/ABI, CPV, USE-state digest,
+  toolchain, jobs, memory class, storage class, virtualization class, and cache
+  state. Reduce weight explicitly as compatibility diverges.
+- Learn a client-specific scaling factor from packages that client has already
+  built relative to comparable corpus medians. Apply that factor to sparse
+  package histories with wider uncertainty instead of pretending the hardware
+  is an exact match.
+- Scale phase models independently: CPU calibration should influence compile
+  work more strongly than network fetches or filesystem-heavy image/commit
+  work. Memory pressure and swap observations must widen or invalidate a
+  prediction rather than merely scaling CPU time.
+- Fall back in a reported order: same CPV and similar hardware; same package
+  and nearby versions; similar recipe/toolchain characteristics; calibrated
+  client scaling; architecture-wide baseline; unavailable.
+- Use robust weighted percentiles and outlier-resistant fitting. Return a
+  point estimate, p50/p75/p90 or prediction interval, sample count, effective
+  weighted sample size, compatibility tier, corpus age, and confidence.
+- Compare local source build time, package-farm queue plus build time, artifact
+  transfer/install time, and any immediately available compatible baseline
+  artifact. Keep CPU-specific optimization differences visible in the
+  tradeoff rather than treating all compatible artifacts as equivalent.
+- Present decisions in user terms, for example `build locally: 38-55 min`,
+  `wait for native farm artifact: about 8 min`, or `install generic artifact:
+  under 1 min`. Estimates remain advisory and never select an artifact or
+  authorize a transaction without the ordinary compatibility and approval
+  checks.
+
+### 8. Track longitudinal package cost and bloat
+
+- Treat “bloat” as a vector, not a single accusation: source/distfile bytes,
+  compressed binary-package bytes, installed exclusive bytes, shared bytes,
+  file count, ELF/debug-symbol bytes, peak build-workspace bytes, peak memory,
+  dependency-closure package count and bytes, total package-work time, and
+  critical-path wall time.
+- Record the recipe commit, CPV, slot, repository, profile, USE-state digest,
+  toolchain, build features, splitdebug/strip/compression policy, architecture,
+  ABI and cache state with every measurement. Never compare differently built
+  artifacts without labeling the configuration delta.
+- Separate package-owned installed bytes from the incremental dependency
+  closure introduced on a frozen baseline. Attribute shared dependencies once
+  and expose both exclusive and amortized views instead of double-counting.
+- Track release-to-release and rolling-baseline deltas for selected major
+  packages such as GCC, LLVM, Rust, Firefox, Chromium, LibreOffice and kernels,
+  while allowing users to define their own watched set.
+- Decompose growth by phase and component where evidence permits: added
+  language frontends, generated sources, debug data, libraries, documentation,
+  tests, localization, vendored dependencies and package-manager metadata.
+- Store absolute values and normalized ratios such as installed bytes per
+  compressed artifact byte, build minutes per installed MiB, and peak workspace
+  per final artifact byte. Ratios supplement absolute cost; they do not replace
+  it.
+- Mark discontinuities caused by compiler, compression, profile, USE, ABI,
+  debug, LTO, PGO or test-policy changes. Do not draw a package trend line
+  through incompatible configurations.
+- Show uncertainty and sample provenance for time/resource trends. Artifact
+  sizes from reproducible farm builds may be exact, while client build time and
+  peak-resource distributions require sample counts and percentiles.
+- Alert only on configurable, sustained regressions against compatible
+  baselines. A single release spike creates an investigation marker, not an
+  automatic package judgment or transaction blocker.
+- Keep longitudinal reports advisory and privacy-safe. Coarse hardware
+  calibration is sufficient for time/resource normalization; artifact sizes
+  do not justify collecting host identity or unrelated filesystem inventory.
+- Publish machine-readable series and human dashboards that can answer both
+  “why did this package grow?” and “what will this version cost on my machine?”
+  from the same provenance-linked corpus.
+
 ## Validation
 
 - Unit fixtures for odd/even medians, percentiles, corrupt/incomplete log
@@ -109,12 +207,29 @@ The Firefox continuation on 2026-07-24 made the limitations visible:
   not increase merely because more identical worker slots are available.
 - Replay historical world-update traces and compare predicted versus actual
   package duration and transaction makespan.
+- Replay distributed observations across held-out hardware classes and package
+  versions. Prevent observations from the evaluated client or build identity
+  from leaking into its training set.
+- Replay known package/profile transitions and verify that compatible
+  release-to-release size/resource deltas are detected while profile, USE,
+  toolchain, debug and compression changes create labeled discontinuities.
+- Property-test closure accounting so shared dependency bytes are never counted
+  more than once in one baseline comparison and exclusive contributions never
+  exceed the measured final closure.
 - Report median absolute percentage error, weighted absolute percentage error,
   p90 error, interval coverage, and bias; do not optimize only for one metric.
+- Measure calibration and error separately for exact matches, similarity
+  weighting, client-scaled fallback, architecture baseline, each build phase,
+  and local-versus-farm tradeoff predictions.
 - Compare the baseline, improved estimator, `qlop`, and `genlop` on the same
   frozen history without treating either external tool as authoritative.
+- Add schema, property, fuzz, adversarial-input, replay, privacy-allowlist,
+  duplicate-submission, signature, rate-limit, poisoning, and outlier tests for
+  both the reporting client and ingestion service.
 - Verify that disabling estimates produces no execution, plan, journal, or
   installed-state difference.
+- Verify that telemetry disabled means no report is queued, written, or sent,
+  including failure, retry, offline, package-farm, and upgrade paths.
 
 ## Initial acceptance criteria
 
@@ -126,5 +241,14 @@ The Firefox continuation on 2026-07-24 made the limitations visible:
   compatibility tier.
 - Sparse or incompatible history yields an explicit `unavailable` or fallback
   label, not an unlabeled guess.
+- Distributed estimates identify their corpus, compatibility tier, effective
+  sample size, uncertainty, client calibration status, and observation age.
+- Users can compare local source build, queued farm build, and available binary
+  installation time without enabling timing reports.
+- Timing reports are opt-in, allowlist-only, locally inspectable before upload,
+  and removable from the local queue.
 - Estimate history remains advisory and cannot invalidate or authorize a
   mutation plan.
+- Longitudinal reports separate exclusive package cost, shared dependency
+  closure and build-resource cost, and never compare incompatible build
+  configurations as one continuous trend.

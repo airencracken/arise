@@ -34,3 +34,25 @@ The machine-readable contract is
 Collection is read-only. Missing optional state is omitted, while malformed
 resume, journal, log, or filesystem state produces a visible warning and marks
 the report incomplete.
+
+For resolver failures, create a separate privacy-reviewed trace while resolving:
+
+```sh
+arise --pretend --save-resolver-trace resolver-trace.json @world
+```
+
+The trace file is created with mode `0600`, is never overwritten, and contains
+only bounded resolver decisions and redacted diagnostics. Review it before
+attaching it alongside a bug report.
+
+To embed it directly after review:
+
+```sh
+arise bug-report --output arise-bug-report \
+  --resolver-trace resolver-trace.json
+```
+
+The importer strictly decodes and semantically validates the trace, applies the
+redactor again, and fails before publishing any report when the trace is
+malformed. The embedded trace appears in `report.json` and therefore in the
+deterministic archive as well.

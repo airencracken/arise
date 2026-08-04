@@ -5601,6 +5601,16 @@ func versionAtomMatches(packageAtom, constraint *atom.Atom, version *VersionInfo
 	return atomMatches(packageAtom, constraint, version.Slot, version.Subslot, useFlags, version.Version)
 }
 
+// VersionMatchesConstraint reports whether one indexed version satisfies a
+// package constraint using the version's effective USE state. Read-only tools
+// use this to avoid implementing a subtly different atom matcher.
+func VersionMatchesConstraint(packageAtom, constraint *atom.Atom, version *VersionInfo) bool {
+	if version == nil {
+		return false
+	}
+	return versionAtomMatches(packageAtom, constraint, version, version.UseFlags)
+}
+
 func resolveUseDependencies(input *atom.Atom, parentUse map[string]bool) *atom.Atom {
 	if input == nil || len(input.UseFlags) == 0 {
 		return input
@@ -6165,13 +6175,10 @@ func (r *resolver) candidateUseFlags(node *PkgNode, vi *VersionInfo) map[string]
 				// graphs whose conditional flags are not backed by metadata.
 				if vi.UseFlags == nil {
 					base[name] = enabled
-				} else if iuseDefault, declared := vi.UseFlags[name]; declared || r.implicitUseExpandFlag(name) {
-					// A merged profile `-flag` must not erase an enabled IUSE
-					// default. Only higher-precedence user/command/package policy
-					// or mask/force layers may do that.
-					if !enabled && declared && iuseDefault && !r.portageConfig.ExplicitUseOverride(cpv, policySlot(vi), vi.Repository, name, stable) {
-						continue
-					}
+				} else if _, declared := vi.UseFlags[name]; declared || r.implicitUseExpandFlag(name) {
+					// IUSE defaults seed package-local state. Effective profile and
+					// user policy is applied afterward and therefore wins for flags
+					// which it explicitly enables or disables.
 					base[name] = enabled
 				}
 			}

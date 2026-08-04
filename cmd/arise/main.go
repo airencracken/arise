@@ -22,11 +22,13 @@ import (
 	"github.com/airencracken/arise/internal/ingest"
 	"github.com/airencracken/arise/internal/log"
 	"github.com/airencracken/arise/internal/search"
+	"golang.org/x/term"
 )
 
 // version is replaced by release builds with -ldflags "-X main.version=...".
 var version = "0.0.23"
 var commandContext = context.Background()
+var stdoutIsTerminal = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
 func versionLine() string {
 	return "arise " + version
@@ -106,8 +108,10 @@ var (
 	quiet                    = flag.Bool("quiet", false, "-q, minimal output")
 	verbose                  = flag.Bool("verbose", false, "-v, verbose output")
 	debugOutput              = flag.Bool("debug", false, "show resolver timing stages and decision ledger")
+	explainOutput            = flag.Bool("explain", false, "explain every bounded candidate decision")
 	jsonOutput               = flag.Bool("json", false, "emit a versioned JSON resolution plan")
 	includeValidationFixture = flag.Bool("include-validation-fixture", false, "include the frozen independent-validation fixture and plan in JSON output")
+	saveResolverTrace        = flag.String("save-resolver-trace", "", "save a private, redacted resolver trace without overwriting")
 	tree                     = flag.Bool("tree", false, "-t, display dependency tree")
 	resume                   = flag.Bool("resume", false, "--resume, resume last operation")
 	skipFirst                = flag.Bool("skipfirst", false, "--skipfirst, skip first package in resume")
@@ -292,6 +296,14 @@ func main() {
 		if code := runBugReport(cmdArgs); code != 0 {
 			os.Exit(code)
 		}
+	case "plan-diff":
+		if code := runPlanDiff(cmdArgs); code != 0 {
+			os.Exit(code)
+		}
+	case "doctor":
+		if code := runDoctor(cmdArgs, *dbPath); code != 0 {
+			os.Exit(code)
+		}
 	case "dispatch-conf":
 		if code := runDispatchConf(cmdArgs); code != 0 {
 			os.Exit(code)
@@ -362,6 +374,8 @@ func main() {
 func configureColorOutput(mode string) error {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "auto", "":
+		color.UseColor = stdoutIsTerminal() && os.Getenv("TERM") != "dumb" &&
+			os.Getenv("NO_COLOR") == "" && os.Getenv("NOCOLOR") == ""
 		return nil
 	case "y", "yes", "true", "1", "always":
 		color.UseColor = true

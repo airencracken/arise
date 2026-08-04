@@ -44,6 +44,45 @@ func TestPortageActionHeaderColorsStatusFields(t *testing.T) {
 	}
 }
 
+func TestExecutionStageColorDoesNotChangeRedirectedText(t *testing.T) {
+	old := color.UseColor
+	t.Cleanup(func() { color.UseColor = old })
+	color.UseColor = false
+	plain := colorExecutionStage("Completed package")
+	if plain != ">>> Completed package" {
+		t.Fatalf("plain execution stage = %q", plain)
+	}
+	color.UseColor = true
+	colored := colorExecutionStage("Completed package")
+	if !strings.Contains(colored, "\x1b[92m>>>\x1b[0m") || !strings.Contains(colored, "\x1b[1mCompleted package\x1b[0m") {
+		t.Fatalf("colored execution stage = %q", colored)
+	}
+	if stripped := stripANSIForProgressTest(colored); stripped != plain {
+		t.Fatalf("color changed execution stage text: colored=%q plain=%q", stripped, plain)
+	}
+}
+
+func TestPackageStageVocabularyAvoidsInternalImageTerminology(t *testing.T) {
+	want := map[string]string{
+		"validate": "Validating package contents",
+		"merge":    "Preparing package merge",
+		"sync":     "Syncing package contents",
+		"commit":   "Committing package transaction",
+		"finalize": "Finalizing package",
+	}
+	for stage, label := range want {
+		if got := packageStageLabel(stage); got != label {
+			t.Errorf("packageStageLabel(%q) = %q, want %q", stage, got, label)
+		}
+		if strings.Contains(strings.ToLower(label), "image") {
+			t.Errorf("package stage %q exposes internal image terminology", label)
+		}
+	}
+	if got := packageStageLabel("unknown"); got != "" {
+		t.Fatalf("unknown package stage label = %q", got)
+	}
+}
+
 func TestColorActionAtomUsesPortageMergeRoles(t *testing.T) {
 	old := color.UseColor
 	color.UseColor = true

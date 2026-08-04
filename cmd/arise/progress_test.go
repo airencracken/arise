@@ -7,12 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/fetch"
 )
 
 func TestConcurrentFetchProgressUsesCompleteLines(t *testing.T) {
 	var output bytes.Buffer
-	progress := newFetchProgress(true, &output)
+	progress := newFetchProgress(true, true, &output)
 	progress.terminal = true
 	progress.setConcurrent(true)
 	for _, event := range []fetch.Progress{
@@ -36,6 +37,63 @@ func TestConcurrentFetchProgressUsesCompleteLines(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("concurrent output %q lacks %q", got, want)
 		}
+	}
+}
+
+func TestConciseFetchProgressSuppressesSuccessfulArtifactChatter(t *testing.T) {
+	var output bytes.Buffer
+	progress := newFetchProgress(true, false, &output)
+	for _, event := range []fetch.Progress{
+		{Stage: fetch.ProgressChecking, Artifact: "tinyvec-1.10.0.crate"},
+		{Stage: fetch.ProgressDownload, Artifact: "tinyvec-1.10.0.crate", Source: "https://distfiles.example/tinyvec-1.10.0.crate"},
+		{Stage: fetch.ProgressVerifying, Artifact: "tinyvec-1.10.0.crate"},
+		{Stage: fetch.ProgressComplete, Artifact: "tinyvec-1.10.0.crate"},
+	} {
+		progress.Report(event)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("concise fetch output leaked artifact events: %q", output.String())
+	}
+}
+
+func TestVerboseFetchProgressUsesColorWithoutChangingText(t *testing.T) {
+	previous := color.UseColor
+	t.Cleanup(func() { color.UseColor = previous })
+	events := []fetch.Progress{
+		{Stage: fetch.ProgressChecking, Artifact: "source.tar.xz"},
+		{Stage: fetch.ProgressComplete, Artifact: "source.tar.xz"},
+	}
+	var plain bytes.Buffer
+	color.UseColor = false
+	plainProgress := newFetchProgress(true, true, &plain)
+	for _, event := range events {
+		plainProgress.Report(event)
+	}
+	var colored bytes.Buffer
+	color.UseColor = true
+	coloredProgress := newFetchProgress(true, true, &colored)
+	for _, event := range events {
+		coloredProgress.Report(event)
+	}
+	if !strings.Contains(colored.String(), "\x1b[") {
+		t.Fatalf("verbose fetch output contains no ANSI styling: %q", colored.String())
+	}
+	if got := stripANSIForProgressTest(colored.String()); got != plain.String() {
+		t.Fatalf("color changed fetch text: colored=%q plain=%q", got, plain.String())
+	}
+}
+
+func stripANSIForProgressTest(value string) string {
+	for {
+		start := strings.Index(value, "\x1b[")
+		if start < 0 {
+			return value
+		}
+		end := strings.IndexByte(value[start:], 'm')
+		if end < 0 {
+			return value[:start]
+		}
+		value = value[:start] + value[start+end+1:]
 	}
 }
 
@@ -228,7 +286,7 @@ func TestFetchProgressCanShareTerminalMessageOwner(t *testing.T) {
 	var output bytes.Buffer
 	terminal := &terminalProgress{output: true, terminal: true, writer: &output}
 	terminal.setStatus(">>> Jobs: 0 of 2 complete")
-	fp := newFetchProgress(true, &output)
+	fp := newFetchProgress(true, true, &output)
 	fp.setConcurrent(true)
 	fp.line = terminal.message
 	fp.Report(fetch.Progress{Stage: fetch.ProgressChecking, Artifact: "source.tar.xz"})

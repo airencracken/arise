@@ -1,6 +1,6 @@
 # Package Plan and Progress Output UX Plan
 
-Implementation note (2026-07-21): dense plan rows now use Portage-style action
+Implementation note (updated 2026-08-04): dense plan rows now use Portage-style action
 fields with independently colored package type and N/R/U/D markers, selected
 and replaced identities, USE transitions/USE_EXPAND groups, and per-package
 download sizes. Runtime output distinguishes image installation, validation,
@@ -8,6 +8,13 @@ content installation/sync, transaction commit, and lifecycle finalization; it
 also reports completed jobs and load averages. Post-transaction reporting now
 covers lifecycle notices, Info-index results, preserved libraries, protected
 configuration updates, and unread news.
+
+Successful per-distfile checks, downloads, and Manifest verification are now
+suppressed in default execution output and retained by `--verbose`. Durable
+package lifecycle stages use semantic terminal color, while automatic
+redirected output and JSON remain uncolored. Runtime vocabulary now uses
+`staging area` and `package contents` rather than exposing the internal package
+image implementation.
 
 ## Goal
 
@@ -135,5 +142,7 @@ for recovery. Extremely long USE state may wrap but remains one logical record.
 - A package selected solely for subslot, USE, dependency metadata or
   preserved-library reasons says so on the package record.
 - Redirected and colored terminal output normalize to identical information.
+- Default successful fetch output is bounded by package rather than distfile
+  count; verbose mode retains the complete artifact lifecycle.
 - Snapshot tests cover new install, update, downgrade, reinstall, slot move,
   binary reuse, masked/forced flags, USE_EXPAND, and long wrapped records.

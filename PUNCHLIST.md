@@ -1991,7 +1991,10 @@ path. Passing a later gate never retroactively waives an earlier one.
   Python 3.9 (five OpenSSL/libffi edges), and repository-orphaned LLVM 13 (six
   libffi edges).
 - [ ] Update `@system` successfully with a verified final state.
-- [ ] Update `@world` successfully with a verified final state.
+- [x] Update `@world` successfully with a verified final state. On the fresh
+  hardened amd64 stage3 VPS, Arise committed the full 65-action `-avuDN @world`
+  transaction. Independent post-transaction `emerge -pavuDN @world` and
+  `arise -pavuDN @world` checks both resolved zero actions with backtrack 0/20.
 - [ ] Complete an `--emptytree` world update, proving the static Arise binary,
   operation journal and recovery tooling remain usable throughout the rebuild.
 - [ ] Add opt-in historical build-time estimates per package and for the whole
@@ -2403,12 +2406,13 @@ Acceptance gate:
   arrays/objects, null/boolean handling and serialization. Keep this amusing
   convenience strictly off Arise's critical path and do not make it a runtime
   dependency; ordinary JSONL must remain usable through many common tools.
-- [ ] Match emerge's unknown-atom "did you mean" behavior. Generate
+- [x] Match emerge's unknown-atom "did you mean" behavior. Generate
   deterministic typo/category suggestions from the same visible package
   snapshot used by resolution, distinguish unavailable/masked exact atoms from
   spelling mistakes, and never silently substitute a suggestion. Differential
-  fixtures should cover misspelled package names, wrong categories, ambiguous
-  names, versioned atoms and a no-useful-suggestion case.
+  fixtures cover misspelled package names, wrong categories, ambiguous names,
+  versioned atoms and a no-useful-suggestion case. Exact but unavailable atoms
+  retain their visibility failure and suggestions never alter the plan.
 - [ ] Implement package sets and list-sets behavior.
 - [ ] Complete autounmask suggestions and atomic config writes.
 - [x] Implement installed `pkg_config` execution. Lifecycle snapshots now
@@ -2487,7 +2491,12 @@ Acceptance gate:
 - [ ] Differential-test Perl repair plans against `perl-cleaner`, and validate
   Python repair plans against VDB ownership, linkage and interpreter import
   probes in disposable broken-root fixtures.
-- [ ] Complete news relevance filtering.
+- [x] Complete news relevance filtering. Arise consumes Portage's
+  repository-specific relevant-unread state, ignores stale missing entries,
+  updates that state atomically when items are read, and falls back to its
+  compatible marker model when Portage has not published the state. A fresh
+  hardened stage3 reported the same 21 relevant unread Gentoo items through
+  both Arise and Portage.
 - [ ] Add a migration-advice engine that correlates relevant Gentoo news items
   with the active profile, installed packages, selected versions and proposed
   transaction before risky upgrades.
@@ -2529,7 +2538,11 @@ These are product goals, not substitutes for correctness:
   10.45→1.86 s). The current Portage run is 17.0 s, but plan equivalence remains
   a prerequisite for publishing that directional advantage.
 - [ ] Incremental index updates after sync instead of full rebuilds.
-- [ ] Explain mode showing why each candidate was accepted or rejected.
+- [x] Explain mode showing why each candidate was accepted or rejected.
+  `--explain` renders every record in the resolver's bounded deterministic
+  candidate ledger, including selected, retained, rejected and skipped
+  outcomes, resolver reasons and committed requirements. JSON plans retain the
+  same versioned ledger for machine consumers; bound omissions remain explicit.
 - [~] Structured JSON plan, conflict, progress and audit output. Plan actions
   and structured conflict details are implemented; progress and audit streams
   remain.
@@ -2559,17 +2572,45 @@ These are product goals, not substitutes for correctness:
   re-resolution and separate approval for drift. This is portable package-set
   reconstruction, not atomic rollback of lifecycle, external or package-unowned
   state.
-- [ ] Plan diff: show what changed since the last sync or previous solution.
-- [ ] Resolver trace that can be attached to bug reports without private data.
+- [~] Plan diff: show what changed since the last sync or previous solution.
+  The frozen validation-plan layer now has a deterministic, non-mutating diff
+  primitive with stable action identities, added/removed/changed records,
+  changed-field attribution and duplicate/schema rejection. `arise plan-diff`
+  compares two bounded, strictly decoded saved JSON plans with human or JSON
+  output. It separately reports operation, targets, completeness, state digest
+  and plan digest drift so equal actions do not imply equal inputs. Automatic
+  previous-solution selection remains.
+- [x] Resolver trace that can be attached to bug reports without private data.
+  A versioned, bounded trace document now exports targets, verification,
+  backtracks, branch evaluations, candidate decisions, conflicts and warnings
+  through the support-bundle redactor. Strict decoding, deterministic output,
+  hostile-input rejection and adversarial secret/path tests enforce the
+  contract. Install/update resolution can export the document through
+  `--save-resolver-trace` using exclusive mode `0600` creation, including on a
+  failed solution. `bug-report --resolver-trace` strictly decodes, validates
+  and redacts imported traces again before embedding them in the private JSON
+  report and deterministic archive; malformed input fails before publication.
 - [ ] Counterfactual planning: compare profile, USE, keyword, license, repository
   or package-version choices without editing live configuration, and explain
   the smallest policy change that produces each alternative plan.
 - [ ] Upgrade risk report before approval: identify critical-path packages,
   ABI/subslot transitions, removals, config-file changes, preserved libraries,
   boot/session/network impact and the transaction's last safe rollback point.
-- [ ] Portage configuration doctor: lint stale or shadowed package.* atoms,
+- [~] Portage configuration doctor: lint stale or shadowed package.* atoms,
   contradictory USE policy, obsolete targets, unknown flags, duplicate rules,
   repository drift and settings that no installed/visible package consumes.
+  The first read-only package.use pass reports invalid and stale atoms, exact
+  duplicate rules, within-rule contradictions and later exact-atom reversals
+  with stable rule evidence. `arise doctor package-use` exposes human and
+  versioned JSON reports from the effective configuration and current package
+  graph. Matching rules also report flags absent from every applicable
+  installed or visible version while respecting the `-*` control token.
+  `doctor package-policy` adds family-qualified invalid, stale-version and
+  duplicate checks for package.accept_keywords, package.license, package.env,
+  package.mask and package.unmask; `doctor all` combines both passes.
+  `doctor world` reports invalid, duplicate and obsolete selected targets while
+  preserving package-set references. Overlapping-atom shadow analysis and
+  repository drift remain.
 - [ ] Maintenance cockpit with evidence-backed priorities: combine news,
   security advisories, preserved rebuilds, broken linkage, stale interpreters,
   depclean candidates and pending config updates into one explainable plan,

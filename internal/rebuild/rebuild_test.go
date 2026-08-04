@@ -1412,16 +1412,18 @@ src_install() { :; }
 	}
 }
 
-func TestMaterializeInstalledEnvironmentRemovesStaleIsolationControls(t *testing.T) {
+func TestMaterializeInstalledEnvironmentPreservesShellStructure(t *testing.T) {
 	if _, err := exec.LookPath("bzip2"); err != nil {
 		t.Skip("bzip2 is not installed")
 	}
 	vdb := t.TempDir()
 	plain := filepath.Join(t.TempDir(), "environment")
 	content := "export EAPI='8'\n" +
-		"export SANDBOX_WRITE='/stale/build'\n" +
-		"declare -x SANDBOX_READ='/stale/read'\n" +
-		"export LD_PRELOAD='/stale/libsandbox.so'\n" +
+		"if [[ ${FEATURES} == *sandbox* ]]; then\n" +
+		"  export SANDBOX_WRITE='/stale/build'\n" +
+		"  declare -x SANDBOX_READ='/stale/read'\n" +
+		"  export LD_PRELOAD='/stale/libsandbox.so'\n" +
+		"fi\n" +
 		"export FEATURES='sandbox'\n"
 	if err := os.WriteFile(plain, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -1447,12 +1449,12 @@ func TestMaterializeInstalledEnvironmentRemovesStaleIsolationControls(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(got)
-	if strings.Contains(text, "SANDBOX_") || strings.Contains(text, "LD_PRELOAD") {
-		t.Fatalf("materialized environment retained isolation controls:\n%s", text)
+	if string(got) != content {
+		t.Fatalf("materialized environment changed stored shell program:\ngot:\n%s\nwant:\n%s", got, content)
 	}
-	if !strings.Contains(text, "export EAPI='8'") || !strings.Contains(text, "export FEATURES='sandbox'") {
-		t.Fatalf("materialized environment lost package state:\n%s", text)
+	check := exec.Command("bash", "--noprofile", "--norc", "-n", path)
+	if output, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("materialized environment is not valid shell: %v\n%s", err, output)
 	}
 }
 
