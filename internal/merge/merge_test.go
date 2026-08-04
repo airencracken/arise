@@ -230,6 +230,45 @@ func TestValidateLiveNewInstallTargetsIsStrictlyAdditive(t *testing.T) {
 	}
 }
 
+func TestValidateLiveNewInstallTargetsAllowsIdenticalAlternativesSymlink(t *testing.T) {
+	tmp := t.TempDir()
+	image := filepath.Join(tmp, "image")
+	root := filepath.Join(tmp, "root")
+	for _, directory := range []string{filepath.Join(image, "bin"), filepath.Join(root, "bin")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, link := range []string{filepath.Join(image, "bin", "cpio"), filepath.Join(root, "bin", "cpio")} {
+		if err := os.Symlink("../usr/bin/cpio", link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := validateLiveNewInstallTargets(image, root); err != nil {
+		t.Fatalf("identical alternatives symlink was rejected: %v", err)
+	}
+}
+
+func TestValidateLiveNewInstallTargetsRejectsDifferentSymlink(t *testing.T) {
+	tmp := t.TempDir()
+	image := filepath.Join(tmp, "image")
+	root := filepath.Join(tmp, "root")
+	for _, directory := range []string{filepath.Join(image, "bin"), filepath.Join(root, "bin")} {
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("../usr/bin/cpio", filepath.Join(image, "bin", "cpio")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../usr/bin/bsd-cpio", filepath.Join(root, "bin", "cpio")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateLiveNewInstallTargets(image, root); err == nil || !strings.Contains(err.Error(), "refuses existing target") {
+		t.Fatalf("different symlink error = %v", err)
+	}
+}
+
 func TestValidateLiveReplacementTargetsRequiresOldContentsOwnership(t *testing.T) {
 	base := t.TempDir()
 	image, root := filepath.Join(base, "image"), filepath.Join(base, "root")

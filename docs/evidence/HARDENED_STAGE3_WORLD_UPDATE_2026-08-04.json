@@ -39,6 +39,18 @@
     "outcome": "committed",
     "duration_seconds": 8312
   },
+  "follow_up_transactions": [
+    {
+      "command": "/root/arise-test sys-kernel/linux-firmware",
+      "planned_actions": 2,
+      "packages": [
+        "app-alternatives/cpio-0",
+        "sys-kernel/linux-firmware-20260622"
+      ],
+      "outcome": "committed",
+      "regression": "accepted an identical unowned /bin/cpio -> gcpio alternatives symlink created by the provider lifecycle while retaining strict rejection for differing links and existing regular files"
+    }
+  ],
   "limitations": [
     "CPU, memory, storage, MAKEOPTS, cache state, effective USE digest, toolchain identity, phase durations, artifact sizes, and peak resources were not captured.",
     "This single package observation is not a calibrated prediction baseline or cross-version bloat comparison."

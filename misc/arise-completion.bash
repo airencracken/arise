@@ -6,9 +6,10 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install uninstall select deselect recover query state search installed info inspect audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench"
+    local commands="sync index install uninstall select deselect recover query state search installed info inspect audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench doctor plan-diff"
 
     local audit_sub="python perl"
+    local doctor_sub="package-use package-policy world all"
     local news_sub="list read display"
 
     if [[ $cword -eq 1 ]]; then
@@ -75,6 +76,16 @@ _arise() {
             elif [[ $cword -eq 3 && ${words[2]} == read ]]; then
                 COMPREPLY=($(compgen -W "all" -- "$cur"))
             fi
+            ;;
+        doctor)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "$doctor_sub --json" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "--json" -- "$cur"))
+            fi
+            ;;
+        plan-diff)
+            COMPREPLY=($(compgen -W "--json" -- "$cur"))
             ;;
         search)
             if [[ $cur == -* ]]; then

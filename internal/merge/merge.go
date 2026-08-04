@@ -288,8 +288,11 @@ func generatedInfoDirectoryIndex(destDir, relative string, staged os.DirEntry, i
 }
 
 // validateLiveNewInstallTargets limits the first live lane to additive package
-// state. Existing directories may be shared, but no file, symlink or other
-// object may be replaced, whether VDB-owned or local/unowned.
+// state. Existing directories may be shared. An identical symlink may be
+// adopted because alternatives packages can stage a link already created by a
+// provider's post-install lifecycle; no filesystem object is changed in that
+// case. Every other existing file, differing symlink or special object is
+// refused, whether VDB-owned or local/unowned.
 func validateLiveNewInstallTargets(destDir, rootDir string) error {
 	return filepath.WalkDir(destDir, func(source string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -309,6 +312,19 @@ func validateLiveNewInstallTargets(destDir, rootDir string) error {
 		}
 		if entry.IsDir() && info.IsDir() {
 			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 && info.Mode()&os.ModeSymlink != 0 {
+			stagedLink, stagedErr := os.Readlink(source)
+			installedLink, installedErr := os.Readlink(target)
+			if stagedErr != nil {
+				return fmt.Errorf("merge: read staged live canary symlink %s: %w", source, stagedErr)
+			}
+			if installedErr != nil {
+				return fmt.Errorf("merge: read installed live canary symlink %s: %w", target, installedErr)
+			}
+			if stagedLink == installedLink {
+				return nil
+			}
 		}
 		return fmt.Errorf("merge: live new-install canary refuses existing target %s", target)
 	})

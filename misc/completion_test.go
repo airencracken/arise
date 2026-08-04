@@ -34,6 +34,8 @@ func TestCommandCompletion(t *testing.T) {
 		{name: "inspect command", words: []string{"arise", "inspe"}, want: []string{"inspect"}},
 		{name: "inspect modes", words: []string{"arise", "inspect", "--"}, want: []string{"--json", "--strict", "--locked", "--target-kernel="}},
 		{name: "news read all", words: []string{"arise", "news", "read", "a"}, want: []string{"all"}},
+		{name: "doctor modes", words: []string{"arise", "doctor", "package"}, want: []string{"package-use", "package-policy"}},
+		{name: "plan diff modes", words: []string{"arise", "plan-diff", "--"}, want: []string{"--json"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
