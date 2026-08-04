@@ -69,7 +69,7 @@ update itself:
 
 ```sh
 arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.22
+arise -1 --reinstall =sys-apps/arise-0.0.23
 ```
 
 Git repositories synchronize concurrently. Arise honors Portage-compatible
@@ -106,6 +106,13 @@ make vet
 
 See the [development guide](docs/development.md) for test lanes, environment
 variables, architecture, and repository conventions.
+
+For a newly unpacked Gentoo stage3, follow the
+[unofficial Gentoo Handbook addendum](docs/handbook-addendum.md), then use the
+[fresh-stage3 maintenance runbook](docs/fresh-stage3.md) as the transaction
+checklist. They keep the initial Portage bootstrap explicit, use Git-only
+repository synchronization, freeze the Arise world plan before mutation, and
+include recovery and post-reboot checks.
 
 ## Quick start
 

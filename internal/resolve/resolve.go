@@ -2342,6 +2342,9 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	}
 	if node == nil {
 		msg := fmt.Sprintf("package %s could not be found in the repository", cp)
+		if suggestions := r.packageSuggestions(cp, 3); len(suggestions) != 0 {
+			msg += "; maybe you meant: " + strings.Join(suggestions, ", ")
+		}
 		r.conflicts = append(r.conflicts, msg)
 		if r.config.KeepGoing {
 			return nil
@@ -2739,6 +2742,77 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	// --deep controls traversal through packages already satisfied by the
 	// installed state; it must not be forced for an ordinary install.
 	return r.processDeps(node, vi, target.String(), depth+1, DomainROOT)
+}
+
+func (r *resolver) packageSuggestions(requested string, limit int) []string {
+	if r == nil || r.graph == nil || limit <= 0 {
+		return nil
+	}
+	type candidate struct {
+		cp       string
+		distance int
+	}
+	requested = strings.ToLower(strings.TrimSpace(requested))
+	requestedParts := strings.SplitN(requested, "/", 2)
+	if len(requestedParts) != 2 {
+		return nil
+	}
+	threshold := len(requested) / 4
+	if threshold < 2 {
+		threshold = 2
+	}
+	var candidates []candidate
+	for cp := range r.graph.Packages {
+		lower := strings.ToLower(cp)
+		parts := strings.SplitN(lower, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		distance := editDistance(requested, lower)
+		// An exact package-name match in a nearby category is the most useful
+		// correction for Gentoo's commonly mistyped singular/plural categories.
+		if parts[1] == requestedParts[1] {
+			distance = editDistance(requestedParts[0], parts[0])
+		}
+		if distance <= threshold {
+			candidates = append(candidates, candidate{cp: cp, distance: distance})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].distance != candidates[j].distance {
+			return candidates[i].distance < candidates[j].distance
+		}
+		return candidates[i].cp < candidates[j].cp
+	})
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	result := make([]string, len(candidates))
+	for index := range candidates {
+		result[index] = candidates[index].cp
+	}
+	return result
+}
+
+func editDistance(left, right string) int {
+	a, b := []rune(left), []rune(right)
+	previous := make([]int, len(b)+1)
+	current := make([]int, len(b)+1)
+	for index := range previous {
+		previous[index] = index
+	}
+	for i := 1; i <= len(a); i++ {
+		current[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 0
+			if a[i-1] != b[j-1] {
+				cost = 1
+			}
+			current[j] = min(previous[j]+1, current[j-1]+1, previous[j-1]+cost)
+		}
+		previous, current = current, previous
+	}
+	return previous[len(b)]
 }
 
 func dependencyVersionKey(cp string, version *atom.Version, slot, repository string) string {
@@ -4367,8 +4441,8 @@ func (r *resolver) verifyPlannedStatePass() (bool, []string) {
 			r.conflictDetails = append(r.conflictDetails, ConflictDetail{Kind: "post-solve-verification", Package: packageName, Message: message})
 		}
 	}
-	repairDependency := func(dep *atom.Atom, parentCP string) bool {
-		if r.config.EmptyTree || !r.config.CompleteGraph || dep == nil {
+	repairDependency := func(dep *atom.Atom, parentCP string, domain DependencyDomain, requiredByPlannedPackage bool) bool {
+		if r.config.EmptyTree || (!r.config.CompleteGraph && !requiredByPlannedPackage) || dep == nil {
 			return false
 		}
 		node := r.graph.Packages[dep.CP()]
@@ -4381,7 +4455,11 @@ func (r *resolver) verifyPlannedStatePass() (bool, []string) {
 		}
 		before := r.verificationRepairStateKey()
 		selected := versionedDependencyAtom(node, dep, best)
-		if err := r.planDependency(selected, dep, "complete-graph dependency repair required by "+parentCP, 1); err != nil {
+		reason := "verification dependency repair required by " + parentCP
+		if r.config.CompleteGraph && !requiredByPlannedPackage {
+			reason = "complete-graph dependency repair required by " + parentCP
+		}
+		if err := r.planDependencyInDomain(selected, dep, reason, 1, domain); err != nil {
 			addConflict(fmt.Sprintf("post-solve verification: repair %s required by %s failed: %v", dep.String(), parentCP, err))
 			return false
 		}
@@ -4512,7 +4590,7 @@ func (r *resolver) verifyPlannedStatePass() (bool, []string) {
 					continue
 				}
 				if !r.finalAtomSatisfiedInDomain(dep, removed, edge.Domain) {
-					if parentChanging && repairDependency(dep, cp) {
+					if parentChanging && repairDependency(dep, cp, edge.Domain, true) {
 						continue
 					}
 					addIssue(node, vi, parentChanging, fmt.Sprintf("post-solve verification: %s required by %s is not satisfied", dep.String(), cp))

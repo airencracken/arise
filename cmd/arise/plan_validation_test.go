@@ -45,6 +45,28 @@ func TestIndependentPlanAuditRouteAndLockedReplay(t *testing.T) {
 	}
 }
 
+func TestIndependentPlanEvidenceIncludesFailedResolution(t *testing.T) {
+	graph := resolve.NewDepGraph()
+	version := graph.AddVersionFromRepository("app-editors/vim", "9.1", "0", "0", false, nil, "amd64", "gentoo")
+	version.Available, version.DependencyMetadataKnown, version.EAPI = true, true, "8"
+	result := &resolve.ResolveResult{
+		Verified: false, Verification: resolve.VerificationFailed,
+		Conflicts: []string{"post-solve verification: dependency missing"},
+	}
+	ordinary, err := prepareIndependentPlanAudit(graph, result, []string{"app-editors/vim"}, resolve.ResolveConfig{})
+	if err != nil || ordinary != nil {
+		t.Fatalf("ordinary failed-plan audit = %#v, %v", ordinary, err)
+	}
+	evidence, err := prepareIndependentPlanEvidence(graph, result, []string{"app-editors/vim"}, resolve.ResolveConfig{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence == nil || evidence.fixture.Schema != planvalidate.SchemaVersion ||
+		!reflect.DeepEqual(evidence.fixture.Request.Targets, []string{"app-editors/vim"}) {
+		t.Fatalf("failed-plan evidence was not frozen: %#v", evidence)
+	}
+}
+
 func TestIndependentPlanAuditCanonicalizesBarePackageTarget(t *testing.T) {
 	graph := resolve.NewDepGraph()
 	version := graph.AddVersionFromRepository("sys-apps/arise", "0.0.8", "0", "0", false, nil, "~amd64", "arise-overlay")

@@ -2,8 +2,8 @@ package preserved
 
 import (
 	"bufio"
+	"context"
 	"debug/elf"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/airencracken/gentooling"
 )
 
 // BrokenLink represents an ELF binary that requires a shared library
@@ -343,33 +345,21 @@ func ScanPreservedLibs(root string) ([]PreservedLib, error) {
 }
 
 func scanPreservedRegistry(root, path string) ([]PreservedLib, bool, error) {
-	data, err := os.ReadFile(path)
+	_, statErr := os.Stat(path)
+	if os.IsNotExist(statErr) {
+		return nil, false, nil
+	}
+	if statErr != nil {
+		return nil, true, fmt.Errorf("could not inspect preserved library registry %q: %w", path, statErr)
+	}
+	records, err := gentooling.ReadPreservedLibraries(context.Background(), root, path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
-		return nil, true, fmt.Errorf("could not read preserved library registry %q: %w", path, err)
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return nil, true, nil
-	}
-	var records map[string][]json.RawMessage
-	if err := json.Unmarshal(data, &records); err != nil {
-		return nil, true, fmt.Errorf("could not parse preserved library registry %q: %w", path, err)
+		return nil, true, err
 	}
 	seen := make(map[string]bool)
 	var preserved []PreservedLib
 	for _, record := range records {
-		if len(record) != 3 {
-			continue
-		}
-		var owner string
-		var paths []string
-		if json.Unmarshal(record[0], &owner) != nil || json.Unmarshal(record[2], &paths) != nil {
-			continue
-		}
-		for _, registeredPath := range paths {
-			fullPath := filepath.Join(root, strings.TrimPrefix(registeredPath, string(filepath.Separator)))
+		for _, fullPath := range record.RootedPaths {
 			if seen[fullPath] {
 				continue
 			}
@@ -382,7 +372,7 @@ func scanPreservedRegistry(root, path string) ([]PreservedLib, bool, error) {
 				soname = sonameFromPath(fullPath)
 			}
 			preserved = append(preserved, PreservedLib{
-				Path: fullPath, Soname: soname, Version: versionFromSONAME(soname), OwningPkg: owner,
+				Path: fullPath, Soname: soname, Version: versionFromSONAME(soname), OwningPkg: record.Owner.CPV(),
 			})
 		}
 	}

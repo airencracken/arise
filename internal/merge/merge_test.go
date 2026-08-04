@@ -1394,6 +1394,39 @@ func TestTransactionalMergeWritesValidatedVDBMetadata(t *testing.T) {
 	}
 }
 
+func TestPrunePreservedRegistryAcceptsEmptyFreshStage3Registry(t *testing.T) {
+	for _, contents := range []string{"", "\n\t "} {
+		t.Run(fmt.Sprintf("bytes-%d", len(contents)), func(t *testing.T) {
+			root := t.TempDir()
+			registry := filepath.Join(root, "var", "lib", "portage", "preserved_libs_registry")
+			if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(registry, []byte(contents), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := prunePreservedRegistry(nil, MergeConfig{RootDir: root, VdbDir: filepath.Join(root, "var", "db", "pkg")}); err != nil {
+				t.Fatalf("empty fresh-stage3 registry: %v", err)
+			}
+		})
+	}
+}
+
+func TestPrunePreservedRegistryRejectsMalformedNonemptyRegistry(t *testing.T) {
+	root := t.TempDir()
+	registry := filepath.Join(root, "var", "lib", "portage", "preserved_libs_registry")
+	if err := os.MkdirAll(filepath.Dir(registry), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registry, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := prunePreservedRegistry(nil, MergeConfig{RootDir: root, VdbDir: filepath.Join(root, "var", "db", "pkg")})
+	if err == nil || !strings.Contains(err.Error(), "parse preserved library registry") {
+		t.Fatalf("malformed registry error = %v", err)
+	}
+}
+
 func TestTransactionalMergeUnsafeVDBMetadataRollsBack(t *testing.T) {
 	tmp := t.TempDir()
 	destDir := filepath.Join(tmp, "dest")

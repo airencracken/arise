@@ -1,12 +1,13 @@
 package news
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
+
+	"github.com/airencracken/gentooling"
 )
 
 type NewsItem struct {
@@ -20,137 +21,27 @@ type NewsItem struct {
 	Body             string
 }
 
-var (
-	headerPattern = regexp.MustCompile(`^([A-Za-z-]+)\s*:\s*(.*)`)
-	datePattern   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}-`)
-)
-
 func ReadNews(newsDir string) ([]NewsItem, error) {
-	entries, err := os.ReadDir(newsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("news: could not read news directory %s: %w", newsDir, err)
-	}
-
-	var items []NewsItem
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if !datePattern.MatchString(name) {
-			continue
-		}
-
-		dirPath := filepath.Join(newsDir, name)
-		newsFile, err := findNewsTextFile(dirPath)
-		if err != nil {
-			continue
-		}
-		if newsFile == "" {
-			continue
-		}
-
-		item, err := parseNewsFile(filepath.Join(dirPath, newsFile))
-		if err != nil {
-			continue
-		}
-		if item == nil {
-			continue
-		}
-		item.Path = dirPath
-		if item.Date == "" && len(name) >= 10 {
-			item.Date = name[:10]
-		}
-
-		items = append(items, *item)
-	}
-
-	return items, nil
-}
-
-func findNewsTextFile(dir string) (string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return "", err
-	}
-
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if strings.HasSuffix(name, ".txt") {
-			return name, nil
-		}
-	}
-
-	return "", nil
-}
-
-func parseNewsFile(path string) (*NewsItem, error) {
-	data, err := os.ReadFile(path)
+	state, err := gentooling.ReadNewsState(context.Background(), gentooling.NewsPaths{
+		RepositoryName: "gentoo", NewsDirectory: newsDir,
+		StateDirectory: filepath.Join(newsDir, ".arise-no-news-state"),
+	}, gentooling.NewsContext{})
 	if err != nil {
 		return nil, err
 	}
-
-	content := string(data)
-	lines := strings.Split(content, "\n")
-
-	item := &NewsItem{Path: path}
-
-	foundBlank := false
-	for i, line := range lines {
-		if !foundBlank {
-			line = strings.TrimRight(line, "\r")
-			if line == "" {
-				foundBlank = true
-				continue
-			}
-			matches := headerPattern.FindStringSubmatch(line)
-			if len(matches) == 3 {
-				key := matches[1]
-				val := strings.TrimSpace(matches[2])
-				switch key {
-				case "Title":
-					item.Title = val
-				case "Author":
-					item.Author = val
-				case "Date":
-					item.Date = val
-				case "Revision":
-					if r, err := strconv.Atoi(val); err == nil {
-						item.Revision = r
-					}
-				case "News-Item-Format":
-					item.NewsItemFormat = val
-				case "Display-If-Installed":
-					item.DisplayIfInstall = val
-				}
-			}
-		} else {
-			if item.Body != "" {
-				item.Body += "\n"
-			}
-			item.Body += line
-			if i == len(lines)-1 && len(remainingLines(lines, i+1)) == 0 {
-				break
-			}
+	items := make([]NewsItem, 0, len(state.Items))
+	for _, item := range state.Items {
+		installed := ""
+		if len(item.DisplayIfInstalled) != 0 {
+			installed = item.DisplayIfInstalled[0]
 		}
+		items = append(items, NewsItem{
+			Path: filepath.Dir(item.Path), Title: item.Title, Author: item.Author,
+			Date: item.Date, Revision: item.Revision, NewsItemFormat: item.Format,
+			DisplayIfInstall: installed, Body: item.Body,
+		})
 	}
-
-	item.Body = strings.TrimSpace(item.Body)
-
-	return item, nil
-}
-
-func remainingLines(lines []string, from int) []string {
-	if from >= len(lines) {
-		return nil
-	}
-	return lines[from:]
+	return items, nil
 }
 
 func ReadNewsForPackage(newsDir string, atom string) ([]NewsItem, error) {
@@ -189,11 +80,30 @@ func matchesConstraint(installed, constraint string) bool {
 }
 
 func ReadUnreadNews(newsDir string, readMarkerDir string) ([]NewsItem, error) {
+	portageUnread := filepath.Join(readMarkerDir, "news-gentoo.unread")
+	if _, err := os.Stat(portageUnread); err == nil {
+		state, err := gentooling.ReadNewsState(context.Background(), gentooling.NewsPaths{
+			RepositoryName: "gentoo", NewsDirectory: newsDir, StateDirectory: readMarkerDir,
+		}, gentooling.NewsContext{})
+		if err != nil {
+			return nil, err
+		}
+		unread := make([]NewsItem, 0, len(state.Unread))
+		for _, item := range state.Unread {
+			unread = append(unread, NewsItem{Path: filepath.Dir(item.Path), Title: item.Title, Author: item.Author, Date: item.Date, Revision: item.Revision, NewsItemFormat: item.Format, Body: item.Body})
+		}
+		return unread, nil
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("news: could not inspect Portage unread state: %w", err)
+	}
 	all, err := ReadNews(newsDir)
 	if err != nil {
 		return nil, err
 	}
 
+	// Portage records the relevant unread item IDs in a repository-specific
+	// file. Prefer that authoritative set when present so irrelevant GLEP 42
+	// items are not reported as unread.
 	readNames, err := readMarkerNames(readMarkerDir)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("news: could not read news markers: %w", err)
@@ -236,6 +146,25 @@ func MarkRead(readMarkerDir string, item NewsItem) error {
 		return fmt.Errorf("news: could not create marker directory %s: %w", readMarkerDir, err)
 	}
 
+	portageUnread := filepath.Join(readMarkerDir, "news-gentoo.unread")
+	if data, err := os.ReadFile(portageUnread); err == nil {
+		markerName := filepath.Base(item.Path)
+		var retained []string
+		for _, line := range strings.Split(string(data), "\n") {
+			name := strings.TrimSpace(line)
+			if name != "" && name != markerName {
+				retained = append(retained, name)
+			}
+		}
+		contents := ""
+		if len(retained) != 0 {
+			contents = strings.Join(retained, "\n") + "\n"
+		}
+		return atomicWrite(portageUnread, []byte(contents), 0644)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("news: could not update Portage unread state: %w", err)
+	}
+
 	markerName := filepath.Base(item.Path)
 	markerPath := filepath.Join(readMarkerDir, markerName)
 
@@ -253,6 +182,25 @@ func MarkRead(readMarkerDir string, item NewsItem) error {
 
 	_, err = f.WriteString(fmt.Sprintf("%s\n", item.Title))
 	return err
+}
+
+func atomicWrite(path string, data []byte, mode os.FileMode) (err error) {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".arise-news-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err = temporary.Chmod(mode); err == nil {
+		_, err = temporary.Write(data)
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 func (n NewsItem) String() string {

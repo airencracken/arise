@@ -34,6 +34,10 @@ Maintained reader guides extracted from the project overview:
   environment variables, and configuration boundaries.
 - [`bug-report.md`](bug-report.md) — local diagnostic collection, redaction,
   review, and export.
+- [`fresh-stage3.md`](fresh-stage3.md) — tested installation, frozen-plan,
+  recovery, validation, and reboot workflow for the G1 maintenance gate.
+- [`handbook-addendum.md`](handbook-addendum.md) — unofficial amd64 stage3
+  installation addendum with conservative defaults and Git-only repositories.
 - [`adr/`](adr/README.md) — accepted architecture decisions, their evidence,
   consequences, and explicit revisit conditions.
 

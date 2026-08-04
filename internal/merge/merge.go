@@ -1198,6 +1198,9 @@ func prunePreservedRegistry(operation *journal.Journal, cfg MergeConfig) error {
 	if err != nil {
 		return err
 	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return nil
+	}
 	records := make(map[string][]json.RawMessage)
 	if err := json.Unmarshal(data, &records); err != nil {
 		return fmt.Errorf("merge: parse preserved library registry: %w", err)

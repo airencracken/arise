@@ -106,7 +106,7 @@ func (r *resolver) buildDecisionLedger(installs, removals []PkgAction) DecisionL
 			if _, exists := records[key]; exists {
 				continue
 			}
-			reasons, outcome := r.candidateDecisionOutcome(node, version, requirements)
+			reasons, outcome := r.candidateDecisionOutcome(node, version, requirements, selectedReplacesSlot(installs, cp, version.Slot))
 			if version.Installed {
 				installedKey := candidateDecisionKey(cpv, version.Slot, version.Repository, "installed")
 				if _, uninstalling := removed[installedKey]; !uninstalling &&
@@ -147,7 +147,7 @@ func (r *resolver) requirementsForCandidate(cp, slot string) []string {
 	return nonemptySortedUnique(requirements)
 }
 
-func (r *resolver) candidateDecisionOutcome(node *PkgNode, version *VersionInfo, requirements []string) ([]string, string) {
+func (r *resolver) candidateDecisionOutcome(node *PkgNode, version *VersionInfo, requirements []string, selectedInSlot bool) ([]string, string) {
 	if node != nil && node.Atom != nil && r.onlyDepsTargets[node.Atom.CP()] {
 		return []string{"omitted by onlydeps partial-plan mode"}, DecisionSkipped
 	}
@@ -163,6 +163,9 @@ func (r *resolver) candidateDecisionOutcome(node *PkgNode, version *VersionInfo,
 		if err != nil || !versionAtomMatches(node.Atom, constraint, version, flags) {
 			return []string{"does not satisfy committed requirement " + raw}, DecisionRejected
 		}
+	}
+	if !selectedInSlot {
+		return []string{"viable candidate was not committed to the plan"}, DecisionSkipped
 	}
 	return []string{"lower committed preference"}, DecisionSkipped
 }

@@ -154,7 +154,7 @@ Body.
 	}
 }
 
-func TestReadNewsMissingHeaders(t *testing.T) {
+func TestReadNewsRejectsMissingRequiredFormat(t *testing.T) {
 	dir := t.TempDir()
 
 	writeNewsItem(t, dir, "2021-01-01-minimal", `Title: Just Title
@@ -162,23 +162,8 @@ func TestReadNewsMissingHeaders(t *testing.T) {
 Body without many headers.
 `)
 
-	items, err := ReadNews(dir)
-	if err != nil {
-		t.Fatalf("ReadNews: %v", err)
-	}
-
-	if len(items) != 1 {
-		t.Fatalf("expected 1 item, got %d", len(items))
-	}
-
-	if items[0].Title != "Just Title" {
-		t.Errorf("Title: got %q", items[0].Title)
-	}
-	if items[0].Author != "" {
-		t.Errorf("Author: got %q, want empty", items[0].Author)
-	}
-	if items[0].Date != "2021-01-01" {
-		t.Errorf("Date: got %q, want directory-derived date", items[0].Date)
+	if _, err := ReadNews(dir); err == nil || !strings.Contains(err.Error(), "unsupported format") {
+		t.Fatalf("missing News-Item-Format error = %v", err)
 	}
 }
 
@@ -235,6 +220,44 @@ Second body.
 
 	if len(items) != 2 {
 		t.Fatalf("expected 2 unread items, got %d", len(items))
+	}
+}
+
+func TestReadUnreadNewsUsesPortageRelevantUnreadSet(t *testing.T) {
+	dir := t.TempDir()
+	markerDir := t.TempDir()
+	for _, name := range []string{"2021-01-01-relevant", "2021-02-01-irrelevant", "2021-03-01-read"} {
+		writeNewsItem(t, dir, name, "Title: "+name+"\nNews-Item-Format: 2.0\n\nBody.\n")
+	}
+	state := "# relevant unread items\n2021-01-01-relevant\nmissing-item\n\n"
+	if err := os.WriteFile(filepath.Join(markerDir, "news-gentoo.unread"), []byte(state), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	unread, err := ReadUnreadNews(dir, markerDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unread) != 1 || filepath.Base(unread[0].Path) != "2021-01-01-relevant" {
+		t.Fatalf("Portage unread set = %#v", unread)
+	}
+}
+
+func TestMarkReadUpdatesPortageUnreadSet(t *testing.T) {
+	markerDir := t.TempDir()
+	statePath := filepath.Join(markerDir, "news-gentoo.unread")
+	if err := os.WriteFile(statePath, []byte("first\nsecond\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkRead(markerDir, NewsItem{Path: filepath.Join("news", "first")}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "second\n" {
+		t.Fatalf("Portage unread state = %q", data)
 	}
 }
 
@@ -449,7 +472,7 @@ Body.
 func TestParseNewsFileCrLfHeaders(t *testing.T) {
 	dir := t.TempDir()
 
-	content := "Title: Test\r\nAuthor: dev@gentoo.org\r\nDate: 2021-01-01\r\n\r\nBody text.\r\n"
+	content := "Title: Test\r\nAuthor: dev@gentoo.org\r\nDate: 2021-01-01\r\nNews-Item-Format: 2.0\r\n\r\nBody text.\r\n"
 
 	writeNewsItem(t, dir, "2021-01-01-crlf", content)
 

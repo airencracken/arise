@@ -522,7 +522,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	var planAuditResult *planvalidate.ValidationResult
 	if err == nil {
 		var auditErr error
-		planAudit, auditErr = prepareIndependentPlanAudit(rg, result, targets, cfg)
+		planAudit, auditErr = prepareIndependentPlanEvidence(rg, result, targets, cfg, *includeValidationFixture)
 		if auditErr != nil {
 			fmt.Fprintf(os.Stderr, "arise: independent plan validation could not freeze the executable plan: %v\n", auditErr)
 			exitAfterRuntimeProfiles(1)

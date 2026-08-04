@@ -16,6 +16,10 @@ type independentPlanAudit struct {
 }
 
 func prepareIndependentPlanAudit(graph *resolve.DepGraph, result *resolve.ResolveResult, targets []string, cfg resolve.ResolveConfig) (*independentPlanAudit, error) {
+	return prepareIndependentPlanEvidence(graph, result, targets, cfg, false)
+}
+
+func prepareIndependentPlanEvidence(graph *resolve.DepGraph, result *resolve.ResolveResult, targets []string, cfg resolve.ResolveConfig, allowIncomplete bool) (*independentPlanAudit, error) {
 	if graph == nil || result == nil {
 		return nil, nil
 	}
@@ -23,7 +27,7 @@ func prepareIndependentPlanAudit(graph *resolve.DepGraph, result *resolve.Resolv
 		if result.Verification != resolve.VerificationSkippedNoDeps {
 			return nil, nil
 		}
-	} else if !result.Verified {
+	} else if !result.Verified && !allowIncomplete {
 		return nil, nil
 	}
 	expandedTargets, err := expandIndependentAuditTargets(targets, cfg)

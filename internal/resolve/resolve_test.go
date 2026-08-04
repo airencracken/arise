@@ -1,6 +1,7 @@
 package resolve
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -167,6 +168,154 @@ func TestResolve_SimpleInstall(t *testing.T) {
 		result.DecisionLedger.Records[0].Outcome != DecisionSelected ||
 		result.DecisionLedger.Records[0].ActionID != ActionIdentity(a) {
 		t.Fatalf("selected action ledger = %#v", result.DecisionLedger)
+	}
+}
+
+func TestResolveVimCoreRuntimeDependencyIsPlanned(t *testing.T) {
+	g := makeGraph()
+	vim := pkg(g, "app-editors/vim", "9.1.1652-r2", "0", "0", false, map[string]bool{"crypt": true, "minimal": false})
+	vim.EAPI, vim.DependencyMetadataKnown = "8", true
+	vim.Depend = ">=app-eselect/eselect-vi-1.1 >=sys-libs/ncurses-5.2-r2:0= crypt? ( dev-libs/libsodium:= ) ~app-editors/vim-core-9.1.1652"
+	vim.Rdepend = vim.Depend
+	vim.Pdepend = "!minimal? ( app-vim/gentoo-syntax )"
+	core := pkg(g, "app-editors/vim-core", "9.1.1652-r3", "0", "0", false, nil)
+	core.EAPI, core.DependencyMetadataKnown = "8", true
+	core.Bdepend = "dev-build/autoconf"
+	core.Depend = ">=sys-libs/ncurses-5.2-r2:0"
+	core.Rdepend = "dev-util/xxd"
+	xxd := pkg(g, "dev-util/xxd", "2025.08.24-r1", "0", "0", false, nil)
+	xxd.EAPI, xxd.DependencyMetadataKnown = "8", true
+	xxd.Rdepend = "!<app-editors/vim-core-9.1.1652-r1"
+	pkg(g, "app-eselect/eselect-vi", "20221122", "0", "0", false, nil)
+	sodium := pkg(g, "dev-libs/libsodium", "1.0.22", "0", "26", false, nil)
+	sodium.EAPI, sodium.DependencyMetadataKnown = "8", true
+	pkg(g, "app-vim/gentoo-syntax", "16", "0", "0", false, nil)
+	pkg(g, "sys-libs/ncurses", "6.5", "0", "6", true, nil)
+	pkg(g, "dev-build/autoconf", "2.72", "0", "0", true, nil)
+
+	result, err := Resolve(g, []string{"app-editors/vim"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatalf("resolve Vim graph: %v", err)
+	}
+	if !result.Verified || len(result.Conflicts) != 0 {
+		t.Fatalf("Vim graph was not verified: %#v", result.Conflicts)
+	}
+	for _, cp := range []string{"app-editors/vim", "app-editors/vim-core", "dev-util/xxd"} {
+		if !actionForCP(result.Install, cp) {
+			t.Errorf("Vim graph omitted %s: %v", cp, collectCPV(result.Install))
+		}
+	}
+}
+
+func TestVerifierRepairsDependencyOmittedFromPlannedPackage(t *testing.T) {
+	g := makeGraph()
+	core := pkg(g, "app-editors/vim-core", "9.1.1652-r3", "0", "0", false, nil)
+	core.EAPI, core.DependencyMetadataKnown = "8", true
+	core.Rdepend = "dev-util/xxd"
+	xxd := pkg(g, "dev-util/xxd", "2025.08.24-r1", "0", "0", false, nil)
+	xxd.EAPI, xxd.DependencyMetadataKnown = "8", true
+	xxd.Rdepend = "!<app-editors/vim-core-9.1.1652-r1"
+	coreAtom := bestVersionAtom(g.Packages["app-editors/vim-core"].Atom, core)
+	coreKey := versionActionKey("app-editors/vim-core", core)
+	r := &resolver{
+		ctx: context.Background(), graph: g, config: DefaultResolveConfig(),
+		toInstall: map[string]*PkgAction{coreKey: {
+			Atom: coreAtom, Action: "install", Reason: "dependency of app-editors/vim",
+			Slot: "0", Domain: DomainROOT,
+		}},
+		installed: make(map[string]*PkgAction), toUninstall: make(map[string]*PkgAction),
+		actionOwners: make(map[string]map[string]bool), rootActionKeys: make(map[string]bool),
+		seenDeps: make(map[string]bool), activeDeps: make(map[string]int), selectedCPs: make(map[string]bool),
+		explicitTargets: make(map[string]bool), directTargets: make(map[string]bool), worldTargets: make(map[string]bool),
+		onlyDepsTargets: make(map[string]bool), dependencyProvenance: make(map[string][]dependencyOrigin),
+		constraints: make(map[string][]*atom.Atom), constraintCauses: make(map[string][]ConflictRequirement),
+		useOverrides: make(map[string]map[string]bool), useChangeSeen: make(map[string]bool),
+		baseUseByVersion: make(map[*VersionInfo]map[string]bool), effectiveNodeUseCache: make(map[string]map[string]bool),
+		maskCache: make(map[string]portage.MaskStatus), keywordCache: make(map[string]bool),
+		candidateCache: make(map[string]candidateCacheEntry),
+	}
+
+	r.verifyPlannedState()
+	if !actionForCP(mapToSlice(r.toInstall), "dev-util/xxd") {
+		t.Fatalf("verifier did not repair omitted runtime dependency: %#v", r.toInstall)
+	}
+	if len(r.conflicts) != 0 {
+		t.Fatalf("repaired plan retained conflicts: %v", r.conflicts)
+	}
+	if r.metrics.VerifierRepairs != 1 || r.metrics.VerifierPasses < 2 {
+		t.Fatalf("verifier metrics = %#v", r.metrics)
+	}
+}
+
+func TestResolveMissingTargetSuggestsNearbyPackages(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "app-editors/vim", "9.1", "0", "0", false, nil)
+	pkg(g, "app-editors/gvim", "9.1", "0", "0", false, nil)
+	pkg(g, "app-editors/pyvim", "3.0", "0", "0", false, nil)
+	pkg(g, "dev-libs/libedit", "1", "0", "0", false, nil)
+
+	_, err := Resolve(g, []string{"app-editor/vim"}, DefaultResolveConfig())
+	if err == nil {
+		t.Fatal("missing target was accepted")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "maybe you meant: app-editors/vim") {
+		t.Fatalf("missing-target diagnostic = %q", message)
+	}
+	if strings.Contains(message, "dev-libs/libedit") {
+		t.Fatalf("missing-target diagnostic contains unrelated package: %q", message)
+	}
+}
+
+func TestPackageSuggestionsAreBoundedAndDeterministic(t *testing.T) {
+	g := makeGraph()
+	for _, cp := range []string{
+		"app-editors/vim", "app-editors/gvim", "app-editors/pyvim",
+		"app-editors/nvim", "app-editors/vile",
+	} {
+		pkg(g, cp, "1", "0", "0", false, nil)
+	}
+	r := &resolver{graph: g}
+	first := r.packageSuggestions("app-editor/vim", 3)
+	second := r.packageSuggestions("app-editor/vim", 3)
+	if len(first) > 3 || !slices.Equal(first, second) {
+		t.Fatalf("suggestions are not bounded and deterministic: %v then %v", first, second)
+	}
+	if len(first) == 0 || first[0] != "app-editors/vim" {
+		t.Fatalf("suggestions = %v, want exact package-name correction first", first)
+	}
+}
+
+func TestDecisionLedgerDoesNotCallSoleOmittedCandidateLowerPreference(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-util/xxd", "2025.08.24-r1", "0", "0", false, nil)
+	r := &resolver{
+		graph: g, config: DefaultResolveConfig(), constraints: map[string][]*atom.Atom{
+			"dev-util/xxd|0": {mustParse("dev-util/xxd")},
+		},
+		maskCache: make(map[string]portage.MaskStatus), keywordCache: make(map[string]bool),
+		baseUseByVersion: make(map[*VersionInfo]map[string]bool),
+	}
+	ledger := r.buildDecisionLedger(nil, nil)
+	if len(ledger.Records) != 1 || !slices.Equal(ledger.Records[0].Reasons, []string{"viable candidate was not committed to the plan"}) {
+		t.Fatalf("omitted sole candidate ledger = %#v", ledger)
+	}
+}
+
+func TestEditDistanceHandlesUnicodeAndEmptyInputs(t *testing.T) {
+	for _, test := range []struct {
+		left, right string
+		want        int
+	}{
+		{"", "vim", 3},
+		{"vim", "", 3},
+		{"vim", "vim", 0},
+		{"editor", "editors", 1},
+		{"café", "cafe", 1},
+	} {
+		if got := editDistance(test.left, test.right); got != test.want {
+			t.Errorf("editDistance(%q, %q) = %d, want %d", test.left, test.right, got, test.want)
+		}
 	}
 }
 
