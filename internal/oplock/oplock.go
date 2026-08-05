@@ -27,6 +27,13 @@ func TryAcquireVDB(vdbDirectory string) (*Lock, error) {
 	return tryAcquire(PortageLockPath(vdbDirectory))
 }
 
+// AcquireVDB waits for Portage's VDB mutation lock. Live package transactions
+// use this so independent package-manager processes queue instead of failing
+// merely because another transaction is currently committing package state.
+func AcquireVDB(vdbDirectory string) (*Lock, error) {
+	return acquire(PortageLockPath(vdbDirectory))
+}
+
 // TryAcquirePath acquires Portage's sibling lock for a mutable state path,
 // such as /var/lib/portage/world.
 func TryAcquirePath(path string) (*Lock, error) {

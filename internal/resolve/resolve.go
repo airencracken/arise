@@ -2749,17 +2749,36 @@ func (r *resolver) packageSuggestions(requested string, limit int) []string {
 		return nil
 	}
 	type candidate struct {
-		cp       string
-		distance int
+		cp               string
+		packageDistance  int
+		categoryDistance int
+		atomDistance     int
+		exactPackageName bool
 	}
 	requested = strings.ToLower(strings.TrimSpace(requested))
 	requestedParts := strings.SplitN(requested, "/", 2)
 	if len(requestedParts) != 2 {
 		return nil
 	}
-	threshold := len(requested) / 4
-	if threshold < 2 {
-		threshold = 2
+	packageThreshold := len(requestedParts[1]) / 4
+	if packageThreshold < 2 {
+		packageThreshold = 2
+	}
+	categoryThreshold := len(requestedParts[0]) / 4
+	if categoryThreshold < 2 {
+		categoryThreshold = 2
+	}
+	exactPackageNames := 0
+	nearbyExactPackageNames := 0
+	for cp := range r.graph.Packages {
+		parts := strings.SplitN(strings.ToLower(cp), "/", 2)
+		if len(parts) != 2 || parts[1] != requestedParts[1] {
+			continue
+		}
+		exactPackageNames++
+		if editDistance(requestedParts[0], parts[0]) <= categoryThreshold {
+			nearbyExactPackageNames++
+		}
 	}
 	var candidates []candidate
 	for cp := range r.graph.Packages {
@@ -2768,19 +2787,37 @@ func (r *resolver) packageSuggestions(requested string, limit int) []string {
 		if len(parts) != 2 {
 			continue
 		}
-		distance := editDistance(requested, lower)
-		// An exact package-name match in a nearby category is the most useful
-		// correction for Gentoo's commonly mistyped singular/plural categories.
-		if parts[1] == requestedParts[1] {
-			distance = editDistance(requestedParts[0], parts[0])
+		packageDistance := editDistance(requestedParts[1], parts[1])
+		if packageDistance > packageThreshold {
+			continue
 		}
-		if distance <= threshold {
-			candidates = append(candidates, candidate{cp: cp, distance: distance})
+		categoryDistance := editDistance(requestedParts[0], parts[0])
+		exactPackageName := packageDistance == 0
+		// When an exact name exists in several categories, suppress remote
+		// categories if nearby corrections exist. A unique exact match remains
+		// useful regardless of how different its Gentoo category is.
+		if exactPackageName && exactPackageNames > 1 && nearbyExactPackageNames > 0 && categoryDistance > categoryThreshold {
+			continue
 		}
+		candidates = append(candidates, candidate{
+			cp: cp, packageDistance: packageDistance,
+			categoryDistance: categoryDistance,
+			atomDistance:     editDistance(requested, lower),
+			exactPackageName: exactPackageName,
+		})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
-		if candidates[i].distance != candidates[j].distance {
-			return candidates[i].distance < candidates[j].distance
+		if candidates[i].exactPackageName != candidates[j].exactPackageName {
+			return candidates[i].exactPackageName
+		}
+		if candidates[i].packageDistance != candidates[j].packageDistance {
+			return candidates[i].packageDistance < candidates[j].packageDistance
+		}
+		if candidates[i].categoryDistance != candidates[j].categoryDistance {
+			return candidates[i].categoryDistance < candidates[j].categoryDistance
+		}
+		if candidates[i].atomDistance != candidates[j].atomDistance {
+			return candidates[i].atomDistance < candidates[j].atomDistance
 		}
 		return candidates[i].cp < candidates[j].cp
 	})

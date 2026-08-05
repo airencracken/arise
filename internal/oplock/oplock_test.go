@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPortageLockPath(t *testing.T) {
@@ -119,11 +120,54 @@ func TestVDBLockContendsAcrossProcessesAndReleases(t *testing.T) {
 	}
 }
 
+func TestAcquireVDBWaitsAcrossProcessesAndThenSucceeds(t *testing.T) {
+	vdb := filepath.Join(t.TempDir(), "var", "db", "pkg")
+	lock, err := TryAcquireVDB(vdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=TestVDBLockHelper")
+	command.Env = append(os.Environ(), "ARISE_LOCK_HELPER=wait", "ARISE_LOCK_VDB="+vdb)
+	done := make(chan error, 1)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go func() { done <- command.Wait() }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("waiting lock helper exited before release: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("waiting lock helper failed after release: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+		t.Fatal("waiting lock helper did not acquire released lock")
+	}
+}
+
 func TestVDBLockHelper(t *testing.T) {
-	if os.Getenv("ARISE_LOCK_HELPER") != "1" {
+	mode := os.Getenv("ARISE_LOCK_HELPER")
+	if mode != "1" && mode != "wait" {
 		return
 	}
-	lock, err := TryAcquireVDB(os.Getenv("ARISE_LOCK_VDB"))
+	var lock *Lock
+	var err error
+	if mode == "wait" {
+		lock, err = AcquireVDB(os.Getenv("ARISE_LOCK_VDB"))
+	} else {
+		lock, err = TryAcquireVDB(os.Getenv("ARISE_LOCK_VDB"))
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -286,6 +286,44 @@ func TestPackageSuggestionsAreBoundedAndDeterministic(t *testing.T) {
 	}
 }
 
+func TestPackageSuggestionsCorrectExactNameAcrossUnrelatedCategory(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "app-admin/logrotate", "3.22.0-r1", "0", "0", false, nil)
+	pkg(g, "sys-apps/logwatch", "7.13", "0", "0", false, nil)
+	pkg(g, "sys-apps/mlocate", "0.26-r7", "0", "0", false, nil)
+
+	_, err := Resolve(g, []string{"sys-apps/logrotate"}, DefaultResolveConfig())
+	if err == nil {
+		t.Fatal("wrong-category target was accepted")
+	}
+	want := "maybe you meant: app-admin/logrotate"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("wrong-category diagnostic = %q, want it to contain %q", err, want)
+	}
+}
+
+func TestPackageSuggestionsCorrectNameTypoAcrossUnrelatedCategory(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "app-admin/logrotate", "3.22.0-r1", "0", "0", false, nil)
+	pkg(g, "sys-apps/groff", "1.23.0", "0", "0", false, nil)
+	pkg(g, "sys-apps/logwatch", "7.13", "0", "0", false, nil)
+	pkg(g, "sys-apps/mlocate", "0.26-r7", "0", "0", false, nil)
+
+	_, err := Resolve(g, []string{"sys-apps/logrote"}, DefaultResolveConfig())
+	if err == nil {
+		t.Fatal("cross-category typo target was accepted")
+	}
+	want := "maybe you meant: app-admin/logrotate"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("cross-category typo diagnostic = %q, want it to contain %q", err, want)
+	}
+	for _, irrelevant := range []string{"sys-apps/groff", "sys-apps/logwatch", "sys-apps/mlocate"} {
+		if strings.Contains(err.Error(), irrelevant) {
+			t.Fatalf("cross-category typo diagnostic contains weaker suggestion %s: %q", irrelevant, err)
+		}
+	}
+}
+
 func TestMissingTargetSuggestionsOrderAmbiguousPackageNames(t *testing.T) {
 	g := makeGraph()
 	for _, cp := range []string{

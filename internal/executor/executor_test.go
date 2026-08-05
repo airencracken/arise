@@ -30,6 +30,18 @@ func action(t *testing.T, cpv string) resolve.PkgAction {
 	return resolve.PkgAction{Atom: a, Action: "install", Repository: "test", RepositoryPath: "/repo", MergeType: "source", Domain: resolve.DomainROOT}
 }
 
+func commitPreparedTestAction(ctx context.Context, cfg *rebuild.RebuildConfig) error {
+	release, err := cfg.BeginMutation(ctx)
+	if err != nil {
+		return err
+	}
+	if err := cfg.OnTransactionCommit(nil); err != nil {
+		_ = release()
+		return err
+	}
+	return release()
+}
+
 func TestPreflightAllRejectsEveryInvalidActionWithoutShortCircuiting(t *testing.T) {
 	valid := action(t, "cat/valid-1")
 	wrongDomain := valid
@@ -255,36 +267,36 @@ func TestExecuteMarksPostCommitLifecycleFailureComplete(t *testing.T) {
 	}
 }
 
-func TestExecutePreparationGatePrecedesResumeAndRunnerMutation(t *testing.T) {
+func TestExecutePreparationGateRunsAfterBuildAndBeforeRunnerMutation(t *testing.T) {
 	item := action(t, "cat/pkg-1")
 	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{item}}
-	root, resume := filepath.Join(t.TempDir(), "root"), filepath.Join(t.TempDir(), "resume.json")
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	root, resume := "/", filepath.Join(t.TempDir(), "resume.json")
 	runnerCalled := false
 	err := Execute(context.Background(), result, Config{
-		ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: root},
-		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: root, VdbDir: filepath.Join(t.TempDir(), "vdb"), AllowLiveRoot: true},
+		Preflight:      func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		ValidateLocked: func() error { return nil },
 		PrepareMutation: func(context.Context) error {
-			if _, statErr := os.Stat(resume); !os.IsNotExist(statErr) {
-				t.Fatalf("resume state exists before preparation: %v", statErr)
+			if _, statErr := os.Stat(resume); statErr != nil {
+				t.Fatalf("resume state must exist before lock-free build preparation: %v", statErr)
 			}
 			return fmt.Errorf("injected recovery publication failure")
 		},
-		Runner: func(context.Context, string, *rebuild.RebuildConfig) error {
+		Runner: func(ctx context.Context, _ string, cfg *rebuild.RebuildConfig) error {
 			runnerCalled = true
-			return nil
+			_, err := cfg.BeginMutation(ctx)
+			return err
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "prepare mutation") {
 		t.Fatalf("Execute() preparation error = %v", err)
 	}
-	if runnerCalled {
-		t.Fatal("runner started after recovery preparation failed")
+	if !runnerCalled {
+		t.Fatal("lock-free build preparation did not start")
 	}
-	if _, statErr := os.Stat(resume); !os.IsNotExist(statErr) {
-		t.Fatalf("failed preparation created resume state: %v", statErr)
+	remaining, loadErr := resolve.LoadResume(resume)
+	if loadErr != nil || len(remaining) != 1 {
+		t.Fatalf("failed mutation preparation resume state = %v, %v", remaining, loadErr)
 	}
 }
 
@@ -303,16 +315,192 @@ func TestLiveRootPreparationFaultStopsBeforeAnyRunnerBoundary(t *testing.T) {
 		PrepareMutation: func(context.Context) error {
 			return fmt.Errorf("injected live recovery-set publication failure")
 		},
-		Runner: func(context.Context, string, *rebuild.RebuildConfig) error {
+		Runner: func(ctx context.Context, _ string, cfg *rebuild.RebuildConfig) error {
 			runs++
-			return nil
+			_, err := cfg.BeginMutation(ctx)
+			return err
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "prepare mutation") {
 		t.Fatalf("Execute() live fault error = %v", err)
 	}
-	if runs != 0 {
-		t.Fatalf("live runners started = %d", runs)
+	if runs != 1 {
+		t.Fatalf("lock-free preparations started = %d, want first package only", runs)
+	}
+}
+
+func TestIndependentExecutorsPrepareConcurrentlyAndSerializeMutations(t *testing.T) {
+	semaphore := make(chan struct{}, 1)
+	semaphore <- struct{}{}
+	prepared := make(chan struct{}, 2)
+	allowMutation := make(chan struct{})
+	var activeMutations atomic.Int32
+	var maximumMutations atomic.Int32
+	acquire := func(ctx context.Context, _ string) (func() error, error) {
+		select {
+		case <-semaphore:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		active := activeMutations.Add(1)
+		for active > maximumMutations.Load() && !maximumMutations.CompareAndSwap(maximumMutations.Load(), active) {
+		}
+		return func() error {
+			activeMutations.Add(-1)
+			semaphore <- struct{}{}
+			return nil
+		}, nil
+	}
+
+	resultFor := func(name string) *resolve.ResolveResult {
+		return &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{action(t, name)}}
+	}
+	run := func(result *resolve.ResolveResult, vdb string) error {
+		return Execute(context.Background(), result, Config{
+			Rebuild:             rebuild.RebuildConfig{RootDir: "/", VdbDir: vdb, AllowLiveRoot: true},
+			Preflight:           func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+			AcquireMutationLock: acquire,
+			ValidateLocked: func() error {
+				if activeMutations.Load() != 1 {
+					return fmt.Errorf("validation ran outside mutation lock")
+				}
+				return nil
+			},
+			RecordLockedMutation: func() error {
+				if activeMutations.Load() != 1 {
+					return fmt.Errorf("state recording ran outside mutation lock")
+				}
+				return nil
+			},
+			Runner: func(ctx context.Context, _ string, cfg *rebuild.RebuildConfig) error {
+				prepared <- struct{}{}
+				select {
+				case <-allowMutation:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				return commitPreparedTestAction(ctx, cfg)
+			},
+		})
+	}
+
+	done := make(chan error, 2)
+	go func() { done <- run(resultFor("cat/first-1"), "/vdb") }()
+	go func() { done <- run(resultFor("cat/second-1"), "/vdb") }()
+	for count := 0; count < 2; count++ {
+		select {
+		case <-prepared:
+		case <-time.After(time.Second):
+			t.Fatal("independent build preparations did not overlap")
+		}
+	}
+	if activeMutations.Load() != 0 {
+		t.Fatal("VDB mutation lock was acquired during build preparation")
+	}
+	close(allowMutation)
+	for count := 0; count < 2; count++ {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if maximumMutations.Load() != 1 {
+		t.Fatalf("maximum concurrent mutations = %d, want 1", maximumMutations.Load())
+	}
+}
+
+func TestPreparedPackageRejectsAdversarialStateChangeBeforeMutation(t *testing.T) {
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{action(t, "cat/pkg-1")}}
+	lockHeld := false
+	released := false
+	mutationRecorded := false
+	prepared := false
+	err := Execute(context.Background(), result, Config{
+		Rebuild:   rebuild.RebuildConfig{RootDir: "/", VdbDir: "/vdb", AllowLiveRoot: true},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		AcquireMutationLock: func(context.Context, string) (func() error, error) {
+			lockHeld = true
+			return func() error {
+				lockHeld = false
+				released = true
+				return nil
+			}, nil
+		},
+		ValidateLocked: func() error {
+			if !lockHeld {
+				t.Fatal("state validation ran without mutation lock")
+			}
+			return fmt.Errorf("injected competing VDB change")
+		},
+		RecordLockedMutation: func() error {
+			mutationRecorded = true
+			return nil
+		},
+		Runner: func(ctx context.Context, _ string, cfg *rebuild.RebuildConfig) error {
+			prepared = true
+			_, err := cfg.BeginMutation(ctx)
+			return err
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "competing VDB change") {
+		t.Fatalf("adversarial validation error = %v", err)
+	}
+	if !prepared {
+		t.Fatal("package did not prepare before adversarial validation")
+	}
+	if !released || lockHeld {
+		t.Fatalf("rejected mutation lock state: released=%t held=%t", released, lockHeld)
+	}
+	if mutationRecorded {
+		t.Fatal("rejected prepared package recorded a mutation")
+	}
+}
+
+func TestMultiPackageTransactionAdvancesExpectedStateBetweenLockedCommits(t *testing.T) {
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{
+		action(t, "cat/first-1"), action(t, "cat/second-1"),
+	}}
+	observedState, expectedState := 0, 0
+	validations, records, preparations := 0, 0, 0
+	err := Execute(context.Background(), result, Config{
+		Rebuild:   rebuild.RebuildConfig{RootDir: "/", VdbDir: "/vdb", AllowLiveRoot: true},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		AcquireMutationLock: func(context.Context, string) (func() error, error) {
+			return func() error { return nil }, nil
+		},
+		ValidateLocked: func() error {
+			validations++
+			if observedState != expectedState {
+				return fmt.Errorf("unexpected state %d, want %d", observedState, expectedState)
+			}
+			return nil
+		},
+		PrepareMutation: func(context.Context) error {
+			preparations++
+			return nil
+		},
+		RecordLockedMutation: func() error {
+			records++
+			expectedState = observedState
+			return nil
+		},
+		Runner: func(ctx context.Context, _ string, cfg *rebuild.RebuildConfig) error {
+			release, err := cfg.BeginMutation(ctx)
+			if err != nil {
+				return err
+			}
+			observedState++
+			if err := cfg.OnTransactionCommit(nil); err != nil {
+				_ = release()
+				return err
+			}
+			return release()
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validations != 2 || records != 2 || preparations != 1 || expectedState != 2 {
+		t.Fatalf("rolling state: validations=%d records=%d preparations=%d expected=%d", validations, records, preparations, expectedState)
 	}
 }
 
@@ -497,8 +685,11 @@ func TestExecutePromotesExplicitLivePlansWithDurableResume(t *testing.T) {
 	ran := false
 	vdbDir := filepath.Join(t.TempDir(), "var", "db", "pkg")
 	err := Execute(context.Background(), result, Config{Rebuild: rebuild.RebuildConfig{RootDir: "/", VdbDir: vdbDir, AllowLiveRoot: true},
-		Preflight:      func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
-		Runner:         func(context.Context, string, *rebuild.RebuildConfig) error { ran = true; return nil },
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(ctx context.Context, _ string, cfg *rebuild.RebuildConfig) error {
+			ran = true
+			return commitPreparedTestAction(ctx, cfg)
+		},
 		ValidateLocked: func() error { return nil },
 	})
 	if err != nil || !ran {
@@ -508,9 +699,9 @@ func TestExecutePromotesExplicitLivePlansWithDurableResume(t *testing.T) {
 	var order []string
 	err = Execute(context.Background(), result, Config{Rebuild: rebuild.RebuildConfig{RootDir: "/", VdbDir: vdbDir, AllowLiveRoot: true},
 		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
-		Runner: func(_ context.Context, label string, _ *rebuild.RebuildConfig) error {
+		Runner: func(ctx context.Context, label string, cfg *rebuild.RebuildConfig) error {
 			order = append(order, label)
-			return nil
+			return commitPreparedTestAction(ctx, cfg)
 		},
 		ValidateLocked: func() error { return nil },
 	})
@@ -525,9 +716,9 @@ func TestExecutePromotesExplicitLivePlansWithDurableResume(t *testing.T) {
 	order = nil
 	err = Execute(context.Background(), result, Config{ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: "/", VdbDir: vdbDir, AllowLiveRoot: true},
 		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
-		Runner: func(_ context.Context, label string, _ *rebuild.RebuildConfig) error {
+		Runner: func(ctx context.Context, label string, cfg *rebuild.RebuildConfig) error {
 			order = append(order, label)
-			return nil
+			return commitPreparedTestAction(ctx, cfg)
 		},
 		ValidateLocked: func() error { return nil },
 	})

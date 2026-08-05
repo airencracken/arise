@@ -173,7 +173,7 @@ func cloneMetadata(source map[string]string) map[string]string {
 	return result
 }
 
-func InstallBinaryPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) error {
+func InstallBinaryPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (returnErr error) {
 	if cfg == nil || cfg.BinaryPackagePath == "" {
 		return fmt.Errorf("rebuild: binary package path is required")
 	}
@@ -266,8 +266,26 @@ func InstallBinaryPackage(ctx context.Context, atomStr string, cfg *RebuildConfi
 		cfg.CommitLock.Lock()
 		defer cfg.CommitLock.Unlock()
 	}
+	if cfg.BeginMutation != nil {
+		release, beginErr := cfg.BeginMutation(ctx)
+		if beginErr != nil {
+			return fmt.Errorf("rebuild: enter binary mutation boundary: %w", beginErr)
+		}
+		if release == nil {
+			return fmt.Errorf("rebuild: binary mutation boundary returned a nil release function")
+		}
+		defer func() {
+			if releaseErr := release(); releaseErr != nil {
+				if returnErr != nil {
+					returnErr = fmt.Errorf("%v; rebuild: leave binary mutation boundary: %w", returnErr, releaseErr)
+				} else {
+					returnErr = fmt.Errorf("rebuild: leave binary mutation boundary: %w", releaseErr)
+				}
+			}
+		}()
+	}
 	cfg.fireStage("merge")
-	return merge.Merge(ctx, image, merge.MergeConfig{
+	mergeErr := merge.Merge(ctx, image, merge.MergeConfig{
 		RootDir: cfg.RootDir, VdbDir: cfg.VdbDir,
 		Category: info.Category, Package: info.Package, Version: info.Version,
 		JournalDir: cfg.JournalDir, AllowLiveRoot: cfg.AllowLiveRoot,
@@ -275,6 +293,17 @@ func InstallBinaryPackage(ctx context.Context, atomStr string, cfg *RebuildConfi
 		VDBLockHeld:          cfg.VDBLockHeld, VDBMetadata: metadata, Environment: environment,
 		OnStage: cfg.fireStage, OnProgress: cfg.fireProgress,
 	})
+	committed := mergeErr == nil
+	if !committed {
+		var postCommit *merge.PostCommitError
+		committed = errors.As(mergeErr, &postCommit)
+	}
+	if committed && cfg.OnTransactionCommit != nil {
+		if callbackErr := cfg.OnTransactionCommit(mergeErr); callbackErr != nil {
+			return &merge.PostCommitError{Err: fmt.Errorf("record committed binary transaction: %w", callbackErr)}
+		}
+	}
+	return mergeErr
 }
 
 func PreflightBinaryPackage(atomStr string, cfg *RebuildConfig) error {

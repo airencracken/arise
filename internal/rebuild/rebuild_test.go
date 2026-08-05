@@ -1307,9 +1307,28 @@ pkg_postinst() { printf 'postinst\n' > "${ROOT}/postinst-marker"; }
 	if err := os.WriteFile(filepath.Join(packageDir, "protocol-test-1.ebuild"), []byte(ebuildContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	var boundaryEvents []string
 	cfg := RebuildConfig{
 		RepoDir: repo, DistfilesDir: dist, RootDir: root, VdbDir: vdb, WorkDirBase: work,
 		PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+		BeginMutation: func(context.Context) (func() error, error) {
+			if _, err := os.Stat(filepath.Join(root, "usr", "share", "protocol-test", "payload")); !os.IsNotExist(err) {
+				t.Fatalf("source payload reached ROOT before mutation boundary: %v", err)
+			}
+			prepared, err := filepath.Glob(filepath.Join(work, "app-misc-protocol-test-1-dest-*", "usr", "share", "protocol-test", "payload"))
+			if err != nil || len(prepared) != 1 {
+				t.Fatalf("prepared source image = %v, %v", prepared, err)
+			}
+			boundaryEvents = append(boundaryEvents, "begin")
+			return func() error {
+				boundaryEvents = append(boundaryEvents, "release")
+				return nil
+			}, nil
+		},
+		OnTransactionCommit: func(error) error {
+			boundaryEvents = append(boundaryEvents, "record")
+			return nil
+		},
 	}
 	if err := RebuildPackage(context.Background(), "app-misc/protocol-test-1", &cfg); err != nil {
 		t.Fatalf("protocol rebuild: %v", err)
@@ -1322,6 +1341,10 @@ pkg_postinst() { printf 'postinst\n' > "${ROOT}/postinst-marker"; }
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("expected disposable-root result %s: %v", path, err)
 		}
+	}
+	wantBoundaryEvents := []string{"begin", "record", "release"}
+	if !slices.Equal(boundaryEvents, wantBoundaryEvents) {
+		t.Fatalf("source mutation boundary events = %v, want %v", boundaryEvents, wantBoundaryEvents)
 	}
 	vdbEntry := filepath.Join(vdb, "app-misc", "protocol-test-1")
 	for name, want := range map[string]string{"CATEGORY": "app-misc", "PF": "protocol-test-1", "EAPI": "8", "repository": "test"} {

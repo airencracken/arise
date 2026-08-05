@@ -24,6 +24,7 @@ import (
 type PackageRunner func(context.Context, string, *rebuild.RebuildConfig) error
 type ActionPreflight func(resolve.PkgAction, *rebuild.RebuildConfig) error
 type FreeSpace func(string) (uint64, error)
+type MutationLockAcquirer func(context.Context, string) (func() error, error)
 
 type PreflightFailure struct {
 	Action resolve.PkgAction
@@ -61,6 +62,7 @@ type Config struct {
 	// parallel job admission is reduced when the scaled reserve is unavailable.
 	TmpdirRequireFreeGB int
 	FreeSpace           FreeSpace
+	AcquireMutationLock MutationLockAcquirer
 	Runner              PackageRunner
 	Preflight           ActionPreflight
 	OnActionStart       func(index, total int, action resolve.PkgAction)
@@ -71,11 +73,14 @@ type Config struct {
 	OnActionComplete    func(index, total int, action resolve.PkgAction)
 	OnSpaceWait         func(path string, available, required uint64)
 	// ValidateLocked reruns state authorization after acquiring the live VDB
-	// lock and immediately before the first worker starts.
+	// lock and immediately before each prepared package mutates live state.
 	ValidateLocked func() error
+	// RecordLockedMutation advances the caller's expected state fingerprint
+	// after an Arise commit and before the live VDB lock is released.
+	RecordLockedMutation func() error
 	// PrepareMutation must durably publish prerequisites such as a complete
-	// recovery set. It runs after locked validation and before resume state,
-	// build workers, or package mutation.
+	// recovery set. It runs once after locked validation and immediately before
+	// the first package mutation; builds may already have completed by then.
 	PrepareMutation func(context.Context) error
 }
 
@@ -129,6 +134,15 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 	if cfg.FreeSpace == nil {
 		cfg.FreeSpace = filesystemAvailableBytes
 	}
+	if cfg.AcquireMutationLock == nil {
+		cfg.AcquireMutationLock = func(_ context.Context, vdbDir string) (func() error, error) {
+			lock, err := oplock.AcquireVDB(vdbDir)
+			if err != nil {
+				return nil, err
+			}
+			return lock.Release, nil
+		}
+	}
 	// Preflight every action before the first build or merge, retaining the
 	// action-specific frozen policy/query results for its eventual worker.
 	actionConfigs := make([]rebuild.RebuildConfig, len(result.Install))
@@ -139,26 +153,50 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 		}
 		actionConfigs[index] = actionCfg
 	}
-	if filepath.Clean(root) == string(filepath.Separator) {
-		lock, err := oplock.TryAcquireVDB(cfg.Rebuild.VdbDir)
-		if err != nil {
-			return fmt.Errorf("executor: acquire operation VDB lock: %w", err)
-		}
-		defer lock.Release()
-		cfg.Rebuild.VDBLockHeld = true
-		for index := range actionConfigs {
-			actionConfigs[index].VDBLockHeld = true
-		}
-		if cfg.ValidateLocked == nil {
-			return fmt.Errorf("executor: live canary requires locked state validation")
-		}
-		if err := cfg.ValidateLocked(); err != nil {
-			return fmt.Errorf("executor: locked state validation: %w", err)
-		}
+	if filepath.Clean(root) == string(filepath.Separator) && cfg.ValidateLocked == nil {
+		return fmt.Errorf("executor: live canary requires locked state validation")
 	}
-	if cfg.PrepareMutation != nil {
-		if err := cfg.PrepareMutation(ctx); err != nil {
-			return fmt.Errorf("executor: prepare mutation: %w", err)
+	if filepath.Clean(root) == string(filepath.Separator) {
+		commitLock := &sync.Mutex{}
+		var preparationLock sync.Mutex
+		preparationComplete := false
+		for index := range actionConfigs {
+			actionCfg := &actionConfigs[index]
+			actionCfg.VDBLockHeld = true
+			actionCfg.CommitLock = commitLock
+			actionCfg.BeginMutation = func(mutationCtx context.Context) (func() error, error) {
+				release, lockErr := cfg.AcquireMutationLock(mutationCtx, cfg.Rebuild.VdbDir)
+				if lockErr != nil {
+					return nil, fmt.Errorf("acquire operation VDB lock: %w", lockErr)
+				}
+				if release == nil {
+					return nil, fmt.Errorf("acquire operation VDB lock returned a nil release function")
+				}
+				fail := func(err error) (func() error, error) {
+					if releaseErr := release(); releaseErr != nil {
+						return nil, errors.Join(err, releaseErr)
+					}
+					return nil, err
+				}
+				if validateErr := cfg.ValidateLocked(); validateErr != nil {
+					return fail(fmt.Errorf("locked state validation: %w", validateErr))
+				}
+				preparationLock.Lock()
+				defer preparationLock.Unlock()
+				if !preparationComplete && cfg.PrepareMutation != nil {
+					if prepareErr := cfg.PrepareMutation(mutationCtx); prepareErr != nil {
+						return fail(fmt.Errorf("prepare mutation: %w", prepareErr))
+					}
+				}
+				preparationComplete = true
+				return release, nil
+			}
+			actionCfg.OnTransactionCommit = func(error) error {
+				if cfg.RecordLockedMutation != nil {
+					return cfg.RecordLockedMutation()
+				}
+				return nil
+			}
 		}
 	}
 	if cfg.ResumePath != "" {
@@ -180,6 +218,17 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 			cfg.OnActionStart(index+1, len(result.Install), action)
 		}
 		actionCfg := actionConfigs[index]
+		transactionCommitted := false
+		recordCommit := actionCfg.OnTransactionCommit
+		if recordCommit != nil {
+			actionCfg.OnTransactionCommit = func(committedErr error) error {
+				if err := recordCommit(committedErr); err != nil {
+					return err
+				}
+				transactionCommitted = true
+				return nil
+			}
+		}
 		actionCfg.OnStage = func(stage string) {
 			if cfg.OnActionStage != nil {
 				cfg.OnActionStage(index+1, len(result.Install), action, stage)
@@ -209,7 +258,7 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 		atomText := actionLabel(action)
 		if err := cfg.Runner(ctx, atomText, &actionCfg); err != nil {
 			var postCommit *merge.PostCommitError
-			if errors.As(err, &postCommit) {
+			if errors.As(err, &postCommit) && (recordCommit == nil || transactionCommitted) {
 				if cfg.ResumePath != "" {
 					if markErr := resolve.MarkResumeComplete(cfg.ResumePath, action.Atom.String()); markErr != nil {
 						return fmt.Errorf("executor: %s committed but post-commit lifecycle failed: %v; mark resume complete: %w", atomText, err, markErr)
@@ -224,6 +273,9 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 				continue
 			}
 			return fmt.Errorf("executor: %s: %w", atomText, err)
+		}
+		if recordCommit != nil && !transactionCommitted {
+			return fmt.Errorf("executor: %s: runner returned without transaction commit notification", atomText)
 		}
 		if cfg.OnActionComplete != nil {
 			cfg.OnActionComplete(index+1, len(result.Install), action)
@@ -400,11 +452,20 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 					cfg.OnActionInstall(index+1, len(actions), action)
 				}
 			}
-			actionCfg.CommitLock = commitLock
+			if actionCfg.CommitLock == nil {
+				actionCfg.CommitLock = commitLock
+			}
 			var transactionCommitted atomic.Bool
+			recordCommit := actionCfg.OnTransactionCommit
 			actionCfg.OnTransactionCommit = func(committedErr error) error {
 				if !transactionCommitted.CompareAndSwap(false, true) {
 					return fmt.Errorf("duplicate transaction commit notification for %s", actionLabel(action))
+				}
+				if recordCommit != nil {
+					if err := recordCommit(committedErr); err != nil {
+						transactionCommitted.Store(false)
+						return err
+					}
 				}
 				if cfg.ResumePath != "" {
 					if err := resolve.MarkResumeComplete(cfg.ResumePath, action.Atom.String()); err != nil {

@@ -78,6 +78,11 @@ type RebuildConfig struct {
 	VDBLockHeld          bool // serial executor owns the operation-wide VDB lock
 	CommitLock           sync.Locker
 	CallbackLock         sync.Locker
+	// BeginMutation enters the externally coordinated live-state transaction
+	// boundary after the package image is fully prepared. The returned release
+	// function remains active through lifecycle hooks, payload/VDB commit, and
+	// commit-state recording.
+	BeginMutation func(context.Context) (func() error, error)
 	// PostCommitContext drives lifecycle hooks after the payload/VDB transaction
 	// is durable. Parallel executors set this to their outer context so a sibling
 	// build failure cannot interrupt pkg_postrm/pkg_postinst mid-transaction.
@@ -1186,15 +1191,33 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	if cfg.BuildOnly {
 		return nil
 	}
+	if cfg.CommitLock != nil {
+		cfg.CommitLock.Lock()
+		defer cfg.CommitLock.Unlock()
+	}
+	if cfg.BeginMutation != nil {
+		release, beginErr := cfg.BeginMutation(ctx)
+		if beginErr != nil {
+			return fmt.Errorf("rebuild: enter mutation boundary: %w", beginErr)
+		}
+		if release == nil {
+			return fmt.Errorf("rebuild: mutation boundary returned a nil release function")
+		}
+		defer func() {
+			if releaseErr := release(); releaseErr != nil {
+				if returnErr != nil {
+					returnErr = fmt.Errorf("%v; rebuild: leave mutation boundary: %w", returnErr, releaseErr)
+				} else {
+					returnErr = fmt.Errorf("rebuild: leave mutation boundary: %w", releaseErr)
+				}
+			}
+		}()
+	}
 	// Portage runs pkg_preinst unsandboxed with host IPC/network/PID access
 	// after src_install has produced the image and before any payload is copied
 	// into ROOT. It cannot share the build worker's isolation policy.
 	if err := run("pkg_preinst"); err != nil {
 		return err
-	}
-	if cfg.CommitLock != nil {
-		cfg.CommitLock.Lock()
-		defer cfg.CommitLock.Unlock()
 	}
 	journalDir := cfg.JournalDir
 	if journalDir == "" {

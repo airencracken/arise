@@ -32,10 +32,32 @@ func TestInstallBinaryPackageGPKG(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(base, "root")
+	var boundaryEvents []string
 	cfg := &RebuildConfig{
 		BinaryPackagePath: packagePath,
 		RootDir:           root, VdbDir: filepath.Join(root, "var", "db", "pkg"),
 		WorkDirBase: filepath.Join(base, "work"), JournalDir: filepath.Join(base, "journal"),
+		BeginMutation: func(context.Context) (func() error, error) {
+			if _, err := os.Stat(filepath.Join(root, "usr", "bin", "demo")); !os.IsNotExist(err) {
+				t.Fatalf("payload reached ROOT before mutation boundary: %v", err)
+			}
+			images, err := filepath.Glob(filepath.Join(base, "work", "binary-demo-*"))
+			if err != nil || len(images) != 1 {
+				t.Fatalf("prepared binary image = %v, %v", images, err)
+			}
+			boundaryEvents = append(boundaryEvents, "begin")
+			return func() error {
+				boundaryEvents = append(boundaryEvents, "release")
+				return nil
+			}, nil
+		},
+		OnTransactionCommit: func(error) error {
+			if _, err := os.Stat(filepath.Join(root, "usr", "bin", "demo")); err != nil {
+				t.Fatalf("transaction callback ran before payload commit: %v", err)
+			}
+			boundaryEvents = append(boundaryEvents, "record")
+			return nil
+		},
 	}
 	if err := InstallBinaryPackage(context.Background(), "=app-misc/demo-1", cfg); err != nil {
 		t.Fatalf("InstallBinaryPackage: %v", err)
@@ -43,6 +65,10 @@ func TestInstallBinaryPackageGPKG(t *testing.T) {
 	payload, err := os.ReadFile(filepath.Join(root, "usr", "bin", "demo"))
 	if err != nil || string(payload) != "payload" {
 		t.Fatalf("installed payload = %q, %v", payload, err)
+	}
+	wantBoundaryEvents := []string{"begin", "record", "release"}
+	if strings.Join(boundaryEvents, ",") != strings.Join(wantBoundaryEvents, ",") {
+		t.Fatalf("mutation boundary events = %v, want %v", boundaryEvents, wantBoundaryEvents)
 	}
 	for name, want := range map[string]string{"CATEGORY": "app-misc", "PF": "demo-1", "SLOT": "0", "EAPI": "8"} {
 		got, err := os.ReadFile(filepath.Join(cfg.VdbDir, "app-misc", "demo-1", name))

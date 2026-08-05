@@ -904,12 +904,16 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
 			rebuildCfg.AllowLiveRoot = true
 		}
+		expectedStateSHA256 := stateSHA256
+		var expectedStateLock sync.Mutex
 		lockedStateValidation := func() error {
+			expectedStateLock.Lock()
+			defer expectedStateLock.Unlock()
 			lockedStateSHA256, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
 			if err != nil {
 				return err
 			}
-			if lockedStateSHA256 != stateSHA256 {
+			if lockedStateSHA256 != expectedStateSHA256 {
 				return fmt.Errorf("package state or policy changed before the operation lock; resolve and approve the new plan")
 			}
 			if planAudit != nil {
@@ -917,6 +921,16 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 					return err
 				}
 			}
+			return nil
+		}
+		recordLockedMutation := func() error {
+			expectedStateLock.Lock()
+			defer expectedStateLock.Unlock()
+			updated, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
+			if err != nil {
+				return fmt.Errorf("record committed package state: %w", err)
+			}
+			expectedStateSHA256 = updated
 			return nil
 		}
 		compatLog, logErr := openPortageMergeLog(*emergeLog)
@@ -989,7 +1003,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 		executionErr := executor.Execute(execCtx, result, executor.Config{
-			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation, PrepareMutation: prepareMutation,
+			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation, RecordLockedMutation: recordLockedMutation, PrepareMutation: prepareMutation,
 			OnSpaceWait: func(path string, available, required uint64) {
 				executionProgress.message(fmt.Sprintf("%s %s has insufficient free space; package parallelism reduced (free: %s, required: %s)", colorExecutionStage("Warning:"), path, formatSize(int64(available)), formatSize(int64(required))))
 			},
