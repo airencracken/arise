@@ -454,6 +454,29 @@ func TestKeywordDiagnosticDoesNotHidePackageMask(t *testing.T) {
 	}
 }
 
+func TestKeywordDiagnosticUsesUnmaskedCandidateWhenAnotherVersionIsMasked(t *testing.T) {
+	g := makeGraph()
+	pkgKeywords(g, "app-editors/vim", "9.0", "0", "0", false, nil, "~amd64")
+	pkgKeywords(g, "app-editors/vim", "9.1", "0", "0", false, nil, "~amd64")
+	cfg := DefaultResolveConfig()
+	cfg.PortageConfig = &portage.Config{
+		MakeConf:        map[string]string{"ARCH": "amd64"},
+		ACCEPT_KEYWORDS: []string{"amd64"},
+		PackageMask:     []string{"=app-editors/vim-9.1"},
+	}
+
+	_, err := Resolve(g, []string{"app-editors/vim"}, cfg)
+	if err == nil {
+		t.Fatal("policy-blocked target was accepted")
+	}
+	if !strings.Contains(err.Error(), "=app-editors/vim-9.0 ~amd64") {
+		t.Fatalf("diagnostic did not offer the unmasked keyword candidate:\n%s", err)
+	}
+	if strings.Contains(err.Error(), "package.unmask") {
+		t.Fatalf("diagnostic preferred an unnecessary unmask:\n%s", err)
+	}
+}
+
 func TestMissingTargetWithoutUsefulSuggestionStaysConcise(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "dev-libs/openssl", "3", "0", "0", false, nil)
@@ -3960,6 +3983,10 @@ func TestResolveMaskedDiagnosticIdentifiesAtomAndVersion(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "app-editors/vim-9.1 by package.mask atom =app-editors/vim-9.1") {
 		t.Fatalf("mask diagnostic = %v", err)
 	}
+	want := "printf '%s\\n' '=app-editors/vim-9.1' >> /etc/portage/package.unmask/vim"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("mask diagnostic is not actionable:\n%s\nwant line: %s", err, want)
+	}
 }
 
 func TestResolve_MaskedPackage_KeepGoing(t *testing.T) {
@@ -5151,6 +5178,10 @@ func TestResolve_RequiredUseViolation(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for REQUIRED_USE violation")
 	}
+	want := "printf '%s\\n' '=dev-lang/python-3.11 python_targets_python3_11' >> /etc/portage/package.use/python"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("REQUIRED_USE diagnostic is not actionable:\n%s\nwant line: %s", err, want)
+	}
 	if result != nil {
 		for _, c := range result.Conflicts {
 			t.Logf("conflict: %s", c)
@@ -5205,6 +5236,22 @@ func TestResolve_RequiredUseViolation_KeepGoing(t *testing.T) {
 	}
 	if !hasConflict {
 		t.Error("expected REQUIRED_USE conflict with KeepGoing")
+	}
+}
+
+func TestResolve_RequiredUseDiagnosticDoesNotOverrideProfileMask(t *testing.T) {
+	g := makeGraph()
+	pkgWithMeta(g, "dev-lang/python", "3.11", "0", "0", false,
+		map[string]bool{"jit": false}, "jit", "")
+	cfg := DefaultResolveConfig()
+	cfg.PortageConfig = &portage.Config{UseMask: []string{"jit"}}
+
+	_, err := Resolve(g, []string{"dev-lang/python"}, cfg)
+	if err == nil {
+		t.Fatal("profile-masked REQUIRED_USE violation was accepted")
+	}
+	if strings.Contains(err.Error(), "package.use") {
+		t.Fatalf("diagnostic claimed package.use can override a profile mask:\n%s", err)
 	}
 }
 
@@ -5372,10 +5419,42 @@ func TestResolve_LicenseRejected(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for rejected license")
 	}
+	want := "printf '%s\\n' '=dev-libs/libfoo-1.0 EULA' >> /etc/portage/package.license/libfoo"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("license diagnostic is not actionable:\n%s\nwant line: %s", err, want)
+	}
 	if result != nil {
 		for _, c := range result.Conflicts {
 			t.Logf("conflict: %s", c)
 		}
+	}
+}
+
+func TestResolve_LicenseDiagnosticChoosesOneAnyOfAlternative(t *testing.T) {
+	g := makeGraph()
+	pkgWithMeta(g, "dev-libs/libfoo", "1.0", "0", "0", false, nil, "", "|| ( Proprietary-A Proprietary-B )")
+	cfg := DefaultResolveConfig()
+	cfg.PortageConfig = &portage.Config{ACCEPT_LICENSE: []string{"-*"}}
+
+	_, err := Resolve(g, []string{"dev-libs/libfoo"}, cfg)
+	if err == nil {
+		t.Fatal("rejected license was accepted")
+	}
+	if !strings.Contains(err.Error(), "=dev-libs/libfoo-1.0 Proprietary-A") {
+		t.Fatalf("license diagnostic did not choose a deterministic alternative:\n%s", err)
+	}
+	if strings.Contains(err.Error(), "Proprietary-A Proprietary-B'") {
+		t.Fatalf("license diagnostic unnecessarily accepted every alternative:\n%s", err)
+	}
+}
+
+func TestPortageAppendHintShellQuotesMetadata(t *testing.T) {
+	hint := portageAppendHint("licenses", "package.license", "dev-libs/libfoo", "dev-libs/libfoo-1", []string{"vendor's-license"})
+	if strings.Contains(hint, "'vendor's-license'") {
+		t.Fatalf("hint contains an unescaped single quote: %s", hint)
+	}
+	if !strings.Contains(hint, `'"'"'`) {
+		t.Fatalf("hint did not shell-quote an adversarial value: %s", hint)
 	}
 }
 
@@ -7860,6 +7939,10 @@ func TestResolve_AnyOfPlansMutableUseRepair(t *testing.T) {
 	}
 	if len(result.Conflicts) != 1 || !strings.Contains(result.Conflicts[0], "USE changes are necessary to proceed:") {
 		t.Fatalf("mutable any-of USE requirement not preserved: %v", result.Conflicts)
+	}
+	if !strings.Contains(result.Conflicts[0], "printf '%s\\n'") ||
+		!strings.Contains(result.Conflicts[0], ">> /etc/portage/package.use/") {
+		t.Fatalf("mutable USE diagnostic is not copy-pasteable: %v", result.Conflicts)
 	}
 	var repaired int
 	for _, action := range result.Install {

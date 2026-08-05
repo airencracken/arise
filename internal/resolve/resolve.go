@@ -2380,8 +2380,11 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			}
 		}
 		msg := fmt.Sprintf("no installable version of %s satisfies the version constraint %s (%s)", cp, target.String(), reason)
-		if masked := r.matchingMaskStatuses(node, matchTarget); len(masked) > 0 {
+		if masked := r.matchingMaskStatuses(node, matchTarget); len(masked) > 0 && r.allMatchingVersionsMasked(node, matchTarget) {
 			msg = fmt.Sprintf("package masked: all matching versions of %s are masked (%s)", cp, strings.Join(masked, "; "))
+			if hint := r.packageUnmaskHint(node, matchTarget); hint != "" {
+				msg += "\n" + hint
+			}
 		} else if hint := r.keywordAcceptanceHint(node, matchTarget); hint != "" {
 			msg += "\n" + hint
 		}
@@ -2509,6 +2512,9 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	if vi.RequiredUse != "" {
 		if err := CheckRequiredUse(vi.RequiredUse, r.candidateUseFlags(node, vi)); err != nil {
 			msg := fmt.Sprintf("REQUIRED_USE constraint not satisfied for %s: %v", cp, err)
+			if changes := r.requiredUseChanges(node, vi); len(changes) > 0 {
+				msg += "\n" + portageAppendHint("USE settings", "package.use", cp, versionedCP(cp, vi), changes)
+			}
 			r.conflicts = append(r.conflicts, msg)
 			if r.config.KeepGoing {
 				return nil
@@ -2531,7 +2537,15 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 			acceptLicenses = portage.ExpandLicenseGroups(acceptLicenses, r.portageConfig.LicenseGroups)
 		}
 		if !LicenseExpressionAccepted(vi.License, acceptLicenses, r.candidateUseFlags(node, vi)) {
-			msg := fmt.Sprintf("license %s not accepted for %s", vi.License, cp)
+			licenses := missingLicenseChoices(vi.License, acceptLicenses, r.candidateUseFlags(node, vi))
+			required := vi.License
+			if len(licenses) > 0 {
+				required = strings.Join(licenses, " ")
+			}
+			msg := fmt.Sprintf("license %s not accepted for %s", required, cp)
+			if len(licenses) > 0 {
+				msg += "\n" + portageAppendHint("licenses", "package.license", cp, versionedCP(cp, vi), licenses)
+			}
 			r.conflicts = append(r.conflicts, msg)
 			if r.config.KeepGoing {
 				return nil
@@ -6341,6 +6355,7 @@ func (r *resolver) findMatchingVersionWithUseChanges(node *PkgNode, constraint *
 	if !r.useChangeSeen[changeKey] {
 		r.setUseChangeSeen(changeKey, true)
 		message := fmt.Sprintf("USE changes are necessary to proceed: %s %s", node.Atom.CP(), strings.Join(rendered, " "))
+		message += "\n" + portageAppendHint("USE settings", "package.use", node.Atom.CP(), versionedCP(node.Atom.CP(), best), rendered)
 		r.conflicts = append(r.conflicts, message)
 		alternatives := []ConflictAlternative{{
 			Kind: "package-use", Package: node.Atom.CP(),
@@ -6489,6 +6504,20 @@ func (r *resolver) matchingMaskStatuses(node *PkgNode, constraint *atom.Atom) []
 	return result
 }
 
+func (r *resolver) allMatchingVersionsMasked(node *PkgNode, constraint *atom.Atom) bool {
+	matched := false
+	for _, version := range node.Versions {
+		if version == nil || !version.Available || !versionAtomMatches(node.Atom, constraint, version, r.candidateUseFlags(node, version)) {
+			continue
+		}
+		matched = true
+		if !r.versionMaskStatus(node, version).Masked {
+			return false
+		}
+	}
+	return matched
+}
+
 func (r *resolver) keywordAcceptanceHint(node *PkgNode, constraint *atom.Atom) string {
 	if r.portageConfig == nil || node == nil || node.Atom == nil || constraint == nil {
 		return ""
@@ -6520,12 +6549,237 @@ func (r *resolver) keywordAcceptanceHint(node *PkgNode, constraint *atom.Atom) s
 		return ""
 	}
 	cp := node.Atom.CP()
-	packageName := strings.TrimPrefix(cp, node.Atom.Category+"/")
 	cpv := cp + "-" + best.Version.Raw
-	return fmt.Sprintf(
-		"best matching candidate: %s (blocked by keyword %s)\nTo accept this version:\n  mkdir -p /etc/portage/package.accept_keywords\n  printf '%%s\\n' '=%s %s' >> /etc/portage/package.accept_keywords/%s",
-		cpv, unstableKeyword, cpv, unstableKeyword, packageName,
-	)
+	return fmt.Sprintf("best matching candidate: %s (blocked by keyword %s)\n%s", cpv, unstableKeyword,
+		portageAppendHint("this version", "package.accept_keywords", cp, cpv, []string{unstableKeyword}))
+}
+
+func (r *resolver) packageUnmaskHint(node *PkgNode, constraint *atom.Atom) string {
+	if node == nil || node.Atom == nil || constraint == nil {
+		return ""
+	}
+	var best *VersionInfo
+	for _, candidate := range node.Versions {
+		if candidate == nil || candidate.Version == nil || !candidate.Available || candidate.Installed ||
+			!versionAtomMatches(node.Atom, constraint, candidate, r.candidateUseFlags(node, candidate)) ||
+			!r.versionMaskStatus(node, candidate).Masked || !r.versionKeywordAccepted(node, candidate) {
+			continue
+		}
+		if betterVersionCandidate(candidate, best) {
+			best = candidate
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	cp := node.Atom.CP()
+	cpv := versionedCP(cp, best)
+	return fmt.Sprintf("best matching candidate: %s (blocked by package.mask)\n%s", cpv,
+		portageAppendHint("this unmask", "package.unmask", cp, cpv, nil))
+}
+
+func versionedCP(cp string, version *VersionInfo) string {
+	if version == nil || version.Version == nil {
+		return cp
+	}
+	return cp + "-" + version.Version.Raw
+}
+
+func portageAppendHint(description, configName, cp, cpv string, values []string) string {
+	packageName := cp
+	if slash := strings.LastIndex(packageName, "/"); slash >= 0 {
+		packageName = packageName[slash+1:]
+	}
+	entry := "=" + cpv
+	if len(values) > 0 {
+		entry += " " + strings.Join(values, " ")
+	}
+	return fmt.Sprintf("To apply %s:\n  mkdir -p /etc/portage/%s\n  printf '%%s\\n' %s >> /etc/portage/%s/%s",
+		description, configName, shellSingleQuote(entry), configName, packageName)
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+func (r *resolver) requiredUseChanges(node *PkgNode, version *VersionInfo) []string {
+	if node == nil || node.Atom == nil || version == nil || strings.TrimSpace(version.RequiredUse) == "" {
+		return nil
+	}
+	parsed, err := depstring.Parse(version.RequiredUse)
+	if err != nil {
+		return nil
+	}
+	flags := requiredUseFlags(parsed)
+	if len(flags) == 0 || len(flags) > 18 {
+		return nil
+	}
+	sort.Strings(flags)
+	current := r.candidateUseFlags(node, version)
+	cpv := versionedCP(node.Atom.CP(), version)
+	stable := slices.Contains(strings.Fields(version.Keywords), r.resolverArch())
+	for changeCount := 1; changeCount <= len(flags); changeCount++ {
+		var selected []int
+		var search func(int) []string
+		search = func(start int) []string {
+			if len(selected) == changeCount {
+				candidate := cloneBoolMap(current)
+				var rendered []string
+				for _, index := range selected {
+					flag := flags[index]
+					enabled := !current[flag]
+					if r.portageConfig != nil && ((enabled && r.portageConfig.UseMaskedFor(cpv, policySlot(version), version.Repository, flag, stable)) ||
+						(!enabled && r.portageConfig.UseForcedFor(cpv, policySlot(version), version.Repository, flag, stable))) {
+						return nil
+					}
+					candidate[flag] = enabled
+					if enabled {
+						rendered = append(rendered, flag)
+					} else {
+						rendered = append(rendered, "-"+flag)
+					}
+				}
+				if CheckRequiredUse(version.RequiredUse, candidate) == nil {
+					return rendered
+				}
+				return nil
+			}
+			for index := start; index <= len(flags)-(changeCount-len(selected)); index++ {
+				selected = append(selected, index)
+				if result := search(index + 1); len(result) > 0 {
+					return result
+				}
+				selected = selected[:len(selected)-1]
+			}
+			return nil
+		}
+		if changes := search(0); len(changes) > 0 {
+			return changes
+		}
+	}
+	return nil
+}
+
+func (r *resolver) resolverArch() string {
+	if r.portageConfig != nil && r.portageConfig.MakeConf["ARCH"] != "" {
+		return r.portageConfig.MakeConf["ARCH"]
+	}
+	return gentooRuntimeArch(runtime.GOARCH)
+}
+
+func requiredUseFlags(node depstring.DepNode) []string {
+	seen := make(map[string]bool)
+	var visit func(depstring.DepNode)
+	visit = func(current depstring.DepNode) {
+		switch n := current.(type) {
+		case *depstring.AtomDep:
+			flag := strings.TrimPrefix(n.Atom, "!")
+			if flag != "" {
+				seen[flag] = true
+			}
+		case *depstring.AllOfGroup:
+			for _, child := range n.Children {
+				visit(child)
+			}
+		case *depstring.AnyOfGroup:
+			for _, child := range n.Children {
+				visit(child)
+			}
+		case *depstring.XorOfGroup:
+			for _, child := range n.Children {
+				visit(child)
+			}
+		case *depstring.AtMostOneOfGroup:
+			for _, child := range n.Children {
+				visit(child)
+			}
+		case *depstring.UseConditional:
+			seen[strings.TrimPrefix(n.Flag, "!")] = true
+			for _, child := range n.Children {
+				visit(child)
+			}
+		}
+	}
+	visit(node)
+	result := make([]string, 0, len(seen))
+	for flag := range seen {
+		if flag != "" {
+			result = append(result, flag)
+		}
+	}
+	return result
+}
+
+func missingLicenseChoices(expression string, accepted []string, useFlags map[string]bool) []string {
+	parsed, err := depstring.Parse(expression)
+	if err != nil {
+		return nil
+	}
+	var missing func(depstring.DepNode) ([]string, bool)
+	missing = func(current depstring.DepNode) ([]string, bool) {
+		switch n := current.(type) {
+		case *depstring.AtomDep:
+			if LicenseAccepted(n.Atom, accepted) {
+				return nil, true
+			}
+			return []string{n.Atom}, true
+		case *depstring.AllOfGroup:
+			var result []string
+			for _, child := range n.Children {
+				choice, ok := missing(child)
+				if !ok {
+					return nil, false
+				}
+				result = append(result, choice...)
+			}
+			return result, true
+		case *depstring.AnyOfGroup:
+			var best []string
+			found := false
+			for _, child := range n.Children {
+				choice, ok := missing(child)
+				if !ok {
+					continue
+				}
+				sort.Strings(choice)
+				if !found || len(choice) < len(best) || (len(choice) == len(best) && strings.Join(choice, "\x00") < strings.Join(best, "\x00")) {
+					best, found = choice, true
+				}
+			}
+			return best, found
+		case *depstring.UseConditional:
+			flag := strings.TrimPrefix(n.Flag, "!")
+			enabled := useFlags[flag]
+			if strings.HasPrefix(n.Flag, "!") {
+				enabled = !enabled
+			}
+			if !enabled {
+				return nil, true
+			}
+			var result []string
+			for _, child := range n.Children {
+				choice, ok := missing(child)
+				if !ok {
+					return nil, false
+				}
+				result = append(result, choice...)
+			}
+			return result, true
+		default:
+			return nil, false
+		}
+	}
+	result, ok := missing(parsed)
+	if !ok {
+		return nil
+	}
+	sort.Strings(result)
+	result = slices.Compact(result)
+	withSuggested := append(append([]string(nil), accepted...), result...)
+	if !LicenseExpressionAccepted(expression, withSuggested, useFlags) {
+		return nil
+	}
+	return result
 }
 
 func (r *resolver) buildResult() (*ResolveResult, error) {
@@ -7456,6 +7710,7 @@ func AutoUseChanges(conflicts []string, portageConfigRoot string) error {
 		if !ok {
 			continue
 		}
+		rest, _, _ = strings.Cut(rest, "\n")
 		fields := strings.Fields(rest)
 		if len(fields) < 2 || !strings.Contains(fields[0], "/") {
 			continue
@@ -7541,6 +7796,7 @@ func AutoAcceptLicense(conflicts []string, portageConfigRoot string) error {
 		}
 		licenseName := rest[:idx]
 		cp := rest[idx+len(" not accepted for "):]
+		cp, _, _ = strings.Cut(cp, "\n")
 
 		cp = strings.TrimSpace(cp)
 		licenseName = strings.TrimSpace(licenseName)
