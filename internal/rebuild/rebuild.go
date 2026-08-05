@@ -553,6 +553,7 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 			if err != nil {
 				return fmt.Errorf("rebuild: preflight old environment: %w", err)
 			}
+			oldRequest = installedLifecycleDiscoveryRequest(oldRequest)
 			allowed := make(map[string]bool)
 			// Replacement removal hooks follow Portage's committed-state
 			// compatibility semantics; failures are reported after commit.
@@ -608,6 +609,14 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 		return fmt.Errorf("rebuild: pkg_pretend: %w", pretendErr)
 	}
 	return nil
+}
+
+func installedLifecycleDiscoveryRequest(request phaseproto.Request) phaseproto.Request {
+	// The stored environment belongs to the installed package's removal side
+	// of the replacement. Source it with pkg_prerm's root lifecycle policy,
+	// never with userpriv inherited from the selected package's build phase.
+	// Materialized snapshots are deliberately private temporary files.
+	return applyPortageLifecyclePolicy(request, "pkg_prerm")
 }
 
 func materializeInstalledEnvironment(vdbPath, directory string) (string, error) {

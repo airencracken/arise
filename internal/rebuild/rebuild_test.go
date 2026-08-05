@@ -164,6 +164,32 @@ func TestApplyPortageUserprivPolicyByPhase(t *testing.T) {
 	}
 }
 
+func TestInstalledLifecycleDiscoveryDoesNotInheritBuildUserpriv(t *testing.T) {
+	base := phaseproto.Request{
+		Environment: "/private/installed-environment",
+		RootDir:     "/",
+		Env:         map[string]string{"USE": "pie"},
+		Policy: phaseproto.ExecutionPolicy{
+			Configured: true, Sandbox: true, NetworkSandbox: true,
+			IPCSandbox: true, PIDSandbox: true, UserPriv: true,
+			UserSandbox: true, DropPrivileges: true,
+		},
+	}
+	got := installedLifecycleDiscoveryRequest(base)
+	if got.Policy.DropPrivileges {
+		t.Fatalf("installed lifecycle discovery retained build userpriv: %+v", got.Policy)
+	}
+	if got.Policy.Sandbox || got.Policy.NetworkSandbox || got.Policy.IPCSandbox || got.Policy.PIDSandbox {
+		t.Fatalf("installed lifecycle discovery retained build isolation: %+v", got.Policy)
+	}
+	if got.Environment != base.Environment || got.Env["USE"] != "pie" {
+		t.Fatalf("installed lifecycle discovery changed snapshot identity: %+v", got)
+	}
+	if base.Policy.DropPrivileges != true || !base.Policy.Sandbox {
+		t.Fatalf("installed lifecycle discovery mutated base policy: %+v", base.Policy)
+	}
+}
+
 func TestInstalledLifecycleHasPhaseIsNilSafeAndExact(t *testing.T) {
 	var nilLifecycle *InstalledLifecycle
 	if nilLifecycle.HasPhase("pkg_config") {
