@@ -357,11 +357,11 @@ func TestMissingVersionedTargetSuggestsWithoutSubstitution(t *testing.T) {
 
 func TestExactUnavailableTargetDoesNotOfferTypoSuggestions(t *testing.T) {
 	g := makeGraph()
-	pkgKeywords(g, "app-editors/vim", "9.1", "0", "0", false, nil, "")
+	pkgKeywords(g, "app-editors/vim", "9.1", "0", "0", false, nil, "~amd64")
 	pkg(g, "app-editors/gvim", "9.1", "0", "0", false, nil)
 
 	cfg := DefaultResolveConfig()
-	cfg.PortageConfig = &portage.Config{ACCEPT_KEYWORDS: []string{"amd64"}}
+	cfg.PortageConfig = &portage.Config{MakeConf: map[string]string{"ARCH": "amd64"}, ACCEPT_KEYWORDS: []string{"amd64"}}
 	_, err := Resolve(g, []string{"app-editors/vim"}, cfg)
 	if err == nil {
 		t.Fatal("keyword-masked exact target was accepted")
@@ -371,6 +371,86 @@ func TestExactUnavailableTargetDoesNotOfferTypoSuggestions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no installable version") {
 		t.Fatalf("unavailable exact-target diagnostic = %q", err)
+	}
+	want := "printf '%s\\n' '=app-editors/vim-9.1 ~amd64' >> /etc/portage/package.accept_keywords/vim"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("keyword diagnostic is not copy-pasteable:\n%s\nwant line: %s", err, want)
+	}
+}
+
+func TestKeywordDiagnosticSelectsNewestMatchingCandidate(t *testing.T) {
+	g := makeGraph()
+	pkgKeywords(g, "games-roguelike/nethack", "3.6.7", "0", "0", false, nil, "~amd64")
+	pkgKeywords(g, "games-roguelike/nethack", "5.0.0-r1", "0", "0", false, nil, "~amd64")
+
+	cfg := DefaultResolveConfig()
+	cfg.PortageConfig = &portage.Config{MakeConf: map[string]string{"ARCH": "amd64"}, ACCEPT_KEYWORDS: []string{"amd64"}}
+	_, err := Resolve(g, []string{"games-roguelike/nethack"}, cfg)
+	if err == nil {
+		t.Fatal("keyword-masked target was accepted")
+	}
+	want := "=games-roguelike/nethack-5.0.0-r1 ~amd64"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("diagnostic did not select newest candidate:\n%s", err)
+	}
+	if strings.Contains(err.Error(), "=games-roguelike/nethack-3.6.7 ~amd64") {
+		t.Fatalf("diagnostic offered a superseded candidate:\n%s", err)
+	}
+}
+
+func TestKeywordDiagnosticHonorsVersionConstraint(t *testing.T) {
+	g := makeGraph()
+	pkgKeywords(g, "games-roguelike/nethack", "3.6.7-r1", "0", "0", false, nil, "~amd64")
+	pkgKeywords(g, "games-roguelike/nethack", "5.0.0-r1", "0", "0", false, nil, "~amd64")
+
+	cfg := DefaultResolveConfig()
+	cfg.PortageConfig = &portage.Config{MakeConf: map[string]string{"ARCH": "amd64"}, ACCEPT_KEYWORDS: []string{"amd64"}}
+	_, err := Resolve(g, []string{"<games-roguelike/nethack-4"}, cfg)
+	if err == nil {
+		t.Fatal("keyword-masked target was accepted")
+	}
+	if !strings.Contains(err.Error(), "=games-roguelike/nethack-3.6.7-r1 ~amd64") {
+		t.Fatalf("diagnostic ignored target constraint:\n%s", err)
+	}
+	if strings.Contains(err.Error(), "=games-roguelike/nethack-5.0.0-r1 ~amd64") {
+		t.Fatalf("diagnostic suggested an excluded version:\n%s", err)
+	}
+}
+
+func TestKeywordDiagnosticDoesNotRecommendForeignArchitecture(t *testing.T) {
+	g := makeGraph()
+	pkgKeywords(g, "app-editors/vim", "9.1", "0", "0", false, nil, "~arm64")
+
+	cfg := DefaultResolveConfig()
+	cfg.PortageConfig = &portage.Config{MakeConf: map[string]string{"ARCH": "amd64"}, ACCEPT_KEYWORDS: []string{"amd64"}}
+	_, err := Resolve(g, []string{"app-editors/vim"}, cfg)
+	if err == nil {
+		t.Fatal("foreign-architecture target was accepted")
+	}
+	if strings.Contains(err.Error(), "package.accept_keywords") {
+		t.Fatalf("diagnostic recommended unsafe foreign keyword override:\n%s", err)
+	}
+}
+
+func TestKeywordDiagnosticDoesNotHidePackageMask(t *testing.T) {
+	g := makeGraph()
+	pkgKeywords(g, "app-editors/vim", "9.1", "0", "0", false, nil, "~amd64")
+
+	cfg := DefaultResolveConfig()
+	cfg.PortageConfig = &portage.Config{
+		MakeConf:        map[string]string{"ARCH": "amd64"},
+		ACCEPT_KEYWORDS: []string{"amd64"},
+		PackageMask:     []string{"=app-editors/vim-9.1"},
+	}
+	_, err := Resolve(g, []string{"app-editors/vim"}, cfg)
+	if err == nil {
+		t.Fatal("masked target was accepted")
+	}
+	if !strings.Contains(err.Error(), "package masked") {
+		t.Fatalf("diagnostic omitted the package mask:\n%s", err)
+	}
+	if strings.Contains(err.Error(), "package.accept_keywords") {
+		t.Fatalf("diagnostic claimed a keyword change would fix a package mask:\n%s", err)
 	}
 }
 

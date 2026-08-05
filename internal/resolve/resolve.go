@@ -2382,6 +2382,8 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 		msg := fmt.Sprintf("no installable version of %s satisfies the version constraint %s (%s)", cp, target.String(), reason)
 		if masked := r.matchingMaskStatuses(node, matchTarget); len(masked) > 0 {
 			msg = fmt.Sprintf("package masked: all matching versions of %s are masked (%s)", cp, strings.Join(masked, "; "))
+		} else if hint := r.keywordAcceptanceHint(node, matchTarget); hint != "" {
+			msg += "\n" + hint
 		}
 		r.conflicts = append(r.conflicts, msg)
 		slots := make(map[string]bool)
@@ -6485,6 +6487,45 @@ func (r *resolver) matchingMaskStatuses(node *PkgNode, constraint *atom.Atom) []
 	}
 	sort.Strings(result)
 	return result
+}
+
+func (r *resolver) keywordAcceptanceHint(node *PkgNode, constraint *atom.Atom) string {
+	if r.portageConfig == nil || node == nil || node.Atom == nil || constraint == nil {
+		return ""
+	}
+	arch := r.portageConfig.MakeConf["ARCH"]
+	if arch == "" {
+		arch = gentooRuntimeArch(runtime.GOARCH)
+	}
+	unstableKeyword := "~" + arch
+	var best *VersionInfo
+	for _, candidate := range node.Versions {
+		if candidate == nil || candidate.Version == nil || !candidate.Available || candidate.Installed {
+			continue
+		}
+		if !versionAtomMatches(node.Atom, constraint, candidate, r.candidateUseFlags(node, candidate)) {
+			continue
+		}
+		if r.versionMaskStatus(node, candidate).Masked || r.versionKeywordAccepted(node, candidate) {
+			continue
+		}
+		if !slices.Contains(strings.Fields(candidate.Keywords), unstableKeyword) {
+			continue
+		}
+		if betterVersionCandidate(candidate, best) {
+			best = candidate
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	cp := node.Atom.CP()
+	packageName := strings.TrimPrefix(cp, node.Atom.Category+"/")
+	cpv := cp + "-" + best.Version.Raw
+	return fmt.Sprintf(
+		"best matching candidate: %s (blocked by keyword %s)\nTo accept this version:\n  mkdir -p /etc/portage/package.accept_keywords\n  printf '%%s\\n' '=%s %s' >> /etc/portage/package.accept_keywords/%s",
+		cpv, unstableKeyword, cpv, unstableKeyword, packageName,
+	)
 }
 
 func (r *resolver) buildResult() (*ResolveResult, error) {
