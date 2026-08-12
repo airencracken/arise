@@ -33,6 +33,7 @@ import (
 	"github.com/airencracken/arise/internal/recoveryset"
 	"github.com/airencracken/arise/internal/resolve"
 	"github.com/airencracken/arise/internal/resolvertrace"
+	"github.com/airencracken/arise/internal/restartneeded"
 	"github.com/airencracken/arise/internal/world"
 )
 
@@ -1002,6 +1003,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				}
 			}
 		}
+		var processesBefore map[int]restartneeded.Process
+		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
+			processesBefore = restartneeded.Snapshot("/proc")
+		}
 		executionErr := executor.Execute(execCtx, result, executor.Config{
 			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation, RecordLockedMutation: recordLockedMutation, PrepareMutation: prepareMutation,
 			OnSpaceWait: func(path string, available, required uint64) {
@@ -1070,6 +1075,14 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if publishedRecoverySet != "" {
 			if statusErr := markRecoverySetOutcome(publishedRecoverySet, executionErr); statusErr != nil {
 				executionProgress.message(" * warning: recovery set remains conservatively active: " + statusErr.Error())
+			}
+		}
+		// Report this even when a later package failed: an earlier transaction may
+		// already have committed a replacement executable used by a critical
+		// daemon. The operator must see this before deciding whether to resume.
+		if processesBefore != nil {
+			if warning := restartneeded.Warning(restartneeded.NewlyDeleted(processesBefore, restartneeded.Snapshot("/proc"))); warning != "" {
+				fmt.Fprint(os.Stderr, warning)
 			}
 		}
 		if executionErr != nil {

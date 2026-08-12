@@ -725,9 +725,10 @@ func runWorkerCommandWithOptions(command *exec.Cmd, request Request, cancelGrace
 			"ARISE_QUERY_BROOT_VDB="+request.QueryBrootVDB,
 		)
 	}
+	ebuildRoot := EbuildPathVariable(request.EAPI, request.RootDir)
 	command.Env = append(command.Env,
 		"FILESDIR="+filepath.Join(filepath.Dir(request.Ebuild), "files"),
-		"EPREFIX=", "EROOT="+request.RootDir, "ESYSROOT="+request.SysrootDir,
+		"EPREFIX=", "EROOT="+ebuildRoot, "ESYSROOT="+request.SysrootDir,
 	)
 	if request.BuildDir != "" {
 		command.Env = append(command.Env, "PORTAGE_BUILDDIR="+request.BuildDir)
@@ -745,7 +746,7 @@ func runWorkerCommandWithOptions(command *exec.Cmd, request Request, cancelGrace
 		command.Env = append(command.Env, "D="+request.ImageDir, "ED="+request.ImageDir)
 	}
 	if request.RootDir != "" {
-		command.Env = append(command.Env, "ROOT="+request.RootDir)
+		command.Env = append(command.Env, "ROOT="+ebuildRoot)
 	}
 	if request.SysrootDir != "" {
 		command.Env = append(command.Env, "SYSROOT="+request.SysrootDir)
@@ -853,6 +854,16 @@ func runWorkerCommandWithOptions(command *exec.Cmd, request Request, cancelGrace
 		return events, fmt.Errorf("phase worker protocol: terminal exit status does not match successful process exit")
 	}
 	return events, nil
+}
+
+// EbuildPathVariable renders ROOT-family path variables according to the EAPI
+// trailing-slash contract. Since EAPI 7, the native system root is empty.
+func EbuildPathVariable(eapi, path string) string {
+	major, err := strconv.Atoi(eapi)
+	if err == nil && major >= 7 && filepath.Clean(path) == string(filepath.Separator) {
+		return ""
+	}
+	return path
 }
 
 func configureProcessGroupCancellation(command *exec.Cmd, grace time.Duration) *atomic.Bool {

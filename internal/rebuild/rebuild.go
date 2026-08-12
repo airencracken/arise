@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -285,7 +286,10 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 	}
 	defer func() {
 		failClean := cfg.Features != nil && cfg.Features.IsEnabled(features.FeatFailClean)
-		if err == nil || failClean {
+		// A signal-driven cancellation is an operator request, not a failed build
+		// to preserve for diagnosis. Always reclaim its uniquely named workspace;
+		// otherwise repeated SIGTERM interruptions strand arbitrarily large trees.
+		if err == nil || failClean || ctx.Err() != nil {
 			os.RemoveAll(workDir)
 		}
 	}()
@@ -539,8 +543,8 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 		// from them. The default Arise lane mirrors that behavior. Syscall-level
 		// lifecycle capture is an optional, USE-gated strengthening feature and
 		// must never be a prerequisite for Portage-compatible execution.
-		if cfg.AllowLiveUpgrade {
-			replaced, err := findInstalledReplacement(cfg.VdbDir, a.Category, a.Package, a.Version.Raw, selectedEbuildSlot(cfg, eb))
+		if cfg.AllowLiveUpgrade || cfg.AllowLiveReplacement {
+			replaced, err := findInstalledReplacement(cfg.VdbDir, a.Category, a.Package, a.Version.Raw, selectedEbuildSlot(cfg, eb), cfg.AllowLiveReplacement)
 			if err != nil {
 				return fmt.Errorf("rebuild: preflight installed replacement: %w", err)
 			}
@@ -1092,8 +1096,8 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	buildPhases = filteredPhases
 	var replacedVDB string
 	var runOld func(string) error
-	if cfg.AllowLiveUpgrade {
-		replacedVDB, err = findInstalledReplacement(cfg.VdbDir, cat, pn, pvr, selectedEbuildSlot(cfg, eb))
+	if cfg.AllowLiveUpgrade || cfg.AllowLiveReplacement {
+		replacedVDB, err = findInstalledReplacement(cfg.VdbDir, cat, pn, pvr, selectedEbuildSlot(cfg, eb), cfg.AllowLiveReplacement)
 		if err != nil {
 			return fmt.Errorf("rebuild: select installed replacement lifecycle: %w", err)
 		}
@@ -1105,11 +1109,16 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		if parseErr != nil {
 			return fmt.Errorf("rebuild: installed replacement lifecycle ebuild: %w", parseErr)
 		}
+		oldAtom, parseOldErr := atom.Parse(cat + "/" + filepath.Base(replacedVDB))
+		if parseOldErr != nil || oldAtom.Version == nil {
+			return fmt.Errorf("rebuild: installed replacement identity: %w", parseOldErr)
+		}
 		environment, environmentErr := materializeInstalledEnvironment(replacedVDB, workDir)
 		if environmentErr != nil {
 			return fmt.Errorf("rebuild: installed replacement lifecycle environment: %w", environmentErr)
 		}
 		oldBase := base
+		base, oldBase = replacementLifecycleRequests(base, oldBase, oldAtom.Version.Raw, pvr)
 		oldBase.Ebuild, oldBase.EAPI, oldBase.Environment = oldEbuilds[0], old.EAPI, environment
 		oldBase.ImageDir = ""
 		runOld = func(phaseName string) error {
@@ -1299,6 +1308,21 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		}
 	}
 	return nil
+}
+
+func replacementLifecycleRequests(current, previous phaseproto.Request, replacingVersion, replacedByVersion string) (phaseproto.Request, phaseproto.Request) {
+	current.Env = maps.Clone(current.Env)
+	previous.Env = maps.Clone(previous.Env)
+	if current.Env == nil {
+		current.Env = make(map[string]string)
+	}
+	if previous.Env == nil {
+		previous.Env = make(map[string]string)
+	}
+	current.Env["REPLACING_VERSIONS"] = replacingVersion
+	previous.Env["REPLACING_VERSIONS"] = replacingVersion
+	previous.Env["REPLACED_BY_VERSION"] = replacedByVersion
+	return current, previous
 }
 
 var infoIndexNames = []string{"dir", "dir.Z", "dir.gz", "dir.bz2", "dir.lzma", "dir.lz", "dir.xz", "dir.zst", "dir.info", "dir.info.Z", "dir.info.gz", "dir.info.bz2", "dir.info.lzma", "dir.info.lz", "dir.info.xz", "dir.info.zst"}
@@ -1937,7 +1961,7 @@ func preflightBestVersions(rootVDB, brootVDB string) map[string]string {
 	return result
 }
 
-func findInstalledReplacement(vdbDir, category, packageName, newVersion, slot string) (string, error) {
+func findInstalledReplacement(vdbDir, category, packageName, newVersion, slot string, allowSameVersion bool) (string, error) {
 	directory := filepath.Join(vdbDir, category)
 	entries, err := os.ReadDir(directory)
 	if err != nil {
@@ -1949,7 +1973,7 @@ func findInstalledReplacement(vdbDir, category, packageName, newVersion, slot st
 			continue
 		}
 		installedAtom, parseErr := atom.Parse(category + "/" + entry.Name())
-		if parseErr != nil || installedAtom.Package != packageName || installedAtom.Version == nil || installedAtom.Version.Raw == newVersion {
+		if parseErr != nil || installedAtom.Package != packageName || installedAtom.Version == nil || (!allowSameVersion && installedAtom.Version.Raw == newVersion) {
 			continue
 		}
 		path := filepath.Join(directory, entry.Name())
@@ -1973,12 +1997,13 @@ func protocolEnvironmentSnapshot(request phaseproto.Request) []byte {
 	for name, value := range request.Env {
 		values[name] = value
 	}
+	ebuildRoot := phaseproto.EbuildPathVariable(request.EAPI, request.RootDir)
 	identity := map[string]string{
 		"CATEGORY": request.Package.Category, "PN": request.Package.PN, "PV": request.Package.PV,
 		"PR": request.Package.PR, "P": request.Package.P, "PVR": request.Package.PVR,
 		"PF": request.Package.PF, "SLOT": request.Package.Slot, "PORTAGE_REPO_NAME": request.Package.Repository,
-		"EAPI": request.EAPI, "ROOT": request.RootDir, "SYSROOT": request.SysrootDir, "BROOT": request.BrootDir,
-		"EPREFIX": "", "EROOT": request.RootDir, "ESYSROOT": request.SysrootDir,
+		"EAPI": request.EAPI, "ROOT": ebuildRoot, "SYSROOT": request.SysrootDir, "BROOT": request.BrootDir,
+		"EPREFIX": "", "EROOT": ebuildRoot, "ESYSROOT": request.SysrootDir,
 		"WORKDIR": request.WorkDir, "S": request.SourceDir, "D": request.ImageDir, "ED": request.ImageDir,
 		"T": request.TempDir, "TMPDIR": request.TempDir, "TMP": request.TempDir, "TEMP": request.TempDir,
 		"HOME": request.HomeDir, "PORTAGE_BUILDDIR": request.BuildDir,

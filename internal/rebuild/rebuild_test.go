@@ -875,6 +875,62 @@ func TestRebuildPackage_ContextCancellation(t *testing.T) {
 	if err == nil {
 		t.Error("expected error from cancelled context, got nil")
 	}
+	entries, readErr := os.ReadDir(cfg.WorkDirBase)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("cancelled build retained work directories: %v", entries)
+	}
+}
+
+func TestFindInstalledReplacementCoversUpgradeAndReinstall(t *testing.T) {
+	vdb := t.TempDir()
+	for _, pf := range []string{"daemon-1", "daemon-2"} {
+		directory := filepath.Join(vdb, "app-misc", pf)
+		if err := os.MkdirAll(directory, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "SLOT"), []byte("0\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upgrade, err := findInstalledReplacement(vdb, "app-misc", "daemon", "2", "0", false)
+	if err != nil || filepath.Base(upgrade) != "daemon-1" {
+		t.Fatalf("upgrade predecessor=%q err=%v", upgrade, err)
+	}
+	if _, err := findInstalledReplacement(vdb, "app-misc", "daemon", "2", "0", true); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("ambiguous reinstall predecessor accepted: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(vdb, "app-misc", "daemon-1")); err != nil {
+		t.Fatal(err)
+	}
+	reinstall, err := findInstalledReplacement(vdb, "app-misc", "daemon", "2", "0", true)
+	if err != nil || filepath.Base(reinstall) != "daemon-2" {
+		t.Fatalf("reinstall predecessor=%q err=%v", reinstall, err)
+	}
+}
+
+func TestReplacementLifecycleRequestsExposePMSVersionsWithoutAliasing(t *testing.T) {
+	base := phaseproto.Request{Env: map[string]string{"KEEP": "value"}}
+	current, previous := replacementLifecycleRequests(base, base, "1.2-r1", "2.0")
+	if current.Env["REPLACING_VERSIONS"] != "1.2-r1" || current.Env["REPLACED_BY_VERSION"] != "" {
+		t.Fatalf("current lifecycle env = %#v", current.Env)
+	}
+	if previous.Env["REPLACING_VERSIONS"] != "1.2-r1" || previous.Env["REPLACED_BY_VERSION"] != "2.0" {
+		t.Fatalf("previous lifecycle env = %#v", previous.Env)
+	}
+	current.Env["KEEP"] = "changed"
+	if previous.Env["KEEP"] != "value" || base.Env["REPLACING_VERSIONS"] != "" {
+		t.Fatalf("lifecycle environments alias: base=%#v current=%#v previous=%#v", base.Env, current.Env, previous.Env)
+	}
+}
+
+func TestReplacementLifecycleRequestsAcceptNilEnvironment(t *testing.T) {
+	current, previous := replacementLifecycleRequests(phaseproto.Request{}, phaseproto.Request{}, "1", "2")
+	if current.Env["REPLACING_VERSIONS"] != "1" || previous.Env["REPLACED_BY_VERSION"] != "2" {
+		t.Fatalf("nil lifecycle environments = %#v %#v", current.Env, previous.Env)
+	}
 }
 
 func TestRebuildPackages(t *testing.T) {

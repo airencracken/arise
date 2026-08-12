@@ -803,8 +803,8 @@ func TestBashWorkerRealRootPrefixContract(t *testing.T) {
 	source := `EAPI=8
 pkg_setup() {
 	[[ -z ${EPREFIX} ]] || die "EPREFIX=${EPREFIX}"
-	[[ ${ROOT} == / ]] || die "ROOT=${ROOT}"
-	[[ ${EROOT} == / ]] || die "EROOT=${EROOT}"
+	[[ -z ${ROOT} ]] || die "ROOT=${ROOT}"
+	[[ -z ${EROOT} ]] || die "EROOT=${EROOT}"
 	[[ -z ${BROOT} ]] || die "BROOT=${BROOT}"
 }
 `
@@ -814,6 +814,65 @@ pkg_setup() {
 	request := Request{Protocol: Version, ID: "real-root-prefix", Command: "run_phase", Phase: "pkg_setup", EAPI: "8", Ebuild: ebuild, WorkDir: directory, RootDir: "/", SysrootDir: "/"}
 	if events, err := RunBashWorker(context.Background(), request); err != nil {
 		t.Fatalf("real-root prefix contract failed: %v; events=%#v", err, events)
+	}
+}
+
+func TestEbuildPathVariableMatchesEAPIRootContract(t *testing.T) {
+	tests := []struct{ eapi, path, want string }{
+		{eapi: "6", path: "/", want: "/"},
+		{eapi: "7", path: "/", want: ""},
+		{eapi: "8", path: "/", want: ""},
+		{eapi: "9", path: "/", want: ""},
+		{eapi: "8", path: "/image", want: "/image"},
+		{eapi: "invalid", path: "/", want: "/"},
+	}
+	for _, test := range tests {
+		if got := EbuildPathVariable(test.eapi, test.path); got != test.want {
+			t.Errorf("EbuildPathVariable(%q, %q) = %q, want %q", test.eapi, test.path, got, test.want)
+		}
+	}
+}
+
+func TestBashWorkerNativePostinstExecutesServiceHandoffBranch(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "daemon-2.ebuild")
+	marker := filepath.Join(directory, "handoff")
+	source := `EAPI=8
+pkg_postinst() {
+	[[ -z ${ROOT} ]] || return
+	[[ ${REPLACING_VERSIONS} == 1 ]] || die "REPLACING_VERSIONS=${REPLACING_VERSIONS}"
+	printf 'handoff\n' > "${T}/handoff"
+}
+`
+	if err := os.WriteFile(ebuild, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "native-handoff", Command: "run_phase", Phase: "pkg_postinst", EAPI: "8", Ebuild: ebuild, RootDir: "/", TempDir: directory, Env: map[string]string{"REPLACING_VERSIONS": "1"}}
+	if events, err := RunBashWorker(context.Background(), request); err != nil {
+		t.Fatalf("native handoff phase: %v; events=%#v", err, events)
+	}
+	if content, err := os.ReadFile(marker); err != nil || string(content) != "handoff\n" {
+		t.Fatalf("handoff marker=%q err=%v", content, err)
+	}
+}
+
+func TestBashWorkerNativePostinstPropagatesHandoffFailure(t *testing.T) {
+	if _, err := exec.LookPath("sandbox"); err != nil {
+		t.Skip("Portage sandbox is not installed")
+	}
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "daemon-2.ebuild")
+	source := "EAPI=8\npkg_postinst() { [[ -z ${ROOT} ]] || return; die 'service handoff failed'; }\n"
+	if err := os.WriteFile(ebuild, []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "native-handoff-failure", Command: "run_phase", Phase: "pkg_postinst", EAPI: "8", Ebuild: ebuild, RootDir: "/", TempDir: directory}
+	events, err := RunBashWorker(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("handoff failure=%v events=%#v", err, events)
 	}
 }
 
