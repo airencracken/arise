@@ -1355,6 +1355,36 @@ func TestRequestValidation(t *testing.T) {
 	}
 }
 
+func BenchmarkRequestValidate(b *testing.B) {
+	request := benchmarkValidationRequest()
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := request.Validate(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func benchmarkValidationRequest() Request {
+	return Request{
+		Protocol: Version, ID: "pkg-1", Command: "run_phase", Phase: "src_compile", EAPI: "8",
+		Ebuild: "/repo/cat/pkg/pkg-1.ebuild", WorkDir: "/tmp/work", BuildDir: "/tmp/build",
+		ConfigRoot: "/etc/portage", SourceDir: "/tmp/source", ImageDir: "/tmp/image",
+		RootDir: "/", SysrootDir: "/", BrootDir: "/", TempDir: "/tmp", HomeDir: "/tmp/home",
+	}
+}
+
+func TestRequestValidationSuccessPathDoesNotAllocate(t *testing.T) {
+	request := benchmarkValidationRequest()
+	if allocations := testing.AllocsPerRun(1000, func() {
+		if err := request.Validate(); err != nil {
+			t.Fatal(err)
+		}
+	}); allocations != 0 {
+		t.Fatalf("successful validation allocations = %.0f, want 0", allocations)
+	}
+}
+
 func TestRequestRejectsUnsupportedEAPIAndRelativeEclassDirectory(t *testing.T) {
 	request := Request{Protocol: Version, ID: "pkg-1", Command: "run_phase", Phase: "src_compile", EAPI: "10", Ebuild: "/repo/pkg.ebuild"}
 	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported EAPI") {

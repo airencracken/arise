@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark test-vendor-artifact audit-repo vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke check-release-version deps deps-cache
+.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark test-vendor-artifact audit-repo audit-complexity vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke check-release-version deps deps-cache
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -75,6 +75,9 @@ AUDIT_OUTPUT ?= /tmp/arise-repository-compatibility.json
 
 audit-repo:
 	$(GO) run ./cmd/arise-repo-audit -repo $(PORTAGE_REPO) -worker internal/phaseproto/worker.sh -output $(AUDIT_OUTPUT)
+
+audit-complexity:
+	bash scripts/check-complexity.sh
 
 test-coverage:
 	$(GO) test $(COVERAGE_CORE_PKGS) -coverpkg=./... -coverprofile=/tmp/arise-coverage.out -covermode=atomic -count=1 -timeout 60s

@@ -133,14 +133,34 @@ func (r Request) Validate() error {
 	if r.ID == "" || r.EAPI == "" || r.Ebuild == "" {
 		return fmt.Errorf("phase protocol: incomplete request")
 	}
+	for _, validate := range []func() error{r.validateCommand, r.validateTokens, r.validatePaths, r.validatePackageIdentity} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	if r.QueryHelper != "" && (r.QueryRootVDB == "" || r.QueryBrootVDB == "") {
+		return fmt.Errorf("phase protocol: runtime query helper requires both VDB paths")
+	}
+	if len(r.UserPatchDirs) != 0 && r.WorkDir == "" {
+		return fmt.Errorf("phase protocol: user patches require a work directory")
+	}
+	return nil
+}
+
+func (r Request) validateCommand() error {
+	validPhase := r.Command == "run_phase" && r.Phase != "" && len(r.Phases) == 0
+	validPhases := r.Command == "run_phases" && r.Phase == "" && len(r.Phases) != 0
+	validDiscovery := r.Command == "discover_phases" && r.Phase == "" && len(r.Phases) == 0
+	if validPhase || validPhases || validDiscovery {
+		return nil
+	}
 	if r.Command != "run_phase" && r.Command != "run_phases" && r.Command != "discover_phases" {
 		return fmt.Errorf("phase protocol: unsupported command %q", r.Command)
 	}
-	if (r.Command == "run_phase" && (r.Phase == "" || len(r.Phases) != 0)) ||
-		(r.Command == "run_phases" && (r.Phase != "" || len(r.Phases) == 0)) ||
-		(r.Command == "discover_phases" && (r.Phase != "" || len(r.Phases) != 0)) {
-		return fmt.Errorf("phase protocol: invalid phase for command %s", r.Command)
-	}
+	return fmt.Errorf("phase protocol: invalid phase for command %s", r.Command)
+}
+
+func (r Request) validateTokens() error {
 	if !safeToken.MatchString(r.ID) || (r.Phase != "" && !safeToken.MatchString(r.Phase)) || !safeToken.MatchString(r.EAPI) {
 		return fmt.Errorf("phase protocol: unsafe request token")
 	}
@@ -149,73 +169,63 @@ func (r Request) Validate() error {
 			return fmt.Errorf("phase protocol: unsafe phase token")
 		}
 	}
-	if !filepath.IsAbs(r.Ebuild) {
-		return fmt.Errorf("phase protocol: ebuild path must be absolute")
-	}
-	if r.Environment != "" && !filepath.IsAbs(r.Environment) {
-		return fmt.Errorf("phase protocol: installed environment path must be absolute")
-	}
-	if r.EnvironmentOverlay != "" && !filepath.IsAbs(r.EnvironmentOverlay) {
-		return fmt.Errorf("phase protocol: environment overlay path must be absolute")
-	}
-	if r.SaveEnvironment != "" && !filepath.IsAbs(r.SaveEnvironment) {
-		return fmt.Errorf("phase protocol: saved environment path must be absolute")
-	}
 	if r.EAPI != "7" && r.EAPI != "8" && r.EAPI != "9" {
 		return fmt.Errorf("phase protocol: unsupported EAPI %q (supported: 7, 8, 9)", r.EAPI)
 	}
-	for _, directory := range r.EclassDirs {
-		if !filepath.IsAbs(directory) {
-			return fmt.Errorf("phase protocol: eclass directory must be absolute")
+	return nil
+}
+
+type requestPath struct {
+	label string
+	value string
+}
+
+func requireAbsolute(paths []requestPath) error {
+	for _, path := range paths {
+		if path.value != "" && !filepath.IsAbs(path.value) {
+			return fmt.Errorf("phase protocol: %s must be absolute", path.label)
 		}
+	}
+	return nil
+}
+
+func (r Request) validatePaths() error {
+	paths := []requestPath{
+		{"ebuild path", r.Ebuild}, {"installed environment path", r.Environment},
+		{"environment overlay path", r.EnvironmentOverlay}, {"saved environment path", r.SaveEnvironment},
+		{"work directory", r.WorkDir}, {"build directory", r.BuildDir},
+		{"configuration root directory", r.ConfigRoot}, {"source directory", r.SourceDir},
+		{"image directory", r.ImageDir}, {"ROOT directory", r.RootDir},
+		{"SYSROOT directory", r.SysrootDir}, {"BROOT directory", r.BrootDir},
+		{"temporary directory", r.TempDir}, {"home directory", r.HomeDir},
+		{"PORTAGE_LOG_FILE", r.LogFile}, {"query helper path", r.QueryHelper},
+		{"runtime ROOT VDB path", r.QueryRootVDB}, {"runtime BROOT VDB path", r.QueryBrootVDB},
+	}
+	for _, directory := range r.EclassDirs {
+		paths = append(paths, requestPath{"eclass directory", directory})
 	}
 	for _, check := range r.InstallQAChecks {
-		if !filepath.IsAbs(check) {
-			return fmt.Errorf("phase protocol: install QA check path must be absolute")
-		}
-	}
-	for label, directory := range map[string]string{
-		"work": r.WorkDir, "build": r.BuildDir, "configuration root": r.ConfigRoot,
-		"source": r.SourceDir, "image": r.ImageDir, "ROOT": r.RootDir,
-		"SYSROOT": r.SysrootDir, "BROOT": r.BrootDir, "temporary": r.TempDir,
-		"home": r.HomeDir,
-	} {
-		if directory != "" && !filepath.IsAbs(directory) {
-			return fmt.Errorf("phase protocol: %s directory must be absolute", label)
-		}
+		paths = append(paths, requestPath{"install QA check path", check})
 	}
 	for _, directory := range r.UserPatchDirs {
-		if !filepath.IsAbs(directory) {
-			return fmt.Errorf("phase protocol: user patch directory must be absolute")
+		paths = append(paths, requestPath{"user patch directory", directory})
+	}
+	return requireAbsolute(paths)
+}
+
+func (r Request) validatePackageIdentity() error {
+	if r.Package == (PackageIdentity{}) {
+		return nil
+	}
+	fields := []struct{ label, value string }{
+		{"CATEGORY", r.Package.Category}, {"PN", r.Package.PN}, {"PV", r.Package.PV},
+		{"PR", r.Package.PR}, {"P", r.Package.P}, {"PVR", r.Package.PVR},
+		{"PF", r.Package.PF}, {"SLOT", r.Package.Slot}, {"repository", r.Package.Repository},
+	}
+	for _, field := range fields {
+		if field.value == "" || !safePackageIdentity.MatchString(field.value) {
+			return fmt.Errorf("phase protocol: unsafe or incomplete package identity %s", field.label)
 		}
-	}
-	if r.Package != (PackageIdentity{}) {
-		for label, value := range map[string]string{
-			"CATEGORY": r.Package.Category, "PN": r.Package.PN, "PV": r.Package.PV,
-			"PR": r.Package.PR, "P": r.Package.P, "PVR": r.Package.PVR,
-			"PF": r.Package.PF, "SLOT": r.Package.Slot, "repository": r.Package.Repository,
-		} {
-			if value == "" || !safePackageIdentity.MatchString(value) {
-				return fmt.Errorf("phase protocol: unsafe or incomplete package identity %s", label)
-			}
-		}
-	}
-	if r.LogFile != "" && !filepath.IsAbs(r.LogFile) {
-		return fmt.Errorf("phase protocol: PORTAGE_LOG_FILE must be absolute")
-	}
-	for label, path := range map[string]string{
-		"query helper": r.QueryHelper, "runtime ROOT VDB": r.QueryRootVDB,
-		"runtime BROOT VDB": r.QueryBrootVDB,
-	} {
-		if path != "" && !filepath.IsAbs(path) {
-			return fmt.Errorf("phase protocol: %s path must be absolute", label)
-		}
-	}
-	if r.QueryHelper != "" && (r.QueryRootVDB == "" || r.QueryBrootVDB == "") {
-		return fmt.Errorf("phase protocol: runtime query helper requires both VDB paths")
-	}
-	if len(r.UserPatchDirs) != 0 && r.WorkDir == "" {
-		return fmt.Errorf("phase protocol: user patches require a work directory")
 	}
 	return nil
 }
