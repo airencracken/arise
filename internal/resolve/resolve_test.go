@@ -8101,6 +8101,29 @@ func TestResolve_DeepUpdatePromotesInstalledAnyOfAlternative(t *testing.T) {
 	}
 }
 
+func TestResolve_DeepUpdatePrefersScheduledAnyOfAlternative(t *testing.T) {
+	g := makeGraph()
+	virtual := pkg(g, "virtual/dist-kernel", "6.18.43", "0", "0", false, nil)
+	virtual.Rdepend = "|| ( =sys-kernel/gentoo-kernel-6.18.43 =sys-kernel/gentoo-kernel-bin-6.18.43 )"
+	pkg(g, "sys-kernel/gentoo-kernel", "6.18.43", "6.18.43", "6.18.43", false, nil)
+	pkg(g, "sys-kernel/gentoo-kernel-bin", "6.18.41", "6.18.41", "6.18.41", true, nil)
+	pkg(g, "sys-kernel/gentoo-kernel-bin", "6.18.43", "6.18.43", "6.18.43", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.Update = true
+	cfg.Deep = true
+
+	result, err := Resolve(g, []string{"sys-kernel/gentoo-kernel-bin", "virtual/dist-kernel"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actionForCP(result.Install, "sys-kernel/gentoo-kernel") {
+		t.Fatalf("source kernel was added beside scheduled binary provider: %v", result.Install)
+	}
+	if !actionForCP(result.Install, "sys-kernel/gentoo-kernel-bin") {
+		t.Fatalf("scheduled binary kernel upgrade missing: %v", result.Install)
+	}
+}
+
 func TestRefreshCommittedDirectUpdatesRestoresRolledBackChildUpdate(t *testing.T) {
 	g := makeGraph()
 	parent := pkg(g, "virtual/parent", "1", "0", "0", true, nil)

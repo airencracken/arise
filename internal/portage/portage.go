@@ -190,7 +190,7 @@ func loadEffectiveConfig(portageConfigRoot string) (*Config, error) {
 	} else if err != nil {
 		return nil, fmt.Errorf("portage: inspect active profile: %w", err)
 	}
-	repositories, err := RepositoryPolicyOrder(filepath.Join(portageConfigRoot, "repos.conf"))
+	repositories, err := EffectiveRepositoryPolicyOrder(portageConfigRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -2019,6 +2019,64 @@ func ReadReposConf(path string) ([]RepoEntry, error) {
 	return parseReposConfDir(path)
 }
 
+// ReadEffectiveReposConf applies Portage's shipped repository configuration
+// before the administrator's repos.conf. Fresh stage3 systems commonly rely
+// on /usr/share/portage/config/repos.conf for the gentoo repository until a
+// local /etc/portage/repos.conf entry is created.
+func ReadEffectiveReposConf(portageConfigRoot string) ([]RepoEntry, error) {
+	var layers []string
+	cleanRoot := filepath.Clean(portageConfigRoot)
+	if filepath.Base(cleanRoot) == "portage" && filepath.Base(filepath.Dir(cleanRoot)) == "etc" {
+		configRoot := filepath.Dir(filepath.Dir(cleanRoot))
+		layers = append(layers, filepath.Join(configRoot, "usr", "share", "portage", "config", "repos.conf"))
+	}
+	layers = append(layers, filepath.Join(cleanRoot, "repos.conf"))
+
+	order := make([]string, 0)
+	byName := make(map[string]RepoEntry)
+	for _, layer := range layers {
+		entries, err := ReadReposConf(layer)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			existing, exists := byName[entry.Name]
+			if !exists {
+				order = append(order, entry.Name)
+			}
+			byName[entry.Name] = mergeRepoEntry(existing, entry)
+		}
+	}
+	result := make([]RepoEntry, 0, len(order))
+	for _, name := range order {
+		result = append(result, byName[name])
+	}
+	return result, nil
+}
+
+func mergeRepoEntry(base, override RepoEntry) RepoEntry {
+	base.Name = override.Name
+	if override.Location != "" {
+		base.Location = override.Location
+	}
+	if override.SyncURI != "" {
+		base.SyncURI = override.SyncURI
+	}
+	if override.SyncType != "" {
+		base.SyncType = override.SyncType
+	}
+	if override.CloneDepth != nil {
+		base.CloneDepth = override.CloneDepth
+	}
+	if override.SyncDepth != nil {
+		base.SyncDepth = override.SyncDepth
+	}
+	if override.Masters != nil {
+		base.Masters = append([]string(nil), override.Masters...)
+	}
+	return base
+}
+
 // ParseReposConf reads repos.conf from the given path (file or directory)
 // and returns the sync-uri for the repo whose location matches targetDir.
 // If targetDir is empty, returns the sync-uri for the first repo found.
@@ -2103,6 +2161,17 @@ func parseReposConfDir(root string) ([]RepoEntry, error) {
 // repos.conf file/section order breaks ties between independent repositories.
 func RepositoryPolicyOrder(reposConfPath string) ([]RepoEntry, error) {
 	entries, err := ReadReposConf(reposConfPath)
+	return repositoryPolicyOrder(entries, err)
+}
+
+// EffectiveRepositoryPolicyOrder orders the merged shipped and local
+// repository configuration using the same policy as RepositoryPolicyOrder.
+func EffectiveRepositoryPolicyOrder(portageConfigRoot string) ([]RepoEntry, error) {
+	entries, err := ReadEffectiveReposConf(portageConfigRoot)
+	return repositoryPolicyOrder(entries, err)
+}
+
+func repositoryPolicyOrder(entries []RepoEntry, err error) ([]RepoEntry, error) {
 	if err != nil {
 		return nil, err
 	}

@@ -3694,6 +3694,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 		idx       int
 		members   []member
 		installed bool
+		scheduled bool
 	}
 	var candidates []candidate
 	activeOptions := 0
@@ -3745,6 +3746,7 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 				}
 			}
 			candidate.installed = candidate.installed && inst != nil
+			candidate.scheduled = candidate.scheduled || r.packageScheduled(toNode)
 			candidate.members = append(candidate.members, member{depAtom: &resolvedOpt, installedVI: inst, best: best, needsUseChange: needsUseChange})
 		}
 		if len(candidate.members) == 0 {
@@ -3778,9 +3780,13 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 		return fmt.Errorf("%s", msg)
 	}
 
-	// sort: installed first, then by version
+	// Prefer a singleton alternative already selected elsewhere in the plan.
+	// Otherwise retain the installed-first and declared-order rules below.
 	sort.Slice(candidates, func(i, j int) bool {
 		singletons := len(candidates[i].members) == 1 && len(candidates[j].members) == 1
+		if singletons && candidates[i].scheduled != candidates[j].scheduled {
+			return candidates[i].scheduled
+		}
 		if singletons && candidates[i].installed != candidates[j].installed {
 			installedCandidate := candidates[i]
 			if !installedCandidate.installed {

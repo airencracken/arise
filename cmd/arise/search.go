@@ -267,7 +267,7 @@ func searchEffectiveConfig() (gentooling.EffectiveConfig, error) {
 	} else if err != nil {
 		return gentooling.EffectiveConfig{}, err
 	}
-	repositories, err := portage.RepositoryPolicyOrder(filepath.Join(*portageConfigRoot, "repos.conf"))
+	repositories, err := portage.EffectiveRepositoryPolicyOrder(*portageConfigRoot)
 	if err != nil {
 		return gentooling.EffectiveConfig{}, err
 	}

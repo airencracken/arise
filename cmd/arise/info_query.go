@@ -141,7 +141,7 @@ func loadInfoConfig() (*portage.Config, int) {
 }
 
 func loadInfoRepositories() ([]portage.RepoEntry, int) {
-	entries, err := portage.RepositoryPolicyOrder(filepath.Join(*portageConfigRoot, "repos.conf"))
+	entries, err := portage.EffectiveRepositoryPolicyOrder(*portageConfigRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "info: loading repositories: %v\n", err)
 		return nil, 1

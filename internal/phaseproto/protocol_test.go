@@ -1258,6 +1258,29 @@ src_compile() {
 	}
 }
 
+func TestBashWorkerSandboxPathHelpers(t *testing.T) {
+	directory := t.TempDir()
+	ebuild := filepath.Join(directory, "pkg-1.ebuild")
+	content := `EAPI=8
+src_configure() {
+  addwrite /run/sshd /var/lib/sshd || return 31
+  addread /etc/ssh || return 32
+  adddeny /root/secret || return 33
+  addpredict /var/cache/ssh || return 34
+  [[ ${SANDBOX_WRITE} == /existing:/run/sshd:/var/lib/sshd ]] || return 35
+  [[ ${SANDBOX_READ} == /etc/ssh ]] || return 36
+  [[ ${SANDBOX_DENY} == /root/secret ]] || return 37
+  [[ ${SANDBOX_PREDICT} == /var/cache/ssh ]] || return 38
+}`
+	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	request := Request{Protocol: Version, ID: "sandbox-path-helpers", Command: "run_phase", Phase: "src_configure", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, Env: map[string]string{"SANDBOX_WRITE": "/existing"}}
+	if events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
+		t.Fatalf("sandbox path helpers: %v; events=%#v", err, events)
+	}
+}
+
 func TestBashWorkerFind0ConsumesNullTerminatedRoots(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "config.log"), []byte("log"), 0o644); err != nil {
