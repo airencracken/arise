@@ -220,7 +220,7 @@ func buildRebuildConfig(repoDir string, jobs int, phaseStart func(string), phase
 		BuildPackage:                  *buildPkg || *buildPkgOnly,
 		BuildOnly:                     *buildPkgOnly,
 	}
-	if repositories, err := portage.RepositoryPolicyOrder(filepath.Join(*portageConfigRoot, "repos.conf")); err == nil {
+	if repositories, err := portage.EffectiveRepositoryPolicyOrder(*portageConfigRoot); err == nil {
 		cfg.Repositories = repositories
 	}
 	if portageCfg != nil {

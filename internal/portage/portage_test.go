@@ -51,6 +51,63 @@ func TestReadReposConfParsesIndependentGitDepthsIncludingFullHistory(t *testing.
 	}
 }
 
+func TestReadEffectiveReposConfUsesStage3ShippedGentooDefault(t *testing.T) {
+	root := t.TempDir()
+	configRoot := filepath.Join(root, "etc", "portage")
+	repository := filepath.Join(root, "var", "db", "repos", "gentoo")
+	if err := os.MkdirAll(filepath.Join(root, "usr", "share", "portage", "config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defaults := "[DEFAULT]\nmain-repo = gentoo\n\n[gentoo]\nlocation = " + repository + "\nsync-type = rsync\nsync-uri = rsync://example.test/gentoo\n"
+	if err := os.WriteFile(filepath.Join(root, "usr", "share", "portage", "config", "repos.conf"), []byte(defaults), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ReadEffectiveReposConf(configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[1].Name != "gentoo" || entries[1].Location != repository {
+		t.Fatalf("effective stage3 repositories = %#v", entries)
+	}
+	ordered, err := EffectiveRepositoryPolicyOrder(configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ordered) != 1 || ordered[0].Name != "gentoo" || ordered[0].Location != repository {
+		t.Fatalf("stage3 repository policy = %#v", ordered)
+	}
+}
+
+func TestReadEffectiveReposConfLocalSectionOverridesShippedDefault(t *testing.T) {
+	root := t.TempDir()
+	configRoot := filepath.Join(root, "etc", "portage")
+	defaultDir := filepath.Join(root, "usr", "share", "portage", "config")
+	if err := os.MkdirAll(defaultDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(configRoot, "repos.conf"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(defaultDir, "repos.conf"), []byte("[gentoo]\nlocation = /shipped/gentoo\nsync-type = rsync\nsync-uri = rsync://example.test/gentoo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configRoot, "repos.conf", "gentoo.conf"), []byte("[gentoo]\nlocation = /local/gentoo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ReadEffectiveReposConf(configRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Location != "/local/gentoo" || entries[0].SyncType != "rsync" || entries[0].SyncURI != "rsync://example.test/gentoo" {
+		t.Fatalf("local repository override = %#v", entries)
+	}
+}
+
 func TestReadReposConfRejectsInvalidGitDepth(t *testing.T) {
 	for _, value := range []string{"-1", "all", "1.5"} {
 		t.Run(value, func(t *testing.T) {

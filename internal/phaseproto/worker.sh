@@ -61,6 +61,23 @@ eqatag() {
 }
 contains_word() { has "$@"; }
 find0() { find -files0-from - "$@"; }
+arise_add_sandbox_path() {
+	local variable=${1-} path
+	shift || return 2
+	for path in "$@"; do
+		[[ $path ]] || continue
+		if [[ ${!variable-} ]]; then
+			printf -v "$variable" '%s:%s' "${!variable}" "$path"
+		else
+			printf -v "$variable" '%s' "$path"
+		fi
+	done
+	export "$variable"
+}
+addread() { arise_add_sandbox_path SANDBOX_READ "$@"; }
+addwrite() { arise_add_sandbox_path SANDBOX_WRITE "$@"; }
+adddeny() { arise_add_sandbox_path SANDBOX_DENY "$@"; }
+addpredict() { arise_add_sandbox_path SANDBOX_PREDICT "$@"; }
 ___eapi_has_version_functions() { [[ ${1-${EAPI-0}} != [0-6] ]]; }
 ___eapi_has_strict_keepdir() { [[ ${1-${EAPI-0}} != [0-7] ]]; }
 ___makeopts_jobs() {

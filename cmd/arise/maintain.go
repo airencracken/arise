@@ -251,7 +251,7 @@ func maintainWorldStateSHA256(worldPath, vdbRoot, configRoot string, repoRoots [
 func maintainRepositoryRoots(primary, configRoot string) []string {
 	roots := []string{primary}
 	seen := map[string]bool{primary: true}
-	repositories, err := portage.ReadReposConf(configRoot + "/repos.conf")
+	repositories, err := portage.ReadEffectiveReposConf(configRoot)
 	if err != nil {
 		return roots
 	}

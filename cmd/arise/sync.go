@@ -23,7 +23,7 @@ func runSync(requested []string, dbPath, repoPath, repoURL string) {
 		fmt.Fprintf(os.Stderr, "sync: %v\n", err)
 		os.Exit(1)
 	}
-	repositories, err := portage.ReadReposConf(filepath.Join(*portageConfigRoot, "repos.conf"))
+	repositories, err := portage.ReadEffectiveReposConf(*portageConfigRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sync: read repositories: %v\n", err)
 		os.Exit(1)

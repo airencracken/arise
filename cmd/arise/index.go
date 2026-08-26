@@ -38,7 +38,7 @@ func runIndex(dbPath, repoPath string) {
 	writePath := candidate.GenerationPath
 	cacheRoots := []string{filepath.Join(repoPath, "metadata", "md5-cache")}
 	seenRoots := map[string]bool{cacheRoots[0]: true}
-	if repos, readErr := portage.ReadReposConf(filepath.Join(*portageConfigRoot, "repos.conf")); readErr == nil {
+	if repos, readErr := portage.ReadEffectiveReposConf(*portageConfigRoot); readErr == nil {
 		for _, repo := range repos {
 			cacheRoot := filepath.Join(repo.Location, "metadata", "md5-cache")
 			if repo.Location == "" || seenRoots[cacheRoot] {

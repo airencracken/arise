@@ -171,7 +171,7 @@ func maintainMoveInstStateSHA256(vdbRoot, configRoot string, repositories []move
 func maintainMoveInstRepositories(primary, configRoot string) []moveinst.Repository {
 	var result []moveinst.Repository
 	seen := map[string]bool{}
-	entries, err := portage.RepositoryPolicyOrder(filepath.Join(configRoot, "repos.conf"))
+	entries, err := portage.EffectiveRepositoryPolicyOrder(configRoot)
 	if err == nil {
 		for _, entry := range entries {
 			if entry.Location == "" || seen[entry.Location] {
