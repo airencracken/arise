@@ -45,6 +45,16 @@ type cachedPolicyAtomEntry struct {
 
 var policyAtomCache sync.Map
 
+type cachedGentoolingAtomEntry struct {
+	atom  gentooling.Atom
+	valid bool
+}
+
+var (
+	gentoolingPolicyAtomCache sync.Map
+	gentoolingCPVCache        sync.Map
+)
+
 func cachedPolicyAtom(raw string) (*atom.Atom, bool) {
 	if cached, found := policyAtomCache.Load(raw); found {
 		entry := cached.(cachedPolicyAtomEntry)
@@ -54,6 +64,30 @@ func cachedPolicyAtom(raw string) (*atom.Atom, bool) {
 	entry := cachedPolicyAtomEntry{atom: parsed, valid: err == nil}
 	actual, _ := policyAtomCache.LoadOrStore(raw, entry)
 	entry = actual.(cachedPolicyAtomEntry)
+	return entry.atom, entry.valid
+}
+
+func cachedGentoolingPolicyAtom(raw string) (gentooling.Atom, bool) {
+	if cached, found := gentoolingPolicyAtomCache.Load(raw); found {
+		entry := cached.(cachedGentoolingAtomEntry)
+		return entry.atom, entry.valid
+	}
+	parsed, err := gentooling.ParseAtom(raw)
+	entry := cachedGentoolingAtomEntry{atom: parsed, valid: err == nil}
+	actual, _ := gentoolingPolicyAtomCache.LoadOrStore(raw, entry)
+	entry = actual.(cachedGentoolingAtomEntry)
+	return entry.atom, entry.valid
+}
+
+func cachedGentoolingCPV(raw string) (gentooling.Atom, bool) {
+	if cached, found := gentoolingCPVCache.Load(raw); found {
+		entry := cached.(cachedGentoolingAtomEntry)
+		return entry.atom, entry.valid
+	}
+	parsed, err := gentooling.ParsePackageVersion(raw)
+	entry := cachedGentoolingAtomEntry{atom: parsed, valid: err == nil}
+	actual, _ := gentoolingCPVCache.LoadOrStore(raw, entry)
+	entry = actual.(cachedGentoolingAtomEntry)
 	return entry.atom, entry.valid
 }
 
@@ -1342,12 +1376,12 @@ func PackageAtomMatches(rawRule, cpv, slot, repo string) bool {
 	if rawRule == "*/*" {
 		return true
 	}
-	rule, err := gentooling.ParseAtom(rawRule)
-	if err != nil {
+	rule, valid := cachedGentoolingPolicyAtom(rawRule)
+	if !valid {
 		return false
 	}
-	candidate, err := gentooling.ParsePackageVersion(cpv)
-	if err != nil {
+	candidate, valid := cachedGentoolingCPV(cpv)
+	if !valid {
 		return false
 	}
 	candidateVersion := ""

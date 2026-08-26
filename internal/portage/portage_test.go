@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -692,6 +693,34 @@ func TestPackageAtomMatchesRejectsUnversionedCandidateWithoutPanic(t *testing.T)
 	if PackageAtomMatches(">=virtual/libc-1", "virtual/libc", "", "") {
 		t.Fatal("versioned package rule matched an unversioned synthetic candidate")
 	}
+}
+
+func TestPackageAtomMatchesCachePreservesRepeatedAndConcurrentResults(t *testing.T) {
+	tests := []struct {
+		rule, cpv, slot, repo string
+		want                  bool
+	}{
+		{"app-editors/vim", "app-editors/vim-9.1", "0", "gentoo", true},
+		{">=app-editors/vim-9", "app-editors/vim-8.2", "0", "gentoo", false},
+		{"app-editors/vim::local", "app-editors/vim-9.1", "0", "gentoo", false},
+		{"not an atom", "app-editors/vim-9.1", "0", "gentoo", false},
+		{"app-editors/vim", "not a cpv", "0", "gentoo", false},
+	}
+	var wait sync.WaitGroup
+	for range 8 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for range 100 {
+				for _, test := range tests {
+					if got := PackageAtomMatches(test.rule, test.cpv, test.slot, test.repo); got != test.want {
+						t.Errorf("PackageAtomMatches(%q, %q, %q, %q) = %t, want %t", test.rule, test.cpv, test.slot, test.repo, got, test.want)
+					}
+				}
+			}
+		}()
+	}
+	wait.Wait()
 }
 
 func TestEffectiveUseForPackagePolicyCanRemoveGlobalMask(t *testing.T) {

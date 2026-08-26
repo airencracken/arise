@@ -717,6 +717,9 @@ func TestResolve_ExplicitInstalledTargetSelectsAvailableUpgrade(t *testing.T) {
 	if len(result.Install) != 1 || result.Install[0].Action != "update" || result.Install[0].Atom.Version == nil || result.Install[0].Atom.Version.Raw != "9.0" {
 		t.Fatalf("explicit target plan = %#v", result.Install)
 	}
+	if action := result.Install[0]; action.InstalledVersion != "8.0" || action.InstalledSlot != "0" {
+		t.Fatalf("upgrade predecessor = %q slot %q, want 8.0 slot 0", action.InstalledVersion, action.InstalledSlot)
+	}
 }
 
 func TestResolve_ExplicitInstalledTargetReinstallsSameVersionByDefault(t *testing.T) {

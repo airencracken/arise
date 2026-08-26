@@ -1200,7 +1200,9 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 	// step 6: topologically sort install actions
 	phaseStarted = time.Now()
 	r.phase = "plan-ordering"
-	install := r.sortPlannedActions(mapToSlice(r.toInstall))
+	install := mapToSlice(r.toInstall)
+	r.enrichInstalledActionContext(install)
+	install = r.sortPlannedActions(install)
 	r.decorateActionsForDisplay(install)
 	r.validatePlanOrder(install)
 	r.metrics.Sort = time.Since(phaseStarted)
