@@ -254,7 +254,10 @@ func TestExecuteMarksPostCommitLifecycleFailureComplete(t *testing.T) {
 	err := Execute(context.Background(), result, Config{
 		ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: root},
 		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
-		Runner: func(context.Context, string, *rebuild.RebuildConfig) error {
+		Runner: func(_ context.Context, _ string, packageCfg *rebuild.RebuildConfig) error {
+			if err := packageCfg.OnTransactionCommit(nil); err != nil {
+				return err
+			}
 			return &merge.PostCommitError{Err: fmt.Errorf("postinst failed")}
 		},
 	})
@@ -590,7 +593,7 @@ func TestExecuteSeriallyRunsVerifiedDisposablePlan(t *testing.T) {
 		Runner: func(_ context.Context, label string, cfg *rebuild.RebuildConfig) error {
 			ran = append(ran, label)
 			cfg.OnPhaseStart("src_install")
-			return nil
+			return cfg.OnTransactionCommit(nil)
 		},
 	})
 	if err != nil {
@@ -622,12 +625,12 @@ func TestExecuteResumeMatrixAdvancesOnlyAfterCommittedRunner(t *testing.T) {
 			err := Execute(context.Background(), result, Config{
 				ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: root},
 				Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
-				Runner: func(_ context.Context, label string, _ *rebuild.RebuildConfig) error {
+				Runner: func(_ context.Context, label string, packageCfg *rebuild.RebuildConfig) error {
 					firstRun = append(firstRun, label)
 					if label == "cat/failing-1" {
 						return fmt.Errorf("injected %s failure", failureStage)
 					}
-					return nil
+					return packageCfg.OnTransactionCommit(nil)
 				},
 			})
 			if err == nil || !strings.Contains(err.Error(), "injected "+failureStage+" failure") {
@@ -650,9 +653,9 @@ func TestExecuteResumeMatrixAdvancesOnlyAfterCommittedRunner(t *testing.T) {
 			if err := Execute(context.Background(), retry, Config{
 				ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: root},
 				Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
-				Runner: func(_ context.Context, label string, _ *rebuild.RebuildConfig) error {
+				Runner: func(_ context.Context, label string, packageCfg *rebuild.RebuildConfig) error {
 					retried = append(retried, label)
-					return nil
+					return packageCfg.OnTransactionCommit(nil)
 				},
 			}); err != nil {
 				t.Fatalf("retry after %s failure: %v", failureStage, err)
@@ -945,7 +948,7 @@ func TestExecuteConcurrentRejectsMalformedPrerequisiteGraphBeforeMutation(t *tes
 				second.Prerequisites = []string{resolve.ActionIdentity(first)}
 				return []resolve.PkgAction{independent, first, second}
 			},
-			want: "graph stalled after 1 of 3 actions",
+			want: "graph contains a cycle",
 		},
 	}
 
@@ -969,15 +972,8 @@ func TestExecuteConcurrentRejectsMalformedPrerequisiteGraphBeforeMutation(t *tes
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Execute error = %v, want substring %q", err, test.want)
 			}
-			switch test.name {
-			case "cycle after independent action":
-				if ran.Load() != 1 || committed.Load() != 1 {
-					t.Fatalf("independent work ran=%d committed=%d, want 1/1", ran.Load(), committed.Load())
-				}
-			default:
-				if ran.Load() != 0 || committed.Load() != 0 {
-					t.Fatalf("malformed graph mutated runner state: ran=%d committed=%d", ran.Load(), committed.Load())
-				}
+			if ran.Load() != 0 || committed.Load() != 0 {
+				t.Fatalf("malformed graph mutated runner state: ran=%d committed=%d", ran.Load(), committed.Load())
 			}
 		})
 	}

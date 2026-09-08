@@ -121,6 +121,8 @@ Build deterministic GPKG binary packages in PKGDIR during installation.
 .TP
 \fB\-B\fR, \fB\-\-buildpkgonly\fR
 Only build deterministic GPKG binary packages in PKGDIR; do not modify ROOT.
+Build dependencies must already be installed. Building a dependency archive
+does not install that dependency. Selected binary install actions are rejected.
 .TP
 \fB\-f\fR, \fB\-\-fetchonly\fR
 Only fetch source files, do not build.
@@ -462,7 +464,6 @@ missing Arise diagnostic surface.
 
 .SS Native Package Query Examples
 
-.PP
 Default line-oriented output, package atoms, exit statuses, and Portage paths
 are suitable for pipelines that mix Arise with existing Gentoo tools. Batch
 forms accept multiple atoms, paths, repositories, or variables where shown by

@@ -118,6 +118,11 @@ func ParsePackagesIndex(reader io.Reader) (*PackagesIndex, error) {
 				return nil, fmt.Errorf("binpkg: invalid Packages SIZE")
 			}
 		}
+		if stamp := record["BUILD_TIME"]; stamp != "" {
+			if _, err := strconv.ParseUint(stamp, 10, 64); err != nil {
+				return nil, fmt.Errorf("binpkg: invalid Packages BUILD_TIME")
+			}
+		}
 		for key, expectedBytes := range map[string]int{"SHA512": sha512.Size, "BLAKE2B": blake2b.Size} {
 			if digest := record[key]; digest != "" {
 				decoded, err := hex.DecodeString(digest)
@@ -157,6 +162,9 @@ func (index *PackagesIndex) Encode(timestamp time.Time) ([]byte, error) {
 	}
 	header["TIMESTAMP"] = strconv.FormatInt(timestamp.Unix(), 10)
 	header["PACKAGES"] = strconv.Itoa(len(index.Packages))
+	if err := validateIndexFields(header); err != nil {
+		return nil, err
+	}
 	var output bytes.Buffer
 	writeIndexRecord(&output, header)
 	packages := append([]PackageIndexEntry(nil), index.Packages...)
@@ -170,12 +178,28 @@ func (index *PackagesIndex) Encode(timestamp time.Time) ([]byte, error) {
 		return packages[i]["PATH"] < packages[j]["PATH"]
 	})
 	for _, entry := range packages {
+		if err := validateIndexFields(entry); err != nil {
+			return nil, err
+		}
 		if entry["CPV"] == "" || entry["PATH"] == "" {
 			return nil, fmt.Errorf("binpkg: Packages entry lacks CPV or PATH")
 		}
 		writeIndexRecord(&output, map[string]string(entry))
 	}
-	return output.Bytes(), nil
+	encoded := output.Bytes()
+	if _, err := ParsePackagesIndex(bytes.NewReader(encoded)); err != nil {
+		return nil, err
+	}
+	return encoded, nil
+}
+
+func validateIndexFields(record map[string]string) error {
+	for key, value := range record {
+		if key == "" || strings.TrimSpace(key) != key || strings.ContainsAny(key, ":\x00\r\n") || strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("binpkg: invalid Packages field %q", key)
+		}
+	}
+	return nil
 }
 
 func writeIndexRecord(output *bytes.Buffer, record map[string]string) {
@@ -212,6 +236,10 @@ func WritePackagesIndex(path string, index *PackagesIndex, timestamp time.Time) 
 		}
 	}()
 	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Chmod(0644); err != nil {
 		_ = file.Close()
 		return err
 	}
@@ -287,7 +315,11 @@ func SelectPackageInstance(entries []PackageIndexEntry, cpv, buildID string) (Pa
 			return left > right
 		}
 		if matches[i]["BUILD_TIME"] != matches[j]["BUILD_TIME"] {
-			return matches[i]["BUILD_TIME"] > matches[j]["BUILD_TIME"]
+			leftTime, _ := strconv.ParseUint(matches[i]["BUILD_TIME"], 10, 64)
+			rightTime, _ := strconv.ParseUint(matches[j]["BUILD_TIME"], 10, 64)
+			if leftTime != rightTime {
+				return leftTime > rightTime
+			}
 		}
 		return matches[i]["PATH"] < matches[j]["PATH"]
 	})

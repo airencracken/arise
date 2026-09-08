@@ -4,7 +4,7 @@ Evidence records support specific dated claims. They are immutable historical
 inputs unless a correction is clearly appended; current product status lives
 in `../../PUNCHLIST.md` and maintained documentation.
 
-## Current milestone
+## Dated milestone evidence
 
 - [`RELEASE_0.0.7_PERFORMANCE_2026-07-29.json`](RELEASE_0.0.7_PERFORMANCE_2026-07-29.json)
   records the refreshed correctness-equivalent Gentoo-tool comparisons, raw
@@ -14,7 +14,7 @@ in `../../PUNCHLIST.md` and maintained documentation.
   cumulative construction acceptance ladder.
 - [`WORLD_UPDATE_CHECKPOINT_2026-07-24.md`](WORLD_UPDATE_CHECKPOINT_2026-07-24.md)
   records the completed v15 continuation, the defects its verifier exposed,
-  their corrections, and the still-pending aligned 19-action continuation.
+  their corrections, and the aligned 19-action continuation that was pending at that checkpoint.
 
 ## Resolver and live-state evidence
 

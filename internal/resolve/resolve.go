@@ -7304,10 +7304,15 @@ func SaveResume(path string, result *ResolveResult) error {
 	state := ResumeState{
 		Packages: make([]ResumePackage, 0, len(result.Install)),
 	}
+	seen := make(map[string]bool, len(result.Install))
 	for _, a := range result.Install {
 		if a.Atom == nil {
 			return fmt.Errorf("resolve: could not save build progress for --resume: invalid install action")
 		}
+		if seen[a.Atom.String()] {
+			return fmt.Errorf("resolve: could not save build progress for --resume: duplicate atom %q", a.Atom.String())
+		}
+		seen[a.Atom.String()] = true
 		cpv := a.Atom.CP()
 		if a.Atom.Version != nil && a.Atom.Version.Raw != "" {
 			cpv += "-" + a.Atom.Version.Raw
@@ -7396,10 +7401,10 @@ func MarkResumeComplete(path string, completedAtom string) error {
 		for i := range state.Packages {
 			if state.Packages[i].Atom == completedAtom {
 				state.Packages[i].Completed = true
-				break
+				return writeResumeState(path, state)
 			}
 		}
-		return writeResumeState(path, state)
+		return fmt.Errorf("completed atom %q is absent from resume state", completedAtom)
 	})
 	if err != nil {
 		return fmt.Errorf("resolve: could not update build progress record: %w", err)

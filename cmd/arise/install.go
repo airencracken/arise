@@ -85,7 +85,7 @@ func recoveryPackagesForActions(vdbRoot string, actions []resolve.PkgAction) []r
 }
 
 func installWorldSelections(targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult) []string {
-	if cfg.Oneshot || cfg.OnlyDeps {
+	if cfg.Oneshot || cfg.OnlyDeps || cfg.BuildPkgOnly {
 		return nil
 	}
 	systemPackages := make(map[string]bool)
@@ -919,7 +919,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			expectedStateSHA256 = updated
 			return nil
 		}
-		compatLog, logErr := openPortageMergeLog(*emergeLog)
+		compatLog, logErr := openPackageExecutionLog(*emergeLog, cfg.BuildPkgOnly)
 		if logErr != nil {
 			fmt.Fprintf(os.Stderr, "arise: open Portage-compatible merge log: %v\n", logErr)
 			os.Exit(1)
@@ -1078,17 +1078,16 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			printExecutionError(os.Stderr, executionErr)
 			os.Exit(1)
 		}
+		if cfg.BuildPkgOnly {
+			printSuccessfulExecution(os.Stdout, cfg, rebuildCfg, repoDir)
+			return
+		}
 		selections := installWorldSelections(targets, cfg, result)
 		if err := updateInstallWorld(*worldFile, selections); err != nil {
 			fmt.Fprintf(os.Stderr, "arise: packages committed but world selection failed: %v\n", err)
 			os.Exit(1)
 		}
-		if !cfg.Quiet {
-			printPostTransactionSummary(os.Stdout, rebuildCfg.RootDir, rebuildCfg.VdbDir, repoDir, rebuildCfg.PortageConfig)
-		}
-		if !cfg.Quiet {
-			fmt.Println("All package transactions committed successfully.")
-		}
+		printSuccessfulExecution(os.Stdout, cfg, rebuildCfg, repoDir)
 		return
 	}
 
@@ -1837,4 +1836,16 @@ func formatInteger(value int64) string {
 		raw = raw[:index] + "," + raw[index:]
 	}
 	return raw
+}
+
+func printSuccessfulExecution(writer io.Writer, cfg resolve.ResolveConfig, rebuildCfg *rebuild.RebuildConfig, repoDir string) {
+	if cfg.Quiet {
+		return
+	}
+	if cfg.BuildPkgOnly {
+		fmt.Fprintln(writer, "All binary packages built successfully.")
+		return
+	}
+	printPostTransactionSummary(writer, rebuildCfg.RootDir, rebuildCfg.VdbDir, repoDir, rebuildCfg.PortageConfig)
+	fmt.Fprintln(writer, "All package transactions committed successfully.")
 }

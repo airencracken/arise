@@ -591,6 +591,8 @@ Only binary packages.
 Build deterministic GPKG binary packages in PKGDIR and install them normally.
 @item -B, --buildpkgonly
 Build deterministic GPKG binary packages in PKGDIR without modifying ROOT.
+Build dependencies must already be installed. Building a dependency archive
+does not install that dependency. Selected binary install actions are rejected.
 @item -f, --fetchonly
 Only fetch sources.
 @item --backtrack @var{N}

@@ -2416,6 +2416,9 @@ func WaitForLoad(maxLoad float64) error {
 }
 
 func WaitForLoadContext(ctx context.Context, maxLoad float64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if maxLoad <= 0 {
 		return nil
 	}

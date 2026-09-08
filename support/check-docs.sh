@@ -9,6 +9,10 @@ if ! source "$repo_dir/support/lib/error-handling.sh"; then
   exit 2
 fi
 status=0
+
+if ! (cd "$repo_dir" && go test ./support -run '^TestDocumentationLinks$' -count=1); then
+  status=1
+fi
 info_output=
 cleanup() {
   [[ -z $info_output ]] || rm -f -- "$info_output"

@@ -38,9 +38,9 @@ Status values are `supported`, `partial`, `planned`, and `not-applicable`.
 | `-g`, `--getbinpkg` | same | supported | `Packages`-indexed dependency-closure acquisition with source fallback |
 | `-G`, `--getbinpkgonly` | same | supported | strict `Packages`-indexed dependency-closure acquisition and binary-only resolution |
 | `-b`, `--buildpkg` | same | supported | deterministic GPKG publication followed by normal installation |
-| `-B`, `--buildpkgonly` | same | supported | deterministic GPKG publication without ROOT mutation |
+| `-B`, `--buildpkgonly` | same | supported subset | source archive production with installed build tools; no payload, VDB, world, or merge-timing update; selected binary install actions are rejected |
 | `--binpkg-respect-use` | same | supported | IUSE-domain USE matching plus available CHOST, ABI, repository and slot metadata |
-| `-j`, `--jobs=N` | same | supported | speculative resolver determinism tests |
+| `-j`, `--jobs=N` | same | supported subset | shared dependency-aware scheduler, full graph preflight, serialized package commits, cancellation and real-worker tests |
 | `-l`, `--load-average=N` | same | supported | context-aware scheduler throttle and configuration tests |
 | `--resolver-timeout=DURATION` | Arise extension | supported | structured context cancellation tests |
 

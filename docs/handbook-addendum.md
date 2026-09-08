@@ -205,7 +205,7 @@ Generate a complete deep/newuse plan with build dependencies included:
 
 ```sh
 arise --pretend --verbose --update --deep --newuse --complete-graph \
-  --with-bdeps=y --backtrack=20 --save-plan stage3-world update @world
+  --with-bdeps=y --backtrack=20 --save-plan stage3-world @world
 sha256sum /var/tmp/arise/plans/stage3-world.json
 ```
 
@@ -218,7 +218,7 @@ Execute exactly the approved plan:
 
 ```sh
 arise --ask --update --deep --newuse --complete-graph --with-bdeps=y \
-  --backtrack=20 --approve-plan stage3-world update @world
+  --backtrack=20 --approve-plan stage3-world @world
 ```
 
 Do not run depclean as part of this first transaction. First establish a clean,
@@ -231,7 +231,7 @@ before starting a different package-manager transaction:
 
 ```sh
 arise recover status
-arise --resume update @world
+arise --resume --update @world
 ```
 
 Do not delete `/var/tmp/arise`, active journals, recovery sets, or the resume
@@ -263,7 +263,7 @@ arise maintain merges --check
 arise maintain resume --check
 arise info --preserved-libs
 arise --pretend --update --deep --newuse --complete-graph \
-  --with-bdeps=y --backtrack=20 update @world
+  --with-bdeps=y --backtrack=20 @world
 ```
 
 Treat active journals, preserved libraries, maintenance failures, ownership or

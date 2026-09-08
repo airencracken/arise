@@ -56,3 +56,20 @@ func TestUpdateInstallWorldIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("world=%v", set.Atoms)
 	}
 }
+
+func TestBuildOnlyDoesNotSelectWorldOrWriteMergeTiming(t *testing.T) {
+	if got := installWorldSelections([]string{"app/pkg"}, resolve.ResolveConfig{BuildPkgOnly: true}, nil); len(got) != 0 {
+		t.Fatalf("archive selected for world: %v", got)
+	}
+	path := t.TempDir() + "/missing/log"
+	log, err := openPackageExecutionLog(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.event(true, 1, 1, resolve.PkgAction{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.close(); err != nil {
+		t.Fatal(err)
+	}
+}

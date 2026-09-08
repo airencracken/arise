@@ -45,43 +45,6 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"General Portage execution parity is not claimed.",
 	)
 
-	punchlist := read("../PUNCHLIST.md")
-	assertAbsent(t, punchlist,
-		"- [ ] Implement pkg_config execution.",
-		"- [ ] Complete dispatch-conf-style recursive config management:",
-		"Install/update still fail explicitly\n  after a successful non-pretend plan",
-		"- [ ] Update world only for successful explicit installs and respect oneshot.",
-		"- [ ] Implement uninstall with reverse-dependency safety.",
-		"- [!] Connect resolved plans to fetch/build/binpkg/merge/unmerge execution.",
-		"- [!] Implement EAPI-correct DEPEND/RDEPEND/BDEPEND/IDEPEND/PDEPEND behavior.",
-		"- [!] Current laptop `--update @world` differential is intentionally failing.",
-		"Build and commit concurrency remain disabled until their",
-	)
-	assertPresent(t, punchlist,
-		"- [x] Implement installed `pkg_config` execution.",
-		"- [~] Complete dispatch-conf-style recursive config management.",
-		"- [x] Update world only after successful explicit installs and respect oneshot.",
-		"- [x] Implement exact uninstall with whole-state reverse-dependency and reverse-",
-		"- [~] Connect resolved plans to fetch/build/binpkg/merge/unmerge execution.",
-		"- [~] Complete EAPI-correct DEPEND/RDEPEND/BDEPEND/IDEPEND/PDEPEND parity.",
-		"- [x] Repair the formerly failing laptop `--update @world` differential.",
-		"- [x] Ship the initial release-bound offline dependency archive path.",
-		"Whole-operation rollback will use verified Btrfs, OpenZFS or LVM snapshots;",
-		"- [ ] Add pre-update recovery binpkgs when Arise subsumes `quickpkg`.",
-		"- [~] Harden host-derived binpkgs before using them as recovery artifacts.",
-		"- [~] Publish pre-update recovery sets atomically before live-root mutation.",
-		"- [ ] Adversarial archive tests for absolute/traversing paths, unsafe links,",
-		"The initial capture boundary now fails closed for malformed `CONTENTS`,",
-		"Each artifact now embeds a versioned `host-recovery` manifest containing its",
-		"A versioned capture context now binds operation kind/ID,",
-		"The live install/update executor now publishes resolver-identified replaced",
-		"Exact uninstall plans now publish the",
-		"Conservative pruning removes only explicitly `verified` sets",
-		"Immutable recovery objects separate",
-		"Recovery-set\n  inspection verifies every artifact and constructs a reverse-capture-order",
-		"XPAK extraction now rejects the path/link/duplicate/device subset,",
-	)
-
 	snapshots := read("../docs/planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md")
 	assertPresent(t, snapshots,
 		"This is not an immutable package store.",

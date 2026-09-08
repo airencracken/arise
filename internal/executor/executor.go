@@ -85,6 +85,9 @@ type Config struct {
 }
 
 func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if result == nil || !result.Verified || result.Verification != resolve.VerificationVerified || len(result.Conflicts) != 0 {
 		return fmt.Errorf("executor: refusing non-verified plan")
 	}
@@ -110,6 +113,16 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 	}
 	if len(result.Uninstall) != 0 {
 		return fmt.Errorf("executor: removal actions are not supported by the install canary executor")
+	}
+	if err := validateActionGraph(result.Install); err != nil {
+		return err
+	}
+	if cfg.Rebuild.BuildOnly {
+		for _, action := range result.Install {
+			if action.MergeType == "binary" {
+				return fmt.Errorf("executor: build-only execution requires source actions")
+			}
+		}
 	}
 	if cfg.Runner == nil {
 		cfg.Runner = func(ctx context.Context, label string, packageConfig *rebuild.RebuildConfig) error {
@@ -153,10 +166,10 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 		}
 		actionConfigs[index] = actionCfg
 	}
-	if filepath.Clean(root) == string(filepath.Separator) && cfg.ValidateLocked == nil {
+	if filepath.Clean(root) == string(filepath.Separator) && !cfg.Rebuild.BuildOnly && cfg.ValidateLocked == nil {
 		return fmt.Errorf("executor: live canary requires locked state validation")
 	}
-	if filepath.Clean(root) == string(filepath.Separator) {
+	if filepath.Clean(root) == string(filepath.Separator) && !cfg.Rebuild.BuildOnly {
 		commitLock := &sync.Mutex{}
 		var preparationLock sync.Mutex
 		preparationComplete := false
@@ -204,89 +217,13 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 			return fmt.Errorf("executor: initialize resume state: %w", err)
 		}
 	}
-	if cfg.Jobs > 1 && len(result.Install) > 1 {
-		return executeConcurrent(ctx, result.Install, actionConfigs, cfg)
+	if len(result.Install) == 0 {
+		return nil
 	}
-	for index, action := range result.Install {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if _, err := admitTmpdirJob(cfg, 0); err != nil {
-			return err
-		}
-		if cfg.OnActionStart != nil {
-			cfg.OnActionStart(index+1, len(result.Install), action)
-		}
-		actionCfg := actionConfigs[index]
-		transactionCommitted := false
-		recordCommit := actionCfg.OnTransactionCommit
-		if recordCommit != nil {
-			actionCfg.OnTransactionCommit = func(committedErr error) error {
-				if err := recordCommit(committedErr); err != nil {
-					return err
-				}
-				transactionCommitted = true
-				return nil
-			}
-		}
-		actionCfg.OnStage = func(stage string) {
-			if cfg.OnActionStage != nil {
-				cfg.OnActionStage(index+1, len(result.Install), action, stage)
-			}
-		}
-		actionCfg.OnProgress = func(stage string, current, stageTotal int) {
-			if cfg.OnActionProgress != nil {
-				cfg.OnActionProgress(index+1, len(result.Install), action, stage, current, stageTotal)
-			}
-		}
-		actionCfg.OnNotice = func(class, message string) {
-			if cfg.OnActionNotice != nil {
-				cfg.OnActionNotice(index+1, len(result.Install), action, class, message)
-			}
-		}
-		installReported := false
-		phaseStart := actionCfg.OnPhaseStart
-		actionCfg.OnPhaseStart = func(phase string) {
-			if phaseStart != nil {
-				phaseStart(phase)
-			}
-			if phase == "src_install" && !installReported && cfg.OnActionInstall != nil {
-				installReported = true
-				cfg.OnActionInstall(index+1, len(result.Install), action)
-			}
-		}
-		atomText := actionLabel(action)
-		if err := cfg.Runner(ctx, atomText, &actionCfg); err != nil {
-			var postCommit *merge.PostCommitError
-			if errors.As(err, &postCommit) && (recordCommit == nil || transactionCommitted) {
-				if cfg.ResumePath != "" {
-					if markErr := resolve.MarkResumeComplete(cfg.ResumePath, action.Atom.String()); markErr != nil {
-						return fmt.Errorf("executor: %s committed but post-commit lifecycle failed: %v; mark resume complete: %w", atomText, err, markErr)
-					}
-				}
-				if cfg.OnActionNotice != nil {
-					cfg.OnActionNotice(index+1, len(result.Install), action, "WARN", "committed package has a post-commit lifecycle failure: "+err.Error())
-				}
-				if cfg.OnActionComplete != nil {
-					cfg.OnActionComplete(index+1, len(result.Install), action)
-				}
-				continue
-			}
-			return fmt.Errorf("executor: %s: %w", atomText, err)
-		}
-		if recordCommit != nil && !transactionCommitted {
-			return fmt.Errorf("executor: %s: runner returned without transaction commit notification", atomText)
-		}
-		if cfg.OnActionComplete != nil {
-			cfg.OnActionComplete(index+1, len(result.Install), action)
-		}
-		if cfg.ResumePath != "" {
-			if err := resolve.MarkResumeComplete(cfg.ResumePath, action.Atom.String()); err != nil {
-				return fmt.Errorf("executor: commit resume state for %s: %w", atomText, err)
-			}
-		}
+	if cfg.Jobs < 1 {
+		cfg.Jobs = 1
 	}
-	return nil
+	return executeConcurrent(ctx, result.Install, actionConfigs, cfg)
 }
 
 func filesystemAvailableBytes(path string) (uint64, error) {
@@ -372,30 +309,9 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 		}
 		spaceWarningReported = true
 	}
-	identities := make(map[string]int, len(actions))
-	for index, action := range actions {
-		identity := resolve.ActionIdentity(action)
-		if _, exists := identities[identity]; exists {
-			return fmt.Errorf("executor: duplicate planned action identity %q", identity)
-		}
-		identities[identity] = index
-	}
-	remaining := make([]int, len(actions))
-	dependents := make(map[int][]int)
-	for index, action := range actions {
-		seenPrerequisites := make(map[string]bool, len(action.Prerequisites))
-		for _, prerequisite := range action.Prerequisites {
-			if seenPrerequisites[prerequisite] {
-				return fmt.Errorf("executor: %s repeats prerequisite %q", actionLabel(action), prerequisite)
-			}
-			seenPrerequisites[prerequisite] = true
-			before, ok := identities[prerequisite]
-			if !ok {
-				return fmt.Errorf("executor: %s references missing prerequisite %q", actionLabel(action), prerequisite)
-			}
-			remaining[index]++
-			dependents[before] = append(dependents[before], index)
-		}
+	remaining, dependents, err := actionPrerequisites(actions)
+	if err != nil {
+		return err
 	}
 	ready := make([]int, 0, len(actions))
 	for index, count := range remaining {
@@ -456,8 +372,21 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 				actionCfg.CommitLock = commitLock
 			}
 			var transactionCommitted atomic.Bool
+			var completionLock sync.Mutex
+			var completionFailure error
 			recordCommit := actionCfg.OnTransactionCommit
-			actionCfg.OnTransactionCommit = func(committedErr error) error {
+			if actionCfg.BuildOnly {
+				recordCommit = nil
+			}
+			complete := func(committedErr error) (returnErr error) {
+				completionLock.Lock()
+				defer completionLock.Unlock()
+				defer func() {
+					completionFailure = errors.Join(completionFailure, returnErr)
+				}()
+				if completionFailure != nil {
+					return completionFailure
+				}
 				if !transactionCommitted.CompareAndSwap(false, true) {
 					return fmt.Errorf("duplicate transaction commit notification for %s", actionLabel(action))
 				}
@@ -477,9 +406,25 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 				}
 				return nil
 			}
+			actionCfg.OnTransactionCommit = complete
+			if actionCfg.BuildOnly {
+				actionCfg.OnTransactionCommit = func(error) error {
+					completionLock.Lock()
+					defer completionLock.Unlock()
+					completionFailure = fmt.Errorf("build-only runner attempted a transaction commit")
+					return completionFailure
+				}
+			}
 			err := cfg.Runner(ctx, actionLabel(action), &actionCfg)
+			if actionCfg.BuildOnly && err == nil {
+				err = complete(nil)
+			}
+			completionLock.Lock()
+			callbackErr := completionFailure
+			completionLock.Unlock()
+			err = errors.Join(err, callbackErr)
 			var postCommit *merge.PostCommitError
-			if errors.As(err, &postCommit) && transactionCommitted.Load() {
+			if errors.As(err, &postCommit) && transactionCommitted.Load() && callbackErr == nil {
 				if cfg.OnActionNotice != nil {
 					cfg.OnActionNotice(index+1, len(actions), action, "WARN", "committed package has a post-commit lifecycle failure: "+err.Error())
 				}
@@ -602,4 +547,64 @@ func actionLabel(action resolve.PkgAction) string {
 		label += "-" + action.Atom.Version.Raw
 	}
 	return label
+}
+
+func actionPrerequisites(actions []resolve.PkgAction) ([]int, map[int][]int, error) {
+	identities := make(map[string]int, len(actions))
+	for index, action := range actions {
+		identity := resolve.ActionIdentity(action)
+		if _, exists := identities[identity]; exists {
+			return nil, nil, fmt.Errorf("executor: duplicate planned action identity %q", identity)
+		}
+		identities[identity] = index
+	}
+	remaining := make([]int, len(actions))
+	dependents := make(map[int][]int)
+	for index, action := range actions {
+		seenPrerequisites := make(map[string]bool, len(action.Prerequisites))
+		for _, prerequisite := range action.Prerequisites {
+			if seenPrerequisites[prerequisite] {
+				return nil, nil, fmt.Errorf("executor: %s repeats prerequisite %q", actionLabel(action), prerequisite)
+			}
+			seenPrerequisites[prerequisite] = true
+			before, ok := identities[prerequisite]
+			if !ok {
+				return nil, nil, fmt.Errorf("executor: %s references missing prerequisite %q", actionLabel(action), prerequisite)
+			}
+			remaining[index]++
+			dependents[before] = append(dependents[before], index)
+		}
+	}
+	return remaining, dependents, nil
+}
+
+// Validate the complete graph before replacing resume state or running any
+// package. An independent ready action does not make a later cycle executable.
+func validateActionGraph(actions []resolve.PkgAction) error {
+	remaining, dependents, err := actionPrerequisites(actions)
+	if err != nil {
+		return err
+	}
+	var ready []int
+	for index, count := range remaining {
+		if count == 0 {
+			ready = append(ready, index)
+		}
+	}
+	visited := 0
+	for len(ready) > 0 {
+		index := ready[0]
+		ready = ready[1:]
+		visited++
+		for _, after := range dependents[index] {
+			remaining[after]--
+			if remaining[after] == 0 {
+				ready = append(ready, after)
+			}
+		}
+	}
+	if visited != len(actions) {
+		return fmt.Errorf("executor: planned prerequisite graph contains a cycle")
+	}
+	return nil
 }

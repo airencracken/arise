@@ -20,8 +20,8 @@ This plan defines a testing architecture which:
   tests.
 
 It extends the claim boundaries in
-[`PLAN_COMPLETENESS_VALIDATION.md`](../evidence/PLAN_COMPLETENESS_VALIDATION.md)
-and the execution lanes in [`TEST_LANES.md`](../testing/TEST_LANES.md).
+[`PLAN_COMPLETENESS_VALIDATION.md`](../../evidence/PLAN_COMPLETENESS_VALIDATION.md)
+and the execution lanes in [`TEST_LANES.md`](../../testing/TEST_LANES.md).
 
 ## Non-goals
 

@@ -2290,3 +2290,11 @@ func TestProtocolVDBMetadataUsesSelectedPackageUSE(t *testing.T) {
 		t.Fatalf("VDB IUSE=%q want=%q", got, want)
 	}
 }
+
+func TestCanceledLoadWaitWithoutThrottleDoesNotAdmitWork(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := WaitForLoadContext(ctx, 0); err != context.Canceled {
+		t.Fatalf("canceled unthrottled work admitted: %v", err)
+	}
+}

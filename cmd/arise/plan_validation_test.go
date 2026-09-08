@@ -301,3 +301,25 @@ func TestIndependentAuditAriseUpgradeRetainsAgeWithoutOldCompiler(t *testing.T) 
 		t.Fatalf("retained age blocked arise: %#v", validation)
 	}
 }
+
+func TestIndependentAuditBuildOnlyDoesNotRequireRuntimeDependencies(t *testing.T) {
+	graph := resolve.NewDepGraph()
+	candidate := graph.AddVersionFromRepository("app/pkg", "1", "0", "0", false, nil, "amd64", "gentoo")
+	candidate.Available, candidate.DependencyMetadataKnown, candidate.EAPI = true, true, "8"
+	candidate.Rdepend = "dev/runtime"
+	selected, err := atom.Parse("app/pkg-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{{Atom: selected, Action: "install", Repository: "gentoo", Slot: "0", Subslot: "0", MergeType: "source"}}}
+	audit, err := prepareIndependentPlanAudit(graph, result, []string{"app/pkg"}, resolve.ResolveConfig{BuildPkgOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audit == nil || !audit.fixture.Request.BuildOnly {
+		t.Fatal("build-only evidence lost")
+	}
+	if validation := audit.validate(); !validation.Valid {
+		t.Fatalf("build-only rejected: %#v", validation)
+	}
+}

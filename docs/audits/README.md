@@ -4,13 +4,13 @@ Audits are dated observations, not live status documents. Open findings must be
 tracked in `../../PUNCHLIST.md`, an active plan, or a regression test. Preserve
 machine-readable companions when they are needed to reproduce a finding.
 
-## Current reference audits
+## Dated reference audits
 
 - [`DOCUMENTATION_AUDIT_2026-07-24.md`](DOCUMENTATION_AUDIT_2026-07-24.md)
   classifies maintained, archived, wiki-bound, and evidence documentation for
   the clean-world checkpoint sweep.
 - [`GENTOO_REPOSITORY_COMPATIBILITY_AUDIT_2026-07-24.md`](GENTOO_REPOSITORY_COMPATIBILITY_AUDIT_2026-07-24.md)
-  classifies the complete current Gentoo repository against the phase worker;
+  classifies the Gentoo repository snapshot recorded in that audit against the phase worker;
   its machine-readable companion is
   [`gentoo-repository-compatibility-2026-07-24.json`](gentoo-repository-compatibility-2026-07-24.json).
 - [`PACKAGE_ENVIRONMENT_PARITY_AUDIT_2026-07-23.md`](PACKAGE_ENVIRONMENT_PARITY_AUDIT_2026-07-23.md)

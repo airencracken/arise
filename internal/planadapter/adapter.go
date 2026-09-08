@@ -14,6 +14,7 @@ import (
 )
 
 type Options struct {
+	BuildOnly          bool
 	Operation          string
 	Targets            []string
 	OriginalTargets    []string
@@ -88,6 +89,7 @@ func Freeze(graph *resolve.DepGraph, result *resolve.ResolveResult, opts Options
 	fixture := planvalidate.Fixture{
 		Schema: planvalidate.SchemaVersion,
 		Request: planvalidate.Request{
+			BuildOnly:       opts.BuildOnly,
 			Operation:       opts.Operation,
 			Targets:         append([]string(nil), opts.Targets...),
 			OriginalTargets: append([]string(nil), opts.OriginalTargets...),

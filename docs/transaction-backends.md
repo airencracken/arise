@@ -1,5 +1,11 @@
 # Transaction rollback backends
 
+This document describes guarantee tiers and provider design. The package
+journal and bounded recovery-set workflows are implemented; general snapshot
+provider selection and the `--experimental-rollback` options below are proposals,
+not available CLI options. See [the punchlist](../PUNCHLIST.md) for remaining
+promotion work and [recovery tests](../internal/recoveryset) for tested scope.
+
 Arise treats rollback strength as an approved plan property, not an incidental
 executor detail. The selected backend and its verified capabilities must be in
 the saved plan digest and must be revalidated under the operation lock before
@@ -56,10 +62,12 @@ would weaken Portage interoperability.
 
 ### Pre-update recovery binpkgs
 
-When Arise subsumes `quickpkg`, it may capture every installed package that an
-approved transaction will replace or remove as a verified host-derived binary
-package before mutation. The complete pre-update set provides a portable,
-filesystem-independent downgrade path when snapshots are unavailable.
+Live install/update and uninstall paths publish recovery sets for the installed
+packages they replace or remove before package mutation. Capture, inspection,
+restore, verification, and conservative pruning have bounded implementations;
+complete recovery promotion still requires the multi-package failure matrix in
+the punchlist. These sets provide portable reconstruction inputs when snapshots
+are unavailable.
 
 This is package-set reconstruction, not atomic system rollback. Recovery must
 re-resolve the complete captured set against actual state, restore it through

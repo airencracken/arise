@@ -17,6 +17,9 @@ var supportedDependencyClasses = map[string]bool{
 }
 
 func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
+	if fixture.Request.BuildOnly {
+		return validateBuildOnly(fixture, plan)
+	}
 	applied := ApplyPlan(fixture.Installed, plan)
 	finalRoot := newPackageState(applied.State.Packages)
 	violations := append([]Violation(nil), applied.Violations...)
@@ -47,14 +50,7 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 			continue
 		}
 		validatePackageDependencies(fixture, pkg, installing[packageIdentity(pkg)], finalRoot, &violations)
-		if strings.TrimSpace(pkg.RequiredUse) != "" {
-			node, err := depstring.Parse(pkg.RequiredUse)
-			if err != nil {
-				violations = append(violations, violation("invalid-required-use", pkg.CPV, pkg.RequiredUse, pkg.CPV, err.Error()))
-			} else if !requiredUseSatisfied(node, pkg.Use) {
-				violations = append(violations, violation("required-use-violation", pkg.CPV, pkg.RequiredUse, pkg.CPV, "selected USE state does not satisfy REQUIRED_USE"))
-			}
-		}
+		validatePackageRequiredUse(pkg, &violations)
 	}
 	if fixture.Request.PartialMode != "onlydeps" {
 		validateTargets(fixture.Request, finalRoot, &violations)
@@ -308,7 +304,7 @@ func ValidatePlanImpact(fixture Fixture, plan Plan) ValidationResult {
 	introduced := make([]Violation, 0, len(planned.Violations))
 	preExistingCount := 0
 	for _, item := range planned.Violations {
-		if !installing[item.Package] && !nonWaivableViolation(item.Kind) && preExisting[item] {
+		if (fixture.Request.BuildOnly || !installing[item.Package]) && !nonWaivableViolation(item.Kind) && preExisting[item] {
 			preExistingCount++
 			continue
 		}
@@ -777,4 +773,15 @@ func sortViolations(violations []Violation) {
 		right := violations[j].Kind + "\x00" + violations[j].Package + "\x00" + violations[j].Requirement + "\x00" + violations[j].RequiredBy + "\x00" + violations[j].Message
 		return left < right
 	})
+}
+
+func validatePackageRequiredUse(pkg Package, violations *[]Violation) {
+	if strings.TrimSpace(pkg.RequiredUse) != "" {
+		node, err := depstring.Parse(pkg.RequiredUse)
+		if err != nil {
+			*violations = append(*violations, violation("invalid-required-use", pkg.CPV, pkg.RequiredUse, pkg.CPV, err.Error()))
+		} else if !requiredUseSatisfied(node, pkg.Use) {
+			*violations = append(*violations, violation("required-use-violation", pkg.CPV, pkg.RequiredUse, pkg.CPV, "selected USE state does not satisfy REQUIRED_USE"))
+		}
+	}
 }

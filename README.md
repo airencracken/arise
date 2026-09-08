@@ -155,8 +155,8 @@ Preview changes before allowing a live transaction:
 
 ```sh
 arise --pretend install app-editors/vim
-arise --pretend --verbose update
-arise --pretend --complete-graph --deep update
+arise --pretend --verbose --update @world
+arise --pretend --complete-graph --deep --update @world
 ```
 
 Review protected configuration files and repository news:

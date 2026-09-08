@@ -52,7 +52,7 @@ all configured repositories and publish the resolver index:
 ```sh
 arise sync
 arise --pretend --verbose --update --deep --newuse --complete-graph \
-  --with-bdeps=y --backtrack=20 --save-plan stage3-world update @world
+  --with-bdeps=y --backtrack=20 --save-plan stage3-world @world
 ```
 
 Review `/var/tmp/arise/plans/stage3-world.json`. Preserve that file and its
@@ -70,7 +70,7 @@ Execute exactly the reviewed plan:
 
 ```sh
 arise --ask --update --deep --newuse --complete-graph --with-bdeps=y \
-  --backtrack=20 --approve-plan stage3-world update @world
+  --backtrack=20 --approve-plan stage3-world @world
 ```
 
 If the command is interrupted, inspect the durable state before doing anything
@@ -78,7 +78,7 @@ else:
 
 ```sh
 arise recover status
-arise --resume update @world
+arise --resume --update @world
 ```
 
 Do not delete `/var/tmp/arise`, active journals, or the resume file to force
@@ -104,7 +104,7 @@ arise maintain merges --check
 arise maintain resume --check
 arise info --preserved-libs
 arise --pretend --update --deep --newuse --complete-graph \
-  --with-bdeps=y --backtrack=20 update @world
+  --with-bdeps=y --backtrack=20 @world
 ```
 
 Treat pending journals, preserved libraries, maintenance failures, or a

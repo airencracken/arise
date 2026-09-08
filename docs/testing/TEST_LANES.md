@@ -1,73 +1,59 @@
 # Test execution lanes
 
-Arise keeps host capabilities explicit. A missing privilege, network namespace
-or Portage command must not silently weaken the routine correctness suite.
+## Ordinary regression suite
 
-## Hermetic lane
+`make test` runs `go test ./...` and Bash worker syntax checks. It does not
+perform live package-manager operations, but it is not a no-subprocess or
+no-socket suite. Some tests start loopback HTTP servers, run Bash workers,
+cross-read artifacts with installed Portage Python, or exercise filesystem
+transactions in temporary roots. Capability-dependent tests report skips when
+the required executable is unavailable.
 
-`make test` or `go test ./...` runs without a live Portage tree, external
-commands, loopback listeners or root access. HTTP behavior uses injected
-transports; resolver parity uses immutable, fingerprinted fixtures. This is the
-mandatory sandbox and ordinary CI gate.
+A sandbox that prohibits local listeners can fail this lane even when the code
+is correct. Run it in a test environment that permits those listeners and
+inspect skips before claiming real-worker coverage. Never redirect fixture
+ROOT/VDB paths to the host to bypass an isolation failure.
 
-## Live Portage lane
+`make test-race` checks internal packages. CLI concurrency also needs
+`go test -race ./cmd/arise`. Coverage commands and dated measurements are in
+[COVERAGE.md](COVERAGE.md); percentages from different lanes are not comparable.
 
-`make test-integration` runs read-only comparisons against the host Gentoo tree.
-`make bench-compare` runs the host-tool performance comparisons. Both require
-the `live_portage` build tag, which prevents them from entering the hermetic
-lane accidentally. Every Portage, Python and Gentoolkit subprocess has a
-measured command-class deadline, an isolated process group, descendant cleanup
-and a bounded wait. Current ceilings are 10 seconds for `portageq`, 45 seconds
-for `equery`, five minutes for emerge plans and 30 seconds for other tools. The
-Go test command has a separate ten-minute suite deadline. These are safety
-ceilings, not delays; commands return as soon as they complete.
+## Live Portage comparisons
 
-Read-only emerge comparisons append `-news` to the caller's existing
-incremental `FEATURES` value. This disables only post-plan news bookkeeping,
-which otherwise attempts to adjust `/var/lib/gentoo/news` ownership and fails
-inside a read-only sandbox. It does not alter candidate selection or dependency
-resolution. Ordinary user emerge commands and non-comparison Arise execution
-are unchanged.
+`make test-integration` enables the `live_portage` tag for host-tree reference
+comparisons. `make bench-compare` runs the corresponding host-tool performance
+lane. `make test-live-portage-compile` checks compilation without running these
+comparisons. Record the repository/profile/VDB/configuration snapshot and
+reference-tool versions alongside results.
 
-`make test-live-portage-compile` verifies that the opt-in lane still compiles
-without executing it.
+These reference lanes inspect live metadata and run pretend/query commands;
+they must not merge, uninstall, sync, or edit the host configuration. External
+commands have class-specific deadlines, isolated process groups, and descendant
+cleanup. The emerge reference adds `-news` to FEATURES to avoid news bookkeeping
+while preserving dependency resolution.
 
-Local coverage measurements, snapshot comparison rules and current improvement
-priorities are documented in [`COVERAGE.md`](COVERAGE.md). Coverage tracking is
-not connected to hosted CI.
+Some tagged phase differentials build synthetic repositories and compare
+normalized environments, images, and config protection in disposable roots.
+They do not constitute a live-system upgrade or a fresh-stage3 acceptance run.
 
-These tests may inspect the live repository, profile and VDB, but must never
-merge, uninstall, sync or modify configuration. Captured outputs are evidence,
-not portable fixtures until sanitized and paired with an `arise state fixture`
-snapshot.
+## Disposable-root mutation tests
 
-The P4 environment and representative-package differentials create synthetic
-repositories and build trees under the Go test temporary directory, run EAPI
-7/8 phases under Portage and Arise, and compare normalized environments and
-image trees. The config-protected fixture additionally merges into two isolated
-temporary roots and compares preservation of the local file and creation of
-the pending `._cfg0000_` update. These tests use the invoking user and group and
-never target the live ROOT.
+The ordinary suite contains synthetic merge, journal, source/binary worker,
+and recovery tests under temporary roots. Tagged comparisons extend that
+coverage using Portage as a reference. Report which tests actually executed,
+including required sandbox or filesystem capabilities, rather than treating
+all capability skips as successful end-to-end validation.
 
-## Privileged read-only lane
+An install/upgrade/unmerge smoke cycle must verify payloads, VDB, world,
+configuration, and journal outcomes. Interruption tests must demonstrate retry
+or rollback, not merely return an error.
 
-Run the reference capture explicitly through `su` as documented in
-[`misc/REFERENCE_FIXTURES.md`](../../misc/REFERENCE_FIXTURES.md). It records
-pretend/query behavior across the privilege boundary; it performs no mutation.
-This lane is not implied by the `live_portage` build tag.
+## Privileged and fresh-system gates
 
-## Disposable-root mutation lane
+Read-only reference capture requiring privilege is documented in
+[REFERENCE_FIXTURES.md](../../misc/REFERENCE_FIXTURES.md). It is distinct from
+ordinary tests and does not authorize live mutation.
 
-Real merge, removal and recovery validation belongs in a synthetic ROOT with
-separate ROOT/SYSROOT/BROOT, repository, VDB, distfiles and configuration. It
-must fail closed when the required isolation is unavailable. This lane remains
-a P4 acceptance gate and is never part of `go test ./...`.
-
-Verified mutation plans can be saved without shell redirection using
-`--save-plan NAME`; names resolve beneath `${PORTAGE_TMPDIR}/arise/plans` by
-default and may be redirected with `--plan-dir`. An explicit path is also
-accepted. A later state-bound command may use `--approve-plan NAME_OR_PATH`
-instead of copying the embedded SHA-256. Arise rereads the saved JSON, requires
-it to be complete and verified, and compares its digest with the freshly
-resolved plan; the file is authorization evidence, not an instruction stream.
-`--approve-plan-sha256` remains available for scripts.
+The [fresh-stage3 runbook](../fresh-stage3.md) is a separate acceptance gate.
+A passing Go suite, a disposable fixture, or an earlier development-host update
+does not replace a recorded clean-image maintenance and recovery run.

@@ -1,137 +1,67 @@
 # Arise documentation
 
-Stable project entry points remain at the repository root:
+## Using Arise
 
-- [`README.md`](../README.md) — project goals, status, usage, and measured claims.
-- [`COMPATIBILITY.md`](../COMPATIBILITY.md) — compatibility and testing contract.
-- [`BENCHMARK_MATRIX.md`](../BENCHMARK_MATRIX.md) — current and planned comparisons.
-- [`PUNCHLIST.md`](../PUNCHLIST.md) — authoritative milestone and dependency graph.
+- [Project overview](../README.md): installation, common commands, and scope.
+- [Native tool equivalents](tool-equivalents.md): package queries, maintenance,
+  coexistence, and Gentoo interoperability.
+- [Configuration and state](configuration-layout.md): current paths and the
+  distinction between implemented configuration and proposed layout.
+- [Bug reports](bug-report.md): local collection, redaction, review, and export.
+- [Fresh stage3](fresh-stage3.md): the runbook for the still-open fresh-system
+  maintenance gate; it is not proof that the gate has passed.
+- [Handbook addendum](handbook-addendum.md): unofficial amd64 installation
+  guidance and Git repository configuration.
+- [Man page](../arise.1) and [Info manual](../arise.texi): installed references.
 
-The directories below contain development records. They are useful context, but
-they may describe an older revision and do not override the root documents or
-automated tests.
+## Development and validation
 
-The latest completed milestone record is the 2026-07-24
-[`Portage self-hosting milestone`](evidence/PORTAGE_SELF_HOSTING_MILESTONE_2026-07-24.md).
-The root punch list remains the authoritative live status until the current
-world-update checkpoint is finalized. All dated checkpoints and audits are
-historical snapshots and must not be read as current implementation status.
+- [Development](development.md): builds, architecture, and environment.
+- [Test lanes](testing/TEST_LANES.md): ordinary tests, host capabilities,
+  disposable-root checks, and opt-in Portage comparisons.
+- [Coverage](testing/COVERAGE.md): commands and dated coverage measurements.
+- [Compatibility contract](../COMPATIBILITY.md) and
+  [compatibility matrix](compatibility/PORTAGE_COMPATIBILITY_MATRIX.md): required
+  behavior and the supported scope of individual interfaces.
+- [eix parity](eix-search-parity.md): tested and incomplete search behavior.
+- [Performance results](performance-results.md) and
+  [benchmark matrix](../BENCHMARK_MATRIX.md): methodology and dated measurements.
+- [Release workflow](../misc/RELEASE.md): artifact and overlay orchestration.
+- [Architecture decisions](adr/README.md): accepted decisions and revisit criteria.
 
-The maintained
-[`compatibility/PORTAGE_COMPATIBILITY_MATRIX.md`](compatibility/PORTAGE_COMPATIBILITY_MATRIX.md)
-tracks man-page-derived CLI options, environment variables, and Portage
-configuration files together with their enforcement status.
+## Remaining work
 
-Maintained reader guides extracted from the project overview:
+The [punchlist](../PUNCHLIST.md) contains only unfinished work, ordered by
+priority, with completion criteria. Remove finished entries; Git retains their
+history. [Topic plans](planning/README.md) provide design detail for open items
+and do not establish current support by themselves.
 
-- [`tool-equivalents.md`](tool-equivalents.md) — native command equivalents,
-  coexistence, and package-tooling interoperability.
-- [`library-roadmap.md`](library-roadmap.md) — boundaries that preserve a path
-  to importable public APIs and alternate user interfaces.
-- [`performance-results.md`](performance-results.md) — comparison tables,
-  methodology, evidence, and claim boundaries.
-- [`development.md`](development.md) — build/test commands, architecture,
-  environment variables, and configuration boundaries.
-- [`bug-report.md`](bug-report.md) — local diagnostic collection, redaction,
-  review, and export.
-- [`fresh-stage3.md`](fresh-stage3.md) — tested installation, frozen-plan,
-  recovery, validation, and reboot workflow for the G1 maintenance gate.
-- [`handbook-addendum.md`](handbook-addendum.md) — unofficial amd64 stage3
-  installation addendum with conservative defaults and Git-only repositories.
-- [`adr/`](adr/README.md) — accepted architecture decisions, their evidence,
-  consequences, and explicit revisit conditions.
+The [library roadmap](library-roadmap.md) and
+[transaction backend design](transaction-backends.md) distinguish proposed
+interfaces from implemented guarantees. Experimental designs must not be read
+as available command-line options.
 
-## Audits
+## Reviews and historical evidence
 
-[`audits/`](audits/) contains dated and scoped codebase reviews; its
-[`index`](audits/README.md) distinguishes current reference audits from
-historical checkpoints. Audit findings
-should migrate into tests, issues, or the punch list. Once every actionable
-finding has migrated and the historical context is no longer useful, the audit
-can be pruned.
+[Reviews](reviews/) record scoped findings and verification for particular
+source revisions. [Audits](audits/README.md), [evidence](evidence/README.md), and
+[release notes](releases/) retain dated results; none describes the current
+installed host or certifies a later revision. Preserve machine-readable data
+needed to reproduce a claim.
 
-## Evidence
+[Archived material](archive/README.md) is not current instruction. Do not add
+an archive copy merely to preserve completed work; prefer Git history. Before
+removing a document, retain unfinished requirements in the punchlist or an
+active topic plan and repair inbound links.
 
-[`evidence/`](evidence/) contains dated benchmark baselines, parity manifests,
-coverage snapshots, and validation records. Prefer portable automated fixtures
-over prose or host-specific evidence; prune a record after a newer reproducible
-gate supersedes it. See the [`evidence index`](evidence/README.md) for scope and
-supersession notes.
+## Documentation checks
 
-The 2026-07-24
-[`Portage self-hosting milestone`](evidence/PORTAGE_SELF_HOSTING_MILESTONE_2026-07-24.md)
-records Arise successfully installing `sys-apps/portage-3.0.81.2` and defines
-the cumulative acceptance ladder from fresh-stage3 maintenance through a
-repeatable stage1/bootstrap-to-stage3 construction.
+Run `./support/check-docs.sh` after changing documentation or CLI behavior. It
+checks local Markdown link targets, Bash syntax, and whitespace, compiles the
+Info manual when `makeinfo` is available, and lints the man page when `mandoc`
+is available. Missing optional tools are reported. External URLs are not
+network-validated by this local check.
 
-## Planning
-
-[`planning/`](planning/) contains working task breakdowns subordinate to the
-root punch list. Reconcile completed or abandoned tasks into `PUNCHLIST.md`
-before pruning a planning document. The
-[`active planning index`](planning/README.md) summarizes each maintained plan.
-
-[`planning/BUILD_TIME_ESTIMATION_PLAN.md`](planning/BUILD_TIME_ESTIMATION_PLAN.md)
-defines explainable historical estimates, compatible sample selection, live
-remaining-time updates, and dependency/job-aware transaction makespan.
-
-[`planning/PERFORMANCE_IMPROVEMENT_PLAN.md`](planning/PERFORMANCE_IMPROVEMENT_PLAN.md)
-defines the post-correctness profiling program, workload controls, suspected
-hot paths, experiment protocol, and acceptance criteria for performance work.
-
-[`planning/EXECUTION_RECOVERY_PLAN.md`](planning/EXECUTION_RECOVERY_PLAN.md)
-defines commit-aware `--keep-going`, locked graph recalculation, continuation
-approval, and bounded retry/rebatch semantics for long transactions.
-
-[`planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md`](planning/FILESYSTEM_SNAPSHOT_ROLLBACK_PLAN.md)
-defines provider-specific whole-operation rollback contracts for Btrfs,
-OpenZFS and LVM, keeps OverlayFS scoped to rehearsal/lifecycle capture, and
-rejects generation-symlink package stores.
-
-[`planning/SOLVER_LIBRARY_PLAN.md`](planning/SOLVER_LIBRARY_PLAN.md) defines the
-pure-Go reusable solver boundary, the Gentoo semantic frontend, first-class
-explanations, and the ideas to study from libsolv without adding cgo or a
-runtime dependency.
-
-[`archive/planning/INDEPENDENT_PLAN_VALIDATION_PLAN.md`](archive/planning/INDEPENDENT_PLAN_VALIDATION_PLAN.md)
-defines an independent final-state validator, bounded candidate decision
-ledger, immutable regression corpus, and classified Arise-versus-Portage
-differentials that do not require action-for-action parity.
-
-[`planning/COLOR_CONFIGURATION_PLAN.md`](planning/COLOR_CONFIGURATION_PLAN.md)
-defines semantic color roles, Portage `color.map` compatibility, palette
-explanations, accessibility themes and the no-color/static configuration
-contract.
-
-[`planning/PHASE_QUERY_PREFLIGHT_PLAN.md`](planning/PHASE_QUERY_PREFLIGHT_PLAN.md)
-tracks complete `has_version`/`best_version` coverage across transitive eclass
-closures and the representative Portage parity matrix.
-
-## Archive
-
-[`archive/`](archive/) contains superseded plans and notes whose actionable
-work has moved into the punch list, tests, or maintained plans. Archived
-documents retain their original context but are not current instructions. This
-is a migration queue: durable narrative can move to the project wiki, while
-repository copies should be deleted after links and reproducibility needs are
-resolved.
-
-## Maintained guides
-
-Operational and implementation guides currently remain under [`misc/`](../misc/)
-alongside their scripts and workload definitions. They can move into dedicated
-guide/reference directories once their interfaces stabilize.
-
-Run `./support/check-docs.sh` after documentation or CLI changes. It always checks Bash
-syntax and whitespace, compiles `arise.texi` when `makeinfo` exists, and lints
-`arise.1` when `mandoc` exists. Missing optional documentation tools are
-reported and skipped rather than invoked blindly.
-
-## Pruning checklist
-
-Before deleting or archiving a development record:
-
-1. Confirm every open finding is represented by a test, issue, or punch-list item.
-2. Confirm no maintained document links to the record as authoritative evidence.
-3. Preserve machine-readable fixtures needed to reproduce a compatibility claim.
-4. Update this index and run the repository link/document validation checks.
+The ordinary Go suite also checks documented CLI routes and punchlist structure.
+Keep examples aligned with executable behavior; tests should reject obsolete
+instructions rather than require their wording to survive.

@@ -25,7 +25,7 @@ func TestHandbookAddendumReferenceConfiguration(t *testing.T) {
 		"--save-plan stage3-world",
 		"--approve-plan stage3-world",
 		"arise recover status",
-		"arise --resume update @world",
+		"arise --resume --update @world",
 		"arise maintain world --check",
 		"arise maintain moveinst --check",
 		"arise maintain merges --check",

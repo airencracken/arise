@@ -42,6 +42,7 @@ type Policy struct {
 }
 
 type Request struct {
+	BuildOnly       bool     `json:"build_only,omitempty"`
 	Operation       string   `json:"operation"`
 	Targets         []string `json:"targets"`
 	OriginalTargets []string `json:"original_targets,omitempty"`

@@ -131,6 +131,9 @@ func openPortageMergeLog(path string) (*portageMergeLog, error) {
 }
 
 func (l *portageMergeLog) event(completed bool, index, total int, action resolve.PkgAction) error {
+	if l == nil {
+		return nil
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.err != nil {
@@ -148,10 +151,20 @@ func (l *portageMergeLog) event(completed bool, index, total int, action resolve
 }
 
 func (l *portageMergeLog) close() error {
+	if l == nil {
+		return nil
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := l.file.Close(); l.err == nil {
 		l.err = err
 	}
 	return l.err
+}
+
+func openPackageExecutionLog(path string, buildOnly bool) (*portageMergeLog, error) {
+	if buildOnly {
+		return nil, nil
+	}
+	return openPortageMergeLog(path)
 }

@@ -21,7 +21,7 @@ func TestFreshStage3RunbookContract(t *testing.T) {
 		"--save-plan stage3-world",
 		"--approve-plan stage3-world",
 		"arise recover status",
-		"arise --resume update @world",
+		"arise --resume --update @world",
 		"arise dispatch-conf",
 		"arise news list",
 		"arise maintain world --check",

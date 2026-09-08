@@ -50,6 +50,7 @@ func prepareIndependentPlanEvidence(graph *resolve.DepGraph, result *resolve.Res
 	}
 	policy, packagePolicy := freezeIndependentPolicy(cfg)
 	fixture, plan, err := planadapter.Freeze(graph, result, planadapter.Options{
+		BuildOnly: cfg.BuildPkgOnly,
 		Operation: operation, Targets: expandedTargets, OriginalTargets: targets,
 		PartialMode: partialMode,
 		Policy:      policy, PackagePolicy: packagePolicy,
