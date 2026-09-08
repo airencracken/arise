@@ -247,3 +247,30 @@ func containsViolation(result planvalidate.ValidationResult, kind string) bool {
 	}
 	return false
 }
+
+func TestFreezePreservesMergeTypeInAuthoritativeEvidence(t *testing.T) {
+	for _, mergeType := range []string{"source", "binary"} {
+		t.Run(mergeType, func(t *testing.T) {
+			graph, result := upgradeGraph(t)
+			result.Install[0].MergeType = mergeType
+			fixture, plan, err := Freeze(graph, result, Options{Operation: "update", Targets: []string{">=dev-libs/library-2"}, DomainsAliasToRoot: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Actions[0].Package.MergeType != mergeType || fixture.Available[0].MergeType != mergeType {
+				t.Fatalf("merge type lost: %#v %#v", fixture.Available, plan.Actions)
+			}
+			encoded, err := json.Marshal(plan)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded planvalidate.Plan
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if validation := planvalidate.ValidateFinalState(fixture, decoded); !validation.Valid {
+				t.Fatalf("round-trip plan invalid: %#v", validation)
+			}
+		})
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
@@ -33,47 +34,19 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 	validateActionPolicy(fixture.Policy, plan.Actions, &violations)
 	validateActionOrder(plan.Actions, &violations)
 	validateDecisionLedger(plan, &violations)
+	installing := make(map[string]bool, len(plan.Actions))
+	for _, action := range plan.Actions {
+		if action.Kind == ActionInstall {
+			installing[packageIdentity(action.Package)] = true
+		}
+	}
 
 	for _, pkg := range applied.State.Packages {
 		if _, err := parseCPV(pkg.CPV); err != nil {
 			violations = append(violations, violation("invalid-package-identity", pkg.CPV, "", "", err.Error()))
 			continue
 		}
-		if fixture.Request.PartialMode != "nodeps" {
-			classes := make([]string, 0, len(pkg.Dependencies))
-			for class := range pkg.Dependencies {
-				classes = append(classes, class)
-			}
-			sort.Strings(classes)
-			for _, class := range classes {
-				expression := strings.TrimSpace(pkg.Dependencies[class])
-				if expression == "" {
-					continue
-				}
-				if !supportedDependencyClasses[class] {
-					violations = append(violations, violation("unsupported-dependency-class", pkg.CPV, class, pkg.CPV, "validator does not yet implement this dependency class"))
-					continue
-				}
-				domainPackages, ok := dependencyDomainState(fixture, class, finalRoot)
-				if !ok {
-					violations = append(violations, violation(
-						"missing-dependency-domain", pkg.CPV, class, pkg.CPV,
-						"fixture does not provide the required independent dependency domain",
-					))
-					continue
-				}
-				node, err := depstring.Parse(expression)
-				if err != nil {
-					violations = append(violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
-					continue
-				}
-				if err := depstring.ValidatePackageDependenciesEAPI(node, pkg.EAPI); err != nil {
-					violations = append(violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
-					continue
-				}
-				validateNode(node, pkg, domainPackages, &violations)
-			}
-		}
+		validatePackageDependencies(fixture, pkg, installing[packageIdentity(pkg)], finalRoot, &violations)
 		if strings.TrimSpace(pkg.RequiredUse) != "" {
 			node, err := depstring.Parse(pkg.RequiredUse)
 			if err != nil {
@@ -98,6 +71,60 @@ func ValidateFinalState(fixture Fixture, plan Plan) ValidationResult {
 		Valid:      len(violations) == 0 && omitted == 0,
 		Violations: violations, Truncated: truncated, OmittedViolations: omitted,
 	}
+}
+
+func validatePackageDependencies(fixture Fixture, pkg Package, installing bool, finalRoot packageState, violations *[]Violation) {
+	if fixture.Request.PartialMode != "nodeps" {
+		classes := make([]string, 0, len(pkg.Dependencies))
+		for class := range pkg.Dependencies {
+			classes = append(classes, class)
+		}
+		sort.Strings(classes)
+		for _, class := range classes {
+			if !installing && mergeTimeDependency(class) {
+				continue
+			}
+			if pkg.MergeType == "binary" && (class == "DEPEND" || class == "BDEPEND") {
+				continue
+			}
+			expression := strings.TrimSpace(pkg.Dependencies[class])
+			if expression == "" {
+				continue
+			}
+			if !supportedDependencyClasses[class] {
+				*violations = append(*violations, violation("unsupported-dependency-class", pkg.CPV, class, pkg.CPV, "validator does not yet implement this dependency class"))
+				continue
+			}
+			domainPackages, ok := dependencyDomainState(fixture, class, pkg.EAPI, finalRoot)
+			if !ok {
+				*violations = append(*violations, violation(
+					"missing-dependency-domain", pkg.CPV, class, pkg.CPV,
+					"fixture does not provide the required independent dependency domain",
+				))
+				continue
+			}
+			node, err := depstring.Parse(expression)
+			if err != nil {
+				*violations = append(*violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
+				continue
+			}
+			if err := depstring.ValidatePackageDependenciesEAPI(node, pkg.EAPI); err != nil {
+				*violations = append(*violations, violation("invalid-dependency-expression", pkg.CPV, expression, pkg.CPV, err.Error()))
+				continue
+			}
+			start := len(*violations)
+			validateNode(node, pkg, domainPackages, violations)
+			for index := start; index < len(*violations); index++ {
+				(*violations)[index].DependencyClass = class
+			}
+		}
+	}
+}
+
+// Build and merge tools are required when a package is installed, not for
+// retaining an already-built package after its compiler or tools change.
+func mergeTimeDependency(class string) bool {
+	return class == "DEPEND" || class == "BDEPEND" || class == "IDEPEND"
 }
 
 func validateActionJustification(fixture Fixture, plan Plan, finalRoot []Package, violations *[]Violation) {
@@ -272,10 +299,16 @@ func ValidatePlanImpact(fixture Fixture, plan Plan) ValidationResult {
 	for _, item := range baseline.Violations {
 		preExisting[item] = true
 	}
+	installing := make(map[string]bool, len(plan.Actions))
+	for _, action := range plan.Actions {
+		if action.Kind == ActionInstall {
+			installing[action.Package.CPV] = true
+		}
+	}
 	introduced := make([]Violation, 0, len(planned.Violations))
 	preExistingCount := 0
 	for _, item := range planned.Violations {
-		if !nonWaivableViolation(item.Kind) && preExisting[item] {
+		if !installing[item.Package] && !nonWaivableViolation(item.Kind) && preExisting[item] {
 			preExistingCount++
 			continue
 		}
@@ -343,7 +376,7 @@ func nonWaivableViolation(kind string) bool {
 		kind == "already-installed" || kind == "slot-collision" || kind == "unknown-action"
 }
 
-func dependencyDomainState(fixture Fixture, class string, finalRoot packageState) (packageState, bool) {
+func dependencyDomainState(fixture Fixture, class, rawEAPI string, finalRoot packageState) (packageState, bool) {
 	switch class {
 	case "RDEPEND", "PDEPEND":
 		return finalRoot, true
@@ -351,7 +384,11 @@ func dependencyDomainState(fixture Fixture, class string, finalRoot packageState
 		if fixture.DomainsAliasToRoot {
 			return finalRoot, true
 		}
-		packages, ok := fixture.Domains[DomainSysroot]
+		domain := DomainSysroot
+		if eapi, err := strconv.Atoi(rawEAPI); err == nil && eapi < 7 {
+			domain = DomainBroot
+		}
+		packages, ok := fixture.Domains[domain]
 		return newPackageState(packages), ok
 	case "BDEPEND", "IDEPEND":
 		if fixture.DomainsAliasToRoot {
@@ -368,6 +405,9 @@ func validateActionAuthority(available []Package, actions []Action, violations *
 	for _, action := range actions {
 		if action.Kind != ActionInstall {
 			continue
+		}
+		if action.Package.MergeType != "" && action.Package.MergeType != "source" && action.Package.MergeType != "binary" {
+			*violations = append(*violations, violation("unsupported-merge-type", action.Package.CPV, action.Package.MergeType, "", "install action has an unsupported merge type"))
 		}
 		foundIdentity := false
 		for _, candidate := range available {

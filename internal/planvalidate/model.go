@@ -54,6 +54,7 @@ type Package struct {
 	Subslot      string            `json:"subslot,omitempty"`
 	Repository   string            `json:"repository"`
 	Authority    MetadataAuthority `json:"metadata_authority"`
+	MergeType    string            `json:"merge_type,omitempty"`
 	Use          map[string]bool   `json:"use,omitempty"`
 	IUse         map[string]bool   `json:"iuse,omitempty"`
 	Dependencies map[string]string `json:"dependencies,omitempty"`
@@ -113,11 +114,12 @@ type State struct {
 }
 
 type Violation struct {
-	Kind        string `json:"kind"`
-	Package     string `json:"package,omitempty"`
-	Requirement string `json:"requirement,omitempty"`
-	RequiredBy  string `json:"required_by,omitempty"`
-	Message     string `json:"message"`
+	DependencyClass string `json:"dependency_class,omitempty"`
+	Kind            string `json:"kind"`
+	Package         string `json:"package,omitempty"`
+	Requirement     string `json:"requirement,omitempty"`
+	RequiredBy      string `json:"required_by,omitempty"`
+	Message         string `json:"message"`
 }
 
 type ApplicationResult struct {

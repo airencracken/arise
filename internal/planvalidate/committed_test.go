@@ -8,6 +8,7 @@ func TestPredictCommittedStateBindsSelectedProviderSubslot(t *testing.T) {
 	consumer := pkg("app-misc/consumer-1", map[string]string{
 		"RDEPEND": "feature? ( dev-libs/provider:= )",
 	})
+	consumer.Authority = AuthorityEvaluated
 	consumer.Use, consumer.IUse = map[string]bool{"feature": true}, map[string]bool{"feature": true}
 	input := State{Packages: []Package{consumer, provider}}
 

@@ -210,6 +210,9 @@ func packageFromVersion(cp string, version *resolve.VersionInfo, installed bool,
 		Dependencies: dependencies, RequiredUse: requiredUse,
 		EAPI: eapi, Keywords: strings.Fields(version.Keywords), License: version.License,
 	}
+	if action != nil && !installed {
+		pkg.MergeType = action.MergeType
+	}
 	// Package policy is consumed only by validateActionPolicy, so freeze it
 	// only for selected install actions. Evaluating every package.mask,
 	// package.accept_keywords, and package.license rule for every repository

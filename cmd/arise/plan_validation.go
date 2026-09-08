@@ -190,6 +190,9 @@ func reportIndependentPlanAudit(writer io.Writer, stage string, result planvalid
 			fmt.Fprintf(writer, " [%s]", violation.Package)
 		}
 		if violation.Requirement != "" {
+			if violation.DependencyClass != "" {
+				fmt.Fprintf(writer, " %s", violation.DependencyClass)
+			}
 			fmt.Fprintf(writer, " requires %s", violation.Requirement)
 		}
 		fmt.Fprintln(writer)

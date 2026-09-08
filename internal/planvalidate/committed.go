@@ -17,6 +17,9 @@ func PredictCommittedState(planned State) (State, error) {
 	result := canonicalState(planned.Packages)
 	for index := range result.Packages {
 		pkg := &result.Packages[index]
+		if pkg.Authority == AuthorityVDB || pkg.MergeType == "binary" {
+			continue
+		}
 		for _, class := range []string{"DEPEND", "RDEPEND", "BDEPEND", "IDEPEND", "PDEPEND"} {
 			raw := strings.TrimSpace(pkg.Dependencies[class])
 			if raw == "" {

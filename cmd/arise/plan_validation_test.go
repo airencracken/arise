@@ -258,3 +258,46 @@ func TestExplanationLedgerIncludesAcceptedRejectedAndRequirements(t *testing.T) 
 		}
 	}
 }
+
+func TestIndependentPlanDiagnosticNamesDependencyClass(t *testing.T) {
+	var output bytes.Buffer
+	reportIndependentPlanAudit(&output, "post-resolution", planvalidate.ValidationResult{Violations: []planvalidate.Violation{{Kind: "unsatisfied-dependency", Package: "app-crypt/age-1.3.1-r1", DependencyClass: "BDEPEND", Requirement: ">=dev-lang/go-1.24.11:0/1.26.5=", Message: "final state does not satisfy dependency"}}})
+	if !strings.Contains(output.String(), "[app-crypt/age-1.3.1-r1] BDEPEND requires >=dev-lang/go-1.24.11:0/1.26.5=") {
+		t.Fatalf("dependency provenance missing: %s", output.String())
+	}
+}
+
+func TestIndependentAuditAriseUpgradeRetainsAgeWithoutOldCompiler(t *testing.T) {
+	graph := resolve.NewDepGraph()
+	age := graph.AddVersionFromRepository("app-crypt/age", "1.3.1-r1", "0", "0", true, nil, "amd64", "gentoo")
+	age.InstalledEAPI = "8"
+	age.InstalledBdepend = ">=dev-lang/go-1.24.11:0/1.26.5="
+	oldGo := graph.AddVersionFromRepository("dev-lang/go", "1.26.5", "0", "1.26.5", true, nil, "amd64", "gentoo")
+	oldGo.InstalledEAPI = "8"
+	nextGo := graph.AddVersionFromRepository("dev-lang/go", "1.26.6", "0", "1.26.6", false, nil, "amd64", "gentoo")
+	nextGo.Available, nextGo.DependencyMetadataKnown, nextGo.EAPI = true, true, "8"
+	arise := graph.AddVersionFromRepository("sys-apps/arise", "0.0.31", "0", "0", false, nil, "amd64", "gentoo")
+	arise.Available, arise.DependencyMetadataKnown, arise.EAPI = true, true, "8"
+	arise.Bdepend = ">=dev-lang/go-1.26.6"
+	goAtom, err := atom.Parse("dev-lang/go-1.26.6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ariseAtom, err := atom.Parse("sys-apps/arise-0.0.31")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goAction := resolve.PkgAction{Atom: goAtom, Action: "update", Slot: "0", Subslot: "1.26.6", Repository: "gentoo", InstalledVersion: "1.26.5", MergeType: "source"}
+	ariseAction := resolve.PkgAction{Atom: ariseAtom, Action: "install", Slot: "0", Subslot: "0", Repository: "gentoo", MergeType: "source", Prerequisites: []string{resolve.ActionIdentity(goAction)}}
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{goAction, ariseAction}}
+	audit, err := prepareIndependentPlanAudit(graph, result, []string{"arise"}, resolve.ResolveConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audit == nil {
+		t.Fatal("independent audit missing")
+	}
+	if validation := audit.validate(); !validation.Valid {
+		t.Fatalf("retained age blocked arise: %#v", validation)
+	}
+}

@@ -230,11 +230,15 @@ func TestDependencyDomainsAreExplicitAndIndependent(t *testing.T) {
 			DomainBroot:   {pkg("dev-libs/host-1", nil), pkg("dev-libs/installer-1", nil)},
 		},
 	}
-	if result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion}); !result.Valid {
+	owner.Authority = AuthorityEvaluated
+	owner.EAPI = "8"
+	fixture.Available = []Package{owner}
+	plan := Plan{Schema: SchemaVersion, Actions: []Action{{Kind: ActionInstall, Package: owner, Replaces: owner.CPV}}}
+	if result := ValidateFinalState(fixture, plan); !result.Valid {
 		t.Fatalf("valid cross-domain dependencies rejected: %#v", result)
 	}
 	delete(fixture.Domains, DomainBroot)
-	result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion})
+	result := ValidateFinalState(fixture, plan)
 	if result.Valid || !hasViolation(result, "missing-dependency-domain") {
 		t.Fatalf("missing BROOT domain accepted: %#v", result)
 	}
@@ -249,11 +253,15 @@ func TestDependencyDomainsCanExplicitlyAliasFinalRoot(t *testing.T) {
 		Schema: SchemaVersion, Request: Request{Operation: "install", Targets: []string{"app-misc/client"}},
 		Installed: []Package{owner, provider}, DomainsAliasToRoot: true,
 	}
-	if result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion}); !result.Valid {
+	owner.Authority = AuthorityEvaluated
+	owner.EAPI = "8"
+	fixture.Available = []Package{owner}
+	plan := Plan{Schema: SchemaVersion, Actions: []Action{{Kind: ActionInstall, Package: owner, Replaces: owner.CPV}}}
+	if result := ValidateFinalState(fixture, plan); !result.Valid {
 		t.Fatalf("aliased dependency domains rejected: %#v", result)
 	}
 	fixture.DomainsAliasToRoot = false
-	result := ValidateFinalState(fixture, Plan{Schema: SchemaVersion})
+	result := ValidateFinalState(fixture, plan)
 	if result.Valid || !hasViolation(result, "missing-dependency-domain") {
 		t.Fatalf("implicit missing domains accepted: %#v", result)
 	}
@@ -782,7 +790,9 @@ func TestAdversarialInputIsBoundedAndFailClosed(t *testing.T) {
 	}
 	owner := pkg("app-misc/client-1", map[string]string{"RDEPEND": dependency.String(), "DEPEND": "dev-libs/build-only"})
 	fixture := Fixture{Schema: 1, Request: Request{Operation: "install", Targets: []string{"app-misc/client"}}, Installed: []Package{owner}}
-	result := ValidateFinalState(fixture, Plan{Schema: 1})
+	owner.Authority = AuthorityEvaluated
+	fixture.Available = []Package{owner}
+	result := ValidateFinalState(fixture, Plan{Schema: 1, Actions: []Action{{Kind: ActionInstall, Package: owner, Replaces: owner.CPV}}})
 	if result.Valid || !hasViolation(result, "missing-dependency-domain") || !hasViolation(result, "unsatisfied-dependency") {
 		t.Fatalf("adversarial fixture did not fail closed: %#v", result)
 	}
