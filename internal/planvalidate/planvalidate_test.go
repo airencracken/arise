@@ -822,3 +822,20 @@ func cloneJSON[T any](t *testing.T, value T) T {
 	}
 	return cloned
 }
+
+func TestApplyPlanRejectedReplacementIsAtomic(t *testing.T) {
+	old := pkg("cat/old-1", nil)
+	existing := pkg("cat/new-1", nil)
+	for _, candidate := range []Package{existing, pkg("cat/new-2", nil)} {
+		installed := []Package{old, existing}
+		plan := Plan{Schema: 1, Actions: []Action{{Kind: ActionInstall, Package: candidate, Replaces: old.CPV}}}
+		got := ApplyPlan(installed, plan)
+		if len(got.Violations) == 0 {
+			t.Fatal("invalid replacement accepted")
+		}
+		want := ApplyPlan(installed, Plan{Schema: 1})
+		if !reflect.DeepEqual(got.State, want.State) {
+			t.Fatalf("rejected action changed state: %#v", got.State)
+		}
+	}
+}

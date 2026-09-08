@@ -24,15 +24,15 @@ over_fifty=$(
 ) || fail "cannot count functions over complexity 50"
 over_fifty=${over_fifty//[[:space:]]/}
 
-if ! awk -v actual="$average" 'BEGIN { exit !(actual <= 7.89) }'; then
-	fail "average complexity $average exceeds the 7.89 ratchet"
+if ! awk -v actual="$average" 'BEGIN { exit !(actual <= 7.87) }'; then
+	fail "average complexity $average exceeds the 7.87 ratchet"
 fi
-if (( over_fifty > 20 )); then
-	fail "$over_fifty functions exceed complexity 50; ratchet allows 20"
+if (( over_fifty > 19 )); then
+	fail "$over_fifty functions exceed complexity 50; ratchet allows 19"
 fi
-if ! "$analyzer" -ignore '_test\.go$' -over 221 "$root/cmd" "$root/internal" "$root/misc" >/dev/null 2>&1; then
-	fail "a production function exceeds the complexity ceiling of 221"
+if ! "$analyzer" -ignore '_test\.go$' -over 215 "$root/cmd" "$root/internal" "$root/misc" >/dev/null 2>&1; then
+	fail "a production function exceeds the complexity ceiling of 215"
 fi
 
-printf 'Cyclomatic complexity: average %s; %s functions over 50; maximum at most 221.\n' \
+printf 'Cyclomatic complexity: average %s; %s functions over 50; maximum at most 215.\n' \
 	"$average" "$over_fifty"

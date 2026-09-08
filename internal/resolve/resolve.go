@@ -3693,10 +3693,11 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 	// Try each conjunction alternative, preferring one whose every active
 	// member is already installed.
 	type candidate struct {
-		idx       int
-		members   []member
-		installed bool
-		scheduled bool
+		idx               int
+		members           []member
+		installed         bool
+		scheduled         bool
+		providerInstalled bool
 	}
 	var candidates []candidate
 	activeOptions := 0
@@ -3748,6 +3749,10 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 				}
 			}
 			candidate.installed = candidate.installed && inst != nil
+			// Version-pinned virtuals can require a new slot of an existing
+			// provider. Keep that provider even before its upgrade is scheduled.
+			providerAtom := &atom.Atom{Category: resolvedOpt.Atom.Category, Package: resolvedOpt.Atom.Package}
+			candidate.providerInstalled = candidate.providerInstalled || r.matchingInstalledVersionInDomain(toNode, providerAtom, edge.Domain) != nil
 			candidate.scheduled = candidate.scheduled || r.packageScheduled(toNode)
 			candidate.members = append(candidate.members, member{depAtom: &resolvedOpt, installedVI: inst, best: best, needsUseChange: needsUseChange})
 		}
@@ -3799,6 +3804,9 @@ func (r *resolver) processAnyOf(node *PkgNode, edge *DepEdge, edgeIdx int, depth
 			if !staleInstalledAlternative {
 				return candidates[i].installed
 			}
+		}
+		if singletons && !candidates[i].installed && !candidates[j].installed && candidates[i].providerInstalled != candidates[j].providerInstalled {
+			return candidates[i].providerInstalled
 		}
 		// Multi-atom alternatives encode an implementation tuple. Eclasses order
 		// these deliberately (for example newest configured Python first), so a
@@ -6236,7 +6244,9 @@ func (r *resolver) candidateUseFlags(node *PkgNode, vi *VersionInfo) map[string]
 				// graphs whose conditional flags are not backed by metadata.
 				if vi.UseFlags == nil {
 					base[name] = enabled
-				} else if _, declared := vi.UseFlags[name]; declared || r.implicitUseExpandFlag(name) {
+				} else if _, declared := vi.UseFlags[name]; declared || name == arch || r.implicitUseExpandFlag(name) {
+					// ARCH is implicit IUSE too: kernel binary SRC_URI and
+					// dependencies use it without declaring it in the ebuild.
 					// IUSE defaults seed package-local state. Effective profile and
 					// user policy is applied afterward and therefore wins for flags
 					// which it explicitly enables or disables.

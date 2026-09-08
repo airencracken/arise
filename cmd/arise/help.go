@@ -14,7 +14,9 @@ var commandHelp = map[string]commandHelpEntry{
 	"sync":              {"arise sync [repository...]", "Synchronize repositories and refresh the resolver index."},
 	"index":             {"arise index", "Refresh the resolver metadata index."},
 	"install":           {"arise install [options] <atom|set>...", "Resolve and install packages."},
-	"uninstall":         {"arise uninstall [options] <exact-cpv>...", "Verify and remove exact installed packages."},
+	"uninstall":         {"arise uninstall [options] <name|atom>...", "Verify and remove matching installed packages. Short names must be unambiguous; atoms may restrict version, slot, or repository."},
+	"unmerge":           {"arise unmerge [options] <name|atom>...", "Alias for uninstall."},
+	"remove":            {"arise remove [options] <name|atom>...", "Alias for uninstall."},
 	"select":            {"arise select <installed-atom>", "Add an installed package to the world set."},
 	"recover":           {"arise recover <status|rollback|inspect-set|restore-set|verify-set|prune-sets> ...", "Inspect or apply journal and recovery-set operations."},
 	"query":             {"arise query [--versions|--ebuild|--best-visible [--type=...]|--all-best-visible|--metadata=KEY,... [--type=ebuild|binary|installed]|--expand-virtual] [atom...]", "Query indexed repository metadata."},
@@ -45,7 +47,7 @@ var commandHelp = map[string]commandHelpEntry{
 }
 
 var commandOrder = []string{
-	"sync", "index", "install", "uninstall", "select", "recover",
+	"sync", "index", "install", "uninstall", "unmerge", "remove", "select", "recover",
 	"query", "state", "search", "installed", "info", "inspect", "audit", "perl-cleaner",
 	"python-cleaner", "maintain", "bug-report", "plan-diff", "doctor", "dispatch-conf", "quickpkg",
 	"depclean", "prune", "env-update", "ldconfig", "config", "news", "deselect",

@@ -101,3 +101,40 @@ func TestLifecycleNoopWithLiveRoot(t *testing.T) {
 		})
 	}
 }
+
+func TestAdversarialLifecycleGuard(t *testing.T) {
+	for _, guard := range []string{
+		"if [[ -z ${ROOT} || -n ${ROOT} ]] ; then",
+		"if [[ -z ${ROOT_OTHER} ]] ; then",
+		"if [[ -z ${ROOT} && $(touch /tmp/unsafe) ]] ; then",
+	} {
+		body := "pkg_postrm() {\n" + guard + "\ntrue\nfi\n}"
+		if lifecycleNoopWithLiveRoot(body, "pkg_postrm") {
+			t.Fatalf("unsafe guard accepted: %s", guard)
+		}
+	}
+	for _, body := range []string{"true; fi; echo unsafe; if true; then", "else", "`echo unsafe`", "fi # escaped"} {
+		script := "pkg_postrm() {\nif [[ -z ${ROOT} ]] ; then\n" + body + "\nfi\n}"
+		if lifecycleNoopWithLiveRoot(script, "pkg_postrm") {
+			t.Fatalf("unsafe body accepted: %s", body)
+		}
+	}
+	for _, declaration := range []string{"pkg_postrm () { true; }", "function pkg_postrm { true; }", "pkg_postrm\n() { true; }"} {
+		dir := t.TempDir()
+		for name, content := range map[string]string{"CONTENTS": "", "pkg-1.ebuild": declaration} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := validateUninstallVDB(dir); err == nil {
+			t.Fatalf("alternate declaration escaped validation: %s", declaration)
+		}
+	}
+}
+
+func TestLifecycleGuardRejectsRedefinedHook(t *testing.T) {
+	safe := "pkg_postrm() {\nif [[ -z ${ROOT} ]] ; then\ntrue\nfi\n}\n"
+	if lifecycleNoopWithLiveRoot(safe+"function pkg_postrm { echo unsafe; }", "pkg_postrm") {
+		t.Fatal("redefined hook admitted")
+	}
+}

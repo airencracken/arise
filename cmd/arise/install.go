@@ -379,19 +379,14 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 
 	// --resume: load remaining packages from previous interrupted operation
 	if cfg.Resume {
-		if cfg.SkipFirst {
-			if err := resolve.SkipFirstResume(*resumeFile); err != nil {
-				fmt.Fprintf(os.Stderr, "resume: skipfirst: %v\n", err)
-			}
-		}
-		remaining, err := resolve.LoadResume(*resumeFile)
+		remaining, err := loadResumeTargets(*resumeFile, cfg.SkipFirst, cfg.Pretend || *preflightOnly)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "resume: load: %v\n", err)
 			os.Exit(1)
 		}
 		if len(remaining) == 0 {
 			fmt.Println("Nothing to resume.")
-			os.Remove(*resumeFile)
+			removeNoopResume(*resumeFile, cfg.Pretend, *preflightOnly)
 			return
 		}
 		targets = remaining
@@ -766,20 +761,6 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 			exitAfterRuntimeProfiles(1)
 		}
-		// KeepGoing: with partial results, ask user if they want to proceed
-		if !jsonMode && cfg.KeepGoing && len(result.Install) > 0 {
-			if !cfg.Ask {
-				fmt.Println("\nProceeding with partial results (--keep-going).")
-			} else if cfg.Ask {
-				fmt.Print("\nProceed with partial results? [y/N] ")
-				var response string
-				fmt.Scanln(&response)
-				if !strings.HasPrefix(strings.ToLower(response), "y") {
-					fmt.Println("Aborted.")
-					return
-				}
-			}
-		}
 	}
 	if !result.Verified && (jsonMode || cfg.Pretend) {
 		// --keep-going controls how much diagnostic work the resolver preserves;
@@ -799,7 +780,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if !cfg.Quiet {
 			fmt.Println("\nNothing to do.")
 		}
-		os.Remove(*resumeFile)
+		removeNoopResume(*resumeFile, cfg.Pretend, *preflightOnly)
 		return
 	}
 	if *preflightOnly {
@@ -850,6 +831,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	if err := planExecutionVerificationError(result); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if !confirmInstall(os.Stdin, os.Stdout, cfg.Ask) {
+		fmt.Println("Aborted.")
+		return
 	}
 	// Close the most obvious approval TOCTOU window: authorization is bound to
 	// a fresh fingerprint taken after all interactive/output work and directly
@@ -1802,12 +1787,13 @@ func sortedUseFlags(flags map[string]bool) ([]string, []string) {
 }
 
 func planActionDownloadSizes(actions []resolve.PkgAction, distdir string, verbose bool) map[string]int64 {
+	var sizer distfiles.DownloadSizer
 	sizes := make(map[string]int64, len(actions))
 	for _, action := range actions {
 		if action.Atom == nil {
 			continue
 		}
-		size, err := distfiles.ManifestDownloadSize(action.RepositoryPath, action.Atom.Category, action.Atom.Package, action.SrcURI, distdir, action.UseFlags)
+		size, err := sizer.Size(action.RepositoryPath, action.Atom.Category, action.Atom.Package, action.SrcURI, distdir, action.UseFlags)
 		if err != nil {
 			if verbose {
 				fmt.Fprintf(os.Stderr, "totals: %s: %v\n", action.Atom.CP(), err)

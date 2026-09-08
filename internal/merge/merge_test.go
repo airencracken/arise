@@ -1116,7 +1116,16 @@ func TestTransactionalUpgradeRemovesOnlyObsoleteUnsharedPayload(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	oldContents := "obj /usr/bin/obsolete md5 1\nobj /usr/bin/shared md5 1\nobj /usr/bin/retained md5 1\ndir /usr/bin\n"
+	obsolete := filepath.Join(rootDir, "usr", "bin", "obsolete")
+	info, err := os.Stat(obsolete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := md5File(obsolete)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldContents := formatContentsObj("/usr/bin/obsolete", digest, info.ModTime().Unix()) + "\nobj /usr/bin/shared md5 1\nobj /usr/bin/retained md5 1\ndir /usr/bin\n"
 	if err := os.WriteFile(filepath.Join(oldEntry, "CONTENTS"), []byte(oldContents), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2290,7 +2299,7 @@ func TestParseContentsExactRecordContracts(t *testing.T) {
 	input := strings.Join([]string{
 		"malformed-first-line",
 		"  obj /path with spaces deadbeef 42  ",
-		"sym /link with spaces -> ../target with spaces feedface 73",
+		"sym /link with spaces -> ../target with spaces 919c8b643b7133116b02fc0d9bb7df3f 73",
 		"dir /empty directory",
 		"fif /run/service.pipe",
 		"dev /dev/example",
@@ -2304,7 +2313,7 @@ func TestParseContentsExactRecordContracts(t *testing.T) {
 	}
 	want := []contentsEntry{
 		{Type: "obj", Path: "/path with spaces", MD5: "deadbeef", Mtime: 42},
-		{Type: "sym", Path: "/link with spaces", Mtime: 73},
+		{Type: "sym", Path: "/link with spaces", LinkTarget: "../target with spaces", Mtime: 73},
 		{Type: "dir", Path: "/empty directory"},
 		{Type: "fif", Path: "/run/service.pipe"},
 		{Type: "dev", Path: "/dev/example"},

@@ -21,6 +21,8 @@ func TestCommandCompletion(t *testing.T) {
 		want  []string
 	}{
 		{name: "command", words: []string{"arise", "mai"}, want: []string{"maintain"}},
+		{name: "unmerge alias", words: []string{"arise", "unm"}, want: []string{"unmerge"}},
+		{name: "remove alias", words: []string{"arise", "remo"}, want: []string{"remove"}},
 		{name: "target", words: []string{"arise", "maintain", ""}, want: []string{"world"}},
 		{name: "mode", words: []string{"arise", "maintain", "world", "--"}, want: []string{"--check", "--fix"}},
 		{name: "filtered mode", words: []string{"arise", "maintain", "world", "--f"}, want: []string{"--fix"}},

@@ -985,24 +985,8 @@ func removeObsoleteReplacementPayload(operation *journal.Journal, destDir, newVD
 		if retained[canonical] || otherOwners[canonical] || preservedPaths[canonical] {
 			continue
 		}
-		if _, err := os.Lstat(target); os.IsNotExist(err) {
-			continue
-		} else if err != nil {
-			return err
-		}
-		if err := operation.Capture(target); err != nil {
-			return fmt.Errorf("merge: journal obsolete replacement path %s: %w", target, err)
-		}
-		if entry.Type == "dir" {
-			if isEmptyDir(target) {
-				if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-					return err
-				}
-			}
-			continue
-		}
-		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-			return err
+		if err := removeRecordedPath(operation, target, entry); err != nil {
+			return fmt.Errorf("merge: remove obsolete path %s: %w", target, err)
 		}
 	}
 	if len(preservedPaths) != 0 {
@@ -1556,28 +1540,8 @@ func UnmergeWithConfig(ctx context.Context, cfg UnmergeConfig) (returnErr error)
 		if entry.Type != "dir" && otherOwners[canonical] {
 			continue
 		}
-		info, err := os.Lstat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return rollback(fmt.Errorf("unmerge: could not check file %s: %w", path, err))
-		}
-		if err := operation.Capture(path); err != nil {
-			return rollback(fmt.Errorf("unmerge: journal %s: %w", path, err))
-		}
-		if info.IsDir() {
-			if isEmptyDir(path) {
-				if err := os.Remove(path); err != nil {
-					return rollback(fmt.Errorf("unmerge: could not remove empty directory %s: %w", path, err))
-				}
-			}
-			continue
-		}
-		if err := os.Remove(path); err != nil {
-			if !os.IsNotExist(err) {
-				return rollback(fmt.Errorf("unmerge: could not remove file %s: %w", path, err))
-			}
+		if err := removeRecordedPath(operation, path, entry); err != nil {
+			return rollback(fmt.Errorf("unmerge: remove %s: %w", path, err))
 		}
 	}
 	if err := operation.RemoveTree(pkgPath); err != nil {
@@ -1608,10 +1572,11 @@ func UnmergeWithConfig(ctx context.Context, cfg UnmergeConfig) (returnErr error)
 }
 
 type contentsEntry struct {
-	Type  string // "obj", "dir", "sym"
-	Path  string
-	MD5   string
-	Mtime int64
+	Type       string // "obj", "dir", "sym"
+	Path       string
+	MD5        string
+	LinkTarget string
+	Mtime      int64
 }
 
 func parseContents(text string) ([]contentsEntry, error) {
@@ -1651,6 +1616,13 @@ func parseContents(text string) ([]contentsEntry, error) {
 			mtimeAt := strings.LastIndexByte(tail, ' ')
 			if mtimeAt >= 0 {
 				e.Mtime, _ = strconv.ParseInt(strings.TrimSpace(tail[mtimeAt+1:]), 10, 64)
+				e.LinkTarget = strings.TrimSpace(tail[:mtimeAt])
+				if digestAt := strings.LastIndexByte(e.LinkTarget, ' '); digestAt >= 0 {
+					digest := e.LinkTarget[digestAt+1:]
+					if decoded, err := hex.DecodeString(digest); err == nil && len(decoded) == md5.Size {
+						e.LinkTarget = strings.TrimSpace(e.LinkTarget[:digestAt])
+					}
+				}
 			}
 		case "dir", "fif", "dev":
 			e.Path = body

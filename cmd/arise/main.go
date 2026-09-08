@@ -26,7 +26,7 @@ import (
 )
 
 // version is replaced by release builds with -ldflags "-X main.version=...".
-var version = "0.0.30"
+var version = "0.0.31"
 var commandContext = context.Background()
 var stdoutIsTerminal = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 
@@ -282,7 +282,7 @@ func main() {
 		runState(cmdArgs, *dbPath, *vdbDir)
 	case "install":
 		runInstall(cmdArgs, *dbPath, *repoPath)
-	case "uninstall":
+	case "uninstall", "unmerge", "remove":
 		runUninstall(cmdArgs, *dbPath, *repoPath)
 	case "recover":
 		runRecover(cmdArgs)
@@ -583,7 +583,7 @@ func normalizeEmergeArgs(args []string) []string {
 	}
 
 	commandAt := -1
-	commands := map[string]bool{"install": true, "uninstall": true, "search": true}
+	commands := map[string]bool{"install": true, "uninstall": true, "unmerge": true, "remove": true, "search": true}
 	for i := 1; i < len(expanded); i++ {
 		if commands[expanded[i]] {
 			commandAt = i

@@ -352,6 +352,9 @@ Resolve and execute updates. If no atoms are specified, resolve @world.
 \fBuninstall\fR [\fIflags\fR] \fIatoms...\fR
 Verify and execute journaled removal. Use \fB\-\-pretend\fR for a read-only
 proposal.
+Accepts unambiguous package names or category/package atoms, optionally
+restricted by version, slot, or repository. All matching installed versions
+are selected. \fBunmerge\fR and \fBremove\fR are aliases.
 
 .TP
 \fBdepclean\fR [\fIflags\fR]

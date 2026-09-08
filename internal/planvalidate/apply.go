@@ -39,24 +39,9 @@ func ApplyPlan(installed []Package, plan Plan) ApplicationResult {
 			}
 			delete(current, identity)
 		case ActionInstall:
-			if action.Replaces != "" {
-				replaced, matches := findCPV(current, action.Replaces)
-				if matches != 1 {
-					violations = append(violations, violation("invalid-replacement-target", action.Package.CPV, action.Replaces, "", fmt.Sprintf("replacement target matched %d installed packages", matches)))
-					continue
-				}
-				delete(current, replaced)
+			if issue := applyInstallAction(current, action); issue != nil {
+				violations = append(violations, *issue)
 			}
-			identity := packageIdentity(action.Package)
-			if _, exists := current[identity]; exists {
-				violations = append(violations, violation("already-installed", action.Package.CPV, "", "", "install target already exists"))
-				continue
-			}
-			if conflict := sameSlotIdentity(current, action.Package); conflict != "" {
-				violations = append(violations, violation("slot-collision", action.Package.CPV, action.Package.Slot, conflict, "plan leaves two package instances in the same slot"))
-				continue
-			}
-			current[identity] = clonePackage(action.Package)
 		default:
 			violations = append(violations, violation("unknown-action", action.Package.CPV, action.Kind, "", "plan contains an unknown action kind"))
 		}
@@ -87,16 +72,47 @@ func findCPV(packages map[string]Package, cpv string) (string, int) {
 	return identity, count
 }
 
-func sameSlotIdentity(packages map[string]Package, candidate Package) string {
+func sameSlotIdentity(packages map[string]Package, candidate Package, excluded string) string {
 	candidateAtom, err := parseCPV(candidate.CPV)
 	if err != nil {
 		return ""
 	}
-	for _, pkg := range packages {
+	for identity, pkg := range packages {
+		if identity == excluded {
+			continue
+		}
 		existingAtom, err := parseCPV(pkg.CPV)
 		if err == nil && existingAtom.CP() == candidateAtom.CP() && pkg.Slot == candidate.Slot {
 			return packageIdentity(pkg)
 		}
 	}
 	return ""
+}
+
+func applyInstallAction(current map[string]Package, action Action) *Violation {
+	var replaced string
+	reject := func(code, atom, cause, message string) *Violation {
+		issue := violation(code, action.Package.CPV, atom, cause, message)
+		return &issue
+	}
+	if action.Replaces != "" {
+		var matches int
+		replaced, matches = findCPV(current, action.Replaces)
+		if matches != 1 {
+			return reject("invalid-replacement-target", action.Replaces, "", fmt.Sprintf("replacement target matched %d installed packages", matches))
+		}
+	}
+	identity := packageIdentity(action.Package)
+	if _, exists := current[identity]; exists && identity != replaced {
+		return reject("already-installed", "", "", "install target already exists")
+	}
+	if conflict := sameSlotIdentity(current, action.Package, replaced); conflict != "" {
+		return reject("slot-collision", action.Package.Slot, conflict, "plan leaves two package instances in the same slot")
+	}
+	// No state changes occur until every condition for this action has passed.
+	if replaced != "" {
+		delete(current, replaced)
+	}
+	current[identity] = clonePackage(action.Package)
+	return nil
 }

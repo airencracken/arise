@@ -15,7 +15,7 @@ func TestComplexityAuditRatchetsAndRequiresPerformanceEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"actual <= 7.89", "over_fifty > 20", "-over 221"} {
+	for _, required := range []string{"actual <= 7.87", "over_fifty > 19", "-over 215"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("complexity ratchet is missing %q", required)
 		}
