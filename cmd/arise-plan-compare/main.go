@@ -80,7 +80,11 @@ func main() {
 	if *withBdeps != "auto" {
 		ariseArgs = append(ariseArgs, "--with-bdeps="+*withBdeps)
 	}
-	ariseArgs = append(ariseArgs, *operation, *target)
+	operationArgs, err := ariseOperationArgs(*operation, *target)
+	if err != nil {
+		fatal(err)
+	}
+	ariseArgs = append(ariseArgs, operationArgs...)
 	// Verbose output is required for Portage to retain slot, repository and USE
 	// information in each action line.
 	emergeArgs := []string{"--pretend", "--verbose", "--color=n", fmt.Sprintf("--backtrack=%d", *backtrack)}
@@ -202,6 +206,17 @@ func main() {
 	}
 	if !r.Accepted {
 		os.Exit(1)
+	}
+}
+
+func ariseOperationArgs(operation, target string) ([]string, error) {
+	switch operation {
+	case "update":
+		return []string{"--update", target}, nil
+	case "install":
+		return []string{"install", target}, nil
+	default:
+		return nil, fmt.Errorf("unsupported comparison operation %q", operation)
 	}
 }
 

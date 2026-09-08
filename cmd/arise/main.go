@@ -26,7 +26,7 @@ import (
 )
 
 // version is replaced by release builds with -ldflags "-X main.version=...".
-var version = "0.0.32"
+var version = "0.0.33"
 var commandContext = context.Background()
 var stdoutIsTerminal = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 

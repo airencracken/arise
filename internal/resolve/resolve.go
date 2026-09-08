@@ -7174,6 +7174,8 @@ func LicenseAccepted(license string, acceptLicenses []string) bool {
 			acceptAll = true
 		case change == "-*":
 			acceptAll = false
+			eulaAllowed = false
+			clear(explicit)
 		case change == "@EULA":
 			eulaAllowed = true
 		case change == "-@EULA":

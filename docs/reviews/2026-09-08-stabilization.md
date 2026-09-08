@@ -70,7 +70,7 @@ preserved rather than rewritten to imply current results.
 
 ## Verification
 
-The following passed on the final production changes:
+The following passed on the initial stabilization batch:
 
 - `go test ./... -count=1 -timeout 120s`.
 - `go vet ./...`.
@@ -97,10 +97,54 @@ validation, missing index field validation, private index permissions,
 reversed timestamp ordering, duplicate resume publication, and cancellation
 bypass. Mutated files were restored before subsequent checks.
 
+## Follow-up Portage and stage3 checks
+
+The live_portage-tagged integration, phase-protocol, and rebuild suites passed.
+Optional package rehearsals without configured fixtures were skipped.
+
+The host comparison froze six repositories, installed metadata, configuration,
+and readable world state under `.validation/frozen-host-20260908`. Both tools
+read the same copies in a private mount namespace; their caches were isolated.
+The root-owned preserved-library registry, repository-revision state, and
+Portage config-state file were unreadable and were not captured. This is plan
+comparison evidence, not a complete host recovery snapshot.
+
+| Case | Result |
+|---|---|
+| Update coreutils, Arise, age individually | Equivalent valid empty plans |
+| Deep/newuse @world, build dependencies enabled | Equivalent valid plans, 107 actions each |
+| Deep/newuse @system, build dependencies enabled | Valid divergence: Arise updates nasm 3.01 to 3.02; Portage retains 3.01. Classified optional. |
+| Build-only coreutils reinstall | Both plan the same one-package source rebuild |
+| Binary-only coreutils | Both reject because no usable local binary exists |
+| Unmerge unqualified coreutils | Arise resolves the name but rejects broken reverse dependencies. Portage permits removal with warnings. Intentional safety boundary. |
+
+The official OpenRC stage3 `stage3-amd64-openrc-20260906T170102Z.tar.xz`
+was verified against its signed DIGESTS using the installed Gentoo release key.
+Its SHA-512 is
+`bd199be985f27edb140fe389db67efc7d25b45886a75619d42ecdc721cbb7a0617d385723da006140f5c86b4e4d87221677b8c8dfc9d317e21d912cc51ac2268`.
+A disposable chroot used the frozen Gentoo repository and stage3 profile.
+The first deep/newuse world comparison exposed one-level-only license-group
+expansion: the independent validator incorrectly rejected all nine updates
+under the default nested `@FREE` policy. After correction, both plans contained
+nine actions and were independently valid and equivalent.
+
+The follow-up also corrected package-specific license exclusions and resets,
+resolver reset handling, and the comparison helper's obsolete update command.
+Regressions cover nested, empty, unknown, and cyclic groups, exclusions, resets,
+input immutability, and supported command routes. Four additional deliberate
+source mutations were detected by these tests.
+
 ## Limits and next work
 
-No host packages, host configuration, or overlay release were changed. The
-same-snapshot Portage matrix, exhaustive option interactions, full recovery-set
-promotion, and fresh-stage3 gates remain open in the punchlist. Passing this
-batch does not close them or certify arbitrary lifecycle writes or snapshot
-backends. Keep these fixes together for the next explicitly requested release.
+No host packages or configuration were changed. Reboot validation was skipped
+at the user's request. The local user namespace has only one mapped UID/GID;
+archive ownership was normalized for chroot planning and Portage's planning
+account was mapped to root. A full stage3 update, interruption/resume, linkage,
+and multi-user ownership gate was not performed and remains open.
+
+S01 remains open for dedicated slot-rebuild and broader option cases; the
+comparison subset above does not close that backlog item. Exhaustive option
+interactions, full recovery-set promotion, and fresh-stage3 execution also
+remain open. These corrections and the documentation cleanup are consolidated
+in release 0.0.33; they do not certify arbitrary lifecycle writes or snapshot
+backends.

@@ -33,9 +33,11 @@ func validateActionPolicy(policy Policy, actions []Action, violations *[]Violati
 				"install target has no keyword accepted by frozen policy",
 			))
 		}
-		acceptedLicenses := applyPolicyChanges(policy.AcceptedLicenses, pkg.Policy.LicenseChanges)
+		// License exclusions and resets are ordered decisions, not removals
+		// from a list: removing -MIT would incorrectly let a prior * allow MIT.
+		acceptedLicenses := append(append([]string(nil), policy.AcceptedLicenses...), pkg.Policy.LicenseChanges...)
 		acceptedLicenses = expandLicenseGroups(acceptedLicenses, policy.LicenseGroups)
-		if len(acceptedLicenses) != 0 {
+		if len(policy.AcceptedLicenses) != 0 || len(pkg.Policy.LicenseChanges) != 0 {
 			node, err := depstring.Parse(pkg.License)
 			if err != nil {
 				*violations = append(*violations, violation(
@@ -77,21 +79,27 @@ func applyPolicyChanges(initial, changes []string) []string {
 
 func expandLicenseGroups(changes []string, groups map[string][]string) []string {
 	var result []string
-	for _, change := range changes {
+	var expand func(string, map[string]bool)
+	expand = func(change string, active map[string]bool) {
 		negative := strings.HasPrefix(change, "-")
 		name := strings.TrimPrefix(change, "-")
-		members, ok := groups[strings.TrimPrefix(name, "@")]
-		if !ok || !strings.HasPrefix(name, "@") {
+		group := strings.TrimPrefix(name, "@")
+		members, ok := groups[group]
+		if !ok || !strings.HasPrefix(name, "@") || active[group] {
 			result = append(result, change)
-			continue
+			return
 		}
+		active[group] = true
 		for _, member := range members {
-			if negative {
-				result = append(result, "-"+member)
-			} else {
-				result = append(result, member)
+			if negative && !strings.HasPrefix(member, "-") {
+				member = "-" + member
 			}
+			expand(member, active)
 		}
+		delete(active, group)
+	}
+	for _, change := range changes {
+		expand(change, make(map[string]bool))
 	}
 	return result
 }

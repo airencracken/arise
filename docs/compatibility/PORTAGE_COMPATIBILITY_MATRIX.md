@@ -21,6 +21,7 @@ Status values are `supported`, `partial`, `planned`, and `not-applicable`.
 | `--changed-use` | same | supported | reinstall classification tests |
 | `--changed-deps` | same | supported | installed/current dependency tests |
 | explicit package reinstall | same default behavior | supported | a same-version directly named atom reinstalls; update mode, sets and dependencies retain it |
+| `--unmerge` | `uninstall TARGET` | partial | accepts unqualified installed names; rejects ambiguous targets and removals that introduce broken dependencies, whereas Portage permits unsafe removal with warnings |
 | `-n`, `--noreplace` | same | supported | suppresses the default same-version explicit reinstall without suppressing upgrades |
 | `-v`, `--verbose` | same | supported subset | package reasons and USE details; resolver internals are excluded |
 | resolver diagnostics | `--debug` | Arise extension | stage/solver timings and bounded decision ledger are debug-only |

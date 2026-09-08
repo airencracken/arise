@@ -131,3 +131,23 @@ func TestWithoutNewsAddsMissingFeatures(t *testing.T) {
 		t.Fatalf("withoutNews() = %v, want %v", got, want)
 	}
 }
+
+func TestComparisonUsesExecutableOperationRoutes(t *testing.T) {
+	for _, operation := range []string{"install", "update", "uninstall", "unknown"} {
+		args, err := ariseOperationArgs(operation, "@world")
+		if operation == "install" || operation == "update" {
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := "install"
+			if operation == "update" {
+				first = "--update"
+			}
+			if len(args) != 2 || args[0] != first || args[1] != "@world" {
+				t.Fatalf("invalid %s route: %v", operation, args)
+			}
+		} else if err == nil {
+			t.Fatalf("unsupported comparison operation %s accepted", operation)
+		}
+	}
+}
