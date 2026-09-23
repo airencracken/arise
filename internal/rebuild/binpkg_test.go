@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/airencracken/arise/internal/binpkg"
+	"github.com/airencracken/arise/internal/portage"
 )
 
 func TestInstallBinaryPackageGPKG(t *testing.T) {
@@ -19,6 +20,15 @@ func TestInstallBinaryPackageGPKG(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(image, "usr", "bin", "demo"), []byte("payload"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	for _, name := range []string{"demo.conf", "masked.conf"} {
+		path := filepath.Join(image, "etc", name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("packaged"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	packagePath := filepath.Join(base, "demo.gpkg.tar")
 	metadata := map[string][]byte{
@@ -32,11 +42,22 @@ func TestInstallBinaryPackageGPKG(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(base, "root")
+	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"demo.conf", "masked.conf"} {
+		if err := os.WriteFile(filepath.Join(root, "etc", name), []byte("local"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var boundaryEvents []string
 	cfg := &RebuildConfig{
 		BinaryPackagePath: packagePath,
 		RootDir:           root, VdbDir: filepath.Join(root, "var", "db", "pkg"),
 		WorkDirBase: filepath.Join(base, "work"), JournalDir: filepath.Join(base, "journal"),
+		PortageConfig: &portage.Config{MakeConf: map[string]string{
+			"CONFIG_PROTECT": "/etc", "CONFIG_PROTECT_MASK": "/etc/masked.conf",
+		}},
 		BeginMutation: func(context.Context) (func() error, error) {
 			if _, err := os.Stat(filepath.Join(root, "usr", "bin", "demo")); !os.IsNotExist(err) {
 				t.Fatalf("payload reached ROOT before mutation boundary: %v", err)
@@ -65,6 +86,12 @@ func TestInstallBinaryPackageGPKG(t *testing.T) {
 	payload, err := os.ReadFile(filepath.Join(root, "usr", "bin", "demo"))
 	if err != nil || string(payload) != "payload" {
 		t.Fatalf("installed payload = %q, %v", payload, err)
+	}
+	for name, want := range map[string]string{"demo.conf": "local", "._cfg0000_demo.conf": "packaged", "masked.conf": "packaged"} {
+		got, err := os.ReadFile(filepath.Join(root, "etc", name))
+		if err != nil || string(got) != want {
+			t.Errorf("binary config %s = %q, %v; want %q", name, got, err, want)
+		}
 	}
 	wantBoundaryEvents := []string{"begin", "record", "release"}
 	if strings.Join(boundaryEvents, ",") != strings.Join(wantBoundaryEvents, ",") {

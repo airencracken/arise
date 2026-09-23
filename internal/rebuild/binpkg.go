@@ -285,14 +285,19 @@ func InstallBinaryPackage(ctx context.Context, atomStr string, cfg *RebuildConfi
 		}()
 	}
 	cfg.fireStage("merge")
-	mergeErr := merge.Merge(ctx, image, merge.MergeConfig{
+	mergeCfg := merge.MergeConfig{
 		RootDir: cfg.RootDir, VdbDir: cfg.VdbDir,
 		Category: info.Category, Package: info.Package, Version: info.Version,
 		JournalDir: cfg.JournalDir, AllowLiveRoot: cfg.AllowLiveRoot,
 		AllowLiveReplacement: cfg.AllowLiveReplacement,
 		VDBLockHeld:          cfg.VDBLockHeld, VDBMetadata: metadata, Environment: environment,
 		OnStage: cfg.fireStage, OnProgress: cfg.fireProgress,
-	})
+	}
+	if cfg.PortageConfig != nil {
+		mergeCfg.ConfigProtect = strings.Fields(cfg.PortageConfig.MakeConf["CONFIG_PROTECT"])
+		mergeCfg.ConfigProtectMask = strings.Fields(cfg.PortageConfig.MakeConf["CONFIG_PROTECT_MASK"])
+	}
+	mergeErr := merge.Merge(ctx, image, mergeCfg)
 	committed := mergeErr == nil
 	if !committed {
 		var postCommit *merge.PostCommitError

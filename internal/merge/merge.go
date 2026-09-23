@@ -109,7 +109,7 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 			if err := validateLiveReplacementTargetsWithConfig(destDir, cfg.RootDir, replacedVDB, cfg.ConfigProtect, cfg.ConfigProtectMask); err != nil {
 				return err
 			}
-		} else if err := validateLiveNewInstallTargets(destDir, cfg.RootDir); err != nil {
+		} else if err := validateLiveNewInstallTargets(destDir, cfg.RootDir, cfg.ConfigProtect, cfg.ConfigProtectMask); err != nil {
 			return err
 		}
 	}
@@ -287,13 +287,14 @@ func generatedInfoDirectoryIndex(destDir, relative string, staged os.DirEntry, i
 	return err == nil && marker.Mode().IsRegular()
 }
 
-// validateLiveNewInstallTargets limits the first live lane to additive package
-// state. Existing directories may be shared. An identical symlink may be
-// adopted because alternatives packages can stage a link already created by a
+// validateLiveNewInstallTargets limits new installs to additive package state,
+// including regular files handled by CONFIG_PROTECT. Existing directories may
+// be shared. An identical symlink may be adopted because alternatives packages
+// can stage a link already created by a
 // provider's post-install lifecycle; no filesystem object is changed in that
-// case. Every other existing file, differing symlink or special object is
+// case. Other existing files, differing symlinks and special objects are
 // refused, whether VDB-owned or local/unowned.
-func validateLiveNewInstallTargets(destDir, rootDir string) error {
+func validateLiveNewInstallTargets(destDir, rootDir string, configProtect, configProtectMask []string) error {
 	return filepath.WalkDir(destDir, func(source string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -311,6 +312,12 @@ func validateLiveNewInstallTargets(destDir, rootDir string) error {
 			return fmt.Errorf("merge: inspect live canary target %s: %w", target, err)
 		}
 		if entry.IsDir() && info.IsDir() {
+			return nil
+		}
+		// Match the merge path's regular-file protection exactly. Local
+		// configuration remains in place; differing defaults go to ._cfg files.
+		// A masked path or a file-type change must not bypass collision checks.
+		if entry.Type().IsRegular() && info.Mode().IsRegular() && protectedPath(relative, configProtect, configProtectMask) {
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 && info.Mode()&os.ModeSymlink != 0 {

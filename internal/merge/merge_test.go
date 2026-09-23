@@ -219,13 +219,13 @@ func TestValidateLiveNewInstallTargetsIsStrictlyAdditive(t *testing.T) {
 	if err := os.WriteFile(imageFile, []byte("new"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateLiveNewInstallTargets(image, root); err != nil {
+	if err := validateLiveNewInstallTargets(image, root, nil, nil); err != nil {
 		t.Fatalf("additive image rejected: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "usr", "bin", "canary"), []byte("local"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateLiveNewInstallTargets(image, root); err == nil {
+	if err := validateLiveNewInstallTargets(image, root, nil, nil); err == nil {
 		t.Fatal("existing live target accepted")
 	}
 }
@@ -244,7 +244,7 @@ func TestValidateLiveNewInstallTargetsAllowsIdenticalAlternativesSymlink(t *test
 			t.Fatal(err)
 		}
 	}
-	if err := validateLiveNewInstallTargets(image, root); err != nil {
+	if err := validateLiveNewInstallTargets(image, root, nil, nil); err != nil {
 		t.Fatalf("identical alternatives symlink was rejected: %v", err)
 	}
 }
@@ -264,7 +264,7 @@ func TestValidateLiveNewInstallTargetsRejectsDifferentSymlink(t *testing.T) {
 	if err := os.Symlink("../usr/bin/bsd-cpio", filepath.Join(root, "bin", "cpio")); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateLiveNewInstallTargets(image, root); err == nil || !strings.Contains(err.Error(), "refuses existing target") {
+	if err := validateLiveNewInstallTargets(image, root, nil, nil); err == nil || !strings.Contains(err.Error(), "refuses existing target") {
 		t.Fatalf("different symlink error = %v", err)
 	}
 }
