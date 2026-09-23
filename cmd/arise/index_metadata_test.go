@@ -52,9 +52,11 @@ func TestIndexEvaluatesUncachedOverlayAndPreservesPreviousOnFailure(t *testing.T
 	}
 	eclass := "gentoo/eclass/dependencies.eclass"
 	write(eclass, "SLOT=0\nKEYWORDS=amd64\nRDEPEND=dev-libs/first\n")
+	write("overlay/acct-group/imvault/imvault-0.ebuild", "EAPI=8\nSLOT=0\nKEYWORDS=amd64\n")
+	write("overlay/acct-user/imvault/imvault-0.ebuild", "EAPI=8\nSLOT=0\nKEYWORDS=amd64\nRDEPEND=acct-group/imvault\n")
 	write("overlay/www-apps/imvault/imvault-1.ebuild", `EAPI=8
 inherit dependencies
-RDEPEND=""
+RDEPEND="acct-user/imvault"
 DESCRIPTION="an uncached overlay package"
 src_install() { die "index must not execute src_install"; }
 `)
@@ -88,7 +90,7 @@ src_install() { die "index must not execute src_install"; }
 				packages = append(packages, action.Atom.CP())
 			}
 			slices.Sort(packages)
-			if want := []string{dependency, "www-apps/imvault"}; !slices.Equal(packages, want) || !result.Verified {
+			if want := []string{"acct-group/imvault", "acct-user/imvault", dependency, "www-apps/imvault"}; !slices.Equal(packages, want) || !result.Verified {
 				t.Fatalf("plan for %s = %v (verified %v), want %v", target, packages, result.Verified, want)
 			}
 		}

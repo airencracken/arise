@@ -71,7 +71,7 @@ func canonicalizeIndependentAuditTargets(graph *resolve.DepGraph, targets []stri
 		if strings.Contains(target, "/") || strings.HasPrefix(target, "@") {
 			continue
 		}
-		matches := graph.FindPackagesByName(target)
+		matches := graph.BarePackageCandidates(target)
 		switch len(matches) {
 		case 1:
 			canonical[index] = matches[0]

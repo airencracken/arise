@@ -2055,7 +2055,7 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 		a, err := atom.ParsePackageAtom(target)
 		if err != nil {
 			if !strings.Contains(target, "/") {
-				matches := r.findPackagesByName(target)
+				matches := r.graph.BarePackageCandidates(target)
 				switch len(matches) {
 				case 0:
 					if name, nameErr := atom.ParsePackageAtom("virtual/" + target); nameErr == nil && name.Package == target {
@@ -2120,19 +2120,29 @@ func parseGeneratedSetAtom(entry string) (*atom.Atom, error) {
 	return identity, nil
 }
 
-func (r *resolver) findPackagesByName(name string) []string {
-	return r.graph.FindPackagesByName(name)
-}
-
-// FindPackagesByName returns the sorted category/package identities whose
-// package component exactly matches name.
-func (g *DepGraph) FindPackagesByName(name string) []string {
+// BarePackageCandidates returns sorted category/package identities for a bare
+// target. Like emerge, it prefers a single ordinary package over names shared
+// with acct-group, acct-user, or virtual packages. Other collisions remain
+// ambiguous; account packages are still resolved normally as dependencies.
+func (g *DepGraph) BarePackageCandidates(name string) []string {
 	var matches []string
+	var ordinary string
+	ordinaryCount := 0
 	for cp := range g.Packages {
-		parts := strings.SplitN(cp, "/", 2)
-		if len(parts) == 2 && parts[1] == name {
-			matches = append(matches, cp)
+		category, packageName, ok := strings.Cut(cp, "/")
+		if !ok || packageName != name {
+			continue
 		}
+		matches = append(matches, cp)
+		switch category {
+		case "acct-group", "acct-user", "virtual":
+		default:
+			ordinary = cp
+			ordinaryCount++
+		}
+	}
+	if ordinaryCount == 1 {
+		return []string{ordinary}
 	}
 	sort.Strings(matches)
 	return matches

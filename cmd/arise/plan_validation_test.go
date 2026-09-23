@@ -110,6 +110,49 @@ func TestIndependentPlanAuditBareTargetFailsClosedOnAmbiguity(t *testing.T) {
 	}
 }
 
+func TestIndependentPlanAuditBareApplicationWithAccounts(t *testing.T) {
+	graph := resolve.NewDepGraph()
+	for _, cp := range []string{"acct-group/imvault", "acct-user/imvault", "www-apps/imvault"} {
+		version := graph.AddVersionFromRepository(cp, "1", "0", "0", false, nil, "amd64", "comfyware")
+		version.Available, version.DependencyMetadataKnown, version.EAPI = true, true, "8"
+		if cp == "www-apps/imvault" {
+			version.Rdepend = "acct-user/imvault"
+		} else if cp == "acct-user/imvault" {
+			version.Rdepend = "acct-group/imvault"
+		}
+	}
+	// Resolve a qualified target so this regression exercises the independent
+	// audit even when the resolver cannot yet expand the bare application name.
+	cfg := resolve.DefaultResolveConfig()
+	result, err := resolve.Resolve(graph, []string{"www-apps/imvault"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audit, err := prepareIndependentPlanAudit(graph, result, []string{"imvault"}, cfg)
+	if err != nil || audit == nil {
+		t.Fatalf("prepare bare application audit: %v", err)
+	}
+	if got := audit.fixture.Request.Targets; !reflect.DeepEqual(got, []string{"www-apps/imvault"}) {
+		t.Fatalf("audit targets = %v", got)
+	}
+	if validation := audit.validate(); !validation.Valid {
+		t.Fatalf("application with accounts failed audit: %#v", validation)
+	}
+	for index, action := range result.Install {
+		if action.Atom.CP() == "acct-user/imvault" {
+			result.Install = append(result.Install[:index], result.Install[index+1:]...)
+			break
+		}
+	}
+	audit, err = prepareIndependentPlanAudit(graph, result, []string{"imvault"}, cfg)
+	if err != nil || audit == nil {
+		t.Fatalf("prepare incomplete application audit: %v", err)
+	}
+	if validation := audit.validate(); validation.Valid {
+		t.Fatal("audit accepted an application plan missing its required account")
+	}
+}
+
 func TestIndependentPlanAuditFreezesPartialPlanModes(t *testing.T) {
 	graph := resolve.NewDepGraph()
 	for name, test := range map[string]struct {
