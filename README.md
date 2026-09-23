@@ -69,7 +69,7 @@ update itself:
 
 ```sh
 arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.33
+arise -1 --reinstall =sys-apps/arise-0.0.34
 ```
 
 Git repositories synchronize concurrently. Arise honors Portage-compatible
@@ -124,6 +124,12 @@ arise search firefox
 arise search --installed --category dev-lang
 arise query --versions www-client/firefox
 ```
+
+Configured overlays do not need to ship a metadata cache. During `arise sync`
+or `arise index`, Arise evaluates uncached ebuilds and their inherited eclasses
+with its sandboxed Bash worker, without running build or install phases. A
+failed evaluation reports the package and preserves the previous index. After
+upgrading from an older release, run `arise index` to refresh existing entries.
 
 Inspect the installed system:
 

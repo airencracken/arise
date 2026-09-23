@@ -26,6 +26,12 @@ func runIndex(dbPath, repoPath string) {
 		fmt.Fprintf(os.Stderr, "index: %v\n", err)
 		os.Exit(1)
 	}
+	absoluteRepo, err := filepath.Abs(repoPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "index: repository path: %v\n", err)
+		os.Exit(1)
+	}
+	repoPath = absoluteRepo
 	candidate, err := snapshotstore.Prepare(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "index: prepare snapshot: %v\n", err)
@@ -38,18 +44,21 @@ func runIndex(dbPath, repoPath string) {
 	writePath := candidate.GenerationPath
 	cacheRoots := []string{filepath.Join(repoPath, "metadata", "md5-cache")}
 	seenRoots := map[string]bool{cacheRoots[0]: true}
-	if repos, readErr := portage.ReadEffectiveReposConf(*portageConfigRoot); readErr == nil {
-		for _, repo := range repos {
-			cacheRoot := filepath.Join(repo.Location, "metadata", "md5-cache")
-			if repo.Location == "" || seenRoots[cacheRoot] {
-				continue
-			}
-			cacheRoots = append(cacheRoots, cacheRoot)
-			seenRoots[cacheRoot] = true
+	repos, readErr := portage.ReadEffectiveReposConf(*portageConfigRoot)
+	if readErr != nil {
+		fmt.Fprintf(os.Stderr, "index: read repositories: %v\n", readErr)
+		os.Exit(1)
+	}
+	for _, repo := range repos {
+		cacheRoot := filepath.Join(repo.Location, "metadata", "md5-cache")
+		if repo.Location == "" || seenRoots[cacheRoot] {
+			continue
 		}
+		cacheRoots = append(cacheRoots, cacheRoot)
+		seenRoots[cacheRoot] = true
 	}
 	cacheResults, cacheErrs := walker.WalkCacheRoots(cacheRoots)
-	fallbackResults, fallbackErrs := walker.WalkUncachedEbuildRoots(cacheRoots)
+	fallbackResults, fallbackErrs := walker.WalkEvaluatedEbuildRoots(commandContext, cacheRoots, walker.RepositoryEntries(cacheRoots, repos))
 	results, errs := walker.MergeWalks(cacheResults, fallbackResults, cacheErrs, fallbackErrs)
 	db, err := ingest.OpenDB(writePath)
 	if err != nil {
@@ -65,11 +74,15 @@ func runIndex(dbPath, repoPath string) {
 	}
 
 	var parseErrors int
+	var firstParseError error
 	errsDone := make(chan struct{})
 	go func() {
 		defer close(errsDone)
 		for e := range errs {
 			parseErrors++
+			if firstParseError == nil {
+				firstParseError = e
+			}
 			if *verbose {
 				fmt.Fprintf(os.Stderr, "index: %v\n", e)
 			}
@@ -94,12 +107,15 @@ func runIndex(dbPath, repoPath string) {
 	}
 	<-errsDone
 	exitIfIndexInterrupted(commandContext)
-	if parseErrors == 0 {
-		stats.Removed, err = ingest.RemoveMissing(db, seen)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "index: remove stale packages: %v\n", err)
-			os.Exit(1)
-		}
+	if parseErrors != 0 {
+		_ = db.Close()
+		fmt.Fprintf(os.Stderr, "index: %d metadata errors; previous index preserved: %v\n", parseErrors, firstParseError)
+		os.Exit(1)
+	}
+	stats.Removed, err = ingest.RemoveMissing(db, seen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "index: remove stale packages: %v\n", err)
+		os.Exit(1)
 	}
 	if interactive {
 		fmt.Printf("\r\033[2K")
@@ -148,9 +164,6 @@ func runIndex(dbPath, repoPath string) {
 		fmt.Fprintf(os.Stderr, "index: prune old snapshots: %v\n", err)
 	}
 	fmt.Printf("%s Scanned %d entries in %s (%d changed, %d unchanged, %d removed)", color.Green("Done."), stats.Seen, time.Since(started).Round(time.Millisecond), stats.Changed, stats.Unchanged, stats.Removed)
-	if parseErrors > 0 {
-		fmt.Printf(" (%d non-fatal parse errors, use -v to see)", parseErrors)
-	}
 	fmt.Println()
 }
 

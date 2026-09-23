@@ -2058,7 +2058,14 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 				matches := r.findPackagesByName(target)
 				switch len(matches) {
 				case 0:
-					// no match, proceed with original error
+					if name, nameErr := atom.ParsePackageAtom("virtual/" + target); nameErr == nil && name.Package == target {
+						msg := fmt.Sprintf("package %q could not be found in the indexed repositories; check repository configuration and refresh with arise sync or arise index", target)
+						r.conflicts = append(r.conflicts, msg)
+						if r.config.KeepGoing {
+							continue
+						}
+						return nil, fmt.Errorf("resolve: %s", msg)
+					}
 				case 1:
 					a, err = atom.Parse(matches[0])
 					if err != nil {

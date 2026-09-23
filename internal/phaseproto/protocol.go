@@ -151,10 +151,11 @@ func (r Request) validateCommand() error {
 	validPhase := r.Command == "run_phase" && r.Phase != "" && len(r.Phases) == 0
 	validPhases := r.Command == "run_phases" && r.Phase == "" && len(r.Phases) != 0
 	validDiscovery := r.Command == "discover_phases" && r.Phase == "" && len(r.Phases) == 0
-	if validPhase || validPhases || validDiscovery {
+	validMetadata := r.Command == "evaluate_metadata" && r.Phase == "" && len(r.Phases) == 0
+	if validPhase || validPhases || validDiscovery || validMetadata {
 		return nil
 	}
-	if r.Command != "run_phase" && r.Command != "run_phases" && r.Command != "discover_phases" {
+	if r.Command != "run_phase" && r.Command != "run_phases" && r.Command != "discover_phases" && r.Command != "evaluate_metadata" {
 		return fmt.Errorf("phase protocol: unsupported command %q", r.Command)
 	}
 	return fmt.Errorf("phase protocol: invalid phase for command %s", r.Command)

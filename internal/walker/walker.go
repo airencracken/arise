@@ -170,7 +170,7 @@ func WalkUncachedEbuildRootsWithPortageCache(cacheRoots []string, portageCacheRo
 				}
 				repositoryRelative := strings.TrimPrefix(filepath.Clean(repo), string(filepath.Separator))
 				portageCachePath := filepath.Join(portageCacheRoot, repositoryRelative, category, pf)
-				if data, err := os.ReadFile(portageCachePath); err == nil {
+				if data, err := readPortageCache(portageCacheRoot, portageCachePath); err == nil {
 					m, parseErr := metadata.ParseCacheEntry(category+"/"+pf, data)
 					if parseErr != nil {
 						errs <- parseErr
@@ -221,6 +221,13 @@ func WalkUncachedEbuildRootsWithPortageCache(cacheRoots []string, portageCacheRo
 		}
 	}()
 	return results, errs
+}
+
+func readPortageCache(root, path string) ([]byte, error) {
+	if root == "" {
+		return nil, os.ErrNotExist
+	}
+	return os.ReadFile(path)
 }
 
 func staticCacheValue(value string) string {

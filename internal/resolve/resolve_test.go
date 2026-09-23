@@ -247,6 +247,21 @@ func TestVerifierRepairsDependencyOmittedFromPlannedPackage(t *testing.T) {
 	}
 }
 
+func TestResolveMissingBareTargetReportsMissingPackage(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "app-admin/vault", "1", "0", "0", false, nil)
+	_, err := Resolve(g, []string{"imvault"}, DefaultResolveConfig())
+	if err == nil || !strings.Contains(err.Error(), `package "imvault" could not be found in the indexed repositories`) || strings.Contains(err.Error(), "expected category/package") {
+		t.Fatalf("missing bare target error: %v", err)
+	}
+	for _, target := range []string{"bad name", "imvault[", "imvault:0"} {
+		_, err := Resolve(g, []string{target}, DefaultResolveConfig())
+		if err == nil || !strings.Contains(err.Error(), "could not parse package specification") {
+			t.Errorf("invalid target %q error: %v", target, err)
+		}
+	}
+}
+
 func TestResolveMissingTargetSuggestsNearbyPackages(t *testing.T) {
 	g := makeGraph()
 	pkg(g, "app-editors/vim", "9.1", "0", "0", false, nil)

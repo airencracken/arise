@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 
 exec 3>&1
+readonly ARISE_WORKER_PID=$BASHPID
 sequence_file=
 log_file=
 cleanup_worker_temporaries() {
+	if [[ $BASHPID == "$ARISE_WORKER_PID" && ${ARISE_RESULT_EMITTED-} != 1 && -f $sequence_file ]]; then
+		if [[ -f $log_file ]]; then
+			emit '"kind":"log","stream":"stdout","message":"'"$(escape_json "$(<"$log_file")")"'"'
+		fi
+		emit '"kind":"result","exit_code":1'
+	fi
   [[ -z $sequence_file ]] || rm -f -- "$sequence_file"
   [[ -z $log_file ]] || rm -f -- "$log_file"
 }
@@ -15,6 +22,7 @@ sequence_file=$(mktemp) || {
 printf '0\n' > "$sequence_file"
 declare -A ARISE_INHERITING=()
 declare -A ARISE_INHERITED=()
+declare -A ARISE_ECLASS_METADATA=()
 escape_json() {
   local s=$1 out= ch escaped
   local i code
@@ -426,20 +434,44 @@ newexe() {
   [[ -z $temporary ]] || rm -f -- "$temporary"
   return "$status"
 }
+arise_source_eclass() {
+	local arise_metadata_name arise_source_status
+	local -a arise_metadata_keys=( IUSE REQUIRED_USE DEPEND BDEPEND RDEPEND PDEPEND IDEPEND )
+	# PMS 10.2: eclass dependency keys accumulate; EAPI 8 adds these two.
+	[[ $EAPI == 8 || $EAPI == 9 ]] && arise_metadata_keys+=( PROPERTIES RESTRICT )
+	local -A arise_metadata_saved=()
+	for arise_metadata_name in "${arise_metadata_keys[@]}"; do
+		[[ -v $arise_metadata_name ]] && arise_metadata_saved[$arise_metadata_name]=${!arise_metadata_name}
+		unset "$arise_metadata_name"
+	done
+	source "$1"
+	arise_source_status=$?
+	for arise_metadata_name in "${arise_metadata_keys[@]}"; do
+		if [[ ${!arise_metadata_name-} ]]; then
+			ARISE_ECLASS_METADATA[$arise_metadata_name]+=" ${!arise_metadata_name}"
+		fi
+		if [[ -v arise_metadata_saved[$arise_metadata_name] ]]; then
+			printf -v "$arise_metadata_name" '%s' "${arise_metadata_saved[$arise_metadata_name]}"
+		else
+			unset "$arise_metadata_name"
+		fi
+	done
+	return "$arise_source_status"
+}
 inherit() {
   local name directory path old_eclass=${ECLASS-}
   for name in "$@"; do
-    [[ $name =~ ^[A-Za-z0-9+_.-]+$ ]] || { printf 'unsafe eclass name %s\n' "$name"; return 1; }
+    [[ $name =~ ^[A-Za-z0-9+_.-]+$ ]] || die "unsafe eclass name $name"
     [[ ${ARISE_INHERITED[$name]-} ]] && continue
-    [[ ${ARISE_INHERITING[$name]-} ]] && { printf 'circular eclass inherit: %s\n' "$name"; return 1; }
+    [[ ${ARISE_INHERITING[$name]-} ]] && die "circular eclass inherit: $name"
     path=
     while IFS= read -r directory; do
       [[ -f $directory/$name.eclass ]] && { path=$directory/$name.eclass; break; }
     done <<< "${ARISE_ECLASS_DIRS-}"
-    [[ $path ]] || { printf 'inherited eclass %s not found\n' "$name"; return 1; }
+    [[ $path ]] || die "inherited eclass $name not found"
     ARISE_INHERITING[$name]=1
     ECLASS=$name
-    source "$path" || return
+    arise_source_eclass "$path" || die "could not source eclass $name"
     unset 'ARISE_INHERITING[$name]'
     ARISE_INHERITED[$name]=1
     ECLASS=$old_eclass
@@ -904,7 +936,7 @@ arise_restore_managed_environment() {
 	[[ -z $ARISE_SAVED_PV ]] || PV=$ARISE_SAVED_PV
 	[[ -z $ARISE_SAVED_PR ]] || PR=$ARISE_SAVED_PR
 	[[ -z $ARISE_SAVED_PVR ]] || PVR=$ARISE_SAVED_PVR
-	[[ -z $ARISE_SAVED_SLOT ]] || SLOT=$ARISE_SAVED_SLOT
+	[[ $ARISE_COMMAND == evaluate_metadata || -z $ARISE_SAVED_SLOT ]] || SLOT=$ARISE_SAVED_SLOT
   ROOT=$ARISE_SAVED_ROOT EROOT=$ARISE_SAVED_EROOT SYSROOT=$ARISE_SAVED_SYSROOT ESYSROOT=$ARISE_SAVED_ESYSROOT BROOT=$ARISE_SAVED_BROOT
   WORKDIR=$ARISE_SAVED_WORKDIR S=$ARISE_SAVED_S D=$ARISE_SAVED_D ED=$ARISE_SAVED_ED T=$ARISE_SAVED_T
   FILESDIR=$ARISE_SAVED_FILESDIR DISTDIR=$ARISE_SAVED_DISTDIR USE=$ARISE_SAVED_USE
@@ -922,9 +954,18 @@ if [[ $ARISE_EAPI == 9 ]]; then
   }
   export -n CATEGORY P PF PN PV PR PVR A FILESDIR DISTDIR WORKDIR S ROOT EROOT T EPREFIX D ED USE EBUILD_PHASE EBUILD_PHASE_FUNC MERGE_TYPE REPLACING_VERSIONS REPLACED_BY_VERSION ECLASS INHERITED DEFINED_PHASES ARCH CONFIG_PROTECT CONFIG_PROTECT_MASK USE_EXPAND USE_EXPAND_UNPREFIXED USE_EXPAND_HIDDEN USE_EXPAND_IMPLICIT IUSE_IMPLICIT 2>/dev/null || :
 fi
+if [[ $ARISE_COMMAND == evaluate_metadata ]]; then
+	unset SLOT
+	EBUILD_PHASE=depend
+	EBUILD_PHASE_FUNC=
+	[[ $ARISE_EAPI == 9 ]] || export EBUILD_PHASE EBUILD_PHASE_FUNC
+fi
 if (( status == 0 )); then
   source "${ARISE_ENVIRONMENT:-$ARISE_EBUILD}" >"$log_file" 2>&1
   status=$?
+  for metadata_name in "${!ARISE_ECLASS_METADATA[@]}"; do
+    printf -v "$metadata_name" '%s%s' "${!metadata_name-}" "${ARISE_ECLASS_METADATA[$metadata_name]}"
+  done
   arise_restore_sandbox_environment
   if [[ ${ARISE_ENVIRONMENT-} ]]; then ARISE_DECLARED_S=$ARISE_SAVED_S; else ARISE_DECLARED_S=${S-}; fi
 fi
@@ -939,7 +980,7 @@ if (( status == 0 )); then
 	if [[ " ${RESTRICT-} " == *" strip "* ]]; then
 		ARISE_STRIP=0
 	fi
-	if [[ $ARISE_DECLARED_S != "$ARISE_SAVED_S" && $ARISE_DECLARED_S != "$WORKDIR" && $ARISE_DECLARED_S != "$WORKDIR"/* ]]; then
+	if [[ $ARISE_COMMAND != evaluate_metadata && $ARISE_DECLARED_S != "$ARISE_SAVED_S" && $ARISE_DECLARED_S != "$WORKDIR" && $ARISE_DECLARED_S != "$WORKDIR"/* ]]; then
 		printf 'ebuild S escapes WORKDIR: %s\n' "$ARISE_DECLARED_S" >>"$log_file"
 		status=126
 	else
@@ -951,7 +992,7 @@ if (( status == 0 )) && [[ ${EAPI-} != "$ARISE_EAPI" ]]; then
   printf 'ebuild EAPI %s does not match preflight EAPI %s\n' "${EAPI-<unset>}" "$ARISE_EAPI" >>"$log_file"
   status=126
 fi
-if (( status == 0 )) && [[ ${ARISE_EMIT_METADATA-} == 1 ]]; then
+if (( status == 0 )) && [[ ${ARISE_EMIT_METADATA-} == 1 || $ARISE_COMMAND == evaluate_metadata ]]; then
   # Portage persists these two values as derived metadata.  Ebuilds normally do
   # not assign either variable themselves, so derive them after the complete
   # eclass/ebuild source pass rather than overwriting useful cache metadata with
@@ -965,7 +1006,11 @@ if (( status == 0 )) && [[ ${ARISE_EMIT_METADATA-} == 1 ]]; then
   for metadata_phase in pkg_pretend pkg_setup src_unpack src_prepare src_configure src_compile src_test src_install pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
     declare -F "$metadata_phase" >/dev/null && DEFINED_PHASES+="${DEFINED_PHASES:+ }${metadata_phase}"
   done
-  for metadata_name in DEPEND RDEPEND BDEPEND IDEPEND PDEPEND IUSE REQUIRED_USE LICENSE PROPERTIES RESTRICT DEFINED_PHASES INHERITED; do
+  metadata_keys=( DEPEND RDEPEND BDEPEND IDEPEND PDEPEND IUSE REQUIRED_USE LICENSE PROPERTIES RESTRICT DEFINED_PHASES INHERITED )
+  if [[ $ARISE_COMMAND == evaluate_metadata ]]; then
+    metadata_keys+=( EAPI SLOT KEYWORDS SRC_URI DESCRIPTION HOMEPAGE )
+  fi
+  for metadata_name in "${metadata_keys[@]}"; do
     metadata_value=${!metadata_name-}
     escaped=$(escape_json "$metadata_value")
     emit '"kind":"metadata","class":"'"$metadata_name"'","message":"'"$escaped"'"'
@@ -1063,6 +1108,7 @@ while IFS= read -r line; do
 done <"$log_file"
 rm -f -- "$log_file"
 log_file=
+ARISE_RESULT_EMITTED=1
 emit '"kind":"result","exit_code":'"$status"
 rm -f -- "$sequence_file"
 sequence_file=
