@@ -179,12 +179,24 @@ func reportIndependentPlanAudit(writer io.Writer, stage string, result planvalid
 	if result.Valid {
 		return
 	}
-	fmt.Fprintf(writer, "arise: independent plan validation failed at %s (%d violation(s), %d omitted); refusing package-state mutation\n",
-		stage, len(result.Violations), result.OmittedViolations)
-	for index, violation := range result.Violations {
-		if index == 5 {
-			fmt.Fprintln(writer, "  additional violations omitted from human audit output")
-			break
+	const maxDisplayedViolations = 5
+	total := len(result.Violations) + result.OmittedViolations
+	fmt.Fprintf(writer, "arise: plan safety check failed at %s; no package changes were made.\n", stage)
+	if len(result.Violations) > maxDisplayedViolations {
+		fmt.Fprintf(writer, "  Found %s; showing the first %d.\n", auditIssueCount(total), maxDisplayedViolations)
+	} else {
+		fmt.Fprintf(writer, "  Found %s.\n", auditIssueCount(total))
+	}
+	shown := len(result.Violations)
+	if shown > maxDisplayedViolations {
+		shown = maxDisplayedViolations
+	}
+	for _, violation := range result.Violations[:shown] {
+		if violation.Kind == "unjustified-action" {
+			fmt.Fprintf(writer,
+				"  Could not verify why %s needs to be installed. It matches no requested package, and the audit found no dependency reason for it; a dependency-triggered rebuild may have lost its justification.\n",
+				violation.Package)
+			continue
 		}
 		fmt.Fprintf(writer, "  %s: %s", violation.Kind, violation.Message)
 		if violation.Package != "" {
@@ -198,4 +210,25 @@ func reportIndependentPlanAudit(writer io.Writer, stage string, result planvalid
 		}
 		fmt.Fprintln(writer)
 	}
+	if hidden := len(result.Violations) - shown; hidden > 0 {
+		fmt.Fprintf(writer, "  %s %s not shown here.\n", auditIssueCount(hidden), auditIssueVerb(hidden))
+	}
+	if result.OmittedViolations > 0 {
+		fmt.Fprintf(writer, "  %s exceeded the validator's reporting limit.\n", auditIssueCount(result.OmittedViolations))
+	}
+}
+
+func auditIssueCount(count int) string {
+	noun := "issues"
+	if count == 1 {
+		noun = "issue"
+	}
+	return fmt.Sprintf("%d %s", count, noun)
+}
+
+func auditIssueVerb(count int) string {
+	if count == 1 {
+		return "is"
+	}
+	return "are"
 }

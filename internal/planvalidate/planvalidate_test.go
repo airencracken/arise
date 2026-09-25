@@ -530,6 +530,44 @@ func TestReplacementIsJustifiedByRepairedRuntimeDependency(t *testing.T) {
 	}
 }
 
+func TestReplacementIsJustifiedWhenProviderSubslotChangesInPlan(t *testing.T) {
+	oldPerl := pkg("dev-lang/perl-5.42.2", nil)
+	oldPerl.Subslot = "5.42"
+	newPerl := pkg("dev-lang/perl-5.44.0", nil)
+	newPerl.Subslot = "5.44"
+	newPerl.Authority = AuthorityEvaluated
+
+	oldConsumer := pkg("app-text/po4a-0.74-r1", map[string]string{
+		"RDEPEND": "dev-lang/perl:0/5.42=",
+	})
+	oldConsumer.Authority = AuthorityVDB
+	rebuiltConsumer := pkg(oldConsumer.CPV, map[string]string{
+		"RDEPEND": "dev-lang/perl:0/5.44=",
+	})
+	rebuiltConsumer.Authority = AuthorityEvaluated
+
+	perlUpgrade := Action{
+		ID: "perl-upgrade", Kind: ActionInstall, Package: newPerl,
+		Replaces: oldPerl.CPV,
+	}
+	consumerRebuild := Action{
+		ID: "po4a-rebuild", Kind: ActionInstall, Package: rebuiltConsumer,
+		Replaces: oldConsumer.CPV, Prerequisites: []string{perlUpgrade.ID},
+	}
+	fixture := Fixture{
+		Schema:    SchemaVersion,
+		Request:   Request{Operation: "update", Targets: []string{"dev-lang/perl"}},
+		Installed: []Package{oldPerl, oldConsumer},
+		Available: []Package{newPerl, rebuiltConsumer},
+	}
+	plan := Plan{Schema: SchemaVersion, Actions: []Action{perlUpgrade, consumerRebuild}}
+	plan.Decisions = testDecisionLedger(t, plan.Actions)
+
+	if result := ValidateFinalState(fixture, plan); !result.Valid {
+		t.Fatalf("provider subslot rebuild rejected: %#v", result)
+	}
+}
+
 func testDecisionLedger(t *testing.T, actions []Action) DecisionLedger {
 	t.Helper()
 	ledger := DecisionLedger{Records: make([]DecisionRecord, 0, len(actions))}

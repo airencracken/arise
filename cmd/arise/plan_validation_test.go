@@ -229,13 +229,34 @@ func TestIndependentPlanAuditHumanOutputIsBounded(t *testing.T) {
 		Violations: violations, OmittedViolations: 7,
 	})
 	got := output.String()
-	if !strings.Contains(got, "validation failed at post-resolution") ||
-		!strings.Contains(got, "refusing package-state mutation") ||
-		!strings.Contains(got, "additional violations omitted") {
+	if !strings.Contains(got, "plan safety check failed at post-resolution") ||
+		!strings.Contains(got, "no package changes were made") ||
+		!strings.Contains(got, "Found 27 issues; showing the first 5") ||
+		!strings.Contains(got, "15 issues are not shown here") ||
+		!strings.Contains(got, "7 issues exceeded the validator's reporting limit") {
 		t.Fatalf("audit output = %q", got)
 	}
 	if count := strings.Count(got, "failure:"); count != 5 {
 		t.Fatalf("rendered violation count = %d, want 5: %q", count, got)
+	}
+}
+
+func TestIndependentPlanAuditExplainsUnjustifiedInstall(t *testing.T) {
+	var output bytes.Buffer
+	reportIndependentPlanAudit(&output, "post-resolution", planvalidate.ValidationResult{
+		Violations: []planvalidate.Violation{{
+			Kind: "unjustified-action", Package: "app-text/po4a-0.74-r1",
+			Requirement: "ROOT|app-text/po4a-0.74-r1:0|0||gentoo",
+			Message:     "install action is not justified by a request or a dependency requirement",
+		}},
+	})
+	got := output.String()
+	if !strings.Contains(got, "Could not verify why app-text/po4a-0.74-r1 needs to be installed") ||
+		!strings.Contains(got, "dependency-triggered rebuild may have lost its justification") {
+		t.Fatalf("unjustified install diagnostic = %q", got)
+	}
+	if strings.Contains(got, "unjustified-action") || strings.Contains(got, "requires ROOT|") {
+		t.Fatalf("diagnostic exposed internal action details: %q", got)
 	}
 }
 
@@ -260,7 +281,7 @@ func TestIndependentPlanAuditEnforcementFailsClosed(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "locked-pre-mutation") {
 		t.Fatalf("invalid plan enforcement error = %v", err)
 	}
-	if !strings.Contains(output.String(), "refusing package-state mutation") {
+	if !strings.Contains(output.String(), "no package changes were made") {
 		t.Fatalf("invalid plan enforcement output = %q", output.String())
 	}
 

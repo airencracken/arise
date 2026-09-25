@@ -162,8 +162,8 @@ func validateActionJustification(fixture Fixture, plan Plan, finalRoot []Package
 	for _, action := range plan.Actions {
 		if action.Kind == ActionInstall && action.ID != "" && !required[action.ID] {
 			*violations = append(*violations, violation(
-				"unjustified-action", action.Package.CPV, action.ID, "",
-				"install action has no independently proven path from a request or retained package requirement",
+				"unjustified-action", action.Package.CPV, "", "",
+				"install action is not justified by a request or a dependency requirement",
 			))
 		}
 	}
@@ -183,7 +183,11 @@ func actionRepairsRuntimeDependency(installed, finalRoot []Package, action Actio
 	if replaced == nil || cpFromPackage(replaced.CPV) != cpFromPackage(action.Package.CPV) {
 		return false
 	}
-	return !runtimeDependenciesSatisfied(*replaced, installed) &&
+	// A provider update can invalidate the installed package's slot-operator
+	// dependency even though it was satisfied before the plan. Compare the old
+	// package with the planned final state so that the provider transition can
+	// justify the dependent rebuild.
+	return !runtimeDependenciesSatisfied(*replaced, finalRoot) &&
 		runtimeDependenciesSatisfied(action.Package, finalRoot)
 }
 
