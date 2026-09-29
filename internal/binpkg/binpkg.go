@@ -824,6 +824,9 @@ func CreateRecoveryArtifact(ctx context.Context, request CaptureRequest) (string
 				return "", fmt.Errorf("binpkg: cannot describe directory %s: %w", entry.Path, err)
 			}
 			hdr.Name = archivePath
+			// Reads change host atime, and ctime cannot be restored. Keep these
+			// outside the identity of an otherwise unchanged recovery object.
+			hdr.AccessTime, hdr.ChangeTime = time.Time{}, time.Time{}
 			if err := addFilesystemMetadata(hdr, srcPath, false); err != nil {
 				cleanup(tw, bzWriter, tmpF)
 				return "", fmt.Errorf("binpkg: capture directory metadata for %s: %w", entry.Path, err)
@@ -843,6 +846,7 @@ func CreateRecoveryArtifact(ctx context.Context, request CaptureRequest) (string
 				return "", fmt.Errorf("binpkg: cannot describe file %s: %w", entry.Path, err)
 			}
 			hdr.Name = archivePath
+			hdr.AccessTime, hdr.ChangeTime = time.Time{}, time.Time{}
 			if stat, ok := fi.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
 				key := inodeKey{dev: uint64(stat.Dev), ino: stat.Ino}
 				if first, exists := hardlinks[key]; exists {
@@ -904,6 +908,7 @@ func CreateRecoveryArtifact(ctx context.Context, request CaptureRequest) (string
 				return "", fmt.Errorf("binpkg: cannot describe symlink %s: %w", entry.Path, err)
 			}
 			hdr.Name = archivePath
+			hdr.AccessTime, hdr.ChangeTime = time.Time{}, time.Time{}
 			if err := addFilesystemMetadata(hdr, srcPath, true); err != nil {
 				cleanup(tw, bzWriter, tmpF)
 				return "", fmt.Errorf("binpkg: capture symlink metadata for %s: %w", entry.Path, err)

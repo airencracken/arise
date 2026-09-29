@@ -16,6 +16,41 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestRecoveryArtifactIgnoresAccessAndChangeTimes(t *testing.T) {
+	base := t.TempDir()
+	vdb, root := createCaptureFixture(t, base, "dir /usr/bin\nobj /usr/bin/item digest 1700000000\n")
+	payload := filepath.Join(root, "usr", "bin", "item")
+	if err := os.WriteFile(payload, []byte("unchanged payload"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Create(context.Background(), vdb, root, filepath.Join(base, "first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(payload, time.Unix(1_800_000_000, 0), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Create(context.Background(), vdb, root, filepath.Join(base, "second"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstBytes, err := os.ReadFile(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBytes, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstBytes, secondBytes) {
+		t.Fatal("unchanged recovery payload produced different objects after an access-time update")
+	}
+}
+
 func TestRecoveryArtifactPreservesHardlinksSparseFilesMetadataAndXAttrs(t *testing.T) {
 	base := t.TempDir()
 	vdb, root := createCaptureFixture(t, base,
