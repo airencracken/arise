@@ -1056,6 +1056,7 @@ func TestExecuteConcurrentFailureCancelsPeersAndDoesNotReleaseDependent(t *testi
 		t.Fatal(err)
 	}
 	var dependentStarted atomic.Bool
+	peerStarted := make(chan struct{})
 	peerCanceled := make(chan struct{})
 	err := Execute(context.Background(), result, Config{
 		Jobs: 2, ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: root},
@@ -1063,8 +1064,10 @@ func TestExecuteConcurrentFailureCancelsPeersAndDoesNotReleaseDependent(t *testi
 		Runner: func(ctx context.Context, label string, _ *rebuild.RebuildConfig) error {
 			switch label {
 			case "cat/failing-1":
+				<-peerStarted
 				return fmt.Errorf("injected build failure")
 			case "cat/peer-1":
+				close(peerStarted)
 				<-ctx.Done()
 				close(peerCanceled)
 				return ctx.Err()
