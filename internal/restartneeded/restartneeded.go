@@ -60,6 +60,9 @@ func Snapshot(procRoot string) map[int]Process {
 func NewlyDeleted(before, after map[int]Process) []Process {
 	var result []Process
 	for pid, current := range after {
+		if pid == os.Getpid() {
+			continue
+		}
 		previous, existed := before[pid]
 		if !existed || previous.StartTime != current.StartTime {
 			continue
@@ -83,12 +86,24 @@ func Warning(processes []Process) string {
 		return ""
 	}
 	var output strings.Builder
-	fmt.Fprintf(&output, "arise: critical: %d running process(es) still use executables replaced by this transaction:\n", len(processes))
+	severity, noun := "warning", "processes"
+	if len(processes) == 1 {
+		noun = "process"
+	}
+	sshAffected := false
+	for _, process := range processes {
+		if process.Name == "sshd" || filepath.Base(strings.TrimSuffix(process.Executable, deletedSuffix)) == "sshd" {
+			sshAffected, severity = true, "critical"
+		}
+	}
+	fmt.Fprintf(&output, "arise: %s: %d running %s still use replaced executables:\n", severity, len(processes), noun)
 	for _, process := range processes {
 		fmt.Fprintf(&output, "  pid %d (%s): %s\n", process.PID, process.Name, process.Executable)
 	}
-	output.WriteString("These processes require a service reload or restart. Verify replacement daemons before closing this session.\n")
-	output.WriteString("For sshd, validate the new binary with `sshd -t`, keep this session open, then reload the existing listener (for example `kill -HUP <pid>`) and test a second connection.\n")
+	output.WriteString("Restart or relaunch the affected processes to use the new executable.\n")
+	if sshAffected {
+		output.WriteString("For sshd, validate the new binary with `sshd -t`, keep this session open, then reload the existing listener (for example `kill -HUP <pid>`) and test a second connection.\n")
+	}
 	return output.String()
 }
 

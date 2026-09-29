@@ -1831,7 +1831,7 @@ SLOT=%q
 src_unpack() { mkdir -p "${S}"; printf 'version=%s\n' > "${S}/current"; printf 'payload=%s\n' > "${S}/versioned"; }
 src_install() {
   insinto /usr/share/cycle-test
-  newins current current
+  if [[ ${SLOT} == 1 ]]; then newins current current-1; else newins current current; fi
   newins versioned version-%s
   if [[ ${SLOT} == 1 ]]; then newins versioned slot-1; fi
 }
@@ -1877,8 +1877,11 @@ src_install() {
 	}
 	run("1", false) // same-version reinstall
 	assertCurrent("1")
-	run("3", false) // parallel slot
-	assertCurrent("3")
+	run("3", false)    // parallel slot
+	assertCurrent("1") // installing another slot must retain slot 0's payload
+	if data, err := os.ReadFile(filepath.Join(root, "usr", "share", "cycle-test", "current-1")); err != nil || string(data) != "version=3\n" {
+		t.Fatalf("slot-1 current payload = %q, %v", data, err)
+	}
 
 	for _, entry := range []string{"cycle-test-1", "cycle-test-3"} {
 		if _, err := os.Stat(filepath.Join(vdb, "app-misc", entry, "CONTENTS")); err != nil {
@@ -1894,10 +1897,13 @@ src_install() {
 	if _, err := os.Lstat(filepath.Join(vdb, "app-misc", "cycle-test-1")); !os.IsNotExist(err) {
 		t.Fatalf("unmerge retained slot-0 VDB: %v", err)
 	}
-	for _, path := range []string{"current", "slot-1", "version-3"} {
+	for _, path := range []string{"current-1", "slot-1", "version-3"} {
 		if _, err := os.Stat(filepath.Join(root, "usr", "share", "cycle-test", path)); err != nil {
 			t.Fatalf("unmerge removed slot-1-owned %s: %v", path, err)
 		}
+	}
+	if _, err := os.Lstat(filepath.Join(root, "usr", "share", "cycle-test", "current")); !os.IsNotExist(err) {
+		t.Fatalf("unmerge retained exclusively owned slot-0 current payload: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(root, "usr", "share", "cycle-test", "version-1")); !os.IsNotExist(err) {
 		t.Fatalf("unmerge retained exclusively owned slot-0 payload: %v", err)

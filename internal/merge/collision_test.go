@@ -87,7 +87,7 @@ func TestCheckCollisions_NoCollisionWhenUpdatingSamePackage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	collisions, err := CheckCollisions(destDir, vdbDir, []string{"app-misc/app"})
+	collisions, err := CheckCollisions(destDir, vdbDir, []string{existingPkgDir})
 	if err != nil {
 		t.Fatalf("CheckCollisions: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestCheckCollisions_NoCollisionWhenUpdatingRevisedPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	collisions, err := CheckCollisions(destDir, vdbDir, []string{"dev-lang/python"})
+	collisions, err := CheckCollisions(destDir, vdbDir, []string{installed})
 	if err != nil {
 		t.Fatalf("CheckCollisions: %v", err)
 	}

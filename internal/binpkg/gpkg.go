@@ -182,101 +182,110 @@ func ReadMetadata(ctx context.Context, path string) (map[string][]byte, error) {
 }
 
 func ReadGPKGWithPolicy(ctx context.Context, path string, policy GPKGPolicy) (*GPKG, error) {
+	pkg, _, err := readVerifiedGPKG(ctx, path, policy, false)
+	return pkg, err
+}
+
+// Capture metadata and, for extraction, the compressed image while hashing the
+// container. Nothing consumes these bytes until the manifest has been verified.
+func readVerifiedGPKG(ctx context.Context, path string, policy GPKGPolicy, captureImage bool) (pkg *GPKG, image *os.File, returnErr error) {
 	if policy.Extraction.MaxEntries == 0 {
 		policy.Extraction = DefaultExtractionPolicy
 	}
-	members, prefix, manifest, signed, err := inspectGPKG(ctx, path, policy)
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var metadataName, imageName, imageCodec string
-	for _, member := range members {
-		base, codec, ok := parseGPKGInnerName(member.Base)
+	defer file.Close()
+	defer func() {
+		if returnErr != nil && image != nil {
+			image.Close()
+		}
+	}()
+	var metadataBlob bytes.Buffer
+	var metadataName, metadataCodec, imageName, imageCodec string
+	capture := func(header *tar.Header) (io.Writer, error) {
+		base, codec, ok := parseGPKGInnerName(filepath.Base(header.Name))
 		if !ok {
-			continue
+			return nil, nil
 		}
 		switch base {
 		case "metadata":
 			if metadataName != "" {
 				return nil, fmt.Errorf("binpkg: GPKG contains multiple metadata archives")
 			}
-			metadataName = member.Name
+			if header.Size > maxGPKGMetadataBytes {
+				return nil, fmt.Errorf("binpkg: GPKG metadata exceeds limits")
+			}
+			metadataName, metadataCodec = header.Name, codec
+			return &metadataBlob, nil
 		case "image":
 			if imageName != "" {
 				return nil, fmt.Errorf("binpkg: GPKG contains multiple image archives")
 			}
-			imageName, imageCodec = member.Name, codec
+			imageName, imageCodec = header.Name, codec
+			if captureImage {
+				image, err = os.CreateTemp("", "arise-gpkg-image-*")
+				if err != nil {
+					return nil, err
+				}
+				// Keep the verified copy private and independent of all pathnames.
+				if err := os.Remove(image.Name()); err != nil {
+					return nil, err
+				}
+				return image, nil
+			}
 		}
+		return nil, nil
+	}
+	_, prefix, _, signed, err := inspectGPKG(ctx, file, policy, capture)
+	if err != nil {
+		return nil, image, err
 	}
 	if metadataName == "" || imageName == "" {
-		return nil, fmt.Errorf("binpkg: GPKG is missing its metadata or image archive")
+		return nil, image, fmt.Errorf("binpkg: GPKG is missing its metadata or image archive")
 	}
-	metadataBlob, codec, err := readGPKGMember(path, metadataName, maxGPKGMetadataBytes)
+	metadataReader, closeReader, err := decodeGPKGReader(ctx, &metadataBlob, metadataCodec)
 	if err != nil {
-		return nil, err
-	}
-	metadataReader, closeReader, err := decodeGPKGReader(ctx, bytes.NewReader(metadataBlob), codec)
-	if err != nil {
-		return nil, err
+		return nil, image, err
 	}
 	metadata, metadataErr := readGPKGMetadata(metadataReader)
 	closeErr := closeReader()
 	if metadataErr != nil {
-		return nil, metadataErr
+		return nil, image, metadataErr
 	}
 	if closeErr != nil {
-		return nil, closeErr
+		return nil, image, closeErr
 	}
-	_ = manifest
 	return &GPKG{
 		Path: path, Prefix: prefix, Metadata: metadata,
 		ImageName: imageName, ImageCodec: imageCodec, Signed: signed,
-	}, nil
+	}, image, nil
 }
 
 func ExtractGPKG(ctx context.Context, path, destination string, policy GPKGPolicy) error {
-	pkg, err := ReadGPKGWithPolicy(ctx, path, policy)
+	pkg, file, err := readVerifiedGPKG(ctx, path, policy, true)
 	if err != nil {
 		return err
 	}
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("binpkg: open GPKG: %w", err)
-	}
 	defer file.Close()
-	tr := tar.NewReader(file)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return fmt.Errorf("binpkg: GPKG image archive disappeared")
-		}
-		if err != nil {
-			return fmt.Errorf("binpkg: read GPKG container: %w", err)
-		}
-		if hdr.Name != pkg.ImageName {
-			continue
-		}
-		reader, closeReader, err := decodeGPKGReader(ctx, io.LimitReader(tr, hdr.Size), pkg.ImageCodec)
-		if err != nil {
-			return err
-		}
-		prefix := "image"
-		extractErr := untarPrefixed(reader, destination, policy.Extraction, prefix)
-		closeErr := closeReader()
-		if extractErr != nil {
-			return extractErr
-		}
-		return closeErr
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return err
 	}
+	reader, closeReader, err := decodeGPKGReader(ctx, file, pkg.ImageCodec)
+	if err != nil {
+		return err
+	}
+	extractErr := untarPrefixed(reader, destination, policy.Extraction, "image")
+	closeErr := closeReader()
+	if extractErr != nil {
+		return extractErr
+	}
+	return closeErr
 }
 
-func inspectGPKG(ctx context.Context, path string, policy GPKGPolicy) ([]gpkgMember, string, map[string]gpkgManifestRecord, bool, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, "", nil, false, fmt.Errorf("binpkg: open GPKG: %w", err)
-	}
-	defer file.Close()
-	tr := tar.NewReader(file)
+func inspectGPKG(ctx context.Context, source io.Reader, policy GPKGPolicy, captureMember func(*tar.Header) (io.Writer, error)) ([]gpkgMember, string, map[string]gpkgManifestRecord, bool, error) {
+	tr := tar.NewReader(source)
 	seen := make(map[string]struct{})
 	var members []gpkgMember
 	var prefix string
@@ -317,6 +326,13 @@ func inspectGPKG(ctx context.Context, path string, policy GPKGPolicy) ([]gpkgMem
 		blakeHash, _ := blake2b.New512(nil)
 		var capture bytes.Buffer
 		writer := io.MultiWriter(shaHash, blakeHash)
+		captured, err := captureMember(hdr)
+		if err != nil {
+			return nil, "", nil, false, err
+		}
+		if captured != nil {
+			writer = io.MultiWriter(writer, captured)
+		}
 		if parts[1] == "Manifest" {
 			if hdr.Size > maxGPKGManifestBytes {
 				return nil, "", nil, false, fmt.Errorf("binpkg: GPKG Manifest exceeds limits")
@@ -451,36 +467,6 @@ func parseGPKGManifest(data []byte) (map[string]gpkgManifestRecord, error) {
 		return nil, fmt.Errorf("binpkg: read GPKG Manifest: %w", err)
 	}
 	return records, nil
-}
-
-func readGPKGMember(path, name string, limit int64) ([]byte, string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, "", err
-	}
-	defer file.Close()
-	tr := tar.NewReader(file)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil, "", fmt.Errorf("binpkg: GPKG member %q not found", name)
-		}
-		if err != nil {
-			return nil, "", err
-		}
-		if hdr.Name != name {
-			continue
-		}
-		if hdr.Size > limit {
-			return nil, "", fmt.Errorf("binpkg: GPKG member %q exceeds limits", name)
-		}
-		data, err := io.ReadAll(io.LimitReader(tr, limit+1))
-		if err != nil || int64(len(data)) != hdr.Size {
-			return nil, "", fmt.Errorf("binpkg: read GPKG member %q: %w", name, err)
-		}
-		_, codec, _ := parseGPKGInnerName(filepath.Base(name))
-		return data, codec, nil
-	}
 }
 
 func parseGPKGInnerName(name string) (string, string, bool) {

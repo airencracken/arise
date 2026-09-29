@@ -113,7 +113,11 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 			return err
 		}
 	}
-	collisions, err := CheckCollisions(destDir, cfg.VdbDir, []string{cfg.Category + "/" + cfg.Package})
+	replaced := []string{cfg.vdbPath()}
+	if cfg.ReplacedVDBPath != "" {
+		replaced = append(replaced, cfg.ReplacedVDBPath)
+	}
+	collisions, err := CheckCollisions(destDir, cfg.VdbDir, replaced)
 	if err != nil {
 		return fmt.Errorf("merge: ownership preflight: %w", err)
 	}
@@ -1413,32 +1417,18 @@ func ownershipExcluding(vdbRoot string, excluded ...string) (map[string]bool, er
 		exclude[filepath.Clean(path)] = true
 	}
 	owned := make(map[string]bool)
-	err := filepath.WalkDir(vdbRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if os.IsNotExist(walkErr) {
-			return nil
-		}
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || entry.Name() != "CONTENTS" || exclude[filepath.Clean(filepath.Dir(path))] {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		entries, err := parseContents(string(data))
-		if err != nil {
-			return err
-		}
-		for _, item := range entries {
-			if item.Type != "dir" && filepath.IsAbs(item.Path) {
-				owned[filepath.Clean(item.Path)] = true
+	owners, err := buildVDBOwners(vdbRoot)
+	if err != nil {
+		return nil, err
+	}
+	for path, packages := range owners {
+		for _, pkg := range packages {
+			if !exclude[filepath.Clean(pkg)] {
+				owned[path] = true
 			}
 		}
-		return nil
-	})
-	return owned, err
+	}
+	return owned, nil
 }
 
 // Unmerge is retained for source compatibility, but removal now requires an
@@ -1588,14 +1578,17 @@ type contentsEntry struct {
 
 func parseContents(text string) ([]contentsEntry, error) {
 	var entries []contentsEntry
-	for _, line := range strings.Split(text, "\n") {
+	for index, line := range strings.Split(text, "\n") {
+		invalid := func() ([]contentsEntry, error) {
+			return nil, fmt.Errorf("invalid CONTENTS record at line %d: %q", index+1, line)
+		}
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		typeEnd := strings.IndexByte(line, ' ')
-		if typeEnd < 1 {
-			continue
+		if typeEnd < 1 || strings.ContainsRune(line, '\x00') {
+			return invalid()
 		}
 		e := contentsEntry{Type: line[:typeEnd]}
 		body := strings.TrimSpace(line[typeEnd+1:])
@@ -1603,26 +1596,37 @@ func parseContents(text string) ([]contentsEntry, error) {
 		case "obj":
 			mtimeAt := strings.LastIndexByte(body, ' ')
 			if mtimeAt < 1 {
-				continue
+				return invalid()
 			}
-			e.Mtime, _ = strconv.ParseInt(strings.TrimSpace(body[mtimeAt+1:]), 10, 64)
+			var err error
+			e.Mtime, err = strconv.ParseInt(strings.TrimSpace(body[mtimeAt+1:]), 10, 64)
+			if err != nil {
+				return invalid()
+			}
 			pathAndMD5 := strings.TrimSpace(body[:mtimeAt])
 			md5At := strings.LastIndexByte(pathAndMD5, ' ')
 			if md5At < 1 {
-				continue
+				return invalid()
 			}
 			e.Path = strings.TrimSpace(pathAndMD5[:md5At])
 			e.MD5 = strings.TrimSpace(pathAndMD5[md5At+1:])
 		case "sym":
 			arrow := strings.Index(body, " -> ")
 			if arrow < 1 {
-				continue
+				return invalid()
 			}
 			e.Path = strings.TrimSpace(body[:arrow])
 			tail := strings.TrimSpace(body[arrow+4:])
 			mtimeAt := strings.LastIndexByte(tail, ' ')
+			if mtimeAt < 1 {
+				return invalid()
+			}
 			if mtimeAt >= 0 {
-				e.Mtime, _ = strconv.ParseInt(strings.TrimSpace(tail[mtimeAt+1:]), 10, 64)
+				var err error
+				e.Mtime, err = strconv.ParseInt(strings.TrimSpace(tail[mtimeAt+1:]), 10, 64)
+				if err != nil {
+					return invalid()
+				}
 				e.LinkTarget = strings.TrimSpace(tail[:mtimeAt])
 				if digestAt := strings.LastIndexByte(e.LinkTarget, ' '); digestAt >= 0 {
 					digest := e.LinkTarget[digestAt+1:]
@@ -1634,10 +1638,10 @@ func parseContents(text string) ([]contentsEntry, error) {
 		case "dir", "fif", "dev":
 			e.Path = body
 		default:
-			continue
+			return invalid()
 		}
-		if e.Path == "" {
-			continue
+		if !filepath.IsAbs(e.Path) || (e.Type == "sym" && e.LinkTarget == "") {
+			return invalid()
 		}
 		entries = append(entries, e)
 	}

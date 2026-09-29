@@ -1044,7 +1044,7 @@ func TestTransactionalUpgradeCommitsNewAndRemovesOldVDB(t *testing.T) {
 	if err := os.MkdirAll(oldEntry, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(oldEntry, "CONTENTS"), []byte("old"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(oldEntry, "CONTENTS"), []byte("dir /usr\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := makeDestDir(destDir, map[string]string{"usr/bin/tool": "v2"}); err != nil {
@@ -2297,15 +2297,11 @@ sym /usr/lib/libx.so -> libx.so.1 ffff 9876543210`
 
 func TestParseContentsExactRecordContracts(t *testing.T) {
 	input := strings.Join([]string{
-		"malformed-first-line",
 		"  obj /path with spaces deadbeef 42  ",
 		"sym /link with spaces -> ../target with spaces 919c8b643b7133116b02fc0d9bb7df3f 73",
 		"dir /empty directory",
 		"fif /run/service.pipe",
 		"dev /dev/example",
-		"obj malformed",
-		"sym missing-arrow",
-		"unknown /ignored",
 	}, "\n")
 	got, err := parseContents(input)
 	if err != nil {
@@ -2338,7 +2334,10 @@ func FuzzParseContentsNeverPanicsAndReturnsKnownNonemptyRecords(f *testing.F) {
 		}
 		entries, err := parseContents(input)
 		if err != nil {
-			t.Fatalf("parseContents(%q): %v", input, err)
+			if entries != nil {
+				t.Fatalf("malformed ownership returned a partial record set: %#v", entries)
+			}
+			return
 		}
 		for index, entry := range entries {
 			switch entry.Type {
@@ -2408,11 +2407,8 @@ func TestParseContents_Adversarial(t *testing.T) {
 		strings.Repeat("obj /x a1 0\n", 1000))
 
 	entries, err := parseContents(input)
-	if err != nil {
-		t.Fatalf("parseContents should not error on adversarial input: %v", err)
-	}
-	if len(entries) < 1000 {
-		t.Errorf("expected at least 1000 entries, got %d", len(entries))
+	if err == nil || entries != nil {
+		t.Fatalf("malformed ownership must fail atomically: entries=%v err=%v", entries, err)
 	}
 }
 

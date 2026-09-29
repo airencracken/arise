@@ -9,10 +9,11 @@ import (
 	"github.com/airencracken/arise/internal/metadata"
 )
 
-func CheckCollisions(destDir, vdbRoot string, excludeCPs []string) ([]string, error) {
-	exclude := make(map[string]bool, len(excludeCPs))
-	for _, cp := range excludeCPs {
-		exclude[cp] = true
+// Exclusions name exact VDB directories replaced by this transaction.
+func CheckCollisions(destDir, vdbRoot string, replacedVDBPaths []string) ([]string, error) {
+	exclude := make(map[string]bool, len(replacedVDBPaths))
+	for _, path := range replacedVDBPaths {
+		exclude[filepath.Clean(path)] = true
 	}
 
 	destFiles, err := gatherDestFiles(destDir)
@@ -28,17 +29,14 @@ func CheckCollisions(destDir, vdbRoot string, excludeCPs []string) ([]string, er
 	var collisions []string
 
 	for _, df := range destFiles {
-		ownerPkg, owned := vdbOwners[df]
-		if !owned {
-			continue
+		for _, ownerPkg := range vdbOwners[df] {
+			if exclude[filepath.Clean(ownerPkg)] {
+				continue
+			}
+			collisions = append(collisions, fmt.Sprintf(
+				"file %s already owned by package %s", df, pkgDirToCP(vdbRoot, ownerPkg),
+			))
 		}
-		ownerCP := pkgDirToCP(vdbRoot, ownerPkg)
-		if exclude[ownerCP] {
-			continue
-		}
-		collisions = append(collisions, fmt.Sprintf(
-			"file %s already owned by package %s", df, ownerCP,
-		))
 	}
 
 	crossCols := detectCrossCollisions(destFiles, vdbOwners)
@@ -50,25 +48,14 @@ func CheckCollisions(destDir, vdbRoot string, excludeCPs []string) ([]string, er
 func DetectFileCollision(targetPath, vdbRoot, owner string) (string, bool) {
 	vdbOwners, err := buildVDBOwners(vdbRoot)
 	if err != nil {
-		return "", false
+		return fmt.Sprintf("could not inspect file ownership: %v", err), true
 	}
-	owningPkg, owned := vdbOwners[targetPath]
-	if !owned {
-		return "", false
-	}
-	ownerCP := pkgDirToCP(vdbRoot, owningPkg)
-	// compare category/package only (strip version from owner param)
-	ownerCPOnly := owner
-	if idx := strings.LastIndex(owner, "/"); idx >= 0 {
-		rest := owner[idx+1:]
-		if vIdx := strings.LastIndex(rest, "-"); vIdx >= 0 {
-			ownerCPOnly = owner[:idx+1+vIdx]
+	for _, owningPkg := range vdbOwners[filepath.Clean(targetPath)] {
+		if filepath.Clean(owningPkg) != filepath.Join(vdbRoot, filepath.FromSlash(owner)) {
+			return fmt.Sprintf("file %s already owned by package %s", targetPath, pkgDirToCP(vdbRoot, owningPkg)), true
 		}
 	}
-	if ownerCP == owner || ownerCP == ownerCPOnly || ownerCP == "" {
-		return "", false
-	}
-	return fmt.Sprintf("file %s already owned by package %s", targetPath, ownerCP), true
+	return "", false
 }
 
 func gatherDestFiles(destDir string) ([]string, error) {
@@ -90,8 +77,8 @@ func gatherDestFiles(destDir string) ([]string, error) {
 	return files, err
 }
 
-func buildVDBOwners(vdbRoot string) (map[string]string, error) {
-	owners := make(map[string]string)
+func buildVDBOwners(vdbRoot string) (map[string][]string, error) {
+	owners := make(map[string][]string)
 
 	categories, err := os.ReadDir(vdbRoot)
 	if err != nil {
@@ -108,7 +95,7 @@ func buildVDBOwners(vdbRoot string) (map[string]string, error) {
 		catPath := filepath.Join(vdbRoot, catEntry.Name())
 		pkgs, err := os.ReadDir(catPath)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read category %s: %w", catPath, err)
 		}
 		for _, pkgEntry := range pkgs {
 			if !pkgEntry.IsDir() {
@@ -118,17 +105,18 @@ func buildVDBOwners(vdbRoot string) (map[string]string, error) {
 			contentsPath := filepath.Join(pkgDir, "CONTENTS")
 			data, err := os.ReadFile(contentsPath)
 			if err != nil {
-				continue
+				return nil, fmt.Errorf("read ownership %s: %w", contentsPath, err)
 			}
 			entries, err := parseContents(string(data))
 			if err != nil {
-				continue
+				return nil, fmt.Errorf("parse ownership %s: %w", contentsPath, err)
 			}
 			for _, e := range entries {
 				if e.Type == "dir" {
 					continue
 				}
-				owners[e.Path] = pkgDir
+				path := filepath.Clean(e.Path)
+				owners[path] = append(owners[path], pkgDir)
 			}
 		}
 	}
@@ -136,7 +124,7 @@ func buildVDBOwners(vdbRoot string) (map[string]string, error) {
 	return owners, nil
 }
 
-func detectCrossCollisions(destFiles []string, vdbOwners map[string]string) []string {
+func detectCrossCollisions(destFiles []string, vdbOwners map[string][]string) []string {
 	counts := make(map[string]int)
 	for _, f := range destFiles {
 		if _, ok := vdbOwners[f]; ok {

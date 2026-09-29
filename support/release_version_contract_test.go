@@ -9,7 +9,7 @@ import (
 func TestReleaseVersionReferencesAgree(t *testing.T) {
 	t.Parallel()
 
-	const want = "0.0.37"
+	want := projectReleaseVersion(t)
 	checks := []struct {
 		path    string
 		pattern string
@@ -19,7 +19,7 @@ func TestReleaseVersionReferencesAgree(t *testing.T) {
 		{"../cmd/arise/version_test.go", `want := version, "` + regexp.QuoteMeta(want) + `"`},
 		{"../arise.texi", `@set VERSION ` + regexp.QuoteMeta(want)},
 		{"../README.md", `=sys-apps/arise-` + regexp.QuoteMeta(want)},
-		{"../docs/releases/0.0.37.md", `# Arise ` + regexp.QuoteMeta(want)},
+		{"../docs/releases/" + want + ".md", `# Arise ` + regexp.QuoteMeta(want)},
 	}
 
 	for _, check := range checks {
@@ -35,4 +35,17 @@ func TestReleaseVersionReferencesAgree(t *testing.T) {
 			}
 		})
 	}
+}
+
+func projectReleaseVersion(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`(?m)^PROJECT_VERSION := ([0-9]+\.[0-9]+\.[0-9]+)$`).FindSubmatch(data)
+	if len(match) != 2 {
+		t.Fatal("Makefile does not declare a release version")
+	}
+	return string(match[1])
 }

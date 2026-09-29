@@ -140,7 +140,11 @@ vet:
 	$(GO) vet ./...
 
 lint:
-	golangci-lint run ./... 2>/dev/null || echo "golangci-lint not installed, skipping"
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	else \
+		printf '%s\n' 'golangci-lint not installed; install it to run lint'; \
+	fi
 
 #
 # Lifecycle
@@ -189,7 +193,7 @@ arise.info: arise.texi
 docs: man info
 	@echo "Documentation built."
 
-PROJECT_VERSION := 0.0.37
+PROJECT_VERSION := 0.0.38
 VERSION ?= $(PROJECT_VERSION)
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
 check-release-version:

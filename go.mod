@@ -5,13 +5,13 @@ go 1.26.3
 require (
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be
 	github.com/dgraph-io/badger/v4 v4.9.1
-	github.com/go-git/go-git/v5 v5.19.1
+	github.com/go-git/go-git/v5 v5.19.2
 	github.com/klauspost/compress v1.18.0
-	golang.org/x/sys v0.43.0
-	golang.org/x/term v0.42.0
+	golang.org/x/sys v0.47.0
+	golang.org/x/term v0.45.0
 )
 
-require github.com/airencracken/gentooling v0.11.0
+require github.com/airencracken/gentooling v0.11.1
 
 require (
 	dario.cat/mergo v1.0.0 // indirect
@@ -41,8 +41,8 @@ require (
 	go.opentelemetry.io/otel v1.37.0 // indirect
 	go.opentelemetry.io/otel/metric v1.37.0 // indirect
 	go.opentelemetry.io/otel/trace v1.37.0 // indirect
-	golang.org/x/crypto v0.50.0
-	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/crypto v0.56.0
+	golang.org/x/net v0.57.0 // indirect
 	google.golang.org/protobuf v1.36.7 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )
