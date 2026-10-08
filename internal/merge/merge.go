@@ -560,8 +560,7 @@ func merge(ctx context.Context, destDir string, cfg MergeConfig, operation *jour
 			if err := unix.UtimesNanoAt(unix.AT_FDCWD, targetPath, times, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 				return fmt.Errorf("merge: preserve symlink timestamp %s: %w", targetPath, err)
 			}
-			md5sum, _ := md5Bytes([]byte(linkTarget))
-			lines = append(lines, formatContentsSym(contentsPathForRoot(cfg.RootDir, targetPath), linkTarget, md5sum, info.ModTime().Unix()))
+			lines = append(lines, formatContentsSym(contentsPathForRoot(cfg.RootDir, targetPath), linkTarget, info.ModTime().Unix()))
 			return nil
 
 		default:
@@ -1166,8 +1165,7 @@ func updatePreservedRegistry(operation *journal.Journal, cfg MergeConfig, ownerV
 			if readErr != nil {
 				return readErr
 			}
-			sum, _ := md5Bytes([]byte(target))
-			lines = append(lines, formatContentsSym(canonical, target, sum, info.ModTime().Unix()))
+			lines = append(lines, formatContentsSym(canonical, target, info.ModTime().Unix()))
 		} else if info.Mode().IsRegular() {
 			sum, hashErr := md5File(fullPath)
 			if hashErr != nil {
@@ -1656,8 +1654,8 @@ func formatContentsDir(path string) string {
 	return fmt.Sprintf("dir %s", path)
 }
 
-func formatContentsSym(path, target, md5sum string, mtime int64) string {
-	return fmt.Sprintf("sym %s -> %s %s %d", path, target, md5sum, mtime)
+func formatContentsSym(path, target string, mtime int64) string {
+	return fmt.Sprintf("sym %s -> %s %d", path, target, mtime)
 }
 
 func copyFile(src, dst string, mode os.FileMode, modTime time.Time, stat *syscall.Stat_t) (string, error) {
@@ -1700,14 +1698,6 @@ func copyFile(src, dst string, mode os.FileMode, modTime time.Time, stat *syscal
 
 	md5sum := hex.EncodeToString(h.Sum(nil))
 	return md5sum, nil
-}
-
-func md5Bytes(data []byte) (string, error) {
-	h := md5.New()
-	if _, err := h.Write(data); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func md5File(path string) (string, error) {

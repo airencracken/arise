@@ -598,8 +598,8 @@ func TestMerge_SymlinksAndDirs(t *testing.T) {
 		t.Fatalf("ReadFile CONTENTS: %v", err)
 	}
 	contents := string(contentsData)
-	if !strings.Contains(contents, "sym ") {
-		t.Errorf("CONTENTS missing sym entry:\n%s", contents)
+	if !strings.Contains(contents, "sym /usr/lib/libfoo.so -> libfoo.so.1 1700000300\n") {
+		t.Errorf("CONTENTS missing Portage-compatible symlink record:\n%s", contents)
 	}
 	if !strings.Contains(contents, "dir ") {
 		t.Errorf("CONTENTS missing dir entry:\n%s", contents)
@@ -1350,6 +1350,18 @@ func TestTransactionalUpgradePreservesRequiredLibraryAndRegistry(t *testing.T) {
 		if !strings.Contains(string(currentContents), preserved) {
 			t.Fatalf("new provider CONTENTS did not take preserved ownership of %s: %s", preserved, currentContents)
 		}
+	}
+	sonameInfo, err := os.Lstat(oldSONAME)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sonameTarget, err := os.Readlink(oldSONAME)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSymlinkRecord := fmt.Sprintf("sym /usr/lib/libarise.so.1 -> %s %d\n", sonameTarget, sonameInfo.ModTime().Unix())
+	if !strings.Contains(string(currentContents), wantSymlinkRecord) {
+		t.Fatalf("preserved symlink lacks Portage-compatible ownership record: %s", currentContents)
 	}
 	consumerImage := filepath.Join(tmp, "consumer-image")
 	if err := makeDestDir(consumerImage, map[string]string{"usr/bin/consumer": "rebuilt-without-old-soname"}); err != nil {

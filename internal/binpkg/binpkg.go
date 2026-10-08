@@ -1159,7 +1159,7 @@ func parseContentsLine(line string) (*contentEntry, error) {
 		if len(targetAndTime) != 2 && len(targetAndTime) != 3 {
 			return nil, fmt.Errorf("malformed sym entry for %s", entry.Path)
 		}
-		// Arise records include an MD5 before the mtime.
+		// Older Arise records include an MD5 before the mtime.
 		// Current Portage records contain only the target and mtime.
 		if len(targetAndTime) == 3 {
 			checksum, err := hex.DecodeString(targetAndTime[1])
