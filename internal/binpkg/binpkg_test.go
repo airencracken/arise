@@ -1248,6 +1248,16 @@ func TestCreateRejectsInstalledStateDrift(t *testing.T) {
 			contents: "sym /usr/bin/item -> expected 1700000000\n",
 			prepare:  func(path string) error { return os.Symlink("different", path) },
 		},
+		{
+			name:     "checksummed symlink became file",
+			contents: "sym /usr/bin/item -> target 0123456789abcdef0123456789abcdef 1700000000\n",
+			prepare:  func(path string) error { return os.WriteFile(path, []byte("file"), 0644) },
+		},
+		{
+			name:     "checksummed symlink target changed",
+			contents: "sym /usr/bin/item -> expected 0123456789abcdef0123456789abcdef 1700000000\n",
+			prepare:  func(path string) error { return os.Symlink("different", path) },
+		},
 	}
 
 	for _, test := range tests {

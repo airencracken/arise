@@ -69,7 +69,7 @@ update itself:
 
 ```sh
 arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.38
+arise -1 --reinstall =sys-apps/arise-0.0.39
 ```
 
 Git repositories synchronize concurrently. Arise honors Portage-compatible

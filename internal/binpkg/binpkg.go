@@ -1156,12 +1156,20 @@ func parseContentsLine(line string) (*contentEntry, error) {
 			return nil, fmt.Errorf("malformed sym entry for %s", entry.Path)
 		}
 		targetAndTime := strings.Fields(strings.TrimSpace(line[idx+2:]))
-		if len(targetAndTime) != 2 {
+		if len(targetAndTime) != 2 && len(targetAndTime) != 3 {
 			return nil, fmt.Errorf("malformed sym entry for %s", entry.Path)
+		}
+		// Arise records include an MD5 before the mtime.
+		// Current Portage records contain only the target and mtime.
+		if len(targetAndTime) == 3 {
+			checksum, err := hex.DecodeString(targetAndTime[1])
+			if err != nil || len(checksum) != 16 {
+				return nil, fmt.Errorf("invalid sym checksum for %s", entry.Path)
+			}
 		}
 		entry.Target = targetAndTime[0]
 		var err error
-		entry.Mtime, err = strconv.ParseInt(targetAndTime[1], 10, 64)
+		entry.Mtime, err = strconv.ParseInt(targetAndTime[len(targetAndTime)-1], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid sym timestamp for %s: %w", entry.Path, err)
 		}
