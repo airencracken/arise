@@ -2252,6 +2252,9 @@ func applyPortageLifecyclePolicy(request phaseproto.Request, phaseName string) p
 		return request
 	case "pkg_preinst", "pkg_postinst", "pkg_prerm", "pkg_postrm", "pkg_config":
 	case "src_unpack", "src_prepare", "src_configure", "src_compile", "src_test":
+		if phaseName == "src_test" && slices.Contains(request.Policy.Properties, "test_network") {
+			request.Policy.NetworkSandbox = false
+		}
 		if request.Policy.UserPriv {
 			request.Policy.DropPrivileges = true
 			// Portage's usersandbox feature controls whether its sandbox is

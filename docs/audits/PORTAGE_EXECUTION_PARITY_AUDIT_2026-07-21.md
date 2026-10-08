@@ -94,14 +94,18 @@ described as whole-package rollback until those writes are captured or isolated.
 - Portage `success_hooks`, `die_hooks`, `clean`, and `cleanrm` are not modeled.
 - `userpriv`/`usersandbox` are implemented but still require the real-root
   credential/supplementary-group matrix before the wrapper override is removed.
-- `PROPERTIES=live`, `test_network`, `virtual`, and `set` are rejected rather
+- `PROPERTIES=live`, `virtual`, and `set` are rejected rather
   than receiving Portage's phase-specific policy.
+- `PROPERTIES=test_network` is supported as of 0.0.41: restricted tests stay
+  disabled unless `ALLOW_TEST=network` or `all` overrides the restriction, and
+  networking is allowed only during `src_test`. The phase policy is checked
+  against installed Portage by `TestLiveNetworkTestPhasePolicyMatchesPortage`.
 - `fixlafiles` image rewriting is implemented and unit tested; corpus parity
   remains part of the configured-FEATURES gate.
 - install-QA scripts were previously absent; their failure/strict semantics
   still need differential validation now that discovery is fixed.
-- build phases share one namespace policy, while Portage varies networking and
-  PID/IPC behavior by phase.
+- build phases share PID/IPC policy; networking now varies for `test_network`,
+  while Portage's `live` unpack exception remains unsupported.
 - XDG/icon/MIME cache lifecycle remains a rejection gate rather than compatible
   post-merge maintenance.
 

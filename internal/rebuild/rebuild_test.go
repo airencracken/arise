@@ -164,6 +164,52 @@ func TestApplyPortageUserprivPolicyByPhase(t *testing.T) {
 	}
 }
 
+func TestNetworkTestPolicyIsScopedToTestPhase(t *testing.T) {
+	for _, properties := range []string{"test_network", "test? ( test_network )", ""} {
+		for _, enabled := range []bool{false, true} {
+			policy, err := phaseproto.EvaluateExecutionPolicy("sandbox network-sandbox ipc-sandbox pid-sandbox mount-sandbox test", "", properties, map[string]bool{"test": enabled})
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := phaseproto.Request{Policy: policy}
+			for _, phase := range []string{"src_unpack", "src_prepare", "src_configure", "src_compile", "src_test", "src_install"} {
+				got := applyPortageLifecyclePolicy(base, phase)
+				wantNetworkSandbox := phase != "src_test" || !slices.Contains(policy.Properties, "test_network")
+				if got.Policy.NetworkSandbox != wantNetworkSandbox || !got.Policy.Sandbox || !got.Policy.IPCSandbox || !got.Policy.PIDSandbox || !got.Policy.MountSandbox {
+					t.Fatalf("%s with PROPERTIES=%q USE test=%v: %+v", phase, properties, enabled, got.Policy)
+				}
+			}
+			if !base.Policy.NetworkSandbox {
+				t.Fatal("phase policy mutated the shared base request")
+			}
+			base.Policy.NetworkSandbox = false
+			if applyPortageLifecyclePolicy(base, "src_compile").Policy.NetworkSandbox {
+				t.Fatal("phase policy re-enabled a disabled network sandbox")
+			}
+		}
+	}
+}
+
+func TestPreflightAcceptsRestrictedNetworkTests(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	pkg := filepath.Join(repo, "dev-libs", "nss")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pkg, "nss-3.125.ebuild"), []byte("EAPI=8\nSLOT=0\nPROPERTIES=\"test_network\"\nRESTRICT=\"test\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &RebuildConfig{
+		RepoDir: repo, Repository: "gentoo", RootDir: filepath.Join(root, "target"),
+		VdbDir: filepath.Join(root, "target", "var", "db", "pkg"), WorkDirBase: filepath.Join(root, "work"),
+		PhaseLogDir: filepath.Join(root, "logs"), JournalDir: filepath.Join(root, "journal"),
+	}
+	if err := PreflightPackage("dev-libs/nss-3.125", cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInstalledLifecycleDiscoveryDoesNotInheritBuildUserpriv(t *testing.T) {
 	base := phaseproto.Request{
 		Environment: "/private/installed-environment",

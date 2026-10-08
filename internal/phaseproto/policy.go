@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
@@ -100,6 +101,16 @@ func EvaluatePolicyExpression(raw string, use map[string]bool) ([]string, error)
 }
 
 func EvaluateExecutionPolicy(featureText, restrictText, propertyText string, use map[string]bool) (ExecutionPolicy, error) {
+	return evaluateExecutionPolicy(featureText, restrictText, propertyText, "", use)
+}
+
+func testRestrictionOverridden(allowText string, properties []string) bool {
+	allow := strings.Fields(allowText)
+	return slices.Contains(allow, "all") ||
+		(slices.Contains(allow, "network") && slices.Contains(properties, "test_network"))
+}
+
+func evaluateExecutionPolicy(featureText, restrictText, propertyText, allowTestText string, use map[string]bool) (ExecutionPolicy, error) {
 	policy := ExecutionPolicy{Configured: true, Fetch: true, Strip: true}
 	for _, token := range strings.Fields(featureText) {
 		enabled, name := true, token
@@ -155,7 +166,7 @@ func EvaluateExecutionPolicy(featureText, restrictText, propertyText string, use
 			policy.UserPriv = false
 			policy.DropPrivileges = false
 		case "test":
-			policy.Tests = false
+			policy.Tests = policy.Tests && testRestrictionOverridden(allowTestText, properties)
 		case "fetch":
 			policy.Fetch = false
 		case "strip":
@@ -169,6 +180,8 @@ func EvaluateExecutionPolicy(featureText, restrictText, propertyText string, use
 	}
 	for _, name := range properties {
 		switch name {
+		case "test_network":
+			// Network access is enabled only for src_test by the phase policy.
 		case "interactive":
 			policy.Interactive = true
 			return policy, fmt.Errorf("unsupported enabled PROPERTY behavior %q", name)
@@ -346,7 +359,7 @@ func ApplyPackagePolicy(request Request, policy PackagePolicy) (Request, error) 
 		featuresText = request.Env["FEATURES"]
 	}
 	if featuresText != "" || policy.Restrict != "" || policy.Properties != "" {
-		executionPolicy, policyErr := EvaluateExecutionPolicy(featuresText, policy.Restrict, policy.Properties, policy.Use)
+		executionPolicy, policyErr := evaluateExecutionPolicy(featuresText, policy.Restrict, policy.Properties, request.Env["ALLOW_TEST"], policy.Use)
 		if policyErr != nil {
 			return request, fmt.Errorf("phase policy: %w", policyErr)
 		}

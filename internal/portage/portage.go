@@ -367,7 +367,7 @@ var effectiveGlobalVariables = map[string]bool{
 
 var commandEnvironmentVariables = map[string]bool{
 	// Package policy and toolchain controls.
-	"USE": true, "FEATURES": true, "ACCEPT_KEYWORDS": true, "ACCEPT_LICENSE": true,
+	"USE": true, "FEATURES": true, "ACCEPT_KEYWORDS": true, "ACCEPT_LICENSE": true, "ALLOW_TEST": true,
 	"ARCH": true, "CHOST": true, "CBUILD": true, "CTARGET": true,
 	"CFLAGS": true, "CXXFLAGS": true, "CPPFLAGS": true, "LDFLAGS": true,
 	"MAKEOPTS": true, "EMERGE_DEFAULT_OPTS": true,
@@ -544,7 +544,7 @@ func (cfg *Config) UseForcedFor(cpv, slot, repo, flag string, stable bool) bool 
 }
 
 var packageExecutionEnvironmentVariables = map[string]bool{
-	"USE": true, "FEATURES": true, "ACCEPT_KEYWORDS": true, "ACCEPT_LICENSE": true,
+	"USE": true, "FEATURES": true, "ACCEPT_KEYWORDS": true, "ACCEPT_LICENSE": true, "ALLOW_TEST": true,
 	"ARCH": true, "CHOST": true, "CBUILD": true, "CTARGET": true,
 	"ABI": true, "DEFAULT_ABI": true, "MULTILIB_ABIS": true,
 	"CFLAGS": true, "CXXFLAGS": true, "CPPFLAGS": true, "FFLAGS": true,

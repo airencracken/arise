@@ -225,15 +225,89 @@ func TestEvaluateExecutionPolicyAcceptsSplitDebugRestriction(t *testing.T) {
 	}
 }
 
+func TestApplyPackagePolicyNetworkTests(t *testing.T) {
+	for _, test := range []struct {
+		name, features, restrict, properties, allow string
+		use                                         map[string]bool
+		wantTests, wantProperty                     bool
+	}{
+		{name: "NSS default", features: "network-sandbox test", restrict: "test", properties: "test_network", wantProperty: true},
+		{name: "network override", features: "network-sandbox test", restrict: "test", properties: "test_network", allow: "network", wantTests: true, wantProperty: true},
+		{name: "all override", features: "network-sandbox test", restrict: "test", properties: "test_network", allow: "all", wantTests: true, wantProperty: true},
+		{name: "no test feature", features: "network-sandbox -test", restrict: "test", properties: "test_network", allow: "network", wantProperty: true},
+		{name: "unrestricted tests", features: "network-sandbox test", properties: "test_network", wantTests: true, wantProperty: true},
+		{name: "conditional enabled", features: "network-sandbox test", restrict: "test", properties: "test? ( test_network )", use: map[string]bool{"test": true}, allow: "network", wantTests: true, wantProperty: true},
+		{name: "conditional disabled", features: "network-sandbox test", restrict: "test", properties: "test? ( test_network )", allow: "network"},
+		{name: "unrelated restriction", features: "network-sandbox test", restrict: "test", allow: "network"},
+		{name: "all ordinary tests", features: "network-sandbox test", restrict: "test", allow: "all", wantTests: true},
+		{name: "exact allow token", features: "network-sandbox test", restrict: "test", properties: "test_network", allow: "not-network", wantProperty: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			request := Request{Protocol: Version, ID: "network-test-policy", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: filepath.Join(root, "nss.ebuild")}
+			got, err := ApplyPackagePolicy(request, PackagePolicy{
+				Repositories: []portage.RepoEntry{{Name: "gentoo", Location: root}}, Repository: "gentoo",
+				Configuration: &portage.Config{MakeConf: map[string]string{"FEATURES": test.features, "ALLOW_TEST": test.allow}},
+				Restrict:      test.restrict, Properties: test.properties, Use: test.use,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Policy.Tests != test.wantTests || !got.Policy.NetworkSandbox {
+				t.Fatalf("policy = %+v, want Tests=%v and retained network sandbox", got.Policy, test.wantTests)
+			}
+			if reflect.DeepEqual(got.Policy.Properties, []string{"test_network"}) != test.wantProperty {
+				t.Fatalf("properties = %v, want test_network=%v", got.Policy.Properties, test.wantProperty)
+			}
+		})
+	}
+}
+
 func TestEvaluateExecutionPolicyRejectsUnsupportedEnabledBehavior(t *testing.T) {
 	for _, test := range []struct{ features, restrict, properties, want string }{
 		{features: "unknown-feature", want: "FEATURE"},
 		{restrict: "unknown-restrict", want: "RESTRICT"},
 		{properties: "interactive", want: "PROPERTY"},
+		{properties: "unknown-property", want: "PROPERTY"},
 	} {
 		if _, err := EvaluateExecutionPolicy(test.features, test.restrict, test.properties, nil); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Fatalf("EvaluateExecutionPolicy(%q,%q,%q) error = %v", test.features, test.restrict, test.properties, err)
 		}
+	}
+}
+
+func TestNetworkTestOverrideUsesPackageEnvironmentPrecedence(t *testing.T) {
+	root := t.TempDir()
+	config := filepath.Join(root, "config")
+	if err := os.MkdirAll(filepath.Join(config, "env"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "env", "network-tests"), []byte("ALLOW_TEST=network\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configuration := &portage.Config{
+		ConfigRoot: config, MakeConf: map[string]string{"FEATURES": "network-sandbox test", "ALLOW_TEST": ""},
+		PackageEnvRules: []portage.PackageUseRule{{Atom: "dev-libs/nss", Flags: []string{"network-tests"}}},
+	}
+	policy := PackagePolicy{
+		Configuration: configuration, Repositories: []portage.RepoEntry{{Name: "gentoo", Location: root}}, Repository: "gentoo",
+		CPV: "dev-libs/nss-3.125", Restrict: "test", Properties: "test_network",
+	}
+	request := Request{Protocol: Version, ID: "package-network-tests", Command: "run_phase", Phase: "src_compile", EAPI: "8", Ebuild: filepath.Join(root, "nss.ebuild")}
+	got, err := ApplyPackagePolicy(request, policy)
+	if err != nil || !got.Policy.Tests {
+		t.Fatalf("package.env override: policy=%+v, error=%v", got.Policy, err)
+	}
+	request.Env = map[string]string{"ALLOW_TEST": ""}
+	got, err = ApplyPackagePolicy(request, policy)
+	if err != nil || got.Policy.Tests {
+		t.Fatalf("request override: policy=%+v, error=%v", got.Policy, err)
+	}
+	configuration.ApplyCommandEnvironment([]string{"ALLOW_TEST="})
+	request.Env = nil
+	got, err = ApplyPackagePolicy(request, policy)
+	if err != nil || got.Policy.Tests {
+		t.Fatalf("command environment override: policy=%+v, error=%v", got.Policy, err)
 	}
 }
 
