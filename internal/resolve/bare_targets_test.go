@@ -78,3 +78,99 @@ func TestResolveBareApplicationIncludesAccountDependencies(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveMissingTargetSuggestsBinaryAlternative(t *testing.T) {
+	for _, test := range []struct {
+		target string
+		cp     string
+	}{
+		{"signal-desktop", "net-im/signal-desktop-bin"},
+		{"net-im/signal-desktop", "net-im/signal-desktop-bin"},
+		{"=net-im/signal-desktop-8.28.0", "net-im/signal-desktop-bin"},
+		{"firefox", "www-client/firefox-bin"},
+		{"firefox-bin", "www-client/firefox"},
+	} {
+		t.Run(test.target, func(t *testing.T) {
+			g := makeGraph()
+			pkg(g, test.cp, "8.28.0", "0", "0", false, nil)
+			result, err := Resolve(g, []string{test.target}, DefaultResolveConfig())
+			if err == nil || !strings.Contains(err.Error(), "maybe you meant: "+test.cp) {
+				t.Fatalf("missing target diagnostic = %v, want suggestion %s", err, test.cp)
+			}
+			if strings.Contains(err.Error(), "arise sync") || strings.Contains(err.Error(), "arise index") {
+				t.Fatalf("useful suggestion was obscured by index refresh advice: %v", err)
+			}
+			if result != nil && actionForCP(result.Install, test.cp) {
+				t.Fatalf("suggested package was silently selected: %v", collectCPV(result.Install))
+			}
+		})
+	}
+}
+
+func TestBarePackageSuggestionsRankBinaryAlternativeAndBoundResults(t *testing.T) {
+	g := makeGraph()
+	for _, cp := range []string{
+		"net-im/signal-desktop-bin", "net-im/signal-desktops",
+		"app-misc/signal-desktops", "app-misc/signal-desktop-bin",
+		"net-im/signal-cli-bin", "dev-libs/openssl",
+	} {
+		pkg(g, cp, "1", "0", "0", false, nil)
+	}
+	r := &resolver{graph: g}
+	want := []string{"app-misc/signal-desktop-bin", "net-im/signal-desktop-bin", "app-misc/signal-desktops"}
+	for range 10 {
+		if got := r.packageSuggestions("signal-desktop", 3); !slices.Equal(got, want) {
+			t.Fatalf("bare suggestions = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestResolveMissingBareNameSuggestsTypoCorrection(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "app-editors/vim", "9.1", "0", "0", false, nil)
+	pkg(g, "dev-libs/openssl", "3", "0", "0", false, nil)
+	_, err := Resolve(g, []string{"vimn"}, DefaultResolveConfig())
+	if err == nil || !strings.Contains(err.Error(), "maybe you meant: app-editors/vim") || strings.Contains(err.Error(), "openssl") {
+		t.Fatalf("bare typo diagnostic = %v", err)
+	}
+}
+
+func TestResolveMissingBareNameWithoutSuggestionKeepsRefreshHint(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "dev-libs/openssl", "3", "0", "0", false, nil)
+	_, err := Resolve(g, []string{"signal-desktop"}, DefaultResolveConfig())
+	if err == nil || !strings.Contains(err.Error(), "arise sync or arise index") || strings.Contains(err.Error(), "maybe you meant") {
+		t.Fatalf("missing bare target diagnostic = %v", err)
+	}
+}
+
+func TestResolveExactBareNameWinsOverBinaryAlternative(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "net-im/signal-desktop", "8.28.0", "0", "0", false, nil)
+	pkg(g, "net-im/signal-desktop-bin", "8.28.0", "0", "0", false, nil)
+	result, err := Resolve(g, []string{"signal-desktop"}, DefaultResolveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Verified || !slices.Equal(collectCPV(result.Install), []string{"net-im/signal-desktop-8.28.0"}) {
+		t.Fatalf("exact target plan = %v", collectCPV(result.Install))
+	}
+}
+
+func TestResolveMissingBareNameKeepGoingRetainsSuggestion(t *testing.T) {
+	g := makeGraph()
+	pkg(g, "net-im/signal-desktop-bin", "8.28.0", "0", "0", false, nil)
+	pkg(g, "app-editors/vim", "9.1", "0", "0", false, nil)
+	cfg := DefaultResolveConfig()
+	cfg.KeepGoing = true
+	result, err := Resolve(g, []string{"signal-desktop", "vim"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Conflicts) != 1 || !strings.Contains(result.Conflicts[0], "maybe you meant: net-im/signal-desktop-bin") {
+		t.Fatalf("partial plan conflicts = %v", result.Conflicts)
+	}
+	if result.Verified || !slices.Equal(collectCPV(result.Install), []string{"app-editors/vim-9.1"}) {
+		t.Fatalf("partial plan = %v, verified %v", collectCPV(result.Install), result.Verified)
+	}
+}

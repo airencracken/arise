@@ -2059,12 +2059,17 @@ func (r *resolver) expandTargets(targets []string) ([]*atom.Atom, error) {
 				switch len(matches) {
 				case 0:
 					if name, nameErr := atom.ParsePackageAtom("virtual/" + target); nameErr == nil && name.Package == target {
-						msg := fmt.Sprintf("package %q could not be found in the indexed repositories; check repository configuration and refresh with arise sync or arise index", target)
+						msg := fmt.Sprintf("package %q could not be found in the indexed repositories", target)
+						if suggestions := r.packageSuggestions(target, 3); len(suggestions) != 0 {
+							msg += "; maybe you meant: " + strings.Join(suggestions, ", ")
+						} else {
+							msg += "; check repository configuration and refresh with arise sync or arise index"
+						}
 						r.conflicts = append(r.conflicts, msg)
 						if r.config.KeepGoing {
 							continue
 						}
-						return nil, fmt.Errorf("resolve: %s", msg)
+						return nil, errors.New(msg)
 					}
 				case 1:
 					a, err = atom.Parse(matches[0])
@@ -2784,49 +2789,60 @@ func (r *resolver) packageSuggestions(requested string, limit int) []string {
 		return nil
 	}
 	type candidate struct {
-		cp               string
-		packageDistance  int
-		categoryDistance int
-		atomDistance     int
-		exactPackageName bool
+		cp                string
+		packageDistance   int
+		categoryDistance  int
+		atomDistance      int
+		exactPackageName  bool
+		binaryAlternative bool
 	}
 	requested = strings.ToLower(strings.TrimSpace(requested))
-	requestedParts := strings.SplitN(requested, "/", 2)
-	if len(requestedParts) != 2 {
+	requestedCategory, requestedPackage, qualified := strings.Cut(requested, "/")
+	if !qualified {
+		requestedPackage, requestedCategory = requestedCategory, ""
+	}
+	if requestedPackage == "" {
 		return nil
 	}
-	packageThreshold := len(requestedParts[1]) / 4
+	packageThreshold := len(requestedPackage) / 4
 	if packageThreshold < 2 {
 		packageThreshold = 2
 	}
-	categoryThreshold := len(requestedParts[0]) / 4
+	categoryThreshold := len(requestedCategory) / 4
 	if categoryThreshold < 2 {
 		categoryThreshold = 2
 	}
 	exactPackageNames := 0
 	nearbyExactPackageNames := 0
-	for cp := range r.graph.Packages {
-		parts := strings.SplitN(strings.ToLower(cp), "/", 2)
-		if len(parts) != 2 || parts[1] != requestedParts[1] {
-			continue
-		}
-		exactPackageNames++
-		if editDistance(requestedParts[0], parts[0]) <= categoryThreshold {
-			nearbyExactPackageNames++
+	if qualified {
+		for cp := range r.graph.Packages {
+			category, name, ok := strings.Cut(strings.ToLower(cp), "/")
+			if !ok || name != requestedPackage {
+				continue
+			}
+			exactPackageNames++
+			if editDistance(requestedCategory, category) <= categoryThreshold {
+				nearbyExactPackageNames++
+			}
 		}
 	}
 	var candidates []candidate
 	for cp := range r.graph.Packages {
 		lower := strings.ToLower(cp)
-		parts := strings.SplitN(lower, "/", 2)
-		if len(parts) != 2 {
+		category, name, ok := strings.Cut(lower, "/")
+		if !ok {
 			continue
 		}
-		packageDistance := editDistance(requestedParts[1], parts[1])
-		if packageDistance > packageThreshold {
+		packageDistance := editDistance(requestedPackage, name)
+		binaryAlternative := name == requestedPackage+"-bin" || requestedPackage == name+"-bin"
+		if packageDistance > packageThreshold && !binaryAlternative {
 			continue
 		}
-		categoryDistance := editDistance(requestedParts[0], parts[0])
+		var categoryDistance, atomDistance int
+		if qualified {
+			categoryDistance = editDistance(requestedCategory, category)
+			atomDistance = editDistance(requested, lower)
+		}
 		exactPackageName := packageDistance == 0
 		// When an exact name exists in several categories, suppress remote
 		// categories if nearby corrections exist. A unique exact match remains
@@ -2836,14 +2852,18 @@ func (r *resolver) packageSuggestions(requested string, limit int) []string {
 		}
 		candidates = append(candidates, candidate{
 			cp: cp, packageDistance: packageDistance,
-			categoryDistance: categoryDistance,
-			atomDistance:     editDistance(requested, lower),
-			exactPackageName: exactPackageName,
+			categoryDistance:  categoryDistance,
+			atomDistance:      atomDistance,
+			exactPackageName:  exactPackageName,
+			binaryAlternative: binaryAlternative,
 		})
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].exactPackageName != candidates[j].exactPackageName {
 			return candidates[i].exactPackageName
+		}
+		if candidates[i].binaryAlternative != candidates[j].binaryAlternative {
+			return candidates[i].binaryAlternative
 		}
 		if candidates[i].packageDistance != candidates[j].packageDistance {
 			return candidates[i].packageDistance < candidates[j].packageDistance
