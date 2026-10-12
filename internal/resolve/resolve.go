@@ -4146,6 +4146,9 @@ func (r *resolver) processCompleteGraph() {
 			if installed == nil || r.packageScheduled(dependent) {
 				continue
 			}
+			if r.toUninstall[versionActionKey(dependent.Atom.CP(), installed)] != nil {
+				continue // removed consumers do not need their stale ABI binding repaired
+			}
 			constraint := *dependent.Atom
 			constraint.Slot = installed.Slot
 			candidate := r.findMatchingVersion(dependent, &constraint)
@@ -4205,6 +4208,9 @@ func (r *resolver) processCompleteGraph() {
 					continue
 				}
 				installedDependent := dependent.GetInstalledVersion()
+				if r.toUninstall[versionActionKey(dependent.Atom.CP(), installedDependent)] != nil {
+					continue // a blocker removal must not be undone by an ABI rebuild
+				}
 				cpv := dependent.Atom.CP()
 				if r.packageScheduled(dependent) {
 					continue // already being rebuilt
