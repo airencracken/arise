@@ -12,6 +12,42 @@ import (
 	"github.com/airencracken/arise/internal/resolve"
 )
 
+func TestIndependentPlanAuditRetainedSlotOperatorDependency(t *testing.T) {
+	for _, ignore := range []string{"", "y"} {
+		t.Run("ignore="+ignore, func(t *testing.T) {
+			graph := resolve.NewDepGraph()
+			old := graph.AddVersionFromRepository("dev-libs/provider", "1", "0", "1", true, nil, "amd64", "gentoo")
+			old.EAPI, old.InstalledEAPI, old.DependencyMetadataKnown = "8", "8", true
+			next := graph.AddVersionFromRepository("dev-libs/provider", "2", "0", "2", false, nil, "amd64", "gentoo")
+			next.EAPI, next.DependencyMetadataKnown = "8", true
+			consumer := graph.AddVersionFromRepository("app-misc/consumer", "1", "0", "0", true, nil, "amd64", "gentoo")
+			consumer.Available, consumer.DependencyMetadataKnown = true, true
+			consumer.EAPI, consumer.InstalledEAPI = "8", "8"
+			// The repository has added a := dependency since this consumer was
+			// built. Deep dynamic-deps updates its provider while retaining it.
+			consumer.Rdepend, consumer.InstalledRdepend = "dev-libs/provider:=", "dev-libs/provider"
+			cfg := resolve.DefaultResolveConfig()
+			cfg.Update, cfg.Deep, cfg.CompleteGraph = true, true, true
+			cfg.IgnoreBuiltSlotOperatorDeps = ignore
+			cfg.WorldSet = &resolve.WorldSet{Entries: []string{"app-misc/consumer"}}
+			result, err := resolve.Resolve(graph, []string{"@world"}, cfg)
+			if err != nil || !result.Verified {
+				t.Fatalf("resolution failed: result=%#v err=%v", result, err)
+			}
+			if len(result.Install) != 1 || result.Install[0].Atom.CPV() != "dev-libs/provider-2" {
+				t.Fatalf("unexpected provider update: %#v", result.Install)
+			}
+			audit, err := prepareIndependentPlanAudit(graph, result, []string{"@world"}, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if validation := audit.validate(); !validation.Valid {
+				t.Fatalf("provider update lost its dependency justification: %#v", validation.Violations)
+			}
+		})
+	}
+}
+
 func TestIndependentPlanAuditRouteAndLockedReplay(t *testing.T) {
 	graph := resolve.NewDepGraph()
 	old := graph.AddVersionFromRepository("dev-libs/library", "1", "0", "0", true, nil, "amd64", "gentoo")

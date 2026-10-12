@@ -1792,7 +1792,7 @@ func planActionDownloadSizes(actions []resolve.PkgAction, distdir string, verbos
 		if action.Atom == nil {
 			continue
 		}
-		size, err := sizer.Size(action.RepositoryPath, action.Atom.Category, action.Atom.Package, action.SrcURI, distdir, action.UseFlags)
+		size, err := sizer.EstimateSize(action.RepositoryPath, action.Atom.Category, action.Atom.Package, action.SrcURI, distdir, action.UseFlags)
 		if err != nil {
 			if verbose {
 				fmt.Fprintf(os.Stderr, "totals: %s: %v\n", action.Atom.CP(), err)

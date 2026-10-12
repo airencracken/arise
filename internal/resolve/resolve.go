@@ -468,6 +468,12 @@ func (g *DepGraph) AddVersion(cp, version, slot, subslot string, installed bool,
 // AddVersionFromRepository retains repository identity for repo-qualified
 // package policy and later visibility decisions.
 func (g *DepGraph) AddVersionFromRepository(cp, version, slot, subslot string, installed bool, useFlags map[string]bool, keywords, repository string) *VersionInfo {
+	if mainSlot, encodedSubslot, combined := strings.Cut(slot, "/"); combined {
+		slot = mainSlot
+		if subslot == "" {
+			subslot = encodedSubslot
+		}
+	}
 	n := g.AddPackage(cp)
 	key := versionRepositoryKey(version, repository)
 	if existing, ok := n.Versions[key]; ok {
@@ -1083,6 +1089,9 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 					}
 					continue
 				}
+				if r.versionExcluded(node, vi) {
+					continue
+				}
 				action := "install"
 				reason := "explicit (nodeps)"
 				if node.Installed && !config.Reinstall {
@@ -1160,18 +1169,6 @@ func resolveAttempt(ctx context.Context, g *DepGraph, targets []string, config R
 		for key, action := range r.toInstall {
 			if action != nil && action.Atom != nil && targetCPs[action.Atom.CP()] {
 				r.deleteInstall(key)
-			}
-		}
-	}
-
-	if len(config.Exclude) > 0 {
-		excludeSet := make(map[string]bool)
-		for _, ex := range config.Exclude {
-			excludeSet[ex] = true
-		}
-		for a := range r.toInstall {
-			if excludeSet[a] {
-				r.deleteInstall(a)
 			}
 		}
 	}
@@ -1403,6 +1400,13 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 	if g == nil {
 		return nil, fmt.Errorf("resolve: no dependency graph provided (internal error)")
 	}
+	// Certify exactly the supplied transaction. Repairs would change the
+	// overlaid plan without being returned to the caller, and dynamic repository
+	// dependencies can hide the ABI bindings of consumers that remain installed.
+	config.CompleteGraph = false
+	config.DynamicDeps = false
+	installs = append([]PkgAction(nil), installs...)
+	removals = append([]PkgAction(nil), removals...)
 	r := &resolver{
 		graph:                g,
 		config:               config,
@@ -1432,9 +1436,10 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 	}
 	for i := range installs {
 		action := installs[i]
-		if action.Atom == nil {
-			return nil, fmt.Errorf("resolve: install action %d has no atom", i)
+		if err := completeInstallIdentity(g, &action); err != nil {
+			return nil, fmt.Errorf("resolve: install action %d: %w", i, err)
 		}
+		installs[i] = action
 		r.toInstall[actionVersionKey(&action)] = &action
 	}
 	for i := range removals {
@@ -1463,6 +1468,37 @@ func VerifyTransaction(g *DepGraph, installs, removals []PkgAction, config Resol
 			return VerificationFailed
 		}(),
 	}, nil
+}
+
+func completeInstallIdentity(g *DepGraph, action *PkgAction) error {
+	if g == nil || action == nil || action.Atom == nil || action.Atom.Version == nil {
+		return fmt.Errorf("exact package identity is required")
+	}
+	node := g.Packages[action.Atom.CP()]
+	if node == nil {
+		return fmt.Errorf("package %s is not available", action.Atom.CP())
+	}
+	var matches []*VersionInfo
+	for _, vi := range node.Versions {
+		if installIdentityMatches(action, vi) {
+			matches = append(matches, vi)
+		}
+	}
+	if len(matches) != 1 {
+		return fmt.Errorf("exact install %s matched %d repository/slot identities", action.Atom, len(matches))
+	}
+	action.Repository, action.Slot, action.Subslot = matches[0].Repository, matches[0].Slot, matches[0].Subslot
+	return nil
+}
+
+func installIdentityMatches(action *PkgAction, vi *VersionInfo) bool {
+	return vi != nil && vi.Version != nil && vi.Version.Raw == action.Atom.Version.Raw &&
+		(action.Repository == "" || vi.Repository == action.Repository) &&
+		(action.Atom.Repo == "" || vi.Repository == action.Atom.Repo) &&
+		(action.Slot == "" || vi.Slot == action.Slot) &&
+		(action.Atom.Slot == "" || vi.Slot == action.Atom.Slot) &&
+		(action.Subslot == "" || vi.Subslot == action.Subslot) &&
+		(action.Atom.Subslot == "" || vi.Subslot == action.Atom.Subslot)
 }
 
 func completeRemovalIdentity(g *DepGraph, action *PkgAction) error {
@@ -2612,6 +2648,12 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 
 	if installed != nil {
 		if versionAtomMatches(node.Atom, installedConstraint, installed, installedFlags(installed)) {
+			if r.versionExcluded(node, vi) {
+				if r.config.Deep {
+					return r.processDeps(node, installed, target.String(), depth+1, DomainROOT)
+				}
+				return nil
+			}
 			// --noreplace: skip if exact same version already installed
 			if r.config.NoReplace && vi != nil && installed.Version != nil && vi.Version != nil &&
 				vi.Version.Raw == installed.Version.Raw {
@@ -3073,6 +3115,10 @@ func (r *resolver) processDeps(node *PkgNode, vi *VersionInfo, parent string, de
 // synthetic/test graphs; using them for repository packages can accidentally
 // resolve the dependencies of a different (often live) version.
 func (r *resolver) dependenciesForVersion(node *PkgNode, vi *VersionInfo) ([]*DepEdge, error) {
+	return r.dependenciesForVersionMetadata(node, vi, false)
+}
+
+func (r *resolver) dependenciesForVersionMetadata(node *PkgNode, vi *VersionInfo, forceInstalledMetadata bool) ([]*DepEdge, error) {
 	if vi == nil || (!vi.DependencyMetadataKnown && vi.Depend == "" && vi.Rdepend == "" && vi.Bdepend == "" && vi.Idepend == "" && vi.Pdepend == "" &&
 		vi.InstalledDepend == "" && vi.InstalledRdepend == "" && vi.InstalledBdepend == "" && vi.InstalledIdepend == "" && vi.InstalledPdepend == "") {
 		return node.Deps, nil
@@ -3086,12 +3132,14 @@ func (r *resolver) dependenciesForVersion(node *PkgNode, vi *VersionInfo) ([]*De
 		{vi.Bdepend, DepTypeBuild}, {vi.Idepend, DepTypeInstall},
 		{vi.Pdepend, DepTypePost},
 	}
-	flags := r.candidateUseFlags(node, vi)
 	scheduledVersion := r.packageVersionScheduled(node, vi)
 	scheduledMergeType := r.mergeTypeForVersion(node, vi)
-	useInstalledMetadata := vi.Installed && !scheduledVersion && (!r.config.DynamicDeps || !vi.Available)
+	useInstalledMetadata := forceInstalledMetadata || vi.Installed && !scheduledVersion && (!r.config.DynamicDeps || !vi.Available)
+	var flags map[string]bool
 	if useInstalledMetadata {
 		flags = installedFlags(vi)
+	} else {
+		flags = r.candidateUseFlags(node, vi)
 	}
 	if useInstalledMetadata &&
 		(vi.InstalledDepend != "" || vi.InstalledRdepend != "" || vi.InstalledBdepend != "" || vi.InstalledIdepend != "" || vi.InstalledPdepend != "") {
@@ -3440,10 +3488,10 @@ func (r *resolver) processEdge(edge *DepEdge, depth int) error {
 				if ignoreSlotOps {
 					// Update dep without triggering dependent rebuilds
 					reason := fmt.Sprintf("dependency of %s", edge.From.Atom.CP())
-					return r.planPackage(bestVersionAtom(toNode.Atom, best), reason, depth)
+					return r.planDependencyInDomain(bestVersionAtom(toNode.Atom, best), depAtom, reason, depth, edge.Domain)
 				}
 				reason := fmt.Sprintf("slot operator rebuild of %s (dep of %s)", toNode.Atom.CP(), edge.From.Atom.CP())
-				return r.planPackage(bestVersionAtom(toNode.Atom, best), reason, depth)
+				return r.planDependencyInDomain(bestVersionAtom(toNode.Atom, best), depAtom, reason, depth, edge.Domain)
 			}
 		}
 		if r.config.Deep {
@@ -4106,6 +4154,14 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 	// slots not matched by a version/slot-qualified blocker remain in the final
 	// state and may continue satisfying other dependencies.
 	for _, installed := range blocked {
+		if r.versionExcluded(installedNode, installed) {
+			message := fmt.Sprintf("%s is blocked by %s, but its removal is excluded by --exclude", bestVersionAtom(installedNode.Atom, installed), blocker)
+			r.conflicts = append(r.conflicts, message)
+			if r.config.KeepGoing {
+				return nil
+			}
+			return fmt.Errorf("%s", message)
+		}
 		cpv := cp
 		if installed.Version != nil && installed.Version.Raw != "" {
 			cpv = cp + "-" + versionRepositoryKey(installed.Version.Raw, installed.Repository)
@@ -4141,9 +4197,9 @@ func (r *resolver) processCompleteGraph() {
 		// consumer metadata still records the old := binding explicitly as
 		// slot/subslot=.  Portage reports these as rR actions on the next plan.
 		// Reconcile those stale bindings on every complete-graph pass.
-		for _, dependent := range r.staleInstalledSlotOperatorDependents() {
-			installed := dependent.GetInstalledVersion()
-			if installed == nil || r.packageScheduled(dependent) {
+		for _, binding := range r.staleInstalledSlotOperatorDependents() {
+			dependent, installed := binding.node, binding.installed
+			if _, scheduled := r.scheduledReplacement(dependent, installed, DomainROOT); scheduled {
 				continue
 			}
 			if r.toUninstall[versionActionKey(dependent.Atom.CP(), installed)] != nil {
@@ -4151,8 +4207,9 @@ func (r *resolver) processCompleteGraph() {
 			}
 			constraint := *dependent.Atom
 			constraint.Slot = installed.Slot
+			constraint.Subslot = ""
 			candidate := r.findMatchingVersion(dependent, &constraint)
-			if candidate == nil || !candidate.Available {
+			if candidate == nil || !candidate.Available || r.versionExcluded(dependent, candidate) {
 				continue
 			}
 			r.setInstall(versionActionKey(dependent.Atom.CP(), candidate),
@@ -4179,19 +4236,22 @@ func (r *resolver) processCompleteGraph() {
 			}
 			a := r.toInstall[key]
 			cp := a.Atom.CP()
-			if processed[cp] {
+			if processed[key] || normalizedActionDomain(a.Domain) != DomainROOT {
 				continue
 			}
-			processed[cp] = true
+			processed[key] = true
 
 			node := r.graph.Packages[cp]
 			if node == nil {
 				continue
 			}
 
-			installed := node.GetInstalledVersion()
 			newVI := r.findMatchingVersion(node, a.Atom)
-			if installed == nil || newVI == nil {
+			if newVI == nil {
+				continue
+			}
+			installed := node.GetInstalledVersionForSlot(newVI.Slot)
+			if installed == nil {
 				continue
 			}
 			if installed.Subslot == "" || newVI.Subslot == "" || installed.Subslot == newVI.Subslot {
@@ -4203,38 +4263,25 @@ func (r *resolver) processCompleteGraph() {
 				continue
 			}
 
-			for _, dependent := range r.installedSlotOperatorDependents(cp) {
-				if dependent == nil || !dependent.Installed || dependent.GetInstalledVersion() == nil {
-					continue
-				}
-				installedDependent := dependent.GetInstalledVersion()
+			for _, binding := range r.installedSlotOperatorDependents(cp, installed.Slot) {
+				dependent, installedDependent := binding.node, binding.installed
 				if r.toUninstall[versionActionKey(dependent.Atom.CP(), installedDependent)] != nil {
 					continue // a blocker removal must not be undone by an ABI rebuild
 				}
-				cpv := dependent.Atom.CP()
-				if r.packageScheduled(dependent) {
+				if _, scheduled := r.scheduledReplacement(dependent, installedDependent, DomainROOT); scheduled {
 					continue // already being rebuilt
 				}
 				reason := fmt.Sprintf("slot operator rebuild (subslot change in %s)", cp)
 				constraint := *dependent.Atom
 				constraint.Slot = installedDependent.Slot
+				constraint.Subslot = ""
 				dVI := r.findMatchingVersion(dependent, &constraint)
-				if dVI == nil || !dVI.Available {
+				if dVI == nil || !dVI.Available || r.versionExcluded(dependent, dVI) {
 					continue
 				}
-				depAtom := bestVersionAtom(dependent.Atom, dVI)
-				cpv = depAtom.CP()
-				if depAtom.Version != nil && depAtom.Version.Raw != "" {
-					cpv = cpv + "-" + depAtom.Version.Raw
-				}
-				r.setInstall(versionActionKey(dependent.Atom.CP(), dVI), &PkgAction{
-					Atom: depAtom, Action: "reinstall", Reason: reason,
-					Slot: dVI.Slot, Subslot: dVI.Subslot, Repository: dVI.Repository,
-					RepositoryPath: dVI.RepositoryPath, SrcURI: dVI.SrcURI, Restrict: dVI.Restrict,
-					IUse:           dVI.IUse,
-					UseFlags:       r.candidateUseFlags(dependent, dVI),
-					RebuildAfterCP: cp,
-				})
+				rebuild := staleSlotRepairAction(dependent, installedDependent, dVI, r.candidateUseFlags(dependent, dVI))
+				rebuild.Reason, rebuild.RebuildAfterCP = reason, cp
+				r.setInstall(versionActionKey(dependent.Atom.CP(), dVI), rebuild)
 				found = true
 			}
 		}
@@ -4266,76 +4313,71 @@ func staleSlotRepairAction(dependent *PkgNode, installed, candidate *VersionInfo
 // installed provider currently has. Repository metadata normally contains an
 // unexpanded := atom; the explicit subslot is the durable ABI binding written
 // to VDB at merge time.
-func (r *resolver) staleInstalledSlotOperatorDependents() []*PkgNode {
-	var result []*PkgNode
+func (r *resolver) staleInstalledSlotOperatorDependents() []installedSlotOperatorDependent {
+	var result []installedSlotOperatorDependent
 	for _, dependent := range r.graph.Packages {
 		if dependent == nil || !dependent.Installed {
 			continue
 		}
-		installed := dependent.GetInstalledVersion()
-		if installed == nil {
-			continue
-		}
-		if r.setScoped && !r.selectedCPs[dependent.Atom.CP()] &&
-			!r.seenDeps[dependencyVersionKey(dependent.Atom.CP(), installed.Version, installed.Slot, installed.Repository)] {
-			continue
-		}
-		edges, err := r.dependenciesForInstalledVersion(dependent, installed)
-		if err != nil {
-			continue
-		}
-		flags := installedFlags(installed)
-		stale := false
-		for _, edge := range edges {
-			if edge.UseCond != "" && !conditionsEnabled(flags, edge.UseCond) {
+		for _, installed := range dependent.Versions {
+			if installed == nil || !installed.Installed {
 				continue
 			}
-			atoms := []*atom.Atom{edge.DepAtom}
-			for _, group := range edgeAnyOfGroups(edge) {
-				for _, member := range group {
-					if member.UseCond == "" || conditionsEnabled(flags, member.UseCond) {
-						atoms = append(atoms, member.Atom)
-					}
+			if r.setScoped && !r.selectedCPs[dependent.Atom.CP()] &&
+				!r.seenDeps[dependencyVersionKey(dependent.Atom.CP(), installed.Version, installed.Slot, installed.Repository)] {
+				continue
+			}
+			if r.installedVersionHasStaleBinding(dependent, installed) {
+				result = append(result, installedSlotOperatorDependent{node: dependent, installed: installed, cp: dependent.Atom.CP()})
+			}
+		}
+	}
+	sortInstalledSlotOperatorDependents(result)
+	return result
+}
+
+func (r *resolver) installedVersionHasStaleBinding(dependent *PkgNode, installed *VersionInfo) bool {
+	edges, err := r.dependenciesForInstalledVersion(dependent, installed)
+	if err != nil {
+		return false
+	}
+	flags := installedFlags(installed)
+	for _, edge := range edges {
+		if edge.UseCond != "" && !conditionsEnabled(flags, edge.UseCond) {
+			continue
+		}
+		atoms := []*atom.Atom{edge.DepAtom}
+		for _, group := range edgeAnyOfGroups(edge) {
+			for _, member := range group {
+				if member.UseCond == "" || conditionsEnabled(flags, member.UseCond) {
+					atoms = append(atoms, member.Atom)
 				}
 			}
-			for _, dep := range atoms {
-				if dep == nil || dep.SlotOp != atom.SlotOpEq || dep.Subslot == "" {
-					continue
-				}
-				provider := r.graph.Packages[dep.CP()]
-				if provider == nil {
-					continue
-				}
-				for _, version := range provider.Versions {
-					if version == nil || !version.Installed {
-						continue
-					}
-					if dep.Slot != "" && version.Slot != dep.Slot {
-						continue
-					}
-					effectiveSubslot := version.Subslot
-					if effectiveSubslot == "" {
-						effectiveSubslot = version.Slot
-					}
-					if effectiveSubslot != dep.Subslot {
-						stale = true
-					}
-					break
-				}
-				if stale {
-					break
-				}
+		}
+		for _, dep := range atoms {
+			if dep == nil || dep.SlotOp != atom.SlotOpEq || dep.Subslot == "" {
+				continue
 			}
-			if stale {
+			provider := r.graph.Packages[dep.CP()]
+			if provider == nil {
+				continue
+			}
+			for _, version := range provider.Versions {
+				if version == nil || !version.Installed || dep.Slot != "" && version.Slot != dep.Slot {
+					continue
+				}
+				effectiveSubslot := version.Subslot
+				if effectiveSubslot == "" {
+					effectiveSubslot = version.Slot
+				}
+				if effectiveSubslot != dep.Subslot {
+					return true
+				}
 				break
 			}
 		}
-		if stale {
-			result = append(result, dependent)
-		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Atom.CP() < result[j].Atom.CP() })
-	return result
+	return false
 }
 
 // installedSlotOperatorDependents derives reverse := edges from the installed
@@ -4343,13 +4385,18 @@ func (r *resolver) staleInstalledSlotOperatorDependents() []*PkgNode {
 // newly selected CPV rather than the installed instance whose ABI binding
 // Portage recorded; relying on it misses real complete-graph rebuilds when the
 // dependency metadata changed between those versions.
-func (r *resolver) installedSlotOperatorDependents(providerCP string) []*PkgNode {
-	var result []*PkgNode
+type installedSlotOperatorDependent struct {
+	node      *PkgNode
+	installed *VersionInfo
+	cp        string
+}
+
+func (r *resolver) installedSlotOperatorDependents(providerCP, providerSlot string) []installedSlotOperatorDependent {
+	var result []installedSlotOperatorDependent
 	for _, dependent := range r.graph.Packages {
 		if dependent == nil || !dependent.Installed {
 			continue
 		}
-		matched := false
 		for _, installed := range dependent.Versions {
 			if installed == nil || !installed.Installed {
 				continue
@@ -4359,6 +4406,7 @@ func (r *resolver) installedSlotOperatorDependents(providerCP string) []*PkgNode
 				continue
 			}
 			flags := installedFlags(installed)
+			matched := false
 			for _, edge := range edges {
 				if edge.UseCond != "" && !conditionsEnabled(flags, edge.UseCond) {
 					continue
@@ -4372,7 +4420,7 @@ func (r *resolver) installedSlotOperatorDependents(providerCP string) []*PkgNode
 					}
 				}
 				for _, dep := range atoms {
-					if dep != nil && dep.CP() == providerCP && dep.SlotOp == atom.SlotOpEq && dep.Subslot != "" {
+					if dep != nil && dep.CP() == providerCP && dep.SlotOp == atom.SlotOpEq && dep.Subslot != "" && (dep.Slot == "" || dep.Slot == providerSlot) {
 						matched = true
 						break
 					}
@@ -4382,15 +4430,22 @@ func (r *resolver) installedSlotOperatorDependents(providerCP string) []*PkgNode
 				}
 			}
 			if matched {
-				break
+				result = append(result, installedSlotOperatorDependent{node: dependent, installed: installed, cp: dependent.Atom.CP()})
 			}
 		}
-		if matched {
-			result = append(result, dependent)
-		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Atom.CP() < result[j].Atom.CP() })
+	sortInstalledSlotOperatorDependents(result)
 	return result
+}
+
+func sortInstalledSlotOperatorDependents(result []installedSlotOperatorDependent) {
+	sort.Slice(result, func(i, j int) bool {
+		left, right := result[i], result[j]
+		if left.cp != right.cp {
+			return left.cp < right.cp
+		}
+		return left.installed.Slot < right.installed.Slot
+	})
 }
 
 // dependenciesForInstalledVersion always selects the dependency strings saved
@@ -4400,9 +4455,7 @@ func (r *resolver) dependenciesForInstalledVersion(node *PkgNode, installed *Ver
 	if installed == nil {
 		return nil, nil
 	}
-	vdbVersion := *installed
-	vdbVersion.Available = false
-	return r.dependenciesForVersion(node, &vdbVersion)
+	return r.dependenciesForVersionMetadata(node, installed, true)
 }
 
 func (r *resolver) verifyPlannedState() {
@@ -4780,7 +4833,7 @@ func (r *resolver) scheduleVerificationRebuild(node *PkgNode, installed *Version
 	target.Slot = installed.Slot
 	target.Subslot = ""
 	best := r.findMatchingVersion(node, &target)
-	if best == nil || best.Version == nil || !best.Available {
+	if best == nil || best.Version == nil || !best.Available || r.versionExcluded(node, best) {
 		return false, nil
 	}
 	actionKey := versionActionKey(node.Atom.CP(), best)
@@ -5915,30 +5968,50 @@ func (r *resolver) newUseChanged(node *PkgNode, installed, candidate *VersionInf
 	if candidate.Version != nil {
 		cpv += "-" + candidate.Version.Raw
 	}
-	stable := false
-	arch := r.portageConfig.MakeConf["ARCH"]
-	if arch == "" {
-		arch = gentooRuntimeArch(runtime.GOARCH)
+	stable := r.versionStableKeyword(candidate)
+	oldFlags := installedFlags(installed)
+	fixedFlag := func(flag string) bool {
+		return r.portageConfig.UseMaskedFor(cpv, policySlot(candidate), candidate.Repository, flag, stable) ||
+			r.portageConfig.UseForcedFor(cpv, policySlot(candidate), candidate.Repository, flag, stable)
 	}
-	for _, keyword := range strings.Fields(candidate.Keywords) {
-		stable = stable || keyword == arch
+	for flag := range oldDomain {
+		if _, exists := candidate.UseFlags[flag]; exists {
+			if oldFlags[flag] != candidateFlags[flag] {
+				return true
+			}
+		} else if oldFlags[flag] || !fixedFlag(flag) {
+			return true
+		}
 	}
-	filtered := *candidate
-	filtered.UseFlags = cloneBoolMap(candidate.UseFlags)
-	for flag := range filtered.UseFlags {
+	for flag := range candidate.UseFlags {
+		if _, existed := oldDomain[flag]; existed {
+			continue
+		}
 		// Repository md5-cache IUSE includes implicit USE_EXPAND values while
 		// installed VDB IUSE normally contains only the ebuild-declared domain.
 		// Those implicit values belong in effective USE, not in --newuse's
 		// added/removed-IUSE comparison.
-		if _, existed := oldDomain[flag]; !existed && r.implicitUseExpandFlag(flag) {
-			delete(filtered.UseFlags, flag)
+		if r.implicitUseExpandFlag(flag) {
 			continue
 		}
-		if _, existed := oldDomain[flag]; !existed && r.portageConfig.UseMaskedFor(cpv, policySlot(candidate), candidate.Repository, flag, stable) {
-			delete(filtered.UseFlags, flag)
+		// Mask/force policy excludes IUSE additions and removals from --newuse
+		// only when they do not change the enabled state recorded at build time.
+		if candidateFlags[flag] || !fixedFlag(flag) {
+			return true
 		}
 	}
-	return newUseChanged(installed, &filtered, candidateFlags)
+	return false
+}
+
+func (r *resolver) versionStableKeyword(vi *VersionInfo) bool {
+	if r.portageConfig == nil || vi == nil {
+		return false
+	}
+	arch := r.portageConfig.MakeConf["ARCH"]
+	if arch == "" {
+		arch = gentooRuntimeArch(runtime.GOARCH)
+	}
+	return slices.Contains(strings.Fields(vi.Keywords), arch)
 }
 
 func effectiveUseChanged(old, new map[string]bool) bool {
@@ -6132,7 +6205,7 @@ func (r *resolver) findMatchingVersion(node *PkgNode, constraint *atom.Atom) *Ve
 		if r.checkContext() != nil {
 			return nil
 		}
-		if vi == nil {
+		if vi == nil || !vi.Installed && r.versionExcluded(node, vi) {
 			continue
 		}
 		if !versionAtomMatches(node.Atom, constraint, vi, r.candidateUseFlags(node, vi)) {
@@ -6182,7 +6255,7 @@ func (r *resolver) versionsSatisfyingAll(node *PkgNode, slot string, constraints
 		if r.checkContext() != nil {
 			return nil
 		}
-		if vi == nil || vi.Slot != slot || (!vi.Installed && !vi.Available) || r.versionMaskStatus(node, vi).Masked {
+		if vi == nil || vi.Slot != slot || (!vi.Installed && !vi.Available) || !vi.Installed && r.versionExcluded(node, vi) || r.versionMaskStatus(node, vi).Masked {
 			continue
 		}
 		if !vi.Installed && !r.versionKeywordAccepted(node, vi) {
@@ -6202,6 +6275,18 @@ func (r *resolver) versionsSatisfyingAll(node *PkgNode, slot string, constraints
 	sort.SliceStable(result, func(i, j int) bool { return betterVersionCandidate(result[i], result[j]) })
 	r.candidateCache[cacheKey] = candidateCacheEntry{versions: result}
 	return result
+}
+
+func (r *resolver) versionExcluded(node *PkgNode, vi *VersionInfo) bool {
+	if node == nil || node.Atom == nil || vi == nil {
+		return false
+	}
+	for _, excluded := range r.config.Exclude {
+		if portage.PackageAtomMatches(excluded, versionedCP(node.Atom.CP(), vi), policySlot(vi), vi.Repository) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *resolver) slotConflictCandidates(node *PkgNode, slot string, constraints []*atom.Atom) []ConflictCandidate {

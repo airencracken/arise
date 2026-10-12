@@ -151,6 +151,9 @@ func (r *resolver) candidateDecisionOutcome(node *PkgNode, version *VersionInfo,
 	if node != nil && node.Atom != nil && r.onlyDepsTargets[node.Atom.CP()] {
 		return []string{"omitted by onlydeps partial-plan mode"}, DecisionSkipped
 	}
+	if !version.Installed && r.versionExcluded(node, version) {
+		return []string{"excluded by --exclude"}, DecisionRejected
+	}
 	if status := r.versionMaskStatus(node, version); status.Masked {
 		return []string{"masked by " + status.Source + " atom " + status.Atom}, DecisionRejected
 	}

@@ -6,6 +6,9 @@ machine-readable companions when they are needed to reproduce a finding.
 
 ## Dated reference audits
 
+- [`WORLD_UPDATE_AUDIT_2026-10-11.md`](WORLD_UPDATE_AUDIT_2026-10-11.md)
+  records world-update blocker, ABI, validation and exclusion fixes, independent
+  host-plan mutation checks, and resolution and whole-command timing comparisons.
 - [`DOCUMENTATION_AUDIT_2026-07-24.md`](DOCUMENTATION_AUDIT_2026-07-24.md)
   classifies maintained, archived, wiki-bound, and evidence documentation for
   the clean-world checkpoint sweep.
