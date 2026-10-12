@@ -15,6 +15,8 @@ Status values are `supported`, `partial`, `planned`, and `not-applicable`.
 | Portage interface | Arise spelling/value | Status | Enforcement |
 |---|---|---|---|
 | `-p`, `--pretend` | same | supported | registration and zero-mutation tests |
+| `-a`, `--ask` | same | supported subset | declined source/resume/remote binary and empty-update paths preserve package/world/checkpoint state; supplied empty-update approvals are validated |
+| `--resume`, `--skipfirst` | same | partial | pending explicit CPVs, same-version rebuilds under update mode, original world favorites and read-only skip/decline covered; original build/binary/root/job options must be supplied again; completed resumes reject package-only approval |
 | `-u`, `--update` | same | supported | resolver config and live pretend matrix |
 | `-D`, `--deep` | same | supported | dependency-depth tests |
 | `-N`, `--newuse` | same | supported | USE transition fixtures |
@@ -31,13 +33,13 @@ Status values are `supported`, `partial`, `planned`, and `not-applicable`.
 | `--keep-going` | same | supported | bounded conflict/cancellation tests |
 | `--backtrack=N` | same | supported | hard-ceiling and deterministic ledger tests |
 | `-e`, `--emptytree` | same | partial | canonical spellings and bounded regression covered; equivalent live outcome/timing gate open |
-| `-O`, `--nodeps` | same | supported | verification-status tests |
+| `-O`, `--nodeps` | same | partial | emits an unverified diagnostic plan with `skipped-nodeps`; CLI returns nonzero and refuses uncertified execution; command-level tests preserve world/resume |
 | `-o`, `--onlydeps` | same | supported | root/dependency action tests |
 | `--root-deps=VALUE` | same | partial | domain policy tested; full value matrix open |
-| `-k`, `--usepkg` | same | supported | compatible local XPAK/GPKG selection with source fallback and transactional binary install |
-| `-K`, `--usepkgonly` | same | supported | compatible local selection fails closed when no candidate is available |
-| `-g`, `--getbinpkg` | same | supported | `Packages`-indexed dependency-closure acquisition with source fallback |
-| `-G`, `--getbinpkgonly` | same | supported | strict `Packages`-indexed dependency-closure acquisition and binary-only resolution |
+| `-k`, `--usepkg` | same | partial | compatible local XPAK/GPKG selection and transactional install/upgrade; required binary lifecycle hooks trigger source fallback; full binary lifecycle/dependency-authority coverage remains open |
+| `-K`, `--usepkgonly` | same | partial | compatible local selection rejects absent candidates or unsupported required lifecycle hooks before ROOT mutation |
+| `-g`, `--getbinpkg` | same | partial | one `Packages` index per host supplies planning candidates; source fallback during selection; archives acquired after confirmation; full binary lifecycle support remains open |
+| `-G`, `--getbinpkgonly` | same | partial | metadata-only pretend/declined-ask; confirmed dependency-plus-target acquisition and binary execution tested; unsupported required lifecycle hooks reject |
 | `-b`, `--buildpkg` | same | supported | deterministic GPKG publication followed by normal installation |
 | `-B`, `--buildpkgonly` | same | supported subset | source archive production with installed build tools; no payload, VDB, world, or merge-timing update; selected binary install actions are rejected |
 | `--binpkg-respect-use` | same | supported | IUSE-domain USE matching plus available CHOST, ABI, repository and slot metadata |
@@ -57,9 +59,9 @@ subset of the man-page inventory, not a claim of full emerge CLI parity.
 | `PORTAGE_CONFIGROOT` | configuration root | supported | config loading tests |
 | `PORTDIR` | primary repository | supported | CLI default tests |
 | `DISTDIR` | distfile cache | supported | CLI/fetch tests |
-| `PKGDIR` | binary package directory | supported | XPAK/GPKG selection, multi-instance and Portage cross-read tests |
+| `PKGDIR` | binary package directory | supported subset | XPAK/GPKG selection, newest compatible build ID, ABI subslot preservation and Portage cross-read tests |
 | `PORTAGE_TMPDIR` | work/resume base | partial | paths tested; lifecycle parity is P4 |
-| `PORTAGE_BINHOST` | binary hosts | supported | ordered URLs, bounded `Packages` parsing, version/build selection, closure acquisition, advertised digest/size checks and GPKG Manifest verification |
+| `PORTAGE_BINHOST` | binary hosts | supported subset | ordered index metadata, bounded parsing, compatible instance selection, post-confirmation closure acquisition, advertised digest/size checks and GPKG Manifest verification; full lifecycle and external-host recovery matrix remain open |
 | `FEATURES` | execution/package features | partial | typed P4 policy; precedence open |
 | `USE`, `ACCEPT_KEYWORDS`, `ACCEPT_LICENSE` | resolver policy | supported | layered config tests |
 | `MAKEOPTS`, `CFLAGS`, `CXXFLAGS` | build environment | partial | P4 differential gate open |

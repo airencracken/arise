@@ -290,7 +290,10 @@ func NewPackageIndexEntry(packagePath, root string, info *BinPkgInfo, metadata m
 		"BLAKE2B": hex.EncodeToString(blakeHash.Sum(nil)),
 		"SLOT":    info.Slot, "USE": info.Use, "EAPI": info.EAPI,
 	}
-	for _, key := range []string{"BUILD_ID", "BUILD_TIME", "repository", "CHOST", "CBUILD", "ABI", "IUSE", "RDEPEND", "PDEPEND"} {
+	if info.Subslot != "" && info.Subslot != info.Slot {
+		entry["SLOT"] += "/" + info.Subslot
+	}
+	for _, key := range []string{"BUILD_ID", "BUILD_TIME", "repository", "CHOST", "CBUILD", "ABI", "IUSE", "RDEPEND", "PDEPEND", "DEFINED_PHASES"} {
 		if value := strings.TrimSpace(string(metadata[key])); value != "" {
 			entry[key] = value
 		}

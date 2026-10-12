@@ -46,21 +46,22 @@ var DefaultExtractionPolicy = ExtractionPolicy{
 }
 
 type BinPkgInfo struct {
-	Category   string
-	Package    string
-	Version    string
-	Slot       string
-	Subslot    string
-	Use        string
-	EAPI       string
-	BuildTime  int64
-	BuildID    string
-	Repository string
-	CHOST      string
-	ABI        string
-	IUse       string
-	Size       int64
-	Path       string
+	Category      string
+	Package       string
+	Version       string
+	Slot          string
+	Subslot       string
+	Use           string
+	EAPI          string
+	BuildTime     int64
+	BuildID       string
+	Repository    string
+	CHOST         string
+	ABI           string
+	IUse          string
+	DefinedPhases string
+	Size          int64
+	Path          string
 }
 
 func (b *BinPkgInfo) CPV() string {
@@ -115,6 +116,7 @@ func ReadInfo(path string) (*BinPkgInfo, error) {
 		result.Version = meta["VERSION"]
 		result.Slot, result.Subslot = parseSlot(meta["SLOT"])
 		result.Use, result.EAPI = meta["USE"], meta["EAPI"]
+		result.DefinedPhases = meta["DEFINED_PHASES"]
 		result.BuildTime, _ = strconv.ParseInt(meta["BUILD_TIME"], 10, 64)
 		result.BuildID, result.Repository = meta["BUILD_ID"], meta["repository"]
 		result.CHOST, result.ABI, result.IUse = meta["CHOST"], meta["ABI"], meta["IUSE"]
@@ -158,6 +160,7 @@ func ReadInfo(path string) (*BinPkgInfo, error) {
 	}
 	info.Use = meta["USE"]
 	info.EAPI = meta["EAPI"]
+	info.DefinedPhases = meta["DEFINED_PHASES"]
 	if bt, ok := meta["BUILD_TIME"]; ok {
 		info.BuildTime, _ = strconv.ParseInt(bt, 10, 64)
 	}
@@ -1360,14 +1363,22 @@ type CompatibilityPolicy struct {
 }
 
 func FindCompatiblePackage(pkgDir string, atomStr string, policy CompatibilityPolicy) (*BinPkgInfo, error) {
-	a, err := atom.Parse(atomStr)
-	if err != nil {
+	if _, err := atom.Parse(atomStr); err != nil {
 		return nil, fmt.Errorf("binpkg: could not parse package name %q: %w", atomStr, err)
 	}
-
 	pkgs, err := ListAvailable(pkgDir)
 	if err != nil {
 		return nil, err
+	}
+	return FindCompatibleCandidate(pkgs, atomStr, policy)
+}
+
+// FindCompatibleCandidate applies the same policy to cached packages and
+// advertised remote metadata. It does not acquire or certify archive payloads.
+func FindCompatibleCandidate(pkgs []*BinPkgInfo, atomStr string, policy CompatibilityPolicy) (*BinPkgInfo, error) {
+	a, err := atom.Parse(atomStr)
+	if err != nil {
+		return nil, fmt.Errorf("binpkg: could not parse package name %q: %w", atomStr, err)
 	}
 
 	type candidate struct {
@@ -1378,6 +1389,9 @@ func FindCompatiblePackage(pkgDir string, atomStr string, policy CompatibilityPo
 
 	var candidates []candidate
 	for _, p := range pkgs {
+		if p == nil {
+			continue
+		}
 		if p.Category != a.Category || p.Package != a.Package {
 			continue
 		}
@@ -1447,9 +1461,19 @@ func FindCompatiblePackage(pkgDir string, atomStr string, policy CompatibilityPo
 		return nil, nil
 	}
 
-	sort.Slice(candidates, func(i, j int) bool {
+	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].ver != nil && candidates[j].ver != nil {
-			return candidates[i].ver.Compare(candidates[j].ver) > 0
+			if cmp := candidates[i].ver.Compare(candidates[j].ver); cmp != 0 {
+				return cmp > 0
+			}
+		}
+		left, _ := strconv.ParseUint(candidates[i].pkg.BuildID, 10, 64)
+		right, _ := strconv.ParseUint(candidates[j].pkg.BuildID, 10, 64)
+		if left != right {
+			return left > right
+		}
+		if candidates[i].pkg.BuildTime != candidates[j].pkg.BuildTime {
+			return candidates[i].pkg.BuildTime > candidates[j].pkg.BuildTime
 		}
 		return false
 	})

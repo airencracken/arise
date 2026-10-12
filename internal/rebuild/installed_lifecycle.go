@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,8 +158,12 @@ func lifecycleFunctionsInEnvironment(path string) (map[string]bool, error) {
 		return nil, err
 	}
 	defer file.Close()
+	return lifecycleFunctionsFromReader(file)
+}
+
+func lifecycleFunctionsFromReader(reader io.Reader) (map[string]bool, error) {
 	functions := make(map[string]bool)
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

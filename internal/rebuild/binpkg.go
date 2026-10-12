@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -196,6 +197,9 @@ func InstallBinaryPackage(ctx context.Context, atomStr string, cfg *RebuildConfi
 		info.Version != requested.Version.Raw {
 		return fmt.Errorf("rebuild: binary package identity %s does not match %s", info.CPV(), atomStr)
 	}
+	if err := binpkg.BinaryLifecycleError(info.DefinedPhases); err != nil {
+		return err
+	}
 	if cfg.SelectedSlot != "" {
 		selectedSlot := info.Slot
 		if info.Subslot != "" {
@@ -250,6 +254,9 @@ func InstallBinaryPackage(ctx context.Context, atomStr string, cfg *RebuildConfi
 			return fmt.Errorf("rebuild: binary package metadata omits %s", required)
 		}
 	}
+	if err := binaryEnvironmentLifecycleError(environment); err != nil {
+		return err
+	}
 	if err := ensureWorkDirectory(cfg.WorkDirBase); err != nil {
 		return err
 	}
@@ -297,6 +304,16 @@ func InstallBinaryPackage(ctx context.Context, atomStr string, cfg *RebuildConfi
 		mergeCfg.ConfigProtect = strings.Fields(cfg.PortageConfig.MakeConf["CONFIG_PROTECT"])
 		mergeCfg.ConfigProtectMask = strings.Fields(cfg.PortageConfig.MakeConf["CONFIG_PROTECT_MASK"])
 	}
+	if cfg.AllowLiveUpgrade || cfg.AllowLiveReplacement {
+		mergeCfg.ReplacedVDBPath, err = findInstalledReplacement(cfg.VdbDir, info.Category, info.Package,
+			info.Version, metadata["SLOT"], cfg.AllowLiveReplacement)
+		if err != nil {
+			return fmt.Errorf("rebuild: select installed binary replacement: %w", err)
+		}
+		if err := binaryInstalledLifecycleError(mergeCfg.ReplacedVDBPath); err != nil {
+			return err
+		}
+	}
 	mergeErr := merge.Merge(ctx, image, mergeCfg)
 	committed := mergeErr == nil
 	if !committed {
@@ -333,5 +350,61 @@ func PreflightBinaryPackage(atomStr string, cfg *RebuildConfig) error {
 	if info.CPV() != requested.Category+"/"+requested.Package+"-"+requested.Version.Raw {
 		return fmt.Errorf("rebuild: preflight binary identity mismatch")
 	}
+	if err := binpkg.BinaryLifecycleError(info.DefinedPhases); err != nil {
+		return err
+	}
+	if cfg.AllowLiveUpgrade || cfg.AllowLiveReplacement {
+		previous, err := findInstalledReplacement(cfg.VdbDir, info.Category, info.Package, info.Version, info.Slot, cfg.AllowLiveReplacement)
+		if err != nil {
+			return err
+		}
+		if err := binaryInstalledLifecycleError(previous); err != nil {
+			return err
+		}
+	}
 	return ensureWorkDirectory(cfg.WorkDirBase)
+}
+
+func binaryEnvironmentLifecycleError(environment []byte) error {
+	functions, err := lifecycleFunctionsFromReader(bytes.NewReader(environment))
+	if err != nil {
+		return fmt.Errorf("rebuild: inspect binary lifecycle: %w", err)
+	}
+	phases := make([]string, 0, len(functions))
+	for phase := range functions {
+		phases = append(phases, phase)
+	}
+	sort.Strings(phases)
+	for _, phase := range phases {
+		if err := binpkg.BinaryLifecycleError(phase); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func binaryInstalledLifecycleError(path string) error {
+	phases, err := os.ReadFile(filepath.Join(path, "DEFINED_PHASES"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := binpkg.BinaryLifecycleError(string(phases)); err != nil {
+		return err
+	}
+	file, err := os.Open(filepath.Join(path, "environment.bz2"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	environment, err := io.ReadAll(io.LimitReader(bzip2.NewReader(file), maxBinaryEnvironmentBytes+1))
+	if err != nil {
+		return fmt.Errorf("rebuild: inspect installed binary replacement environment: %w", err)
+	}
+	if len(environment) > maxBinaryEnvironmentBytes {
+		return fmt.Errorf("rebuild: installed binary replacement environment exceeds limits")
+	}
+	return binaryEnvironmentLifecycleError(environment)
 }

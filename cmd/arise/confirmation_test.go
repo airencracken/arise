@@ -39,23 +39,27 @@ func TestNoopReadOnlyPlanPreservesResume(t *testing.T) {
 	}
 }
 
-func TestResumeSkipFirstPretendIsReadOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "resume")
-	first, _ := atom.Parse("cat/first-1")
-	second, _ := atom.Parse("cat/second-1")
-	if err := resolve.SaveResume(path, &resolve.ResolveResult{Install: []resolve.PkgAction{{Atom: first}, {Atom: second}}}); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := loadResumeTargets(path, true, true)
-	if err != nil || len(got) != 1 || got[0] != "cat/second-1" {
-		t.Fatalf("pretend skip: %v %v", got, err)
-	}
-	after, err := os.ReadFile(path)
-	if err != nil || string(before) != string(after) {
-		t.Fatal("pretend modified resume state")
+func TestResumeSkipFirstPlanningPreservesCheckpoint(t *testing.T) {
+	for _, skip := range []bool{true, false} {
+		t.Run(map[bool]string{true: "skip first", false: "all remaining"}[skip], func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "resume")
+			first, _ := atom.Parse("cat/first-1")
+			second, _ := atom.Parse("cat/second-1")
+			if err := resolve.SaveResume(path, &resolve.ResolveResult{Install: []resolve.PkgAction{{Atom: first}, {Atom: second}}}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, favorites, err := loadResumeRequest(path, skip)
+			if want := map[bool]int{true: 1, false: 2}[skip]; err != nil || len(got) != want || got[len(got)-1] != "=cat/second-1" || len(favorites) != 0 {
+				t.Fatalf("resume request: %v %v %v", got, favorites, err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(before) != string(after) {
+				t.Fatal("planning modified resume state before confirmation and preflight")
+			}
+		})
 	}
 }

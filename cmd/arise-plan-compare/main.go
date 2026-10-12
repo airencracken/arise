@@ -109,17 +109,17 @@ func main() {
 	emergeResult := run(*emergePath, emergeArgs)
 	arisePlan, err := plancompare.ParseAriseJSON(ariseResult.stdout)
 	if err != nil {
-		fatal(err)
+		fatal(planCommandError("Arise", ariseResult, err))
 	}
 	emergePlan, err := plancompare.ParseEmerge(emergeResult.stdout)
 	if err != nil {
-		fatal(err)
+		fatal(planCommandError("emerge", emergeResult, err))
 	}
 	if len(arisePlan) == 0 && ariseResult.err != nil {
-		fatal(fmt.Errorf("Arise produced no parseable actions: %w", ariseResult.err))
+		fatal(planCommandError("Arise", ariseResult, fmt.Errorf("no parseable actions")))
 	}
 	if len(emergePlan) == 0 && emergeResult.err != nil && !looksLikeEmergePlan(emergeResult.stdout) {
-		fatal(fmt.Errorf("emerge produced no parseable actions: %w", emergeResult.err))
+		fatal(planCommandError("emerge", emergeResult, fmt.Errorf("no parseable actions")))
 	}
 
 	differences := plancompare.Compare(arisePlan, emergePlan)
@@ -149,6 +149,7 @@ func main() {
 		portageValidationFixture = externalFixture
 		policy := plancompare.ClassificationPolicyForRequest(fixture.Request, ariseAssessment, portageAssessment)
 		classified, err = plancompare.ClassifyFinalStates(ariseAssessment, portageAssessment, policy, differences)
+		classified = requireResolvedCommands(classified, ariseVerified, portageResolved)
 		if err == nil && *captureDir != "" {
 			err = writeComparisonCapture(*captureDir, *target, *operation, classified,
 				plancompare.CaptureDocument(fixture, ariseValidationPlan),
@@ -160,6 +161,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	classified = requireResolvedCommands(classified, ariseVerified, portageResolved)
 	r := report{
 		AriseCount: len(arisePlan), EmergeCount: len(emergePlan),
 		AriseVerified: ariseVerified, PortageResolved: portageResolved,
@@ -207,6 +209,22 @@ func main() {
 	if !r.Accepted {
 		os.Exit(1)
 	}
+}
+
+func requireResolvedCommands(classified plancompare.ClassifiedComparison, ariseVerified, portageResolved bool) plancompare.ClassifiedComparison {
+	// A failed command can print a partial or empty transaction that happens
+	// to preserve a valid installed state. It is not a successful comparison.
+	if !ariseVerified || !portageResolved {
+		classified.Class, classified.Equivalent = plancompare.ClassInconclusive, false
+	}
+	return classified
+}
+
+func planCommandError(tool string, result commandResult, parseErr error) error {
+	if result.err != nil {
+		return fmt.Errorf("%s command failed: %w; %v\n%s", tool, result.err, parseErr, strings.TrimSpace(result.stderr))
+	}
+	return fmt.Errorf("%s plan: %w\n%s", tool, parseErr, strings.TrimSpace(result.stderr))
 }
 
 func ariseOperationArgs(operation, target string) ([]string, error) {

@@ -26,31 +26,54 @@ type canonicalPlanAuthorization struct {
 }
 
 type planOptions struct {
-	Update            bool    `json:"update"`
-	Deep              bool    `json:"deep"`
-	CompleteGraph     bool    `json:"complete_graph"`
-	NewUse            bool    `json:"newuse"`
-	ChangedUse        bool    `json:"changed_use"`
-	ChangedDeps       bool    `json:"changed_deps"`
-	EmptyTree         bool    `json:"empty_tree"`
-	Reinstall         bool    `json:"reinstall"`
-	ExplicitReinstall bool    `json:"explicit_reinstall"`
-	OnlyDeps          bool    `json:"only_deps"`
-	NoDeps            bool    `json:"no_deps"`
-	Oneshot           bool    `json:"oneshot"`
-	WithBdeps         string  `json:"with_bdeps"`
-	RootDeps          string  `json:"root_deps"`
-	Backtrack         int     `json:"backtrack"`
-	Jobs              int     `json:"jobs"`
-	LoadAverage       float64 `json:"load_average"`
+	Update            bool     `json:"update"`
+	Deep              bool     `json:"deep"`
+	CompleteGraph     bool     `json:"complete_graph"`
+	NewUse            bool     `json:"newuse"`
+	ChangedUse        bool     `json:"changed_use"`
+	ChangedDeps       bool     `json:"changed_deps"`
+	EmptyTree         bool     `json:"empty_tree"`
+	Reinstall         bool     `json:"reinstall"`
+	ExplicitReinstall bool     `json:"explicit_reinstall"`
+	OnlyDeps          bool     `json:"only_deps"`
+	NoDeps            bool     `json:"no_deps"`
+	Oneshot           bool     `json:"oneshot"`
+	WithBdeps         string   `json:"with_bdeps"`
+	RootDeps          string   `json:"root_deps"`
+	Backtrack         int      `json:"backtrack"`
+	Jobs              int      `json:"jobs"`
+	LoadAverage       float64  `json:"load_average"`
+	WorldSelections   []string `json:"world_selections,omitempty"`
+	Resume            bool     `json:"resume,omitempty"`
 }
 
 func optionsForPlan(cfg resolve.ResolveConfig) planOptions {
+	selections := append([]string(nil), cfg.WorldSelections...)
+	sort.Strings(selections)
 	return planOptions{Update: cfg.Update, Deep: cfg.Deep, CompleteGraph: cfg.CompleteGraph, NewUse: cfg.NewUse,
 		ChangedUse: cfg.ChangedUse, ChangedDeps: cfg.ChangedDeps, EmptyTree: cfg.EmptyTree, Reinstall: cfg.Reinstall,
 		ExplicitReinstall: cfg.ExplicitReinstall,
+		WorldSelections:   selections,
+		Resume:            cfg.Resume,
 		OnlyDeps:          cfg.OnlyDeps, NoDeps: cfg.NoDeps, Oneshot: cfg.Oneshot, WithBdeps: cfg.WithBdeps,
 		RootDeps: cfg.RootDeps, Backtrack: cfg.Backtrack, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage}
+}
+
+func authorizeInstallExecution(targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult, stateSHA256 string) (string, error) {
+	if *approvePlanSHA256 == "" && *approvePlan == "" {
+		return stateSHA256, nil
+	}
+	current, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
+	if err != nil {
+		return "", fmt.Errorf("refresh mutation-state fingerprint: %w", err)
+	}
+	if stateSHA256 != "" && current != stateSHA256 {
+		return "", fmt.Errorf("package state or policy changed after resolution; resolve and approve the new plan")
+	}
+	if err := requestedPlanAuthorizationError(*approvePlanSHA256, *approvePlan, *planDir, targets, cfg, result, current); err != nil {
+		return "", err
+	}
+	return current, nil
 }
 
 type canonicalWorldMutation struct {
@@ -322,6 +345,7 @@ func describeApprovedPlanDifference(reference, directory string, current resolve
 	boolOption("emptytree", saved.Options.EmptyTree, want.EmptyTree)
 	boolOption("reinstall", saved.Options.Reinstall, want.Reinstall)
 	boolOption("explicit-reinstall", saved.Options.ExplicitReinstall, want.ExplicitReinstall)
+	boolOption("resume", saved.Options.Resume, want.Resume)
 	boolOption("onlydeps", saved.Options.OnlyDeps, want.OnlyDeps)
 	boolOption("nodeps", saved.Options.NoDeps, want.NoDeps)
 	boolOption("oneshot", saved.Options.Oneshot, want.Oneshot)
@@ -330,6 +354,9 @@ func describeApprovedPlanDifference(reference, directory string, current resolve
 	}
 	if saved.Options.RootDeps != want.RootDeps {
 		differences = append(differences, fmt.Sprintf("root-deps (saved=%q, current=%q)", saved.Options.RootDeps, want.RootDeps))
+	}
+	if strings.Join(saved.Options.WorldSelections, "\x00") != strings.Join(want.WorldSelections, "\x00") {
+		differences = append(differences, "world selections")
 	}
 	if len(differences) == 0 {
 		return ""

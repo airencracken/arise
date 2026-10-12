@@ -138,24 +138,31 @@ func TestActionRebuildConfigCopiesEveryFrozenActionFieldWithoutAliasing(t *testi
 	}
 }
 
-func TestActionRebuildConfigLiveMutationEligibilityMatrix(t *testing.T) {
+func TestActionRebuildConfigReplacementEligibilityMatrix(t *testing.T) {
 	for _, test := range []struct {
 		action          string
 		live            bool
+		buildOnly       bool
 		wantReplacement bool
 		wantUpgrade     bool
 	}{
 		{action: "install", live: false},
-		{action: "reinstall", live: false},
-		{action: "update", live: false},
+		{action: "reinstall", live: false, wantReplacement: true},
+		{action: "update", live: false, wantReplacement: true, wantUpgrade: true},
 		{action: "install", live: true},
 		{action: "reinstall", live: true, wantReplacement: true},
 		{action: "update", live: true, wantReplacement: true, wantUpgrade: true},
+		{action: "reinstall", live: true, buildOnly: true},
+		{action: "update", live: false, buildOnly: true},
+		{action: "update", live: true, buildOnly: true},
 	} {
-		t.Run(fmt.Sprintf("%s/live=%t", test.action, test.live), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/live=%t/buildOnly=%t", test.action, test.live, test.buildOnly), func(t *testing.T) {
 			item := action(t, "cat/pkg-1")
 			item.Action = test.action
-			got := actionRebuildConfig(rebuild.RebuildConfig{AllowLiveRoot: test.live}, item)
+			got := actionRebuildConfig(rebuild.RebuildConfig{AllowLiveRoot: test.live, BuildOnly: test.buildOnly}, item)
+			if got.AllowLiveRoot != test.live {
+				t.Fatal("replacement selection changed live-root authorization")
+			}
 			if got.AllowLiveReplacement != test.wantReplacement || got.AllowLiveUpgrade != test.wantUpgrade {
 				t.Fatalf("replacement=%t upgrade=%t, want %t/%t", got.AllowLiveReplacement, got.AllowLiveUpgrade, test.wantReplacement, test.wantUpgrade)
 			}

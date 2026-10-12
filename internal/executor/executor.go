@@ -54,10 +54,11 @@ func PreflightAll(result *resolve.ResolveResult, base rebuild.RebuildConfig) []P
 }
 
 type Config struct {
-	Rebuild     rebuild.RebuildConfig
-	ResumePath  string
-	Jobs        int
-	LoadAverage float64
+	WorldSelections []string
+	Rebuild         rebuild.RebuildConfig
+	ResumePath      string
+	Jobs            int
+	LoadAverage     float64
 	// TmpdirRequireFreeGB mirrors emerge's --jobs-tmpdir-require-free-gb:
 	// parallel job admission is reduced when the scaled reserve is unavailable.
 	TmpdirRequireFreeGB int
@@ -213,7 +214,7 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 		}
 	}
 	if cfg.ResumePath != "" {
-		if err := resolve.SaveResume(cfg.ResumePath, result); err != nil {
+		if err := resolve.SaveResumeWithWorldSelections(cfg.ResumePath, result, cfg.WorldSelections); err != nil {
 			return fmt.Errorf("executor: initialize resume state: %w", err)
 		}
 	}
@@ -522,8 +523,10 @@ func actionRebuildConfig(base rebuild.RebuildConfig, action resolve.PkgAction) r
 	if action.MergeType == "binary" {
 		base.BinaryPackagePath = action.BinaryPath
 	}
-	base.AllowLiveReplacement = base.AllowLiveRoot && action.Action == "reinstall"
-	base.AllowLiveUpgrade = base.AllowLiveRoot && action.Action == "update"
+	// Replacement selection is needed for disposable ROOTs as well as the live
+	// lane. Build-only archives never replace installed state.
+	base.AllowLiveReplacement = !base.BuildOnly && action.Action == "reinstall"
+	base.AllowLiveUpgrade = !base.BuildOnly && action.Action == "update"
 	if base.AllowLiveUpgrade {
 		base.AllowLiveReplacement = true
 	}

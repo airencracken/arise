@@ -66,6 +66,13 @@ regressions; release on an explicit decision, not after each individual fix.
 
 ## Next: remaining daily-driver gaps
 
+The [October stabilization review](docs/reviews/2026-10-11-stabilization-release.md)
+records progress on S01–S07 without closing their broader acceptance criteria.
+Resume/world, source and binary replacement, recovery replay, remote pretend/ask
+and failed-comparison cases now have regressions. Full binary lifecycle support,
+broader interacting-option and multi-package recovery evidence, and fresh-stage3
+execution with normal UID/GID mappings remain priorities.
+
 - [ ] **N01 — Close metadata and configuration gaps.** Evaluate uncached
   overlay metadata authoritatively and test repository/profile precedence,
   USE/keywords/licenses, environment, and ROOT/SYSROOT/BROOT separation.

@@ -85,7 +85,7 @@ func recoveryPackagesForActions(vdbRoot string, actions []resolve.PkgAction) []r
 }
 
 func installWorldSelections(targets []string, cfg resolve.ResolveConfig, result *resolve.ResolveResult) []string {
-	if cfg.Oneshot || cfg.OnlyDeps || cfg.BuildPkgOnly {
+	if cfg.Oneshot || cfg.OnlyDeps || cfg.BuildPkgOnly || cfg.Resume {
 		return nil
 	}
 	systemPackages := make(map[string]bool)
@@ -364,35 +364,49 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		break
 	}
 
-	// --getbinpkg / --getbinpkgonly: download from binhost
+	// Remote planning reads advertised metadata, never archive payloads.
 	if cfg.GetBinPkg || cfg.GetBinPkgOnly {
 		if len(cfg.BinhostURLs) == 0 {
 			fmt.Fprintf(os.Stderr, "--getbinpkg: no PORTAGE_BINHOST configured in make.conf\n")
 			if cfg.GetBinPkgOnly {
 				os.Exit(1)
 			}
-		} else if err := downloadBinpkgTargets(context.Background(), cfg.BinhostURLs, targets, cfg.BinpkgDir, cfg.GetBinPkgOnly, cfg.Quiet); err != nil {
-			fmt.Fprintf(os.Stderr, "--getbinpkg: %v\n", err)
-			os.Exit(1)
 		}
 	}
 
 	// --resume: load remaining packages from previous interrupted operation
+	var resumeSelections []string
 	if cfg.Resume {
-		remaining, err := loadResumeTargets(*resumeFile, cfg.SkipFirst, cfg.Pretend || *preflightOnly)
+		remaining, selections, err := loadResumeRequest(*resumeFile, cfg.SkipFirst)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "resume: load: %v\n", err)
 			os.Exit(1)
 		}
+		if !cfg.Oneshot && !cfg.OnlyDeps && !cfg.BuildPkgOnly {
+			resumeSelections = selections
+		}
 		if len(remaining) == 0 {
-			fmt.Println("Nothing to resume.")
-			removeNoopResume(*resumeFile, cfg.Pretend, *preflightOnly)
+			if err := finishEmptyResume(*resumeFile, *worldFile, cfg, *preflightOnly, resumeSelections); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 			return
 		}
 		targets = remaining
 		if !cfg.Quiet {
 			fmt.Printf("Resuming %d packages...\n", len(targets))
 		}
+	}
+	resolveCtx := commandContext
+	cancelResolve := func() {}
+	if *resolverTimeout > 0 {
+		resolveCtx, cancelResolve = context.WithTimeout(resolveCtx, *resolverTimeout)
+	}
+	defer cancelResolve()
+	remoteArchives, err := loadRemoteBinaryCandidates(resolveCtx, &cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "--getbinpkg: %v\n", err)
+		os.Exit(1)
 	}
 
 	if !cfg.Quiet {
@@ -475,36 +489,6 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 
 	stageStarted = time.Now()
 	progress.setStatus("Solving dependency graph...")
-	resolveCtx := commandContext
-	cancelResolve := func() {}
-	if *resolverTimeout > 0 {
-		resolveCtx, cancelResolve = context.WithTimeout(resolveCtx, *resolverTimeout)
-	}
-	defer cancelResolve()
-	// Resolve once with source fallback to discover the complete dependency
-	// closure that a remote binhost must satisfy. Downloading only the command
-	// line targets misses binary dependencies and makes -g/-G non-transitive.
-	if (cfg.GetBinPkg || cfg.GetBinPkgOnly) && len(cfg.BinhostURLs) != 0 {
-		probeCfg := cfg
-		probeCfg.GetBinPkg = false
-		probeCfg.GetBinPkgOnly = false
-		probeCfg.UsePkgOnly = false
-		probeCfg.UsePkg = true
-		probe, probeErr := resolve.ResolveContext(resolveCtx, rg, targets, probeCfg)
-		if probeErr == nil && probe != nil {
-			closure := make([]string, 0, len(probe.Install))
-			for _, action := range probe.Install {
-				if action.Atom != nil {
-					closure = append(closure, action.Atom.String())
-				}
-			}
-			if downloadErr := downloadBinpkgTargets(resolveCtx, cfg.BinhostURLs, closure, cfg.BinpkgDir, cfg.GetBinPkgOnly, cfg.Quiet); downloadErr != nil {
-				err = fmt.Errorf("--getbinpkg: download dependency closure: %w", downloadErr)
-			}
-		} else if cfg.GetBinPkgOnly {
-			err = fmt.Errorf("--getbinpkgonly: discover dependency closure: %w", probeErr)
-		}
-	}
 	var result *resolve.ResolveResult
 	if err == nil {
 		result, err = resolve.ResolveContext(resolveCtx, rg, targets, cfg)
@@ -526,6 +510,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	}
 	if result == nil {
 		result = &resolve.ResolveResult{}
+	}
+	cfg.WorldSelections = installWorldSelections(targets, cfg, result)
+	if cfg.Resume {
+		cfg.WorldSelections = resumeSelections
 	}
 	resolutionDuration := time.Since(resolutionStarted)
 	stateSHA256 := ""
@@ -769,10 +757,18 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		exitAfterRuntimeProfiles(1)
 	}
 
+	worldSelections := cfg.WorldSelections
 	if len(result.Install) == 0 && len(result.Uninstall) == 0 {
-		selections := installWorldSelections(targets, cfg, result)
 		if !cfg.Pretend && !*preflightOnly {
-			if err := updateInstallWorld(*worldFile, selections); err != nil {
+			if !confirmInstall(os.Stdin, os.Stdout, cfg.Ask) {
+				fmt.Println("Aborted.")
+				return
+			}
+			if _, err := authorizeInstallExecution(targets, cfg, result, stateSHA256); err != nil {
+				fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", err)
+				os.Exit(1)
+			}
+			if err := updateInstallWorld(*worldFile, worldSelections); err != nil {
 				fmt.Fprintf(os.Stderr, "arise: update world selection: %v\n", err)
 				os.Exit(1)
 			}
@@ -780,7 +776,9 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if !cfg.Quiet {
 			fmt.Println("\nNothing to do.")
 		}
-		removeNoopResume(*resumeFile, cfg.Pretend, *preflightOnly)
+		if cfg.Resume {
+			removeNoopResume(*resumeFile, cfg.Pretend, *preflightOnly)
+		}
 		return
 	}
 	if *preflightOnly {
@@ -841,23 +839,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	// before execution. The merge lock and journal provide the mutation-side
 	// boundary; a changed package database, policy, recipe, or eclass changes
 	// the canonical plan digest and fails closed here.
-	if *approvePlanSHA256 != "" || *approvePlan != "" {
-		currentStateSHA256, fingerprintErr := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
-		if fingerprintErr != nil {
-			fmt.Fprintf(os.Stderr, "arise: refusing execution: refresh mutation-state fingerprint: %v\n", fingerprintErr)
-			os.Exit(1)
-		}
-		if stateSHA256 != "" && currentStateSHA256 != stateSHA256 {
-			fmt.Fprintln(os.Stderr, "arise: refusing execution: package state or policy changed after resolution; resolve and approve the new plan")
-			os.Exit(1)
-		}
-		stateSHA256 = currentStateSHA256
-	}
-	if *approvePlanSHA256 != "" || *approvePlan != "" {
-		if err := requestedPlanAuthorizationError(*approvePlanSHA256, *approvePlan, *planDir, targets, cfg, result, stateSHA256); err != nil {
-			fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", err)
-			os.Exit(1)
-		}
+	stateSHA256, err = authorizeInstallExecution(targets, cfg, result, stateSHA256)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", err)
+		os.Exit(1)
 	}
 	if cfg.FetchOnly {
 		progress := newFetchProgress(!cfg.Quiet, cfg.Verbose, os.Stdout)
@@ -870,6 +855,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			fmt.Println("All source artifacts are present and Manifest-verified.")
 		}
 		return
+	}
+	if err := acquirePlannedBinaries(commandContext, remoteArchives, result.Install, cfg.BinpkgDir); err != nil {
+		fmt.Fprintf(os.Stderr, "--getbinpkg: acquire approved binary packages: %v\n", err)
+		os.Exit(1)
 	}
 	{
 		// Package transactions remain dependency-ordered by the executor, while
@@ -993,7 +982,8 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			processesBefore = restartneeded.Snapshot("/proc")
 		}
 		executionErr := executor.Execute(execCtx, result, executor.Config{
-			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation, RecordLockedMutation: recordLockedMutation, PrepareMutation: prepareMutation,
+			WorldSelections: worldSelections,
+			Rebuild:         *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation, RecordLockedMutation: recordLockedMutation, PrepareMutation: prepareMutation,
 			OnSpaceWait: func(path string, available, required uint64) {
 				executionProgress.message(fmt.Sprintf("%s %s has insufficient free space; package parallelism reduced (free: %s, required: %s)", colorExecutionStage("Warning:"), path, formatSize(int64(available)), formatSize(int64(required))))
 			},
@@ -1082,10 +1072,15 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			printSuccessfulExecution(os.Stdout, cfg, rebuildCfg, repoDir)
 			return
 		}
-		selections := installWorldSelections(targets, cfg, result)
-		if err := updateInstallWorld(*worldFile, selections); err != nil {
+		if err := updateInstallWorld(*worldFile, worldSelections); err != nil {
 			fmt.Fprintf(os.Stderr, "arise: packages committed but world selection failed: %v\n", err)
 			os.Exit(1)
+		}
+		if cfg.Resume {
+			if err := resolve.RemoveCompletedResume(*resumeFile); err != nil {
+				fmt.Fprintf(os.Stderr, "arise: retire completed resume: %v\n", err)
+				os.Exit(1)
+			}
 		}
 		printSuccessfulExecution(os.Stdout, cfg, rebuildCfg, repoDir)
 		return
@@ -1272,35 +1267,6 @@ func highestRejectedBlockerCandidate(ledger resolve.DecisionLedger, blocker stri
 		return "", nil, false
 	}
 	return best.CPV, append([]string(nil), best.Reasons...), true
-}
-
-func downloadBinpkgTargets(ctx context.Context, binhosts, targets []string, destination string, required, quiet bool) error {
-	for _, target := range targets {
-		parsed, parseErr := atom.Parse(target)
-		if parseErr != nil || parsed.Category == "" || parsed.Package == "" {
-			continue
-		}
-		var failures []error
-		acquired := false
-		for _, host := range binhosts {
-			downloaded, err := binpkg.DownloadFromBinhost(ctx, host, []string{target}, destination)
-			if err != nil {
-				failures = append(failures, fmt.Errorf("%s: %w", host, err))
-				continue
-			}
-			if len(downloaded) != 0 {
-				acquired = true
-				if !quiet {
-					fmt.Printf("Downloaded %d binary package from %s\n", len(downloaded), host)
-				}
-				break
-			}
-		}
-		if required && !acquired {
-			return fmt.Errorf("no configured binhost supplied %s: %w", target, errors.Join(failures...))
-		}
-	}
-	return nil
 }
 
 func markRecoverySetOutcome(path string, operationErr error) error {

@@ -99,6 +99,30 @@ func TestCanonicalPlanSHA256IgnoresTimingAndMapOrder(t *testing.T) {
 	}
 }
 
+func TestPlanAuthorizationBindsResumeAndWorldSelections(t *testing.T) {
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified}
+	cfg := resolve.DefaultResolveConfig()
+	state := strings.Repeat("a", 64)
+	original := canonicalPlanSHA256(nil, cfg, result, state)
+	cfg.Resume = true
+	if canonicalPlanSHA256(nil, cfg, result, state) == original {
+		t.Fatal("resume semantics missing from authorization")
+	}
+	cfg.WorldSelections = []string{"cat/second", "cat/first"}
+	selected := canonicalPlanSHA256(nil, cfg, result, state)
+	if selected == original || optionsForPlan(cfg).WorldSelections[0] != "cat/first" || cfg.WorldSelections[0] != "cat/second" {
+		t.Fatal("world selection binding is absent or mutates caller")
+	}
+	cfg.WorldSelections = []string{"cat/first", "cat/second"}
+	if canonicalPlanSHA256(nil, cfg, result, state) != selected {
+		t.Fatal("favorite set order changes authorization")
+	}
+	cfg.WorldSelections = []string{"cat/third"}
+	if canonicalPlanSHA256(nil, cfg, result, state) == selected {
+		t.Fatal("different world selections retain approval")
+	}
+}
+
 func TestMutationStateSHA256DetectsPolicyAndVDBChanges(t *testing.T) {
 	base := t.TempDir()
 	vdb := filepath.Join(base, "vdb")

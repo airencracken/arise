@@ -1,13 +1,50 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/airencracken/arise/internal/plancompare"
 )
+
+func TestFailedCommandCannotCertifyValidPartialPlan(t *testing.T) {
+	for _, class := range []string{plancompare.ClassEquivalentValid, plancompare.ClassValidDivergence, plancompare.ClassAriseValidPortageInvalid} {
+		for _, resolved := range [][2]bool{{true, false}, {false, true}, {false, false}, {true, true}} {
+			comparison := plancompare.ClassifiedComparison{Class: class, Equivalent: class == plancompare.ClassEquivalentValid}
+			got := requireResolvedCommands(comparison, resolved[0], resolved[1])
+			if resolved[0] && resolved[1] {
+				if got.Class != class {
+					t.Fatalf("resolved comparison changed: %#v", got)
+				}
+			} else if got.Class != plancompare.ClassInconclusive || got.Equivalent || classificationAccepted(got.Class) {
+				t.Fatalf("failed command accepted: %#v", got)
+			}
+		}
+	}
+}
+
+func TestPlanCommandErrorRetainsLaunchAndExitDiagnostics(t *testing.T) {
+	missing := run(filepath.Join(t.TempDir(), "missing-tool"), nil)
+	if err := planCommandError("Arise", missing, io.EOF); !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "command failed") {
+		t.Fatalf("launch failure hidden by parse error: %v", err)
+	}
+	script := filepath.Join(t.TempDir(), "probe")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'package database unavailable' >&2\nexit 7\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	result := run(script, nil)
+	if err := planCommandError("emerge", result, io.EOF); !errors.Is(err, result.err) || !strings.Contains(err.Error(), "package database unavailable") || !strings.Contains(err.Error(), "exit status 7") {
+		t.Fatalf("failed command diagnostics lost: %v", err)
+	}
+	if err := planCommandError("Arise", commandResult{}, io.EOF); !errors.Is(err, io.EOF) {
+		t.Fatalf("successful command parse failure lost: %v", err)
+	}
+}
 
 func TestWithoutNewsPreservesCallerFeatures(t *testing.T) {
 	input := []string{"PATH=/bin", "FEATURES=test sandbox", "USE=ssl"}

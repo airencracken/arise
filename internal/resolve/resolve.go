@@ -76,6 +76,11 @@ type ResolveConfig struct {
 	WorldSet                    *WorldSet
 	SystemSet                   *WorldSet
 	PackageSetExpander          func(string) ([]string, error)
+
+	// RemoteBinpkgs holds advertised candidates; acquisition follows planning.
+	RemoteBinpkgs []*binpkg.BinPkgInfo
+	// WorldSelections is the command's proposed world bookkeeping, bound to approval.
+	WorldSelections []string
 	// InstalledByDomain supplies immutable installed-state views for cross-root
 	// verification. Missing domains retain the historical single-graph view.
 	// Planned actions are overlaid from the transaction graph in every domain;
@@ -2632,7 +2637,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	// --update controls set members and traversal into dependencies; it is not
 	// required for `emerge category/package` to select a newer visible CPV.
 	allowUpdate := (r.config.Update || (depth == 0 && r.explicitTargets[cp])) && (depth == 0 || r.config.Deep)
-	requestedReinstall := r.config.Reinstall && depth == 0 && r.explicitTargets[cp]
+	requestedReinstall := (r.config.Reinstall || r.config.Resume) && depth == 0 && r.explicitTargets[cp]
 	defaultExplicitReinstall := r.config.ExplicitReinstall && !r.config.Update && !r.config.NoReplace && depth == 0 && r.directTargets[cp]
 
 	// check package.provided — treat as already installed
@@ -3035,15 +3040,25 @@ func (r *resolver) selectMergeType(node *PkgNode, version *VersionInfo) (string,
 		chost = r.config.PortageConfig.MakeConf["CHOST"]
 		abi = r.config.PortageConfig.MakeConf["ABI"]
 	}
-	binary, err := binpkg.FindCompatiblePackage(directory, exact, binpkg.CompatibilityPolicy{
+	policy := binpkg.CompatibilityPolicy{
 		UseFlags: r.candidateUseFlags(node, version), IUse: version.IUse,
 		RespectUse: r.config.BinpkgRespectUse, CHOST: chost, ABI: abi,
 		Repository: version.Repository, Slot: version.Slot, Subslot: version.Subslot,
-	})
+	}
+	binary, err := binpkg.FindCompatiblePackage(directory, exact, policy)
+	if binary == nil && err == nil && len(r.config.RemoteBinpkgs) != 0 {
+		binary, err = binpkg.FindCompatibleCandidate(r.config.RemoteBinpkgs, exact, policy)
+	}
 	if err != nil && r.config.UsePkgOnly {
 		return "", "", fmt.Errorf("binary-only: inspect %s: %w", exact, err)
 	}
 	if binary != nil && (version.Slot == "" || binary.Slot == "" || binary.Slot == version.Slot) {
+		if lifecycleErr := binpkg.BinaryLifecycleError(binary.DefinedPhases); lifecycleErr != nil {
+			if r.config.UsePkgOnly {
+				return "", "", lifecycleErr
+			}
+			return "source", "", nil
+		}
 		return "binary", binary.Path, nil
 	}
 	if r.config.UsePkgOnly {
@@ -7399,7 +7414,8 @@ type ResumePackage struct {
 
 // ResumeState represents the full resume file contents.
 type ResumeState struct {
-	Packages []ResumePackage `json:"packages"`
+	Packages        []ResumePackage `json:"packages"`
+	WorldSelections []string        `json:"world_selections,omitempty"`
 }
 
 // ResumePath is the default filesystem location for the resume file.
@@ -7428,11 +7444,21 @@ func withResumeLock(path string, update func() error) (returnErr error) {
 
 // SaveResume saves the current resolution state for --resume support.
 func SaveResume(path string, result *ResolveResult) error {
+	return SaveResumeWithWorldSelections(path, result, nil)
+}
+
+// SaveResumeWithWorldSelections retains the user's original favorites, rather
+// than promoting every dependency in the executor checkpoint to world.
+func SaveResumeWithWorldSelections(path string, result *ResolveResult, selections []string) error {
 	if result == nil {
 		return nil
 	}
 	state := ResumeState{
-		Packages: make([]ResumePackage, 0, len(result.Install)),
+		Packages:        make([]ResumePackage, 0, len(result.Install)),
+		WorldSelections: append([]string(nil), selections...),
+	}
+	if err := validateResumeWorldSelections(state.WorldSelections); err != nil {
+		return err
 	}
 	seen := make(map[string]bool, len(result.Install))
 	for _, a := range result.Install {
@@ -7490,6 +7516,9 @@ func readResumeState(path string) (ResumeState, error) {
 	if state.Packages == nil {
 		return ResumeState{}, fmt.Errorf("missing packages")
 	}
+	if err := validateResumeWorldSelections(state.WorldSelections); err != nil {
+		return ResumeState{}, err
+	}
 	seen := make(map[string]bool, len(state.Packages))
 	for index, pkg := range state.Packages {
 		if strings.TrimSpace(pkg.Atom) == "" {
@@ -7505,9 +7534,16 @@ func readResumeState(path string) (ResumeState, error) {
 
 // LoadResume loads a previous resume state.
 func LoadResume(path string) ([]string, error) {
+	remaining, _, err := LoadResumeWithWorldSelections(path)
+	return remaining, err
+}
+
+// LoadResumeWithWorldSelections reads package progress and original favorites
+// from the same checkpoint. Legacy records have no favorites to invent.
+func LoadResumeWithWorldSelections(path string) ([]string, []string, error) {
 	state, err := readResumeState(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolve: could not load saved build progress: %w", err)
+		return nil, nil, fmt.Errorf("resolve: could not load saved build progress: %w", err)
 	}
 	var result []string
 	for _, p := range state.Packages {
@@ -7515,7 +7551,19 @@ func LoadResume(path string) ([]string, error) {
 			result = append(result, p.Atom)
 		}
 	}
-	return result, nil
+	return result, append([]string(nil), state.WorldSelections...), nil
+}
+
+func validateResumeWorldSelections(selections []string) error {
+	seen := make(map[string]bool, len(selections))
+	for _, selection := range selections {
+		parsed, err := atom.ParsePackageAtom(selection)
+		if err != nil || parsed.CP() != selection || seen[selection] {
+			return fmt.Errorf("resolve: invalid saved world selection %q", selection)
+		}
+		seen[selection] = true
+	}
+	return nil
 }
 
 // MarkResumeComplete marks a package as completed in the resume file.

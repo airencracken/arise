@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/resolve"
 )
 
@@ -33,18 +34,46 @@ func removeNoopResume(path string, pretend, preflight bool) {
 	}
 }
 
-func loadResumeTargets(path string, skipFirst, readOnly bool) ([]string, error) {
-	if skipFirst && !readOnly {
-		if err := resolve.SkipFirstResume(path); err != nil {
-			return nil, err
-		}
-	}
-	remaining, err := resolve.LoadResume(path)
+func loadResumeRequest(path string, skipFirst bool) ([]string, []string, error) {
+	// Planning must preserve the checkpoint through confirmation, approval and
+	// preflight failures. The executor saves the selected remaining plan only
+	// when it is ready to start execution.
+	remaining, selections, err := resolve.LoadResumeWithWorldSelections(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if skipFirst && readOnly && len(remaining) > 0 {
+	if skipFirst && len(remaining) > 0 {
 		remaining = remaining[1:]
 	}
-	return remaining, nil
+	for index, target := range remaining {
+		if _, err := atom.ParsePackageAtom(target); err == nil {
+			continue
+		}
+		// Executor action atoms and older checkpoints use bare CPVs. Resolver
+		// command-line requests require an explicit operator for versions.
+		parsed, err := atom.Parse(target)
+		if err != nil || parsed.Version == nil || parsed.Op != "" {
+			return nil, nil, fmt.Errorf("resume: invalid saved package atom %q", target)
+		}
+		remaining[index] = "=" + target
+	}
+	return remaining, selections, nil
+}
+
+func finishEmptyResume(path, worldPath string, cfg resolve.ResolveConfig, preflight bool, selections []string) error {
+	if *approvePlanSHA256 != "" || *approvePlan != "" {
+		return fmt.Errorf("resume: completed checkpoint has no package plan to approve; use a separately reviewed world operation")
+	}
+	if !cfg.Pretend && !preflight {
+		if !confirmInstall(os.Stdin, os.Stdout, cfg.Ask) {
+			fmt.Println("Aborted.")
+			return nil
+		}
+		if err := updateInstallWorld(worldPath, selections); err != nil {
+			return fmt.Errorf("resume: update world selection: %w", err)
+		}
+	}
+	fmt.Println("Nothing to resume.")
+	removeNoopResume(path, cfg.Pretend, preflight)
+	return nil
 }

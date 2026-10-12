@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/airencracken/arise/internal/atom"
 	"github.com/airencracken/arise/internal/binpkg"
 	"github.com/airencracken/arise/internal/merge"
 	"github.com/airencracken/arise/internal/oplock"
@@ -77,6 +78,9 @@ func InspectRestore(request RestoreRequest) (*RestorePlan, error) {
 }
 
 func Restore(ctx context.Context, request RestoreRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if request.SetPath == "" || request.RootDir == "" || request.VDBDir == "" || request.JournalDir == "" {
 		return fmt.Errorf("recovery set: restore requires set, ROOT, VDB and journal paths")
 	}
@@ -141,6 +145,11 @@ func Restore(ctx context.Context, request RestoreRequest) error {
 				VDBLockHeld: true, ReplacedVDBPath: targetVDB,
 				VDBMetadata: metadata, Environment: environment,
 			}
+			cfg.ReplacedVDBPath, err = restoreReplacement(request.VDBDir, recoveryManifest.Package.Category,
+				recoveryManifest.Package.Package, metadata["SLOT"], targetVDB)
+			if err != nil {
+				return err
+			}
 			if err := mergePackage(ctx, image, cfg); err != nil {
 				return fmt.Errorf("recovery set: restore %s: %w", artifact.CPV, err)
 			}
@@ -154,6 +163,46 @@ func Restore(ctx context.Context, request RestoreRequest) error {
 		return fmt.Errorf("recovery set: packages restored but status update failed: %w", err)
 	}
 	return nil
+}
+
+// Recovery can replace a newer version, or replay an already restored package.
+// Select by installed slot, preserving every parallel slot and refusing an
+// ambiguous database rather than choosing an arbitrary owner.
+func restoreReplacement(vdbDir, category, packageName, slot, fallback string) (string, error) {
+	directory := filepath.Join(vdbDir, category)
+	entries, err := os.ReadDir(directory)
+	if os.IsNotExist(err) {
+		return fallback, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("recovery set: inspect installed slot: %w", err)
+	}
+	var replacement string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		installed, err := atom.Parse(category + "/" + entry.Name())
+		if err != nil || installed.Package != packageName || installed.Version == nil {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		installedSlot, err := os.ReadFile(filepath.Join(path, "SLOT"))
+		if err != nil {
+			return "", fmt.Errorf("recovery set: read installed slot %s: %w", path, err)
+		}
+		if strings.SplitN(strings.TrimSpace(string(installedSlot)), "/", 2)[0] != strings.SplitN(slot, "/", 2)[0] {
+			continue
+		}
+		if replacement != "" {
+			return "", fmt.Errorf("recovery set: multiple installed versions of %s/%s in slot %s", category, packageName, slot)
+		}
+		replacement = path
+	}
+	if replacement == "" {
+		return fallback, nil
+	}
+	return replacement, nil
 }
 
 func restoreVDBMetadata(manifest *binpkg.RecoveryManifest) (map[string]string, []byte, error) {

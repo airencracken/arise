@@ -29,6 +29,9 @@ machine-readable companions when they are needed to reproduce a finding.
 
 ## Historical checkpoints and reviews
 
+- [`2026-10-11-stabilization-release.md`](../reviews/2026-10-11-stabilization-release.md)
+  records the 0.0.42 candidate's resume, transaction, recovery and remote-binary
+  regressions, frozen comparisons and unfinished fresh-stage3 gate.
 - [`CHECKPOINT_P3_P6_2026-07-18.md`](CHECKPOINT_P3_P6_2026-07-18.md) and
   [`CHECKPOINT_2026-07-18.md`](CHECKPOINT_2026-07-18.md) are superseded
   development snapshots.
