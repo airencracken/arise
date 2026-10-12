@@ -1,170 +1,43 @@
-# Public library direction
-
-Arise's application internals remain private, but the first public Go API now
-lives in `gentooling`. Further extraction must follow demonstrated consumer
-needs rather than making internal packages importable wholesale.
+# Shared libraries
 
 ## Shared module: gentooling
 
-The shared library project is **gentooling**:
+[github.com/airencracken/gentooling](https://github.com/airencracken/gentooling):
+Reusable Go libraries for Gentoo system and package tooling.
+Arise and Maize should become peer applications over cohesive public APIs.
 
-> Reusable Go libraries for Gentoo system and package tooling.
+The first extracted surface provides explicit system paths and root-aware
+inventory. Consumers choose partial inspection with typed issues or strict
+validation. Arise consumes this API for its VDB scans.
 
-The intended module path is:
+| Boundary | Contract |
+|---|---|
+| Gentooling `v0.1.0` | Validated inventory, structured IUSE defaults, symlink-safe reads, opt-in CONTENTS, bounded concurrent record scans and final mutation revalidation |
+| Gentooling `v0.2.0` | Profile graph with root-to-leaf layers, repository roots, policy and source-line provenance; rejecting parent escapes, cycles and symlinks. Arise now uses this graph |
+| Gentooling `v0.3.0` | Effective configuration with caller-supplied environment rather than reading process state implicitly. Arise search now consumes this API |
+| Gentooling `v0.4.0` | Atom/version parsing and package-specific effective USE provenance |
+| Gentooling `v0.5.0` | World/system selections and locked combined snapshots |
 
-```text
-github.com/airencracken/gentooling
-```
-
-The name describes a broad toolkit rather than a package manager or an
-official Portage component. Arise and Maize should become peer applications
-that consume gentooling:
-
-```text
-gentooling
-├── arise  package-management application
-├── maize  kernel configuration and upgrade tooling
-└── future Gentoo tools
-```
-
-The first extracted surface provides explicit system paths, stable package
-identities, and root-aware installed-package inventory. Inventory consumers
-choose partial inspection with typed issues or strict validation that promotes
-incomplete evidence to an error. Arise consumes this API for its VDB scans,
-while preserving typed diagnostics for inspection paths.
-
-Gentooling `v0.1.0` hardens that boundary with validated integrity modes,
-structured IUSE defaults, symlink-safe metadata reads, opt-in CONTENTS loading,
-bounded concurrent record scans, and final mutation revalidation. Its
-pre-1.0 compatibility policy permits documented breaking changes in minor
-releases while keeping patch releases compatible.
-
-Gentooling `v0.2.0` adds the active profile graph as the next public boundary.
-It retains root-to-leaf layers, explicit repository roots, ordered package
-policy, and source-line provenance while rejecting parent escapes, cycles,
-malformed rules, and policy symlinks. Arise now uses this graph when building
-its effective Portage configuration.
-
-Gentooling `v0.3.0` adds explicit effective configuration over make.globals,
-profile defaults, make.conf, package.use, USE_EXPAND, and a caller-supplied
-command environment. It retains policy layers and source provenance without
-reading process state implicitly. Arise search now consumes this API for its
-installed USE-expansion presentation.
-
-Gentooling `v0.4.0` adds public atom and version parsing plus package-specific
-effective USE evaluation with ordered provenance. Gentooling `v0.5.0` adds
-world/system selections and combined system snapshots which observe the shared
-Portage/Arise VDB and world locks and require consecutive agreeing
-observations. Gentooling `v0.6.0` adds prospective keyword and package
-visibility evaluation, including repository/profile/user mask policy and
-typed explanation trails. Arise consumes each of these boundaries in
-production paths and carries downstream integration tests.
-
-After Maize adopts the current package-state boundary, pause public extraction
-long enough to run an Arise stabilization campaign. That gate must include the
-complete automated suite, race detection, vet, stored parity fixtures,
-representative live-root query and world-update planning, and manual
-install/uninstall/search/configuration workflows. Regressions found there are
-library-boundary defects, not downstream exceptions. Once that campaign is
-clean, publish a `dev-go/gentooling` overlay package at the deliberate stable
-baseline rather than packaging every rapidly changing pre-1.0 carveout.
-
-Code remains in Arise until its boundary passes the stability and
-downstream-consumer gates below. New code should follow a dependency direction
-that permits cohesive packages to move into `gentooling` without importing
-Arise command, terminal, or execution concerns.
-
-New work should nevertheless preserve a direct path to public libraries:
-
-- core operations accept typed inputs, contexts, explicit paths, and explicit
-  policy rather than reading CLI globals;
-- core operations return typed results and errors rather than printing,
-  prompting, or terminating the process;
-- filesystem mutation is separated from discovery and planning;
-- deterministic result ordering is part of the contract;
-- line, JSON, TUI, and future API representations remain adapters over the
-  same result types; and
-- interoperability formats are explicit at package boundaries.
-
-The command package owns argument parsing, terminal presentation, and exit
-status. It should remain thin enough that a future Charmbracelet application
-can call the same underlying operation without emulating an Arise subprocess.
+The pre-1.0 compatibility policy allows documented minor-release breaks and
+compatible patches. Further extraction waits for stable behavior and a concrete
+consumer; internal packages are not public wholesale.
 
 ## Concrete downstream consumer: Maize
 
-Maize is a separate planned Gentoo project written in Go. Its purpose is to
-help generate hardware- and package-informed "optimal" kernel configurations
-and to assist with custom-kernel upgrades. It is a concrete future consumer of
-Arise libraries, not a requirement to merge kernel tooling into Arise.
+Maize is planned hardware- and package-informed kernel configuration/upgrade
+tooling, not a requirement to merge kernel tooling into Arise. If Maize must
+execute `arise` and parse human output, a needed library boundary is missing.
+Candidates include Portage configuration loading and effective per-package
+policy, dependency and reverse-dependency inspection, and hardware- and
+package-capability discovery.
 
-Maize should be able to import Gentooling packages to answer questions
-such as:
+Public code accepts `context.Context`, explicit roots and policy; separates
+inspection, planning, mutation and presentation; returns deterministic typed
+results and diagnostics; and must remain usable with `CGO_ENABLED=0` without
+Python, Portage or the Arise executable. Require a downstream compile test,
+examples and versioned compatibility policy before promotion.
 
-- which kernel features are required by installed or proposed packages;
-- which CPU, firmware, filesystem, networking, security, virtualization, and
-  device options fit the detected machine and package state;
-- what changed between the running kernel, installed kernel sources, and a
-  proposed kernel upgrade;
-- which package changes make a kernel option newly required or obsolete; and
-- whether a proposed kernel can support the current or planned package state
-  before either package or kernel installation begins.
-
-If Maize must execute `arise` and parse human output to obtain package state,
-that is evidence of missing public library surface. Subprocess interoperability
-remains valuable, but it must not be the only supported integration boundary.
-
-## Candidate public surfaces
-
-The Maize use case makes the following extraction candidates concrete:
-
-- Portage configuration loading and effective per-package policy;
-- repository and installed-package metadata snapshots;
-- atom and Gentoo-version parsing and matching;
-- dependency and reverse-dependency inspection;
-- USE, keyword, license, repository, slot, and subslot state;
-- hardware- and package-capability discovery inputs and typed findings;
-- immutable transaction or package-state planning without mandatory execution;
-  and
-- structured diagnostics, explanations, and provenance.
-
-These do not need to become one large package or be exported immediately.
-Boundaries should follow cohesive data ownership and dependency direction.
-Generic solver packages must not import Gentoo filesystem or presentation
-concerns; Gentoo semantic packages may compile normalized inputs for them.
-
-## External-consumer design constraints
-
-Code likely to become public should:
-
-- accept `context.Context`, explicit roots, repository paths, configuration,
-  architecture, and policy rather than assuming `/` or reading process-global
-  flags;
-- avoid hidden environment reads and make any environment-derived defaults
-  available through explicit constructors;
-- return stable typed values, structured diagnostics, and ordinary errors;
-- keep discovery, planning, mutation, prompting, logging, and rendering
-  separable;
-- remain usable with `CGO_ENABLED=0` and without invoking Python, Portage, or
-  the Arise executable;
-- preserve deterministic ordering and serializable identities for fixtures,
-  caching, comparison, and TUI state updates; and
-- avoid importing `cmd/arise`, terminal packages, or concrete CLI renderers.
-
-Promotion to a public package should include a downstream compile test that
-uses only exported APIs. Maize can become that real downstream contract once
-its repository is ready; until then, a small external-style test module or
-example should enforce the same import direction.
-
-Once a package boundary has demonstrated stability through CLI, integration,
-property, and adversarial contracts, it can be promoted from `internal/` to a
-versioned public package. That promotion should include API documentation,
-compatibility policy, examples, and downstream import tests.
-
-Public-library work is not required for the current query-parity release. Code
-that unnecessarily couples new core behavior to `cmd/arise`, global flags, or
-terminal output is still considered architectural regression.
-
-A future kernel build and installation tool may also consume Gentooling. Maize
-should own kernel-policy decisions; that build tool should own reproducible
-configuration, compilation, installation, initramfs, bootloader, and rollback
-operations. Neither concern belongs in Gentooling's package-state contracts.
+A future kernel build and installation tool owns build/initramfs/bootloader
+operations; Maize owns kernel policy. Neither concern belongs in Gentooling's
+package-state contracts. Generic solver extraction has its own
+[boundary constraints](planning/SOLVER_LIBRARY_PLAN.md).

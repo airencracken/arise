@@ -1,67 +1,39 @@
-# Arise documentation
+# Documentation
 
 ## Using Arise
 
-- [Project overview](../README.md): installation, common commands, and scope.
-- [Native tool equivalents](tool-equivalents.md): package queries, maintenance,
-  coexistence, and Gentoo interoperability.
-- [Configuration and state](configuration-layout.md): current paths and the
-  distinction between implemented configuration and proposed layout.
-- [Bug reports](bug-report.md): local collection, redaction, review, and export.
-- [Fresh stage3](fresh-stage3.md): the runbook for the still-open fresh-system
-  maintenance gate; it is not proof that the gate has passed.
-- [Handbook addendum](handbook-addendum.md): unofficial amd64 installation
-  guidance and Git repository configuration.
-- [Man page](../arise.1) and [Info manual](../arise.texi): installed references.
+- [Install and quick start](../README.md)
+- [Command and tool equivalents](tool-equivalents.md)
+- [Configuration and state paths](configuration-layout.md)
+- [Supported behavior](compatibility/PORTAGE_COMPATIBILITY_MATRIX.md)
+- [Bug reports](bug-report.md)
+- [Man page](../arise.1) and [Info manual](../arise.texi)
+- [Release notes](releases/README.md)
 
-## Development and validation
+## Development
 
-- [Development](development.md): builds, architecture, and environment.
-- [Test lanes](testing/TEST_LANES.md): ordinary tests, host capabilities,
-  disposable-root checks, and opt-in Portage comparisons.
-- [Coverage](testing/COVERAGE.md): commands and dated coverage measurements.
-- [Compatibility contract](../COMPATIBILITY.md) and
-  [compatibility matrix](compatibility/PORTAGE_COMPATIBILITY_MATRIX.md): required
-  behavior and the supported scope of individual interfaces.
-- [eix parity](eix-search-parity.md): tested and incomplete search behavior.
-- [Performance results](performance-results.md) and
-  [benchmark matrix](../BENCHMARK_MATRIX.md): methodology and dated measurements.
-- [Release workflow](../misc/RELEASE.md): artifact and overlay orchestration.
-- [Architecture decisions](adr/README.md): accepted decisions and revisit criteria.
+- [Build, architecture and conventions](development.md)
+- [Test lanes](testing/TEST_LANES.md) and [coverage](testing/COVERAGE.md)
+- [Compatibility contract](../COMPATIBILITY.md)
+- [Search parity](eix-search-parity.md)
+- [Performance methodology and results](performance-results.md)
+- [Release workflow](../misc/RELEASE.md)
+- [Architecture decisions](adr/README.md)
+- [Open work](../PUNCHLIST.md) and [design constraints](planning/README.md)
+- [Shared library boundary](library-roadmap.md)
 
-## Remaining work
+## Acceptance procedures and evidence
 
-The [punchlist](../PUNCHLIST.md) contains only unfinished work, ordered by
-priority, with completion criteria. Remove finished entries; Git retains their
-history. [Topic plans](planning/README.md) provide design detail for open items
-and do not establish current support by themselves.
+The [fresh-stage3 runbook](fresh-stage3.md) and
+[Handbook addendum](handbook-addendum.md) describe experimental installation
+and validation procedures. The full fresh-stage3 acceptance run is deferred
+for 0.0.42; neither procedure is evidence that it passed.
 
-The [library roadmap](library-roadmap.md) and
-[transaction backend design](transaction-backends.md) distinguish proposed
-interfaces from implemented guarantees. Experimental designs must not be read
-as available command-line options.
+The [0.0.42 review](reviews/2026-10-11-stabilization-release.md) records tested
+scope and remaining gaps. [Machine-readable evidence](evidence/README.md)
+retains dated measurement inputs. Superseded prose lives in Git history.
 
-## Reviews and historical evidence
-
-[Reviews](reviews/) record scoped findings and verification for particular
-source revisions. [Audits](audits/README.md), [evidence](evidence/README.md), and
-[release notes](releases/) retain dated results; none describes the current
-installed host or certifies a later revision. Preserve machine-readable data
-needed to reproduce a claim.
-
-[Archived material](archive/README.md) is not current instruction. Do not add
-an archive copy merely to preserve completed work; prefer Git history. Before
-removing a document, retain unfinished requirements in the punchlist or an
-active topic plan and repair inbound links.
-
-## Documentation checks
-
-Run `./support/check-docs.sh` after changing documentation or CLI behavior. It
-checks local Markdown link targets, Bash syntax, and whitespace, compiles the
-Info manual when `makeinfo` is available, and lints the man page when `mandoc`
-is available. Missing optional tools are reported. External URLs are not
-network-validated by this local check.
-
-The ordinary Go suite also checks documented CLI routes and punchlist structure.
-Keep examples aligned with executable behavior; tests should reject obsolete
-instructions rather than require their wording to survive.
+Run `./support/check-docs.sh` after documentation changes. It checks local
+links, Bash syntax, whitespace, Info compilation and man-page lint. Optional
+tools report skips; external URLs are not checked. The Go suite also checks
+CLI examples, versions, schemas and compatibility contracts.

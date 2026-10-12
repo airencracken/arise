@@ -13,7 +13,7 @@ func TestLibraryRoadmapRecordsExternalConsumerBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	roadmap := string(data)
+	roadmap := strings.Join(strings.Fields(string(data)), " ")
 	for _, fragment := range []string{
 		"Shared module: gentooling",
 		"github.com/airencracken/gentooling",

@@ -1,43 +1,16 @@
-# Evidence index
+# Measurement evidence
 
-Evidence records support specific dated claims. They are immutable historical
-inputs unless a correction is clearly appended; current product status lives
-in `../../PUNCHLIST.md` and maintained documentation.
+These JSON files preserve dated inputs, provenance and measurements used by
+regression checks or published claims. They do not describe today's host or
+certify a later revision.
 
-## Dated milestone evidence
+- `RELEASE_0.0.7_PERFORMANCE_2026-07-29.json`: historical tool comparisons.
+- `COVERAGE_BASELINE_*.json`: instrumented coverage snapshots.
+- `HARDENED_STAGE3_WORLD_UPDATE_2026-08-04.json`: observed transaction, with
+  explicit unknowns and limits; not the current fresh-stage3 acceptance gate.
+- Other snapshots retain resolver, timing and post-repair observations.
 
-- [`RELEASE_0.0.7_PERFORMANCE_2026-07-29.json`](RELEASE_0.0.7_PERFORMANCE_2026-07-29.json)
-  records the refreshed correctness-equivalent Gentoo-tool comparisons, raw
-  wall samples, release performance floors, and frozen host snapshot.
-- [`PORTAGE_SELF_HOSTING_MILESTONE_2026-07-24.md`](PORTAGE_SELF_HOSTING_MILESTONE_2026-07-24.md)
-  records Arise building and installing Portage 3.0.81.2 and defines the
-  cumulative construction acceptance ladder.
-- [`WORLD_UPDATE_CHECKPOINT_2026-07-24.md`](WORLD_UPDATE_CHECKPOINT_2026-07-24.md)
-  records the completed v15 continuation, the defects its verifier exposed,
-  their corrections, and the aligned 19-action continuation that was pending at that checkpoint.
-
-## Resolver and live-state evidence
-
-- [`INDEPENDENT_PLAN_EXECUTION_2026-07-29.md`](INDEPENDENT_PLAN_EXECUTION_2026-07-29.md)
-  records the portable stale built-slot repair reduction and the complete
-  resolver-to-execution validation chain.
-- `P3_BROKEN_WORLD_BASELINE_2026-07-18.json`
-- `P3_EXPLICIT_CORPUS_EXPANSION_2026-07-19.json`
-- `P3_LIVE_SYSTEM_COMPARATOR_2026-07-18.json`
-- `P3_SYSTEM_POST_REPAIR_2026-07-19.json`
-- `P3_SYSTEM_REPAIR_TIMINGS_2026-07-18.json`
-- `P3_SYSTEM_SHALLOW_TIMINGS_2026-07-18.json`
-- [`PLAN_COMPLETENESS_VALIDATION.md`](PLAN_COMPLETENESS_VALIDATION.md)
-
-These remain useful for provenance but do not describe the current installed
-system after later live transactions.
-
-## Baselines and parity snapshots
-
-- [`PERFORMANCE_BASELINE_2026-07-16.md`](PERFORMANCE_BASELINE_2026-07-16.md)
-- `LIVE_COMMAND_TIMINGS_2026-07-17.json`
-- `COVERAGE_BASELINE_2026-07-17.json`
-- `P2_PARITY_EVIDENCE_2026-07-17.json`
-
-Performance claims must follow the current benchmark methodology; historical
-numbers are not release claims.
+Current methodology is in [performance results](../performance-results.md),
+[test lanes](../testing/TEST_LANES.md) and the
+[0.0.42 review](../reviews/2026-10-11-stabilization-release.md).
+Superseded prose is available in Git history.

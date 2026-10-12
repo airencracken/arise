@@ -28,8 +28,9 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 	assertPresent(t, readme,
 		"arise sync\narise -1 --reinstall =sys-apps/arise-"+projectReleaseVersion(t),
 		"sys-apps/arise ~amd64",
-		"| Workload | Arise | Compared with | Other tool | Arise speedup |",
-		"| Plan a deep/newuse `@world` update | 3.25 s | `emerge` | 17.98 s | **5.54x** |",
+		"sys-apps/arise-bin ~amd64",
+		"emerge --ask sys-apps/arise-bin",
+		"Keep Portage installed for reference",
 		"[performance results](docs/performance-results.md)",
 		"[development guide](docs/development.md)",
 		"[documentation index](docs/README.md)",
@@ -84,8 +85,9 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 
 func assertPresent(t *testing.T, text string, values ...string) {
 	t.Helper()
+	text = strings.Join(strings.Fields(text), " ")
 	for _, value := range values {
-		if !strings.Contains(text, value) {
+		if !strings.Contains(text, strings.Join(strings.Fields(value), " ")) {
 			t.Errorf("documentation omits current contract %q", value)
 		}
 	}

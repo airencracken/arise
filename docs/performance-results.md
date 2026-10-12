@@ -1,61 +1,42 @@
-# Performance results
+# Performance
 
-`emerge` is the behavioral reference. `eix`, `eix-installed`, and related tools
-are performance references where they provide an equivalent operation. Arise
-publishes a speedup only when normalized results from the same system snapshot
-are equivalent.
+Publish speedups only for equivalent normalized results from identical
+repository/profile/configuration/VDB/world inputs. Retain cache state, command
+options, tool/source identity, hardware, repeated samples and failed attempts.
+The [benchmark format](../misc/PERFORMANCE.md) records wall, CPU, I/O and
+process-tree memory without shell-wrapper overhead.
 
-## Gentoo tool comparisons
+## 0.0.42 stabilization measurements
 
-Release-candidate results captured on 2026-07-29:
+| Warm workload | Arise median | Portage median | Speedup |
+|---|---:|---:|---:|
+| Nano update, one action | 1.584 s | 6.032 s | 3.81x |
+| Coreutils build-only reinstall, one action | 1.597 s | 3.831 s | 2.40x |
 
-| Task | Arise median | Reference | Reference median | Arise speedup |
-|---|---:|---|---:|---:|
-| List all installed CPVs | 8.54 ms | `eix-installed` | 38.22 ms | **4.48x** |
-| Firefox substring search | 14.60 ms | `eix` | 35.05 ms | **2.40x** |
-| Firefox substring search | 13.66 ms | `emerge` | 960.59 ms | **70.34x** |
-| Shallow `@system` update plan | 1.96 s | `emerge` | 3.78 s | **1.93x** |
-| Deep/newuse `@world` pretend plan | 3.25 s | `emerge` | 17.98 s | **5.54x** |
-| Full configured-repository index | 7.14 s | `eix-update` | 10.55 s | **1.48x** |
-| No-change configured-repository index | 3.79 s | `eix-update` | 10.52 s | **2.78x** |
+Five paired runs after one warmup used frozen inputs on one Gentoo workstation;
+both cases required action parity. These are workload measurements, not general
+performance guarantees. Cold-cache and broader system budgets remain open.
 
-Every row passed the workload's output normalizer. Resolver rows compare CPV,
-slot, repository, action, merge type, and effective USE rather than relying on
-exit codes. Index rows validate the resulting normalized package-name set.
-Query rows compare normalized sorted results.
+The separate [world-update audit](audits/WORLD_UPDATE_AUDIT_2026-10-11.md)
+reduced a blocker-loop plan from over four minutes to 5.29–5.33 seconds versus
+Portage's 28.38–28.63 seconds. Both final plans passed independent validation;
+Arise retained four additional required Perl rebuilds, so this is classified
+plan divergence rather than an identical-action speedup claim.
 
-The resolver release gate now requires at least a 1.2x median lead. Regular
-tests also exercise a large deterministic final-state lookup budget and assert
-that policy evaluation is confined to selected actions. These gates were added
-after independent validation briefly caused a major pre-release regression.
+## Method and boundaries
 
-The exact samples, tool versions, snapshot identities, binary digest, and
-performance floors are preserved in
-[`evidence/RELEASE_0.0.7_PERFORMANCE_2026-07-29.json`](evidence/RELEASE_0.0.7_PERFORMANCE_2026-07-29.json).
+Resolver normalization includes CPV, slot/subslot, repository, action, merge
+type and effective USE. Query/index workloads compare sorted results. Rejected
+or incomplete commands are failure evidence, never successful timing samples.
+Read-only Portage comparisons disable news bookkeeping. Separate warm, cold
+and incremental trials; define budgets and noise before optimizing.
 
-## Method
+Dependency-aware parallel preparation with serialized commits is implemented,
+as are source installed lifecycle execution, durable journals and fault-injected
+recovery. General Portage execution parity is not claimed. Required binary
+lifecycle hooks remain an explicit source-fallback/rejection boundary.
 
-The harness runs each tool directly without a shell, records repeated wall,
-CPU, I/O, and process-tree memory samples, and rejects unequal normalized
-output before considering speed. Resolver comparisons disable Portage's news
-side effect with `FEATURES=-news` so both commands remain read-only.
-
-The current rows are warm-cache comparisons. Full index runs remove only their
-explicit benchmark paths before every sample; no-change index runs retain the
-previous index. See [`../misc/PERFORMANCE.md`](../misc/PERFORMANCE.md) for the
-workload schema, normalization rules, cache handling, and benchmark policy.
-
-## Claim boundaries
-
-- Dependency-aware parallel preparation with serialized commits, atomic
-  Manifest-verified fetching, installed lifecycle execution, durable journals,
-  resume recovery, and fault-injected atomicity tests are implemented.
-- General Portage execution parity is not claimed. It requires broader machine,
-  EAPI, package, filesystem-layout, failure, and long-running upgrade corpora.
-- Results are measurements from one x86-64 Gentoo workstation and are not
-  universal performance guarantees.
-- Damaged-state recovery results remain separate because unequal outcomes
-  cannot enter the equivalence table.
-
-See [`../BENCHMARK_MATRIX.md`](../BENCHMARK_MATRIX.md) for the workload matrix
-and [`releases/0.0.7.md`](releases/0.0.7.md) for release context.
+The [0.0.42 review](reviews/2026-10-11-stabilization-release.md) records scope.
+The [0.0.7 measurements](evidence/RELEASE_0.0.7_PERFORMANCE_2026-07-29.json)
+remain historical evidence, not current release numbers. See the
+[workload matrix](../BENCHMARK_MATRIX.md) and [remaining work](../PUNCHLIST.md).

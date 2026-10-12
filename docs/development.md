@@ -56,6 +56,13 @@ authoritative implementation-level reference.
 
 ## Architecture decisions
 
+Keep the complexity ratchets in `scripts/check-complexity.sh`: average at most
+7.87, at most 19 functions over 50, and no function over 215. Refactors require
+wall-clock benchmarks, allocations and production-style resolver timings.
+Reject cosmetic complexity improvements that add overhead or hide branches
+without improving the structure. Correctness and durable transaction behavior
+remain required.
+
 Durable architectural choices and their tradeoffs are maintained as
 [architecture decision records](adr/README.md). Add an ADR when a decision is
 likely to be questioned later, crosses package boundaries, establishes a

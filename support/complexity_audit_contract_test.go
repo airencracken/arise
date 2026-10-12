@@ -6,12 +6,12 @@ import (
 	"testing"
 )
 
-func TestComplexityAuditRatchetsAndRequiresPerformanceEvidence(t *testing.T) {
+func TestComplexityRatchetsAndRequiresPerformanceEvidence(t *testing.T) {
 	script, err := os.ReadFile("../scripts/check-complexity.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := os.ReadFile("../docs/audits/cyclomatic-complexity-2026-08-26.md")
+	report, err := os.ReadFile("../docs/development.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -20,9 +20,9 @@ func TestComplexityAuditRatchetsAndRequiresPerformanceEvidence(t *testing.T) {
 			t.Errorf("complexity ratchet is missing %q", required)
 		}
 	}
-	for _, required := range []string{"wall-clock benchmarks", "allocations", "production-style resolver timings", "was rejected"} {
+	for _, required := range []string{"wall-clock benchmarks", "allocations", "production-style resolver timings", "Reject cosmetic complexity improvements"} {
 		if !strings.Contains(string(report), required) {
-			t.Errorf("complexity audit is missing performance rule %q", required)
+			t.Errorf("development guide is missing performance rule %q", required)
 		}
 	}
 }
