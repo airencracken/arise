@@ -1,13 +1,20 @@
 # Open work
 
-Updated 2026-10-11. This is the remaining backlog, not release history.
+Updated 2026-10-22. This is the remaining backlog, not release history.
 Remove completed items; Git retains them. Each item requires observable
 behavior and failure-path evidence before closing.
 
-0.0.42 ships the scoped fixes in its [release notes](docs/releases/0.0.42.md).
+0.0.43 adds profile inspection and comparison in its [release notes](docs/releases/0.0.43.md).
 The full fresh-stage3 run is explicitly deferred for this release.
 
 ## Next fixes and validation
+
+- [ ] **N10 — Profile explanation queries and migration planning.** Expose Gentooling's
+  assignment trace through targeted CLI queries and connect profile comparisons
+  to dependency resolution and hashed plans.
+  **Done when:** [explanations](docs/profile-inspection.md) identify inherited changes and overrides, and
+  candidate-profile plans use isolated configuration with reproducible inputs.
+  Advertised architecture matches alone do not establish migration safety.
 
 - [ ] **S01 — Expand frozen Portage comparisons.** Add slot rebuild, uninstall,
   damaged-world and configuration-diversity cases to the existing matrix.
@@ -86,7 +93,7 @@ The full fresh-stage3 run is explicitly deferred for this release.
   resume, linkage and reboot checks.
   **Done when:** the [runbook](docs/fresh-stage3.md) reproduces a complete run
   with retained inputs and before/after state. Current single-UID fixtures do
-  not satisfy this gate. No new stage3 run is planned for 0.0.42.
+  not satisfy this gate. No new stage3 run is planned for 0.0.43.
 
 - [ ] **N04 — Filesystem snapshot rollback.** Certify Btrfs, OpenZFS and LVM
   separately, including capacity, topology, partial failure and reboot recovery.
