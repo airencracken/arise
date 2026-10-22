@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/profile-diff-v1.schema.json",
+  "title": "Arise profile comparison v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "scope", "before", "after", "defaults", "policies"],
+  "properties": {
+    "schema": { "const": "arise.profile-diff.v1" },
+    "scope": { "const": "profile" },
+    "before": { "$ref": "#/$defs/side" },
+    "after": { "$ref": "#/$defs/side" },
+    "defaults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "before", "after"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["value", "tokens"] },
+          "before": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/default" }] },
+          "after": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/default" }] }
+        }
+      }
+    },
+    "policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind", "before", "after", "before_contributions", "after_contributions"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["effective", "ordered_rules"] },
+          "before": { "$ref": "#/$defs/strings" },
+          "after": { "$ref": "#/$defs/strings" },
+          "before_contributions": { "$ref": "#/$defs/contributions" },
+          "after_contributions": { "$ref": "#/$defs/contributions" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "strings": { "type": "array", "items": { "type": "string" } },
+    "side": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "architecture", "layers", "unsupported_files"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "architecture": { "type": "string" },
+        "layers": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "unsupported_files": { "$ref": "#/$defs/strings" }
+      }
+    },
+    "default": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value", "contributions"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "value": { "type": "string" },
+        "contributions": { "$ref": "#/$defs/contributions" }
+      }
+    },
+    "contributions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["value", "source"],
+        "properties": {
+          "value": { "type": "string" },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "line"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "line": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

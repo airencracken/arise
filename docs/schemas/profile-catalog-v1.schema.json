@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/profile-catalog-v1.schema.json",
+  "title": "Arise advertised profile catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "active_path", "architecture", "all_architectures", "profiles"],
+  "properties": {
+    "schema": { "const": "arise.profile-catalog.v1" },
+    "active_path": { "type": "string", "minLength": 1 },
+    "architecture": { "type": "string" },
+    "all_architectures": { "type": "boolean" },
+    "profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["selector", "path", "architecture", "status", "deprecated", "selected", "source"],
+        "properties": {
+          "selector": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "architecture": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "minLength": 1 },
+          "deprecated": { "type": "boolean" },
+          "selected": { "type": "boolean" },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "line"],
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "line": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -285,6 +285,26 @@ inspection or output failure, and 2 for invalid arguments.
 Text output uses aligned columns with wrapped values and source paths relative
 to the displayed profile root. Terminal colors honor the global
 @option{--color} option; JSON output is always uncolored.
+
+@item profile list [--all] [--json]
+List profiles advertised in configured repositories' @file{profiles.desc}
+catalogs, filtered by the active profile's architecture. Show status and selected
+or deprecated markers. @option{--all} includes every advertised architecture.
+Architecture matching is a discovery filter; profile migration requirements
+need separate assessment. JSON uses @code{arise.profile-catalog.v1}.
+
+@item profile diff [--explain] [--json] [@var{before}] @var{after}
+Compare profile defaults, inheritance, USE policy, system packages, package
+masks and ordered package USE rules. A single target compares against the active
+profile. Accept @code{REPOSITORY:PROFILE}, a unique repository-relative path,
+an absolute path inside configured repositories, or the reserved selector
+@code{active}. @option{--explain} includes contributions for changed settings.
+Ordered rules preserve sequence and duplicates; scalar changes distinguish unset
+from an empty string. JSON uses @code{arise.profile-diff.v1} and retains complete
+changed rule sequences. Neither command modifies the active selection or local
+configuration, plans rebuilds, or performs a profile migration. Exit status is
+0 on success, including differences, 1 on inspection/output failure, and 2 for
+invalid arguments. Put flags before profile operands.
 @end table
 
 @subheading Native Package Query Examples

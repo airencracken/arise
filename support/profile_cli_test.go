@@ -67,7 +67,11 @@ func TestReleasedCLIProfileShowHonorsConfigRootAndOptions(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{{"profile", "--help"}, {"profile", "show", "--help"}} {
-		if output, err := exec.Command(binary, args...).CombinedOutput(); err != nil || !strings.Contains(string(output), "arise profile show") {
+		expected := "arise profile <show|list|diff>"
+		if len(args) == 3 {
+			expected = "arise profile show"
+		}
+		if output, err := exec.Command(binary, args...).CombinedOutput(); err != nil || !strings.Contains(string(output), expected) {
 			t.Fatalf("%v: %v\n%s", args, err, output)
 		}
 	}
@@ -89,10 +93,89 @@ func TestReleasedCLIProfileShowHonorsConfigRootAndOptions(t *testing.T) {
 			t.Fatal("automatic color changed redirected report text")
 		}
 	}
+	alternative := filepath.Join(repo, "profiles", "alternative")
+	if err := os.Mkdir(alternative, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files[filepath.Join(profile, "make.defaults")] += "ARCH=amd64\n"
+	files[filepath.Join(alternative, "make.defaults")] = "ARCH=amd64\nUSE=\"profile desktop\"\n"
+	files[filepath.Join(repo, "profiles", "profiles.desc")] = "amd64 selected stable\namd64 alternative dev\n"
+	for path, data := range files {
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	catalogCommand := exec.Command(binary, "profile", "list", "--json")
+	catalogOutput, err := catalogCommand.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var catalog portage.ProfileCatalog
+	if err := json.Unmarshal(catalogOutput, &catalog); err != nil || catalog.Arch != "amd64" || len(catalog.Profiles) != 2 {
+		t.Fatalf("released catalog: %+v, %v", catalog, err)
+	}
+	for _, args := range [][]string{
+		{"profile", "diff", "--json", "gentoo:alternative"},
+		{"--json", "profile", "diff", "gentoo:selected", "gentoo:alternative"},
+		{"--color=y", "profile", "diff", "--json", "gentoo:alternative"},
+	} {
+		output, err := exec.Command(binary, args...).Output()
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		var diff portage.ProfileDiff
+		if err := json.Unmarshal(output, &diff); err != nil || diff.Schema != "arise.profile-diff.v1" || diff.Before.Path != profile || diff.After.Path != alternative || len(diff.Defaults) != 1 || diff.Defaults[0].Name != "USE" {
+			t.Fatalf("released diff: %+v, %v", diff, err)
+		}
+		if bytes.Contains(output, []byte("\x1b[")) {
+			t.Fatal("released comparison JSON contains ANSI styling")
+		}
+	}
+	if selected, err := os.Readlink(filepath.Join(config, "make.profile")); err != nil || selected != profile {
+		t.Fatalf("comparison switched the active profile: %q, %v", selected, err)
+	}
 	for path, want := range files {
 		got, err := os.ReadFile(path)
 		if err != nil || string(got) != want {
 			t.Fatalf("inspection modified %s: %v, %q", path, err, got)
+		}
+	}
+}
+
+func TestProfileComparisonPublishedSchemaContracts(t *testing.T) {
+	for _, test := range []struct {
+		file     string
+		identity string
+		required []string
+	}{
+		{"profile-catalog-v1.schema.json", "arise.profile-catalog.v1", []string{"schema", "active_path", "architecture", "all_architectures", "profiles"}},
+		{"profile-diff-v1.schema.json", "arise.profile-diff.v1", []string{"schema", "scope", "before", "after", "defaults", "policies"}},
+	} {
+		data, err := os.ReadFile(filepath.Join("..", "docs", "schemas", test.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var schema struct {
+			Required   []string                   `json:"required"`
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(data, &schema); err != nil {
+			t.Fatal(err)
+		}
+		required := make(map[string]bool)
+		for _, name := range schema.Required {
+			required[name] = true
+		}
+		for _, name := range test.required {
+			if !required[name] || schema.Properties[name] == nil {
+				t.Errorf("%s does not define and require %s", test.file, name)
+			}
+		}
+		var identity struct {
+			Const string `json:"const"`
+		}
+		if err := json.Unmarshal(schema.Properties["schema"], &identity); err != nil || identity.Const != test.identity {
+			t.Fatalf("%s identity: %+v, %v", test.file, identity, err)
 		}
 	}
 }

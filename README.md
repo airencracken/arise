@@ -51,6 +51,7 @@ arise query --versions www-client/firefox
 arise installed --owner /usr/bin/gcc
 arise inspect sys-devel/gcc
 arise profile show --explain
+arise profile list
 arise --pretend install app-editors/vim
 arise --pretend --verbose --update --deep --newuse @world
 arise dispatch-conf
@@ -69,7 +70,9 @@ command details.
 
 `arise profile show` displays inherited profile defaults and policy;
 `--explain` includes their ordered source contributions and `--json` emits a
-versioned report. See [profile inspection](docs/profile-inspection.md) for scope
+versioned report. `arise profile list` finds advertised profiles for the active
+architecture; `arise profile diff REPOSITORY:PROFILE` shows what changes with
+another profile. See [profile inspection](docs/profile-inspection.md) for scope
 and examples.
 
 ## Correctness and performance

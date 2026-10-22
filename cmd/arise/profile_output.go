@@ -22,13 +22,17 @@ type profileTextWriter struct {
 }
 
 func writeProfileReport(writer io.Writer, report portage.ProfileReport, explain bool) {
+	writeProfileReportWidth(writer, report, explain, profileOutputWidth())
+}
+
+func profileOutputWidth() int {
 	width := 100
 	if stdoutIsTerminal() {
 		if columns, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && columns > 0 {
 			width = columns
 		}
 	}
-	writeProfileReportWidth(writer, report, explain, width)
+	return max(24, width)
 }
 
 func writeProfileReportWidth(writer io.Writer, report portage.ProfileReport, explain bool, width int) {

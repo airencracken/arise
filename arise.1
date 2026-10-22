@@ -468,6 +468,29 @@ to the displayed profile root. Terminal colors honor the global
 \fB\-\-color\fR option; JSON output is always uncolored.
 
 .TP
+\fBprofile list\fR [\fB\-\-all\fR] [\fB\-\-json\fR]
+List profiles advertised in configured repositories' profiles.desc catalogs,
+filtered by the active profile's architecture. Show status and selected or
+deprecated markers. \fB\-\-all\fR includes every advertised architecture.
+Architecture matching is a discovery filter; profile migration requirements
+need separate assessment. JSON uses \fBarise.profile-catalog.v1\fR.
+
+.TP
+\fBprofile diff\fR [\fB\-\-explain\fR] [\fB\-\-json\fR]
+[\fIBEFORE\fR] \fIAFTER\fR
+Compare profile defaults, inheritance, USE policy, system packages, package
+masks and ordered package USE rules. A single target compares against the
+active profile. Accept REPOSITORY:PROFILE, unique repository-relative paths,
+absolute paths inside configured repositories, or the reserved selector active.
+\fB\-\-explain\fR includes source contributions for changed settings.
+Ordered rules preserve sequence and duplicates; scalar changes distinguish
+unset from an empty string. JSON uses \fBarise.profile-diff.v1\fR and retains
+complete changed rule sequences. Neither command modifies the active selection
+or local configuration. No rebuild or profile migration is planned. Exit status
+is 0 on success, including differences, 1 on inspection/output failure, and 2
+for invalid arguments. Put flags before profile operands.
+
+.TP
 \fBinstalled\fR [\fIinspection-option\fR] [\fIargument\fR]
 List or inspect installed packages. Inspection options include
 \fB\-\-owner\fR, \fB\-\-contents\fR, \fB\-\-uses\fR, \fB\-\-size\fR,

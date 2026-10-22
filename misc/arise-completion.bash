@@ -54,7 +54,9 @@ _arise() {
             ;;
         profile)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "show --help" -- "$cur"))
+                COMPREPLY=($(compgen -W "show list diff --help" -- "$cur"))
+            elif [[ ${words[2]} == list ]]; then
+                COMPREPLY=($(compgen -W "--all --json --help" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "--explain --json --help" -- "$cur"))
             fi

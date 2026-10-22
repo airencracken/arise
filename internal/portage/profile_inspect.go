@@ -54,9 +54,17 @@ type ProfilePolicy struct {
 // InspectProfile reuses the production graph and assignment merge functions.
 // Package USE rules remain ordered because their result needs package context.
 func InspectProfile(ctx context.Context, configRoot string) (ProfileReport, error) {
-	repositories, err := EffectiveRepositoryPolicyOrder(configRoot)
+	paths, err := profileInspectionPaths(configRoot)
 	if err != nil {
 		return ProfileReport{}, err
+	}
+	return inspectProfilePaths(ctx, paths)
+}
+
+func profileInspectionPaths(configRoot string) (gentooling.SystemPaths, error) {
+	repositories, err := EffectiveRepositoryPolicyOrder(configRoot)
+	if err != nil {
+		return gentooling.SystemPaths{}, err
 	}
 	paths := gentooling.SystemPaths{ActiveProfile: filepath.Join(configRoot, "make.profile")}
 	for _, repository := range repositories {
@@ -66,6 +74,10 @@ func InspectProfile(ctx context.Context, configRoot string) (ProfileReport, erro
 			})
 		}
 	}
+	return paths, nil
+}
+
+func inspectProfilePaths(ctx context.Context, paths gentooling.SystemPaths) (ProfileReport, error) {
 	profile, err := gentooling.ReadProfile(ctx, paths)
 	if err != nil {
 		return ProfileReport{}, err
