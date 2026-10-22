@@ -76,42 +76,6 @@ func TestCompareProfilesResolvesSelectorsAndPreservesActiveSelection(t *testing.
 	}
 }
 
-func TestCompareProfilesPreservesRuleOrderButIgnoresSetAndWhitespaceOrder(t *testing.T) {
-	before := ProfileReport{
-		Defaults: []ProfileDefault{{Name: "USE", Value: "ssl -debug"}},
-		Policies: []ProfilePolicy{
-			{Name: "use.mask", Kind: "effective", Values: []string{"a", "b"}},
-			{Name: "package.use", Kind: "ordered_rules", Values: []string{"cat/pkg ssl", "cat/pkg -ssl"}},
-		},
-	}
-	after := before
-	after.Defaults = []ProfileDefault{{Name: "USE", Value: "-debug ssl"}}
-	after.Policies = []ProfilePolicy{
-		{Name: "use.mask", Kind: "effective", Values: []string{"b", "a", "a"}},
-		{Name: "package.use", Kind: "ordered_rules", Values: []string{"cat/pkg\tssl", "cat/pkg   -ssl"}},
-	}
-	if diff := compareProfileReports(before, after); len(diff.Defaults) != 0 || len(diff.Policies) != 0 {
-		t.Fatalf("cosmetic changes reported: %+v", diff)
-	}
-	after.Policies[1].Values = []string{"cat/pkg -ssl", "cat/pkg ssl"}
-	diff := compareProfileReports(before, after)
-	if len(diff.Policies) != 1 || diff.Policies[0].Name != "package.use" {
-		t.Fatalf("rule reordering was missed: %+v", diff)
-	}
-	if !reflect.DeepEqual(diff.Policies[0].Before, []string{"cat/pkg ssl", "cat/pkg -ssl"}) || !reflect.DeepEqual(diff.Policies[0].After, []string{"cat/pkg -ssl", "cat/pkg ssl"}) {
-		t.Fatalf("rule sequence lost: %+v", diff.Policies)
-	}
-}
-
-func TestCompareProfilesDetectsOrderSensitiveLicenseChanges(t *testing.T) {
-	before := ProfileReport{Defaults: []ProfileDefault{{Name: "ACCEPT_LICENSE", Value: "* -GPL-2"}}}
-	after := ProfileReport{Defaults: []ProfileDefault{{Name: "ACCEPT_LICENSE", Value: "-GPL-2 *"}}}
-	diff := compareProfileReports(before, after)
-	if len(diff.Defaults) != 1 || diff.Defaults[0].Kind != "value" {
-		t.Fatalf("order-sensitive license expression was hidden: %+v", diff.Defaults)
-	}
-}
-
 func TestCompareProfilesEqualityAndReverseComparison(t *testing.T) {
 	config, _, _, _ := profileComparisonFixture(t)
 	same, err := CompareProfiles(t.Context(), config, "active", "active")

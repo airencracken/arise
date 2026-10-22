@@ -22,6 +22,23 @@ The pre-1.0 compatibility policy allows documented minor-release breaks and
 compatible patches. Further extraction waits for stable behavior and a concrete
 consumer; internal packages are not public wholesale.
 
+The profile-inspection feature now consumes Gentooling's profile inspection,
+catalog and comparison APIs. Gentooling owns direct selected-directory loading,
+assignment evaluation and provenance, selector validation, advertised profile
+metadata, and ordered policy comparison. Arise retains repository-configuration
+adaptation, command handling, terminal rendering and its `arise.profile.*` JSON
+contracts. The inspection's profile-scoped configuration uses the existing
+Gentooling package USE and visibility evaluators.
+
+Gentooling variable explanations retain the expression, expansion, source line,
+effective before/after value and prior defined state for each assignment. This
+supports explanation without reconstructing history from a flattened result.
+Package-mask reasons and global USE force/mask source lines remain inspectable.
+The consumer contract is exercised both from Gentooling's external-package tests
+and Arise's command/schema tests. Dependency solving and hashed execution plans
+remain Arise responsibilities; a profile configuration diff does not plan a
+profile migration.
+
 ## Concrete downstream consumer: Maize
 
 Maize is planned hardware- and package-informed kernel configuration/upgrade

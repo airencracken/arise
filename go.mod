@@ -11,7 +11,7 @@ require (
 	golang.org/x/term v0.45.0
 )
 
-require github.com/airencracken/gentooling v0.11.1
+require github.com/airencracken/gentooling v0.11.2-0.20261022220744-7bd5ddc91c11
 
 require (
 	dario.cat/mergo v1.0.0 // indirect

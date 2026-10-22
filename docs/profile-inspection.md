@@ -35,7 +35,7 @@ uncolored, including with `--color=y`.
 
 The report contains:
 
-- Merged `make.defaults` assignments, using Arise's configuration evaluator.
+- Merged `make.defaults` assignments, using Gentooling's configuration evaluator.
 - The profile's `@system` entries from `packages` and `package.provided` entries.
 - Global USE masks and forces, including stable-only policy.
 - Profile `package.mask` and `package.unmask` entries.
@@ -141,10 +141,19 @@ configuration-root options. Exit status is 0 for a successful comparison,
 including when differences exist, 1 for inspection/output failure, and 2 for
 invalid arguments. Failures do not emit a partial report.
 
+Gentooling owns profile evaluation, discovery, comparison and source provenance;
+Arise adapts repository configuration and renders its versioned report documents.
 Comparison loads both profiles with the same evaluator as `show`. It isolates
 profile contributions, leaves the active selection and configuration untouched,
-and does not plan rebuilds or perform a profile migration. The graph adapter
-uses a private temporary symlink which is removed after inspection. Files
+and does not plan rebuilds or perform a profile migration. Gentooling loads
+selected profile directories directly. Files
 outside supported report policy remain listed for each side.
 
 Targeted `why` queries are not implemented yet.
+
+Gentooling's `ExplainVariable` API additionally exposes the expression, expansion
+and before/after value for each inherited assignment. `ExplainPolicy` preserves
+policy contributions, including those later removed. Its profile-scoped effective
+configuration reuses package USE and visibility evaluators for flag decisions and
+mask reasons. Arise's existing `--explain` output retains ordered contributions;
+the richer variable trace is available through the library API.
