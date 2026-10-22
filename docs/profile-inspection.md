@@ -10,7 +10,28 @@ arise --portage-config-root /path/to/etc/portage profile show --explain
 `show` reads the selected `make.profile` and follows its parents, including
 cross-repository parents resolved through the configured repositories. It prints
 each inherited layer once, in evaluation order. With `--explain`, it also prints
-each layer's parent references relative to that layer.
+each layer's parent references relative to that layer. The selected layer is
+marked `[selected]`. Paths below the displayed `Root` use relative names;
+cross-repository paths outside that root remain absolute.
+
+Text output aligns variable names and values, package atoms and flags, and
+sources and contributions in separate columns. Long values wrap under the
+value column at the terminal width, or 100 columns for redirected output.
+Individual tokens and long source paths are preserved without truncation.
+
+Section headings and variable names use Arise's cyan palette, source locations
+use blue, positive USE tokens use green, and negative tokens use red. Global
+USE masks and package masks use red. Colors supplement the policy names and
+token signs. Automatic colors respect terminal detection, `NO_COLOR`, `NOCOLOR`
+and `TERM=dumb`. Use the global color option to override automatic detection:
+
+```sh
+arise --color=y profile show --explain
+arise --color=n profile show --explain
+```
+
+Redirected output is uncolored in automatic mode. JSON output is always
+uncolored, including with `--color=y`.
 
 The report contains:
 
@@ -25,9 +46,11 @@ and line number. Earlier assignments, removals and overrides remain visible.
 Backslash continuations point to the first physical line. For example:
 
 ```text
-  CFLAGS="-O2 -pipe"
-    /repo/profiles/base/make.defaults:10: "-O1"
-    /repo/profiles/desktop/make.defaults:4: "-O2 -pipe"
+  VARIABLE  VALUE
+  CFLAGS    "-O2 -pipe"
+    SOURCE                    CONTRIBUTION
+    base/make.defaults:10     "-O1"
+    desktop/make.defaults:4   "-O2 -pipe"
 ```
 
 Negative USE tokens in merged defaults retain explicit disable requests.

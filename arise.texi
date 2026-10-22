@@ -282,6 +282,9 @@ are not executed and files outside supported report policy are listed.
 Use @option{--portage-config-root} before the command to select configuration.
 No index or root privileges are needed. Exit status is 0 on success, 1 on
 inspection or output failure, and 2 for invalid arguments.
+Text output uses aligned columns with wrapped values and source paths relative
+to the displayed profile root. Terminal colors honor the global
+@option{--color} option; JSON output is always uncolored.
 @end table
 
 @subheading Native Package Query Examples

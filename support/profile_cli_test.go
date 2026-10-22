@@ -46,6 +46,7 @@ func TestReleasedCLIProfileShowHonorsConfigRootAndOptions(t *testing.T) {
 	for _, args := range [][]string{
 		{"profile", "show", "--json"},
 		{"--json", "profile", "show"},
+		{"--color=y", "profile", "show", "--json"},
 		{"--portage-config-root", config, "profile", "show", "--json", "--explain"},
 	} {
 		command := exec.Command(binary, args...)
@@ -68,6 +69,24 @@ func TestReleasedCLIProfileShowHonorsConfigRootAndOptions(t *testing.T) {
 	for _, args := range [][]string{{"profile", "--help"}, {"profile", "show", "--help"}} {
 		if output, err := exec.Command(binary, args...).CombinedOutput(); err != nil || !strings.Contains(string(output), "arise profile show") {
 			t.Fatalf("%v: %v\n%s", args, err, output)
+		}
+	}
+	var plainText []byte
+	for _, mode := range []string{"n", "y", "auto"} {
+		command := exec.Command(binary, "--color="+mode, "profile", "show", "--explain")
+		output, err := command.Output()
+		if err != nil {
+			t.Fatalf("color %s: %v", mode, err)
+		}
+		colored := bytes.Contains(output, []byte("\x1b["))
+		if colored != (mode == "y") {
+			t.Fatalf("color %s: ANSI presence = %t", mode, colored)
+		}
+		if mode == "n" {
+			plainText = output
+		}
+		if mode == "auto" && !bytes.Equal(output, plainText) {
+			t.Fatal("automatic color changed redirected report text")
 		}
 	}
 	for path, want := range files {

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 
 	"github.com/airencracken/arise/internal/portage"
 )
@@ -60,51 +59,4 @@ func runProfileWithWriters(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
-}
-
-func writeProfileReport(writer io.Writer, report portage.ProfileReport, explain bool) {
-	fmt.Fprintf(writer, "Profile: %s\nScope: profile defaults and policy\n", report.ActivePath)
-	fmt.Fprintln(writer, "Local configuration, make.globals, command environment and package IUSE are excluded.")
-	fmt.Fprintln(writer, "\nInheritance (evaluation order):")
-	for index, layer := range report.Layers {
-		fmt.Fprintf(writer, "  %d. %s\n", index+1, layer.Path)
-		if explain && len(layer.Parents) != 0 {
-			fmt.Fprintf(writer, "     parent references: %s\n", strings.Join(layer.Parents, ", "))
-		}
-	}
-	fmt.Fprintln(writer, "\nDefaults (negative USE tokens retain explicit disable requests):")
-	for _, value := range report.Defaults {
-		fmt.Fprintf(writer, "  %s=%q\n", value.Name, value.Value)
-		if explain {
-			writeProfileContributions(writer, value.Contributions)
-		}
-	}
-	for _, policy := range report.Policies {
-		label := "effective entries"
-		if policy.Kind == "ordered_rules" {
-			label = "ordered rules; evaluated per package"
-		}
-		fmt.Fprintf(writer, "\n%s (%s):\n", policy.Name, label)
-		if len(policy.Values) == 0 {
-			fmt.Fprintln(writer, "  (none)")
-		}
-		for _, value := range policy.Values {
-			fmt.Fprintf(writer, "  %s\n", value)
-		}
-		if explain {
-			writeProfileContributions(writer, policy.Contributions)
-		}
-	}
-	if len(report.Unsupported) != 0 {
-		fmt.Fprintln(writer, "\nFiles outside this report's supported policy (not evaluated):")
-		for _, path := range report.Unsupported {
-			fmt.Fprintf(writer, "  %s\n", path)
-		}
-	}
-}
-
-func writeProfileContributions(writer io.Writer, changes []portage.ProfileContribution) {
-	for _, change := range changes {
-		fmt.Fprintf(writer, "    %s:%d: %q\n", change.Source.Path, change.Source.Line, change.Value)
-	}
 }

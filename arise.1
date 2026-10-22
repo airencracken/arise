@@ -463,6 +463,9 @@ are not executed; files outside the report's supported policy are listed.
 Use \fB\-\-portage-config-root\fR before the command to select configuration.
 No index or root privileges are needed. Exit status is 0 on success, 1 on
 inspection or output failure, and 2 for invalid arguments.
+Text output uses aligned columns with wrapped values and source paths relative
+to the displayed profile root. Terminal colors honor the global
+\fB\-\-color\fR option; JSON output is always uncolored.
 
 .TP
 \fBinstalled\fR [\fIinspection-option\fR] [\fIargument\fR]
