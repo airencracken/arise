@@ -330,6 +330,10 @@ func main() {
 		if code := runInspect(cmdArgs); code != 0 {
 			os.Exit(code)
 		}
+	case "profile":
+		if code := runProfile(cmdArgs); code != 0 {
+			os.Exit(code)
+		}
 	case "preserved-rebuild":
 		runPreservedRebuild()
 	case "revdep-rebuild":

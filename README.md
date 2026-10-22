@@ -50,6 +50,7 @@ arise search firefox
 arise query --versions www-client/firefox
 arise installed --owner /usr/bin/gcc
 arise inspect sys-devel/gcc
+arise profile show --explain
 arise --pretend install app-editors/vim
 arise --pretend --verbose --update --deep --newuse @world
 arise dispatch-conf
@@ -65,6 +66,11 @@ Create a local diagnostic bundle with `arise bug-report --output arise-bug-repor
 The [bug-report guide](docs/bug-report.md) explains collection and redaction.
 Use `arise help`, `man arise` or the [documentation index](docs/README.md) for
 command details.
+
+`arise profile show` displays inherited profile defaults and policy;
+`--explain` includes their ordered source contributions and `--json` emits a
+versioned report. See [profile inspection](docs/profile-inspection.md) for scope
+and examples.
 
 ## Correctness and performance
 

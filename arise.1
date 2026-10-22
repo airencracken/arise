@@ -450,6 +450,21 @@ lock files. \fB\-\-locked\fR also observes Portage state locks;
 \fB\-\-json\fR emits the \fBarise.package-inspect.v1\fR contract.
 
 .TP
+\fBprofile show\fR [\fB\-\-explain\fR] [\fB\-\-json\fR]
+Show inherited profile layers in evaluation order, merged defaults, system
+packages, provided packages, USE masks and forces, package masks and unmasks,
+and ordered package USE rules. \fB\-\-explain\fR includes contributions with
+source file and line, retaining overridden and removed entries. Package USE
+rules require package context to determine effective flags.
+The report excludes local configuration, make.globals, the command environment,
+package IUSE, and repository policy outside the inherited layers. Shell hooks
+are not executed; files outside the report's supported policy are listed.
+\fB\-\-json\fR emits the \fBarise.profile.v1\fR contract with provenance.
+Use \fB\-\-portage-config-root\fR before the command to select configuration.
+No index or root privileges are needed. Exit status is 0 on success, 1 on
+inspection or output failure, and 2 for invalid arguments.
+
+.TP
 \fBinstalled\fR [\fIinspection-option\fR] [\fIargument\fR]
 List or inspect installed packages. Inspection options include
 \fB\-\-owner\fR, \fB\-\-contents\fR, \fB\-\-uses\fR, \fB\-\-size\fR,

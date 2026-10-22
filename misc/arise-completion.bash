@@ -6,7 +6,7 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install uninstall unmerge remove select deselect recover query state search installed info inspect audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench doctor plan-diff"
+    local commands="sync index install uninstall unmerge remove select deselect recover query state search installed info inspect profile audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench doctor plan-diff"
 
     local audit_sub="python perl"
     local doctor_sub="package-use package-policy world all"
@@ -50,6 +50,13 @@ _arise() {
                 COMPREPLY=($(compgen -W "--json --strict --locked --target-kernel=" -- "$cur"))
             else
                 _arise_pkg_atoms "$cur"
+            fi
+            ;;
+        profile)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "show --help" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "--explain --json --help" -- "$cur"))
             fi
             ;;
         audit)

@@ -5,6 +5,7 @@
 - [Install and quick start](../README.md)
 - [Command and tool equivalents](tool-equivalents.md)
 - [Configuration and state paths](configuration-layout.md)
+- [Profile inheritance and policy inspection](profile-inspection.md)
 - [Supported behavior](compatibility/PORTAGE_COMPATIBILITY_MATRIX.md)
 - [Bug reports](bug-report.md)
 - [Man page](../arise.1) and [Info manual](../arise.texi)

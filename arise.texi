@@ -268,6 +268,20 @@ typed incomplete-evidence diagnostics. The default lockless mode works for
 unprivileged users and requires two agreeing observations. @option{--locked}
 also observes Portage locks, while @option{--strict} rejects partial evidence.
 JSON output uses the @code{arise.package-inspect.v1} contract.
+
+@item profile show [--explain] [--json]
+Show inherited layers in evaluation order, merged defaults, system packages,
+provided packages, global USE masks and forces, package masks and unmasks, and
+ordered package USE rules, including stable-only policy. @option{--explain}
+retains contributions with file and line, including removals and overrides.
+Package USE rules require package context to determine effective flags.
+The report excludes local configuration, @file{make.globals}, command environment,
+package IUSE, and repository policy outside the inherited layers. Shell hooks
+are not executed and files outside supported report policy are listed.
+@option{--json} emits @code{arise.profile.v1}, always including provenance.
+Use @option{--portage-config-root} before the command to select configuration.
+No index or root privileges are needed. Exit status is 0 on success, 1 on
+inspection or output failure, and 2 for invalid arguments.
 @end table
 
 @subheading Native Package Query Examples

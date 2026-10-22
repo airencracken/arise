@@ -878,10 +878,13 @@ var removalOnlyIncrementalVariables = map[string]bool{
 	"FEATURES": true,
 }
 
-type configAssignment struct{ key, value string }
+type configAssignment struct {
+	key, value string
+	source     gentooling.PolicySource
+}
 
 func parseMakeConfAssignments(path string) ([]configAssignment, error) {
-	lines, err := readMakeConfLines(path)
+	lines, err := readMakeConfSourceLines(path)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -890,17 +893,19 @@ func parseMakeConfAssignments(path string) ([]configAssignment, error) {
 	}
 	var assignments []configAssignment
 	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
+		text := strings.TrimSpace(line.text)
+		if text == "" || strings.HasPrefix(text, "#") {
 			continue
 		}
-		idx := strings.IndexByte(line, '=')
+		idx := strings.IndexByte(text, '=')
 		if idx < 1 {
 			continue
 		}
-		key := strings.TrimSpace(line[:idx])
-		value := unquote(strings.TrimSpace(line[idx+1:]))
-		assignments = append(assignments, configAssignment{key: key, value: value})
+		key := strings.TrimSpace(text[:idx])
+		value := unquote(strings.TrimSpace(text[idx+1:]))
+		assignments = append(assignments, configAssignment{
+			key: key, value: value, source: gentooling.PolicySource{Path: path, Line: line.line},
+		})
 	}
 	return assignments, nil
 }
@@ -1247,6 +1252,23 @@ func ParseMakeConf(path string) (map[string]string, error) {
 }
 
 func readMakeConfLines(path string) ([]string, error) {
+	entries, err := readMakeConfSourceLines(path)
+	if err != nil {
+		return nil, err
+	}
+	var lines []string
+	for _, entry := range entries {
+		lines = append(lines, entry.text)
+	}
+	return lines, nil
+}
+
+type configSourceLine struct {
+	text string
+	line int
+}
+
+func readMakeConfSourceLines(path string) ([]configSourceLine, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -1257,12 +1279,17 @@ func readMakeConfLines(path string) ([]string, error) {
 		}
 	}()
 
-	var lines []string
+	var lines []configSourceLine
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 
 	var buf strings.Builder
+	var number, start int
 	for scanner.Scan() {
+		number++
+		if buf.Len() == 0 {
+			start = number
+		}
 		raw := scanner.Text()
 		stripped := strings.TrimRight(raw, " \t")
 		if len(stripped) > 0 && stripped[len(stripped)-1] == '\\' && !strings.HasSuffix(stripped, "\\\\") {
@@ -1271,14 +1298,14 @@ func readMakeConfLines(path string) ([]string, error) {
 		}
 		if buf.Len() > 0 {
 			buf.WriteString(raw)
-			lines = append(lines, buf.String())
+			lines = append(lines, configSourceLine{text: buf.String(), line: start})
 			buf.Reset()
 		} else {
-			lines = append(lines, raw)
+			lines = append(lines, configSourceLine{text: raw, line: number})
 		}
 	}
 	if buf.Len() > 0 {
-		lines = append(lines, buf.String())
+		lines = append(lines, configSourceLine{text: buf.String(), line: start})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("portage: could not read %s: %w", path, err)
