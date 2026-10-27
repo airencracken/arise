@@ -35,8 +35,8 @@ func (f PreflightFailure) Error() string {
 	return fmt.Sprintf("preflight %s: %v", actionLabel(f.Action), f.Err)
 }
 
-// PreflightAll validates every install action and deliberately does not apply
-// Execute's live-root canary size/removal limits. It performs no fetch, build,
+// PreflightAll validates install actions and their blocker removals without
+// applying Execute's live-root size limits. It performs no fetch, build,
 // merge, VDB/world, journal, resume or operation-lock mutation and returns the
 // complete failure set for large-plan compatibility audits.
 func PreflightAll(result *resolve.ResolveResult, base rebuild.RebuildConfig) []PreflightFailure {
@@ -49,6 +49,9 @@ func PreflightAll(result *resolve.ResolveResult, base rebuild.RebuildConfig) []P
 		if err := PreflightAction(action, &actionCfg); err != nil {
 			failures = append(failures, PreflightFailure{Action: action, Err: err})
 		}
+	}
+	if _, err := planBlockerRemovals(result, base); err != nil {
+		failures = append(failures, PreflightFailure{Err: err})
 	}
 	return failures
 }
@@ -83,6 +86,7 @@ type Config struct {
 	// recovery set. It runs once after locked validation and immediately before
 	// the first package mutation; builds may already have completed by then.
 	PrepareMutation func(context.Context) error
+	removalCount    int
 }
 
 func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) error {
@@ -112,9 +116,11 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 			}
 		}
 	}
-	if len(result.Uninstall) != 0 {
-		return fmt.Errorf("executor: removal actions are not supported by the install canary executor")
+	removals, err := planBlockerRemovals(result, cfg.Rebuild)
+	if err != nil {
+		return err
 	}
+	cfg.removalCount = len(result.Uninstall)
 	if err := validateActionGraph(result.Install); err != nil {
 		return err
 	}
@@ -218,13 +224,25 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 			return fmt.Errorf("executor: initialize resume state: %w", err)
 		}
 	}
+	for index, action := range result.Install {
+		if len(result.Uninstall) == 0 {
+			break
+		}
+		removals.wrapMutation(action, &actionConfigs[index], cfg, len(result.Install))
+	}
 	if len(result.Install) == 0 {
 		return nil
 	}
 	if cfg.Jobs < 1 {
 		cfg.Jobs = 1
 	}
-	return executeConcurrent(ctx, result.Install, actionConfigs, cfg)
+	if err := executeConcurrent(ctx, result.Install, actionConfigs, cfg); err != nil {
+		return err
+	}
+	if len(removals.completed) != len(removals.actions) {
+		return fmt.Errorf("executor: package runner did not execute planned blocker removals")
+	}
+	return nil
 }
 
 func filesystemAvailableBytes(path string) (uint64, error) {
@@ -299,6 +317,7 @@ type concurrentResult struct {
 }
 
 func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionConfigs []rebuild.RebuildConfig, cfg Config) error {
+	totalActions := len(actions) + cfg.removalCount
 	outerCtx := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -334,7 +353,7 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 		// after each worker's load wait, which lets goroutine scheduling announce
 		// later plan indexes before earlier ones.
 		if cfg.OnActionStart != nil {
-			cfg.OnActionStart(index+1, len(actions), action)
+			cfg.OnActionStart(index+1, totalActions, action)
 		}
 		go func() {
 			if err := rebuild.WaitForLoadContext(ctx, cfg.LoadAverage); err != nil {
@@ -345,17 +364,17 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 			actionCfg.PostCommitContext = outerCtx
 			actionCfg.OnStage = func(stage string) {
 				if cfg.OnActionStage != nil {
-					cfg.OnActionStage(index+1, len(actions), action, stage)
+					cfg.OnActionStage(index+1, totalActions, action, stage)
 				}
 			}
 			actionCfg.OnProgress = func(stage string, current, stageTotal int) {
 				if cfg.OnActionProgress != nil {
-					cfg.OnActionProgress(index+1, len(actions), action, stage, current, stageTotal)
+					cfg.OnActionProgress(index+1, totalActions, action, stage, current, stageTotal)
 				}
 			}
 			actionCfg.OnNotice = func(class, message string) {
 				if cfg.OnActionNotice != nil {
-					cfg.OnActionNotice(index+1, len(actions), action, class, message)
+					cfg.OnActionNotice(index+1, totalActions, action, class, message)
 				}
 			}
 			installReported := false
@@ -366,7 +385,7 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 				}
 				if phase == "src_install" && !installReported && cfg.OnActionInstall != nil {
 					installReported = true
-					cfg.OnActionInstall(index+1, len(actions), action)
+					cfg.OnActionInstall(index+1, totalActions, action)
 				}
 			}
 			if actionCfg.CommitLock == nil {
@@ -403,7 +422,7 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 					}
 				}
 				if cfg.OnActionComplete != nil {
-					cfg.OnActionComplete(index+1, len(actions), action)
+					cfg.OnActionComplete(index+1, totalActions, action)
 				}
 				return nil
 			}
@@ -427,7 +446,7 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 			var postCommit *merge.PostCommitError
 			if errors.As(err, &postCommit) && transactionCommitted.Load() && callbackErr == nil {
 				if cfg.OnActionNotice != nil {
-					cfg.OnActionNotice(index+1, len(actions), action, "WARN", "committed package has a post-commit lifecycle failure: "+err.Error())
+					cfg.OnActionNotice(index+1, totalActions, action, "WARN", "committed package has a post-commit lifecycle failure: "+err.Error())
 				}
 				err = nil
 			}

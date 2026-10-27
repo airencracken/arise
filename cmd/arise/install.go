@@ -71,10 +71,17 @@ func recoveryPackagesForActions(vdbRoot string, actions []resolve.PkgAction) []r
 	seen := make(map[string]struct{})
 	var packages []recoveryset.Package
 	for _, action := range actions {
-		if action.Atom == nil || action.InstalledVersion == "" {
+		if action.Atom == nil {
 			continue
 		}
-		path := filepath.Join(vdbRoot, action.Atom.Category, action.Atom.Package+"-"+action.InstalledVersion)
+		installedVersion := action.InstalledVersion
+		if action.Action == "uninstall" && action.Atom.Version != nil {
+			installedVersion = action.Atom.Version.Raw
+		}
+		if installedVersion == "" {
+			continue
+		}
+		path := filepath.Join(vdbRoot, action.Atom.Category, action.Atom.Package+"-"+installedVersion)
 		if _, exists := seen[path]; exists {
 			continue
 		}
@@ -808,17 +815,14 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			exitAfterRuntimeProfiles(1)
 		}
 		failures := executor.PreflightAll(result, *rebuildCfg)
-		if len(result.Uninstall) > 0 {
-			fmt.Fprintf(os.Stderr, "Preflight notice: %d removal action(s) require the uninstall transaction path and are not covered by package build preflight.\n", len(result.Uninstall))
-		}
 		if len(failures) > 0 {
-			fmt.Fprintf(os.Stderr, "Preflight failed for %d of %d install actions:\n\n", len(failures), len(result.Install))
+			fmt.Fprintf(os.Stderr, "Preflight found %d issue(s) across %d installs and %d blocker removals:\n\n", len(failures), len(result.Install), len(result.Uninstall))
 			for _, failure := range failures {
 				fmt.Fprintf(os.Stderr, "  %v\n", failure)
 			}
 			exitAfterRuntimeProfiles(1)
 		}
-		fmt.Printf("Preflight passed for all %d install actions (recipe/policy only); build tools were not executed and no package state was mutated.\n", len(result.Install))
+		fmt.Printf("Preflight passed for all %d install actions (recipe/policy only) and %d blocker removals; build tools were not executed and no package state was mutated.\n", len(result.Install), len(result.Uninstall))
 		return
 	}
 
@@ -920,7 +924,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			executionEstimates = loadMergeEstimates(*emergeLog)
 		}
 		var completedActions atomic.Int64
-		initialStatus := fmt.Sprintf("%s 0 of %d complete", colorExecutionStage("Jobs:"), len(result.Install))
+		initialStatus := fmt.Sprintf("%s 0 of %d complete", colorExecutionStage("Jobs:"), len(result.Install)+len(result.Uninstall))
 		if load := currentLoadAverages(); load != "" {
 			initialStatus += "    Load avg: " + load
 		}
@@ -928,7 +932,8 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		var prepareMutation func(context.Context) error
 		var publishedRecoverySet string
 		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
-			recoveryPackages := recoveryPackagesForActions(*vdbDir, result.Install)
+			recoveryActions := append(append([]resolve.PkgAction(nil), result.Install...), result.Uninstall...)
+			recoveryPackages := recoveryPackagesForActions(*vdbDir, recoveryActions)
 			if len(recoveryPackages) > 0 {
 				recoverySetID, idErr := recoveryset.NewID()
 				if idErr != nil {
@@ -988,13 +993,17 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				executionProgress.message(fmt.Sprintf("%s %s has insufficient free space; package parallelism reduced (free: %s, required: %s)", colorExecutionStage("Warning:"), path, formatSize(int64(available)), formatSize(int64(required))))
 			},
 			OnActionStart: func(index, total int, action resolve.PkgAction) {
-				message := fmt.Sprintf("Building package (%d of %d) %s", index, total, colorActionAtom(action))
-				if *showEstimates {
+				label := "Building package"
+				if action.Action == "uninstall" {
+					label = "Removing blocker"
+				}
+				message := fmt.Sprintf("%s (%d of %d) %s", label, index, total, colorActionAtom(action))
+				if *showEstimates && action.Action != "uninstall" {
 					if estimate, ok := executionEstimates.forAction(action); ok {
 						message += " (estimated " + formatEstimate(estimate) + ")"
 					}
 				}
-				message = colorExecutionStage("Building package") + strings.TrimPrefix(message, "Building package")
+				message = colorExecutionStage(label) + strings.TrimPrefix(message, label)
 				if executionProgress.enabled {
 					executionProgress.setLabel(message)
 				} else {
@@ -1117,13 +1126,9 @@ func printResolutionWarnings(writer io.Writer, result *resolve.ResolveResult, ve
 				continue
 			}
 			advised[detail.Blocker] = true
-			fmt.Fprintln(writer, "    To clear this block:")
-			fmt.Fprintf(writer, "      inspect compatible versions: arise search --exact --versions %s\n", detail.Blocker)
-			if candidate, reasons, ok := highestRejectedBlockerCandidate(result.DecisionLedger, detail.Blocker); ok {
-				fmt.Fprintf(writer, "      newer candidate unavailable: %s (%s)\n", candidate, strings.Join(reasons, "; "))
-			}
+			fmt.Fprintf(writer, "    inspect dependent versions: arise search --exact --versions %s\n", detail.Blocker)
 			if detail.BlockerCPV != "" {
-				fmt.Fprintf(writer, "      if no longer needed: arise --pretend uninstall =%s\n", detail.BlockerCPV)
+				fmt.Fprintf(writer, "    if no longer needed: arise --pretend uninstall =%s\n", detail.BlockerCPV)
 			}
 		}
 	}
@@ -1244,29 +1249,6 @@ func decisionMatchesAnyPackage(record resolve.CandidateDecision, packages []stri
 		}
 	}
 	return false
-}
-
-func highestRejectedBlockerCandidate(ledger resolve.DecisionLedger, blocker string) (string, []string, bool) {
-	var best *resolve.CandidateDecision
-	var bestVersion *atom.Version
-	for index := range ledger.Records {
-		record := &ledger.Records[index]
-		if record.Outcome != resolve.DecisionRejected || record.State != "available" ||
-			!decisionMatchesAnyPackage(*record, []string{blocker}) {
-			continue
-		}
-		parsed, err := atom.Parse(record.CPV)
-		if err != nil || parsed.Version == nil {
-			continue
-		}
-		if best == nil || parsed.Version.Compare(bestVersion) > 0 {
-			best, bestVersion = record, parsed.Version
-		}
-	}
-	if best == nil {
-		return "", nil, false
-	}
-	return best.CPV, append([]string(nil), best.Reasons...), true
 }
 
 func markRecoverySetOutcome(path string, operationErr error) error {

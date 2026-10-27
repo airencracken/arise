@@ -287,6 +287,9 @@ type PkgAction struct {
 	// omitted so a scheduler can treat the SCC as an ordered serial component.
 	Prerequisites  []string
 	RebuildAfterCP string // provider update that must commit before this rebuild
+	// RemovalBefore lists package CPs whose blockers require this
+	// installed package to be removed before their payloads are committed.
+	RemovalBefore []string
 }
 
 // ActionIdentity is stable across process boundaries and distinguishes slots,
@@ -4182,7 +4185,14 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 			cpv = cp + "-" + versionRepositoryKey(installed.Version.Raw, installed.Repository)
 		}
 		key := domainActionKey(cpv, blockDomain)
-		if _, exists := r.toUninstall[key]; !exists {
+		if existing, exists := r.toUninstall[key]; exists {
+			if !slices.Contains(existing.RemovalBefore, blocker) {
+				updated := *existing
+				updated.RemovalBefore = append(append([]string(nil), existing.RemovalBefore...), blocker)
+				sort.Strings(updated.RemovalBefore)
+				r.setUninstall(key, &updated)
+			}
+		} else {
 			strength := "weak"
 			if edge.StrongBlock {
 				strength = "strong; remove before merge"
@@ -4192,7 +4202,8 @@ func (r *resolver) processBlock(edge *DepEdge) error {
 				Action: "uninstall",
 				Reason: fmt.Sprintf("%s blocker from %s", strength, blocker),
 				Slot:   installed.Slot, Subslot: installed.Subslot, Repository: installed.Repository,
-				Domain: blockDomain,
+				Domain:        blockDomain,
+				RemovalBefore: []string{blocker},
 			})
 		}
 	}

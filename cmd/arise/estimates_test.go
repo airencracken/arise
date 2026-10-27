@@ -74,3 +74,37 @@ func TestOpenPortageMergeLogRejectsNULCorruption(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestBlockerRemovalsAreLoggedWithoutBuildEstimates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "emerge.log")
+	log, err := openPortageMergeLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := atom.Parse("perl-core/Test-Harness-3.500.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := resolve.PkgAction{Atom: a, Action: "uninstall", Repository: "gentoo"}
+	if err := log.event(false, 2, 2, action); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.event(true, 2, 2, action); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{">>> unmerge (2 of 2) perl-core/Test-Harness-3.500.0::gentoo", "::: completed unmerge (2 of 2)"} {
+		if !strings.Contains(string(data), text) {
+			t.Fatalf("missing removal event %q:\n%s", text, data)
+		}
+	}
+	if len(loadMergeEstimates(path)) != 0 {
+		t.Fatal("removal time was counted as a build estimate")
+	}
+}

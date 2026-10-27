@@ -122,3 +122,15 @@ func TestRecoveryPackagesForActionsIncludesOnlyReplacedInstalledInstances(t *tes
 		t.Fatalf("recovery VDB path = %q, want %q", packages[0].VDBEntryPath, want)
 	}
 }
+
+func TestRecoveryPackagesForActionsIncludesBlockerRemovals(t *testing.T) {
+	removed, err := atom.Parse("perl-core/Test-Harness-3.500.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := []resolve.PkgAction{{Atom: removed, Action: "uninstall"}, {Atom: removed, Action: "uninstall"}}
+	packages := recoveryPackagesForActions("/vdb", actions)
+	if len(packages) != 1 || packages[0].VDBEntryPath != "/vdb/perl-core/Test-Harness-3.500.0" {
+		t.Fatalf("blocker recovery packages = %#v", packages)
+	}
+}

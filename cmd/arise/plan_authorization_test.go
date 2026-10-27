@@ -123,6 +123,22 @@ func TestPlanAuthorizationBindsResumeAndWorldSelections(t *testing.T) {
 	}
 }
 
+func TestPlanAuthorizationBindsBlockerRemovalOrdering(t *testing.T) {
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified,
+		Uninstall: []resolve.PkgAction{{Atom: planTestAtom(t, "perl-core/Test-Harness-3.500.0"), Action: "uninstall", RemovalBefore: []string{"virtual/perl-Test-Harness", "cat/other"}}},
+	}
+	cfg := resolve.DefaultResolveConfig()
+	original := canonicalPlanSHA256(nil, cfg, result, "state")
+	result.Uninstall[0].RemovalBefore = []string{"cat/other", "virtual/perl-Test-Harness"}
+	if canonicalPlanSHA256(nil, cfg, result, "state") != original {
+		t.Fatal("requester ordering changed the digest")
+	}
+	result.Uninstall[0].RemovalBefore = []string{"cat/other"}
+	if canonicalPlanSHA256(nil, cfg, result, "state") == original {
+		t.Fatal("removal requester mutation did not invalidate authorization")
+	}
+}
+
 func TestMutationStateSHA256DetectsPolicyAndVDBChanges(t *testing.T) {
 	base := t.TempDir()
 	vdb := filepath.Join(base, "vdb")

@@ -143,6 +143,12 @@ func (l *portageMergeLog) event(completed bool, index, total int, action resolve
 	if completed {
 		verb = "::: completed emerge"
 	}
+	if action.Action == "uninstall" {
+		verb = ">>> unmerge"
+		if completed {
+			verb = "::: completed unmerge"
+		}
+	}
 	_, l.err = fmt.Fprintf(l.file, "%d:  %s (%d of %d) %s to /\n", time.Now().Unix(), verb, index, total, executionActionLabel(action))
 	if l.err == nil {
 		l.err = l.file.Sync()

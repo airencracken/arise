@@ -82,6 +82,7 @@ type jsonAction struct {
 	UseEnabled    []string `json:"use_enabled,omitempty"`
 	UseDisabled   []string `json:"use_disabled,omitempty"`
 	Prerequisites []string `json:"prerequisites,omitempty"`
+	RemovalBefore []string `json:"removal_before,omitempty"`
 	Restrict      string   `json:"restrict,omitempty"`
 }
 
@@ -191,6 +192,7 @@ func jsonActions(actions []resolve.PkgAction) []jsonAction {
 			domain = resolve.DomainROOT
 		}
 		item := jsonAction{Action: action.Action, CPV: cpv, Slot: action.Slot, Subslot: action.Subslot, Repository: action.Repository, MergeType: action.MergeType, BinaryPath: action.BinaryPath, Reason: action.Reason, Domain: string(domain), Prerequisites: append([]string(nil), action.Prerequisites...), Restrict: action.Restrict}
+		item.RemovalBefore = append([]string(nil), action.RemovalBefore...)
 		for flag, enabled := range action.UseFlags {
 			if enabled {
 				item.UseEnabled = append(item.UseEnabled, flag)
@@ -201,6 +203,7 @@ func jsonActions(actions []resolve.PkgAction) []jsonAction {
 		sort.Strings(item.UseEnabled)
 		sort.Strings(item.UseDisabled)
 		sort.Strings(item.Prerequisites)
+		sort.Strings(item.RemovalBefore)
 		result = append(result, item)
 	}
 	return result
