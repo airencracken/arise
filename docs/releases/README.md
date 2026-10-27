@@ -1,5 +1,10 @@
 # Releases
 
+[0.0.44](0.0.44.md) fixes execution of planned blocker removals and adds
+package history queries and dependency-aware time estimates.
+It remains experimental and `~amd64`; the full fresh-stage3 acceptance run
+remains deferred.
+
 [0.0.43](0.0.43.md) adds profile inheritance and policy inspection, advertised
 profile discovery, and configuration comparison, backed by Gentooling.
 It remains experimental and `~amd64`; the full fresh-stage3 acceptance run

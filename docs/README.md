@@ -29,7 +29,7 @@
 The [fresh-stage3 runbook](fresh-stage3.md) and
 [Handbook addendum](handbook-addendum.md) describe experimental installation
 and validation procedures. The full fresh-stage3 acceptance run is deferred
-for 0.0.43; neither procedure is evidence that it passed.
+for 0.0.44; neither procedure is evidence that it passed.
 
 The [0.0.42 review](reviews/2026-10-11-stabilization-release.md) records tested
 scope and remaining gaps. [Machine-readable evidence](evidence/README.md)

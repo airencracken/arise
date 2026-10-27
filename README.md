@@ -39,7 +39,7 @@ To update a source installation:
 
 ```sh
 arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.43
+arise -1 --reinstall =sys-apps/arise-0.0.44
 ```
 
 ## Use
@@ -110,7 +110,7 @@ make vet
 ```
 
 See the [development guide](docs/development.md), [open work](PUNCHLIST.md) and
-[0.0.43 release notes](docs/releases/0.0.43.md). Arise is maintained by one
+[0.0.44 release notes](docs/releases/0.0.44.md). Arise is maintained by one
 developer with AI assistance. Portage, Gentoo, eix, Gentoolkit, portage-utils and
 pkgcore/pkgcheck provide the reference behavior and comparison tools.
 
