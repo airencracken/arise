@@ -1,6 +1,11 @@
 # Build estimates
 
-Deferred design; estimates remain independent of package selection and approval.
+The [history command and opt-in ETA](../history.md) implement Portage-log
+reports, timing statistics, exact-version/package median fallbacks, partial
+coverage, and an ordered dependency-graph simulation. The native history,
+configuration compatibility, richer uncertainty, serialized-phase models and
+distributed corpus below remain deferred design. Estimates remain independent
+of package selection and approval.
 
 ## Local estimates
 

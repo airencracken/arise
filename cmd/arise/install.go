@@ -670,8 +670,8 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 	}
 	if !cfg.Quiet {
-		estimates := mergeEstimates(nil)
-		if *showEstimates {
+		estimates := mergeEstimates{}
+		if *showEstimates && !cfg.FetchOnly {
 			estimates = loadMergeEstimates(*emergeLog)
 		}
 		fmt.Printf("\n%s\n", planHeading(result, cfg.FetchOnly))
@@ -711,20 +711,8 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		for _, line := range renderDebugDecisionLedger(*debugOutput && !*explainOutput, result.DecisionLedger, 10, warningBlockers(result.WarningDiagnostics)...) {
 			fmt.Println(line)
 		}
-		if *showEstimates {
-			var total time.Duration
-			covered := 0
-			for _, action := range result.Install {
-				if estimate, ok := estimates.forAction(action); ok {
-					total += estimate
-					covered++
-				}
-			}
-			if covered > 0 {
-				fmt.Printf("Estimated merge time: %s (%d of %d packages with history)\n", formatEstimate(total), covered, len(result.Install))
-			} else {
-				fmt.Println("Estimated merge time: unavailable (no matching history)")
-			}
+		if *showEstimates && !cfg.FetchOnly {
+			writePlanEstimates(os.Stdout, result.Install, cfg.Jobs, estimates)
 		}
 		printResolutionWarnings(os.Stdout, result, cfg.Verbose)
 	}
@@ -919,16 +907,25 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 		execCtx, cancelExecution := context.WithCancel(commandContext)
 		defer cancelExecution()
-		executionEstimates := mergeEstimates(nil)
+		executionEstimates := mergeEstimates{}
 		if *showEstimates {
 			executionEstimates = loadMergeEstimates(*emergeLog)
 		}
+		var liveEstimate *executionEstimate
+		if *showEstimates && !cfg.Quiet {
+			liveEstimate = newExecutionEstimate(result.Install, len(result.Install)+len(result.Uninstall), cfg.Jobs, executionEstimates, time.Now())
+		}
+		stopEstimate := watchExecutionEstimate(executionProgress, liveEstimate)
+		defer stopEstimate()
 		var completedActions atomic.Int64
 		initialStatus := fmt.Sprintf("%s 0 of %d complete", colorExecutionStage("Jobs:"), len(result.Install)+len(result.Uninstall))
 		if load := currentLoadAverages(); load != "" {
 			initialStatus += "    Load avg: " + load
 		}
 		executionProgress.setStatus(initialStatus)
+		if liveEstimate != nil {
+			executionProgress.setStatus(liveEstimate.status(time.Now()))
+		}
 		var prepareMutation func(context.Context) error
 		var publishedRecoverySet string
 		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
@@ -993,6 +990,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				executionProgress.message(fmt.Sprintf("%s %s has insufficient free space; package parallelism reduced (free: %s, required: %s)", colorExecutionStage("Warning:"), path, formatSize(int64(available)), formatSize(int64(required))))
 			},
 			OnActionStart: func(index, total int, action resolve.PkgAction) {
+				liveEstimate.start(action, time.Now())
+				if liveEstimate != nil {
+					executionProgress.setStatus(liveEstimate.status(time.Now()))
+				}
 				label := "Building package"
 				if action.Action == "uninstall" {
 					label = "Removing blocker"
@@ -1039,11 +1040,14 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				}
 			},
 			OnActionComplete: func(index, total int, action resolve.PkgAction) {
+				liveEstimate.complete(action)
 				executionProgress.clearProgress()
 				executionProgress.message(fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage("Completed package"), index, total, colorActionAtom(action)))
 				completed := completedActions.Add(1)
 				status := fmt.Sprintf("%s %d of %d complete", colorExecutionStage("Jobs:"), completed, total)
-				if load := currentLoadAverages(); load != "" {
+				if liveEstimate != nil {
+					status = liveEstimate.status(time.Now())
+				} else if load := currentLoadAverages(); load != "" {
 					status += "    Load avg: " + load
 				}
 				executionProgress.setStatus(status)
@@ -1052,6 +1056,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				}
 			},
 		})
+		stopEstimate()
 		executionProgress.stop()
 		if logErr := compatLog.close(); executionErr == nil && logErr != nil {
 			executionErr = fmt.Errorf("Portage-compatible merge log: %w", logErr)

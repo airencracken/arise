@@ -450,6 +450,28 @@ lock files. \fB\-\-locked\fR also observes Portage state locks;
 \fB\-\-json\fR emits the \fBarise.package-inspect.v1\fR contract.
 
 .TP
+\fBhistory\fR [\fBlist|stats|incomplete\fR] [options] [\fIpackage|glob\fR...]
+Read merge, removal, and sync records from Portage-compatible logs, without an
+index or package mutation. Display readable rows or timing statistics (median,
+average, p90, total work, and sample counts). Incomplete records do not prove
+that a build is currently running. The default limit is 20; use
+\fB\-\-limit 0\fR for all rows. Repeat \fB\-\-log FILE\fR for plain,
+gzip or bzip2 logs. Overlapping records are deduplicated. Use
+\fB\-\-kind all|merge|unmerge|sync\fR, \fB\-\-since DATE\fR and
+\fB\-\-until DATE\fR to filter before computing statistics. Dates accept
+YYYY-MM-DD, RFC3339, today, yesterday, or positive offsets such as 7d and 12h.
+A date-only until includes that whole day; timestamp until is exclusive.
+Use \fB\-\-utc\fR for UTC and \fB\-\-json\fR for arise.history.v1.
+Options precede package filters. Logs must be readable.
+.PP
+On install or pretend plans, \fB\-\-show-estimates\fR displays historical
+timings and dependency-aware parallel estimates. Total package work is shown
+separately from modeled elapsed time. Live progress includes remaining and
+approximate finish time, partial coverage, and explicit over-estimate status.
+Unknown history is not assigned an invented duration. Binary installs, removal
+time, build settings, serialized phases and resource contention are not modeled.
+Estimates remain advisory and do not change scheduling or package selection.
+.TP
 \fBprofile show\fR [\fB\-\-explain\fR] [\fB\-\-json\fR]
 Show inherited profile layers in evaluation order, merged defaults, system
 packages, provided packages, USE masks and forces, package masks and unmasks,

@@ -35,6 +35,21 @@ The native implementation is held to four additional requirements:
 | `qsize`, `equery size` | `arise installed --size ATOM` |
 | `qcheck`, `equery check` | `arise installed --check ATOM` |
 
+## History and timing
+
+| Reference workflow | Native Arise operation |
+| --- | --- |
+| genlop/qlop package history | `arise history [package]` |
+| genlop/qlop timing summaries | `arise history stats [package]` |
+| merge/removal/sync date filters | `arise history --kind KIND --since DATE --until DATE` |
+| upgrade-time prediction | `arise --show-estimates -pvuDN @world` |
+| active Arise upgrade progress | `arise --show-estimates -avuDN @world` |
+
+See [history and timing](history.md) for compressed logs, JSON, incomplete
+records, and estimate limits. These are workflow equivalents, not complete
+option-for-option replacements; history does not infer active processes from
+unfinished log entries.
+
 ## Repository and configuration state
 
 | Reference operation | Native Arise operation |

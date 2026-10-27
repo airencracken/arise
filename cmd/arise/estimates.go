@@ -1,110 +1,49 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
-	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/airencracken/arise/internal/metadata"
+	"github.com/airencracken/arise/internal/mergehistory"
 	"github.com/airencracken/arise/internal/resolve"
 )
 
-type mergeEstimates map[string]time.Duration
+type mergeEstimates struct {
+	events []mergehistory.Event
+	err    error
+}
 
 func loadMergeEstimates(path string) mergeEstimates {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	starts := make(map[string][]time.Time)
-	samples := make(map[string][]time.Duration)
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		line := s.Text()
-		// Historical emerge.log files can contain sparse/corrupt NUL padding
-		// before an otherwise intact record. Do not let that poison timing
-		// history for every later package; recover the timestamped suffix while
-		// leaving the source log untouched for explicit, backed-up repair.
-		line = strings.TrimLeft(line, "\x00")
-		colon := strings.IndexByte(line, ':')
-		if colon < 1 {
-			continue
-		}
-		unix, err := strconv.ParseInt(strings.TrimSpace(line[:colon]), 10, 64)
-		if err != nil {
-			continue
-		}
-		stamp := time.Unix(unix, 0)
-		kind := ""
-		switch {
-		case strings.Contains(line, ">>> emerge ("):
-			kind = "start"
-		case strings.Contains(line, "::: completed emerge ("):
-			kind = "done"
-		default:
-			continue
-		}
-		close := strings.Index(line, ") ")
-		if close < 0 {
-			continue
-		}
-		cpv := strings.Fields(strings.TrimSuffix(strings.SplitN(line[close+2:], " to ", 2)[0], "::gentoo"))
-		if len(cpv) == 0 {
-			continue
-		}
-		key := cpv[0]
-		if kind == "start" {
-			starts[key] = append(starts[key], stamp)
-			continue
-		}
-		queue := starts[key]
-		if len(queue) == 0 {
-			continue
-		}
-		start := queue[len(queue)-1]
-		starts[key] = queue[:len(queue)-1]
-		if duration := stamp.Sub(start); duration > 0 && duration < 7*24*time.Hour {
-			category, pkg, _, parseErr := metadata.ParseCPV(key)
-			if parseErr == nil {
-				samples[category+"/"+pkg] = append(samples[category+"/"+pkg], duration)
-			}
-		}
-	}
-	result := make(mergeEstimates)
-	for cp, values := range samples {
-		sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
-		result[cp] = values[len(values)/2]
-	}
-	return result
+	report, err := mergehistory.Read(context.Background(), []string{path})
+	return mergeEstimates{events: report.Events, err: err}
 }
 
 func (e mergeEstimates) forAction(action resolve.PkgAction) (time.Duration, bool) {
-	if action.Atom == nil {
-		return 0, false
+	prediction, ok := e.prediction(action)
+	return time.Duration(prediction.Seconds * float64(time.Second)), ok
+}
+
+func (e mergeEstimates) prediction(action resolve.PkgAction) (mergehistory.Prediction, bool) {
+	if action.Atom == nil || action.MergeType == "binary" || action.Action == "uninstall" {
+		return mergehistory.Prediction{}, false
 	}
-	d, ok := e[action.Atom.CP()]
-	return d, ok
+	return mergehistory.Predict(e.events, action.Atom.CP(), action.Atom.CPV(), action.Repository, commandEnv("ROOT", "/"))
 }
 
 func formatEstimate(d time.Duration) string {
-	if d < time.Minute {
-		return d.Round(time.Second).String()
-	}
-	return d.Round(time.Minute).String()
+	return historyDuration(int64(max(d, 0).Round(time.Second) / time.Second))
 }
 
 type portageMergeLog struct {
 	mu   sync.Mutex
 	file *os.File
 	err  error
+	root string
 }
 
 func openPortageMergeLog(path string) (*portageMergeLog, error) {
@@ -127,7 +66,7 @@ func openPortageMergeLog(path string) (*portageMergeLog, error) {
 			return nil, fmt.Errorf("validate timing log %s: %w", path, readErr)
 		}
 	}
-	return &portageMergeLog{file: f}, nil
+	return &portageMergeLog{file: f, root: commandEnv("ROOT", "/")}, nil
 }
 
 func (l *portageMergeLog) event(completed bool, index, total int, action resolve.PkgAction) error {
@@ -143,13 +82,14 @@ func (l *portageMergeLog) event(completed bool, index, total int, action resolve
 	if completed {
 		verb = "::: completed emerge"
 	}
-	if action.Action == "uninstall" {
-		verb = ">>> unmerge"
+	line := fmt.Sprintf("%s (%d of %d) %s to %s", verb, index, total, executionActionLabel(action), l.root)
+	if action.Action == "uninstall" && action.Atom != nil {
+		line = "=== Unmerging... (" + action.Atom.CPV() + ")"
 		if completed {
-			verb = "::: completed unmerge"
+			line = ">>> unmerge success: " + action.Atom.CPV()
 		}
 	}
-	_, l.err = fmt.Fprintf(l.file, "%d:  %s (%d of %d) %s to /\n", time.Now().Unix(), verb, index, total, executionActionLabel(action))
+	_, l.err = fmt.Fprintf(l.file, "%d:  %s\n", time.Now().Unix(), line)
 	if l.err == nil {
 		l.err = l.file.Sync()
 	}

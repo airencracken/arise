@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/mergehistory"
 	"github.com/airencracken/arise/internal/resolve"
 )
 
@@ -20,8 +22,8 @@ func TestLoadMergeEstimatesUsesMedianPortageHistory(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadMergeEstimates(path)["llvm-core/llvm"]; got != 120*time.Second {
-		t.Fatalf("median estimate = %v, want 2m", got)
+	if got := historicalEstimateForTest(t, path, "llvm-core/llvm-22"); got != 90*time.Second {
+		t.Fatalf("median estimate = %v, want 1m30s", got)
 	}
 }
 
@@ -32,7 +34,7 @@ func TestLoadMergeEstimatesRecoversNULPaddedHistoricalRecord(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadMergeEstimates(path)["app-misc/example"]; got != time.Minute {
+	if got := historicalEstimateForTest(t, path, "app-misc/example-1"); got != time.Minute {
 		t.Fatalf("recovered estimate = %v, want 1m", got)
 	}
 }
@@ -55,7 +57,7 @@ func TestPortageMergeLogProjectionRoundTripsIntoEstimate(t *testing.T) {
 	if err := log.close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadMergeEstimates(path)["app-misc/example"]; got < time.Second || got > 2*time.Second {
+	if got := historicalEstimateForTest(t, path, "app-misc/example-1"); got < time.Second || got > 2*time.Second {
 		t.Fatalf("projected estimate = %v", got)
 	}
 }
@@ -99,12 +101,48 @@ func TestBlockerRemovalsAreLoggedWithoutBuildEstimates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{">>> unmerge (2 of 2) perl-core/Test-Harness-3.500.0::gentoo", "::: completed unmerge (2 of 2)"} {
+	for _, text := range []string{"=== Unmerging... (perl-core/Test-Harness-3.500.0)", ">>> unmerge success: perl-core/Test-Harness-3.500.0"} {
 		if !strings.Contains(string(data), text) {
 			t.Fatalf("missing removal event %q:\n%s", text, data)
 		}
 	}
-	if len(loadMergeEstimates(path)) != 0 {
+	if _, known := loadMergeEstimates(path).forAction(action); known {
 		t.Fatal("removal time was counted as a build estimate")
+	}
+}
+
+func historicalEstimateForTest(t *testing.T, log, cpv string) time.Duration {
+	t.Helper()
+	a, err := atom.Parse(cpv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	estimate, known := loadMergeEstimates(log).forAction(resolve.PkgAction{Atom: a})
+	if !known {
+		t.Fatal("missing historical estimate")
+	}
+	return estimate
+}
+
+func TestPortageMergeLogRetainsSelectedRoot(t *testing.T) {
+	t.Setenv("ROOT", "/prefix with spaces")
+	path := filepath.Join(t.TempDir(), "emerge.log")
+	log, err := openPortageMergeLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := resolve.PkgAction{Atom: planTestAtom(t, "cat/pkg-1"), Action: "install"}
+	if err := log.event(false, 1, 1, action); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.event(true, 1, 1, action); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.close(); err != nil {
+		t.Fatal(err)
+	}
+	report, err := mergehistory.Read(context.Background(), []string{path})
+	if err != nil || len(report.Events) != 1 || report.Events[0].Root != "/prefix with spaces" {
+		t.Fatalf("root lost: %+v %v", report, err)
 	}
 }

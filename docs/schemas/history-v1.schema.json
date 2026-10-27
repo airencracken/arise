@@ -1,0 +1,56 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/airencracken/arise/blob/master/docs/schemas/history-v1.schema.json",
+	"title": "Arise package history version 1",
+	"type": "object",
+	"additionalProperties": false,
+	"required": ["schema", "mode", "logs", "matched", "events", "statistics", "recovered_lines", "malformed_lines"],
+	"properties": {
+		"schema": {"const": "arise.history.v1"},
+		"mode": {"enum": ["list", "stats", "incomplete"]},
+		"logs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+		"matched": {"type": "integer", "minimum": 0},
+		"events": {"type": "array", "items": {"$ref": "#/$defs/event"}},
+		"statistics": {"type": "array", "items": {"$ref": "#/$defs/statistics"}},
+		"recovered_lines": {"type": "integer", "minimum": 0},
+		"malformed_lines": {"type": "integer", "minimum": 0}
+	},
+	"$defs": {
+		"event": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["kind", "package", "status"],
+			"anyOf": [{"required": ["started_at"]}, {"required": ["finished_at"]}],
+			"properties": {
+				"kind": {"enum": ["merge", "unmerge", "sync"]},
+				"package": {"type": "string", "minLength": 1},
+				"cpv": {"type": "string", "minLength": 1},
+				"repository": {"type": "string"},
+				"root": {"type": "string"},
+				"started_at": {"type": "string", "format": "date-time"},
+				"finished_at": {"type": "string", "format": "date-time"},
+				"duration_seconds": {"type": "integer", "minimum": 0},
+				"status": {"enum": ["completed", "incomplete", "interrupted"]}
+			}
+		},
+		"statistics": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["kind", "package", "completed", "incomplete", "samples", "total_seconds", "median_seconds", "mean_seconds", "p90_seconds", "last"],
+			"properties": {
+				"kind": {"enum": ["merge", "unmerge", "sync"]},
+				"package": {"type": "string", "minLength": 1},
+				"repository": {"type": "string"},
+				"root": {"type": "string"},
+				"completed": {"type": "integer", "minimum": 0},
+				"incomplete": {"type": "integer", "minimum": 0},
+				"samples": {"type": "integer", "minimum": 0},
+				"total_seconds": {"type": "integer", "minimum": 0},
+				"median_seconds": {"type": "number", "minimum": 0},
+				"mean_seconds": {"type": "number", "minimum": 0},
+				"p90_seconds": {"type": "integer", "minimum": 0},
+				"last": {"type": "string", "format": "date-time"}
+			}
+		}
+	}
+}

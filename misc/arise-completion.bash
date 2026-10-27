@@ -6,7 +6,7 @@ _arise() {
     local cur prev words cword
     _init_completion -n = || return
 
-    local commands="sync index install uninstall unmerge remove select deselect recover query state search installed info inspect profile audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench doctor plan-diff"
+    local commands="sync index install uninstall unmerge remove select deselect recover query state search installed info inspect profile history audit perl-cleaner python-cleaner maintain bug-report dispatch-conf quickpkg depclean prune env-update ldconfig config news preserved-rebuild revdep-rebuild bench doctor plan-diff"
 
     local audit_sub="python perl"
     local doctor_sub="package-use package-policy world all"
@@ -48,6 +48,19 @@ _arise() {
         inspect)
             if [[ $cur == -* ]]; then
                 COMPREPLY=($(compgen -W "--json --strict --locked --target-kernel=" -- "$cur"))
+            else
+                _arise_pkg_atoms "$cur"
+            fi
+            ;;
+        history)
+            if [[ $prev == --log ]]; then
+                _filedir
+            elif [[ $prev == --kind ]]; then
+                COMPREPLY=($(compgen -W "all merge unmerge sync" -- "$cur"))
+            elif [[ $cword -eq 2 && $cur != -* ]]; then
+                COMPREPLY=($(compgen -W "list stats incomplete" -- "$cur"))
+            elif [[ $cur == -* ]]; then
+                COMPREPLY=($(compgen -W "--log --since --until --kind --limit --utc --json --help" -- "$cur"))
             else
                 _arise_pkg_atoms "$cur"
             fi

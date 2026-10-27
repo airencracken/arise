@@ -269,6 +269,27 @@ unprivileged users and requires two agreeing observations. @option{--locked}
 also observes Portage locks, while @option{--strict} rejects partial evidence.
 JSON output uses the @code{arise.package-inspect.v1} contract.
 
+@item history [list|stats|incomplete] [options] [@var{package|glob}...]
+Read merge, removal, and sync history without an index or package mutation.
+Rows show dates and durations; statistics show median, average, p90, total work,
+and timed sample counts. An unfinished entry does not prove a build is running.
+Use @option{--log FILE} repeatedly for plain, gzip, or bzip2 logs, which are
+timestamp ordered and deduplicated. Options precede package filters.
+@option{--limit 0} removes the default 20-row display limit.
+Filter by @option{--kind all|merge|unmerge|sync}, @option{--since DATE}, or
+@option{--until DATE}; dates accept YYYY-MM-DD, RFC3339, today, yesterday,
+and positive offsets such as 7d or 12h. A date-only until includes the whole
+day; timestamp until is exclusive. @option{--utc} selects UTC and
+@option{--json} emits @code{arise.history.v1}. Logs must be readable.
+
+On install or pretend plans, @option{--show-estimates} shows historical timings
+and dependency-aware parallel estimates, separating total package work from
+modeled elapsed time. Live progress reports remaining time, approximate finish,
+coverage, and explicit over-estimate status. Missing history is not assigned an
+invented duration. Binary installs, removal time, build settings, serialized
+phases, and resource contention are not modeled. Estimates remain advisory and
+never change scheduling or package selection.
+
 @item profile show [--explain] [--json]
 Show inherited layers in evaluation order, merged defaults, system packages,
 provided packages, global USE masks and forces, package masks and unmasks, and

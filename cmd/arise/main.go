@@ -256,7 +256,7 @@ func main() {
 	}
 
 	cmd, cmdArgs := selectCommand(args)
-	if isHelpRequest(cmdArgs) {
+	if isHelpRequest(cmdArgs) && cmd != "history" {
 		if writeCommandHelp(os.Stdout, cmd) {
 			return
 		}
@@ -332,6 +332,10 @@ func main() {
 		}
 	case "profile":
 		if code := runProfile(cmdArgs); code != 0 {
+			os.Exit(code)
+		}
+	case "history":
+		if code := runHistory(cmdArgs); code != 0 {
 			os.Exit(code)
 		}
 	case "preserved-rebuild":
@@ -589,10 +593,25 @@ func normalizeEmergeArgs(args []string) []string {
 	commandAt := -1
 	commands := map[string]bool{"install": true, "uninstall": true, "unmerge": true, "remove": true, "search": true}
 	for i := 1; i < len(expanded); i++ {
+		arg := expanded[i]
+		if arg == "--" {
+			return expanded
+		}
+		if strings.HasPrefix(arg, "-") {
+			name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+			if option := flag.Lookup(name); option != nil && !hasValue {
+				if boolean, ok := option.Value.(interface{ IsBoolFlag() bool }); !ok || !boolean.IsBoolFlag() {
+					i++
+				}
+			}
+			continue
+		}
 		if commands[expanded[i]] {
 			commandAt = i
-			break
 		}
+		// Only the actual command owns normalization. A delegated command's
+		// values (history --kind unmerge, for example) are not new commands.
+		break
 	}
 	if commandAt < 0 {
 		return expanded

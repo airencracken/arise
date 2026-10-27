@@ -52,6 +52,8 @@ arise installed --owner /usr/bin/gcc
 arise inspect sys-devel/gcc
 arise profile show --explain
 arise profile list
+arise history --since 7d
+arise history stats firefox
 arise --pretend install app-editors/vim
 arise --pretend --verbose --update --deep --newuse @world
 arise dispatch-conf
@@ -67,6 +69,11 @@ Create a local diagnostic bundle with `arise bug-report --output arise-bug-repor
 The [bug-report guide](docs/bug-report.md) explains collection and redaction.
 Use `arise help`, `man arise` or the [documentation index](docs/README.md) for
 command details.
+
+`arise history` reads merge, removal, and sync history from Portage-compatible
+logs, including rotated gzip/bzip2 files. Use `--show-estimates` on an install
+or pretend plan for historical timings and a dependency-aware parallel ETA.
+See [history and timing](docs/history.md) for filtering, JSON, and estimate limits.
 
 `arise profile show` displays inherited profile defaults and policy;
 `--explain` includes their ordered source contributions and `--json` emits a

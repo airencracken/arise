@@ -318,6 +318,21 @@ func TestNormalizeEmergeArgs(t *testing.T) {
 			in:   []string{"arise", "search", "--maintainer=python@gentoo.org", "sphinx"},
 			want: []string{"arise", "--search-maintainer=python@gentoo.org", "search", "sphinx"},
 		},
+		{
+			name: "history kind is not a command",
+			in:   []string{"arise", "history", "--kind", "unmerge", "--json"},
+			want: []string{"arise", "history", "--kind", "unmerge", "--json"},
+		},
+		{
+			name: "command name in global flag value",
+			in:   []string{"arise", "--db", "history", "install", "--pretend", "cat/pkg"},
+			want: []string{"arise", "--db", "history", "--pretend", "install", "cat/pkg"},
+		},
+		{
+			name: "delegated command operand is not a command",
+			in:   []string{"arise", "query", "search", "--json"},
+			want: []string{"arise", "query", "search", "--json"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

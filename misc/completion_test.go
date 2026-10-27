@@ -39,6 +39,10 @@ func TestCommandCompletion(t *testing.T) {
 		{name: "doctor modes", words: []string{"arise", "doctor", "package"}, want: []string{"package-use", "package-policy"}},
 		{name: "plan diff modes", words: []string{"arise", "plan-diff", "--"}, want: []string{"--json"}},
 		{name: "profile commands", words: []string{"arise", "profile", ""}, want: []string{"show", "list", "diff", "--help"}},
+		{name: "history command", words: []string{"arise", "hist"}, want: []string{"history"}},
+		{name: "history modes", words: []string{"arise", "history", ""}, want: []string{"list", "stats", "incomplete"}},
+		{name: "history kind", words: []string{"arise", "history", "list", "--kind", ""}, want: []string{"all", "merge", "unmerge", "sync"}},
+		{name: "history options", words: []string{"arise", "history", "stats", "--"}, want: []string{"--log", "--since", "--until", "--kind", "--limit", "--utc", "--json", "--help"}},
 		{name: "profile list options", words: []string{"arise", "profile", "list", "--"}, want: []string{"--all", "--json", "--help"}},
 		{name: "profile diff options", words: []string{"arise", "profile", "diff", "--"}, want: []string{"--explain", "--json", "--help"}},
 	}
