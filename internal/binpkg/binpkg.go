@@ -1118,8 +1118,8 @@ func parseContents(path string) ([]contentEntry, error) {
 	lineNumber := 0
 	for scanner.Scan() {
 		lineNumber++
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+		line := scanner.Text()
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		entry, err := parseContentsLine(line)
@@ -1132,33 +1132,42 @@ func parseContents(path string) ([]contentEntry, error) {
 }
 
 func parseContentsLine(line string) (*contentEntry, error) {
-	fields := strings.Fields(line)
-	if len(fields) < 2 {
+	kind, path, ok := strings.Cut(line, " ")
+	if !ok || path == "" {
 		return nil, fmt.Errorf("malformed CONTENTS entry")
 	}
 
 	entry := &contentEntry{
-		Type: fields[0],
-		Path: fields[1],
+		Type: kind,
+		Path: path,
 	}
 
 	switch entry.Type {
 	case "obj":
-		if len(fields) != 4 {
+		// CONTENTS paths are unquoted and can contain spaces. Only the
+		// final checksum and timestamp are separate fields.
+		timeIndex := strings.LastIndexByte(path, ' ')
+		if timeIndex <= 0 {
 			return nil, fmt.Errorf("malformed obj entry for %s", entry.Path)
 		}
-		entry.Size, _ = strconv.ParseInt(fields[2], 10, 64)
+		checksumIndex := strings.LastIndexByte(path[:timeIndex], ' ')
+		if checksumIndex <= 0 || checksumIndex == timeIndex-1 {
+			return nil, fmt.Errorf("malformed obj entry for %s", entry.Path)
+		}
+		entry.Path = path[:checksumIndex]
+		entry.Size, _ = strconv.ParseInt(path[checksumIndex+1:timeIndex], 10, 64)
 		var err error
-		entry.Mtime, err = strconv.ParseInt(fields[3], 10, 64)
+		entry.Mtime, err = strconv.ParseInt(path[timeIndex+1:], 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid obj timestamp for %s: %w", entry.Path, err)
 		}
 	case "sym":
-		idx := strings.Index(line, "->")
-		if idx < 0 {
+		idx := strings.LastIndex(path, " -> ")
+		if idx <= 0 {
 			return nil, fmt.Errorf("malformed sym entry for %s", entry.Path)
 		}
-		targetAndTime := strings.Fields(strings.TrimSpace(line[idx+2:]))
+		entry.Path = path[:idx]
+		targetAndTime := strings.Fields(path[idx+4:])
 		if len(targetAndTime) != 2 && len(targetAndTime) != 3 {
 			return nil, fmt.Errorf("malformed sym entry for %s", entry.Path)
 		}
@@ -1177,9 +1186,7 @@ func parseContentsLine(line string) (*contentEntry, error) {
 			return nil, fmt.Errorf("invalid sym timestamp for %s: %w", entry.Path, err)
 		}
 	case "dir":
-		if len(fields) != 2 {
-			return nil, fmt.Errorf("malformed dir entry for %s", entry.Path)
-		}
+		// The entire remainder is the directory path, including spaces.
 	default:
 		return nil, fmt.Errorf("unsupported CONTENTS entry type %q", entry.Type)
 	}
