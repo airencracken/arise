@@ -76,6 +76,24 @@ func TestPrintExecutionErrorIndentsMultilineLeaf(t *testing.T) {
 	}
 }
 
+func TestPrintExecutionErrorPreservesLongRecoveryFailure(t *testing.T) {
+	message := "rebuild: enter mutation boundary: prepare mutation: recovery set: capture /var/db/pkg/sys-apps/util-linux-2.42.2: binpkg: capture installed path /etc/pam.d/runuser-l: lstat /etc/pam.d/runuser-l: no such file or directory"
+	var output bytes.Buffer
+	printExecutionError(&output, fmt.Errorf("executor: app-arch/gzip-1.15: %w", errors.New(message)))
+	if !strings.Contains(output.String(), message) {
+		t.Fatalf("recovery failure lost its path or cause:\n%s", output.String())
+	}
+}
+
+func TestPrintExecutionErrorPreservesLongUnicodeDiagnostic(t *testing.T) {
+	message := strings.Repeat("診断", 40) + ": permission denied"
+	var output bytes.Buffer
+	printExecutionError(&output, errors.New(message))
+	if !strings.Contains(output.String(), message) {
+		t.Fatalf("long diagnostic was truncated:\n%s", output.String())
+	}
+}
+
 func TestPrintExecutionErrorExplainsTemporaryStorageExhaustion(t *testing.T) {
 	err := fmt.Errorf(
 		"executor: sys-apps/arise-0.0.5: %w",

@@ -1529,9 +1529,6 @@ func printExecutionError(w io.Writer, err error) {
 			if line == "" || len(details) >= maxDetails {
 				continue
 			}
-			if len(line) > 160 {
-				line = line[:157] + "..."
-			}
 			details = append(details, line)
 		}
 		err = cause
