@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.45](0.0.45.md) fixes recovery capture of installed filenames containing
+spaces, including Intel and Raspberry Pi firmware records.
+
 [0.0.44](0.0.44.md) fixes execution of planned blocker removals and adds
 package history queries and dependency-aware time estimates.
 It remains experimental and `~amd64`; the full fresh-stage3 acceptance run
