@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.48](0.0.48.md) isolates install QA scripts so Bash completion helpers cannot
+leak into saved package environments and break pre-install hooks.
+
 [0.0.47](0.0.47.md) fixes phase-state persistence, the binutils source directory,
 and installed lifecycle state, and advances the execution ABI to 5.
 
