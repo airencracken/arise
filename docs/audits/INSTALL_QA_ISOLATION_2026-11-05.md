@@ -17,6 +17,13 @@ explains that extended patterns require `extglob` while parsing a function.
 Enabling that option globally would conceal the unwanted QA state in this
 case; the repair restores the intended boundary instead.
 
+Existing saved environments may already contain functions with this syntax.
+The reader therefore enables `extglob` only while sourcing saved state and
+restores its previous value before running a hook. Initial ebuild sourcing is
+unchanged. Separate regressions cover both build and installed snapshots, and
+execute a restored helper while checking that the parser option did not leak
+into the package phase.
+
 ## Repair and verification
 
 Each QA check now runs in a separate subshell, with the QA driver's defaults

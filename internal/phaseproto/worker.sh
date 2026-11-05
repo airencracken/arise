@@ -944,6 +944,8 @@ ARISE_LOG_FILE=$(mktemp) || {
 }
 ARISE_STATUS=0
 ARISE_DECLARED_S=
+readonly ARISE_SNAPSHOT_INPUT=${ARISE_ENVIRONMENT_OVERLAY:-${ARISE_ENVIRONMENT:-}}
+readonly ARISE_SNAPSHOT_EXTGLOB=$(shopt -p extglob)
 readonly ARISE_SAVED_CATEGORY=${CATEGORY-} ARISE_SAVED_P=${P-} ARISE_SAVED_PF=${PF-} ARISE_SAVED_PN=${PN-}
 readonly ARISE_SAVED_PV=${PV-} ARISE_SAVED_PR=${PR-} ARISE_SAVED_PVR=${PVR-} ARISE_SAVED_SLOT=${SLOT-}
 readonly ARISE_SAVED_ROOT=${ROOT-} ARISE_SAVED_EROOT=${EROOT-} ARISE_SAVED_SYSROOT=${SYSROOT-} ARISE_SAVED_ESYSROOT=${ESYSROOT-} ARISE_SAVED_BROOT=${BROOT-}
@@ -1036,8 +1038,13 @@ fi
 if (( ARISE_STATUS == 0 )); then
   # A saved environment is the phase's complete package state. Re-sourcing the
   # ebuild would resurrect unset variables/functions and overwrite phase changes.
+	# declare -f can contain extended case patterns even when the original
+	# function restored extglob after its definition. Enable it only for parsing
+	# saved state, then restore the worker's option before executing any hook.
+	[[ ! $ARISE_SNAPSHOT_INPUT ]] || builtin shopt -s extglob
   source "${ARISE_ENVIRONMENT_OVERLAY:-${ARISE_ENVIRONMENT:-$ARISE_EBUILD}}" >"$ARISE_LOG_FILE" 2>&1
   ARISE_STATUS=$?
+	[[ ! $ARISE_SNAPSHOT_INPUT ]] || builtin eval "$ARISE_SNAPSHOT_EXTGLOB"
   for ARISE_METADATA_NAME in "${!ARISE_ECLASS_METADATA[@]}"; do
     printf -v "$ARISE_METADATA_NAME" '%s%s' "${!ARISE_METADATA_NAME-}" "${ARISE_ECLASS_METADATA[$ARISE_METADATA_NAME]}"
   done

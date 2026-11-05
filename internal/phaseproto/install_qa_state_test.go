@@ -90,3 +90,35 @@ func TestInstallQACheckFailureReportsAndContinues(t *testing.T) {
 		})
 	}
 }
+
+func TestSavedEnvironmentParsesExtendedFunctionsWithoutChangingPhaseOptions(t *testing.T) {
+	for _, installed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "build snapshot", true: "installed environment"}[installed], func(t *testing.T) {
+			request := phaseStateRequest(t, "")
+			state := `EAPI=8
+extended_helper() { case $1 in /..?(/*)) printf matched;; esac; }
+pkg_preinst() {
+	! shopt -q extglob || die 'snapshot parser option leaked into hook'
+	declare -F extended_helper >/dev/null || die 'saved function was lost'
+	shopt -s extglob
+	[[ $(extended_helper /../path) == matched ]] || die 'saved function changed'
+	shopt -u extglob
+	printf passed > "$T/observed"
+}
+`
+			path := filepath.Join(request.TempDir, "existing.environment")
+			if err := os.WriteFile(path, []byte(state), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if installed {
+				request.Environment = path
+			} else {
+				request.EnvironmentOverlay = path
+			}
+			runPhaseStateSequence(t, request, true, "pkg_preinst")
+			if data, err := os.ReadFile(filepath.Join(request.TempDir, "observed")); err != nil || string(data) != "passed" {
+				t.Fatalf("hook = %q, %v", data, err)
+			}
+		})
+	}
+}
