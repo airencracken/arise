@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.46](0.0.46.md) fixes recovery capture after protected config updates have
+been consumed and preserves the full text of execution errors.
+
 [0.0.45](0.0.45.md) fixes recovery capture of installed filenames containing
 spaces, including Intel and Raspberry Pi firmware records.
 
