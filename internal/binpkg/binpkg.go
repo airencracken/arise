@@ -745,6 +745,10 @@ func CreateRecoveryArtifact(ctx context.Context, request CaptureRequest) (string
 	if err != nil {
 		return "", fmt.Errorf("binpkg: could not parse installed file list: %w", err)
 	}
+	entries, err = installedCaptureEntries(rootDir, entries)
+	if err != nil {
+		return "", err
+	}
 
 	cat := meta["CATEGORY"]
 	pkg := meta["PACKAGE"]

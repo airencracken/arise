@@ -84,6 +84,10 @@ func CreateInstalledGPKG(ctx context.Context, vdbEntryPath, rootDir, packageDir 
 	if err != nil {
 		return "", fmt.Errorf("binpkg: parse installed CONTENTS for GPKG: %w", err)
 	}
+	entries, err = installedCaptureEntries(rootDir, entries)
+	if err != nil {
+		return "", err
+	}
 	category, pf, packageName := meta["CATEGORY"], meta["PF"], meta["PACKAGE"]
 	if err := validatePackagePathComponent(category); err != nil {
 		return "", err

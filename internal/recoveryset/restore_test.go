@@ -4,14 +4,77 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/airencracken/arise/internal/binpkg"
+	"github.com/airencracken/arise/internal/dispatchconf"
 	"github.com/airencracken/arise/internal/merge"
 )
+
+func TestRestoreAfterDispatchConfConsumesRecordedConfigUpdate(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	vdb := createInstalledFixture(t, root, root, "sys-apps", "util-linux", "2.42.2", "etc/pam.d/runuser")
+	const contents = "dir /etc/pam.d\nobj /etc/pam.d/._cfg0000_runuser digest 1700000000\n"
+	if err := os.WriteFile(filepath.Join(vdb, "CONTENTS"), []byte(contents), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "etc/pam.d/._cfg0000_runuser"), []byte("accepted PAM configuration\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	opts := dispatchconf.DefaultOptions()
+	opts.Root, opts.Protect = root, []string{"/etc"}
+	opts.ArchiveDir = filepath.Join(base, "config-archive")
+	opts.Input, opts.Output, opts.Error = strings.NewReader("u\n"), io.Discard, io.Discard
+	result, err := dispatchconf.Run(context.Background(), opts)
+	if err != nil || result.Updated != 1 {
+		t.Fatalf("dispatch-conf = %+v, %v", result, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "etc/pam.d/._cfg0000_runuser")); !os.IsNotExist(err) {
+		t.Fatalf("dispatch-conf did not consume the staged update: %v", err)
+	}
+	request := validRequest(base, root, []Package{{VDBEntryPath: vdb}})
+	setPath, err := Publish(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image := filepath.Join(base, "new-image")
+	if err := os.MkdirAll(filepath.Join(image, "etc/pam.d"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(image, "etc/pam.d/runuser"), []byte("upgraded PAM configuration\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	vdbDir := filepath.Join(root, "vdb")
+	if err := merge.Merge(context.Background(), image, merge.MergeConfig{
+		RootDir: root, VdbDir: vdbDir, Category: "sys-apps", Package: "util-linux", Version: "2.42.3",
+		JournalDir: filepath.Join(base, "upgrade-journal"), ReplacedVDBPath: vdb,
+		VDBMetadata: map[string]string{"CATEGORY": "sys-apps", "PF": "util-linux-2.42.3", "SLOT": "0", "EAPI": "8"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(context.Background(), RestoreRequest{
+		SetPath: setPath, RootDir: root, VDBDir: vdbDir, JournalDir: filepath.Join(base, "restore-journal"),
+		CurrentConfiguration: request.ConfigurationFingerprint, CurrentRepository: request.RepositoryFingerprint,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "etc/pam.d/runuser"))
+	if err != nil || string(data) != "accepted PAM configuration\n" {
+		t.Fatalf("recovery lost the accepted configuration: %q, %v", data, err)
+	}
+	if _, err := os.Lstat(filepath.Join(root, "etc/pam.d/._cfg0000_runuser")); !os.IsNotExist(err) {
+		t.Fatalf("recovery resurrected the consumed update: %v", err)
+	}
+	data, err = os.ReadFile(filepath.Join(vdb, "CONTENTS"))
+	if err != nil || !strings.Contains(string(data), "obj /etc/pam.d/runuser ") || strings.Contains(string(data), "._cfg") {
+		t.Fatalf("restored VDB does not track the actual configuration: %q, %v", data, err)
+	}
+}
 
 func TestInspectRestoreUsesReverseCaptureOrder(t *testing.T) {
 	base := t.TempDir()
