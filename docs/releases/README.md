@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.47](0.0.47.md) fixes phase-state persistence, the binutils source directory,
+and installed lifecycle state, and advances the execution ABI to 5.
+
 [0.0.46](0.0.46.md) fixes recovery capture after protected config updates have
 been consumed and preserves the full text of execution errors.
 
