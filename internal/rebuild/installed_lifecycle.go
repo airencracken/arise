@@ -64,7 +64,11 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 	if err != nil {
 		return fail(fmt.Errorf("installed lifecycle: environment: %w", err))
 	}
-	environmentPhases, err := lifecycleFunctionsInEnvironment(environment)
+	environmentState, err := os.ReadFile(environment)
+	if err != nil {
+		return fail(fmt.Errorf("installed lifecycle: read environment: %w", err))
+	}
+	environmentPhases, err := lifecycleFunctionsFromReader(strings.NewReader(string(environmentState)))
 	if err != nil {
 		return fail(fmt.Errorf("installed lifecycle: inspect environment functions: %w", err))
 	}
@@ -111,6 +115,11 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 			phases[phase] = true
 		}
 	}
+	if strings.Contains("\n"+string(environmentState), "\n"+phaseproto.SavedEnvironmentMarker+"\n") {
+		// Complete snapshots are authoritative even when a build phase added
+		// or deliberately removed hooks after the static metadata pass.
+		phases = environmentPhases
+	}
 	return &InstalledLifecycle{
 		request: request, log: log, workDir: workDir, cfg: cfg, phases: phases,
 		environmentPhases: environmentPhases,
@@ -136,6 +145,7 @@ func (l *InstalledLifecycle) Run(ctx context.Context, phase string) error {
 	request := l.requestForPhase(phase)
 	request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(request.Package.Category + "-" + request.Package.PF + "-" + phase)
 	request.Phase = phase
+	request.SaveEnvironment = filepath.Join(l.workDir, "lifecycle.environment")
 	request = applyPortageLifecyclePolicy(request, phase)
 	l.cfg.firePhaseStart(phase)
 	events, err := runPhaseWorker(ctx, request, l.cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage, DurableLog: l.log})
@@ -149,6 +159,7 @@ func (l *InstalledLifecycle) Run(ctx context.Context, phase string) error {
 		}
 		return fmt.Errorf("installed lifecycle %s: %w%s", phase, err, lifecycleDetails(details))
 	}
+	l.request.EnvironmentOverlay = request.SaveEnvironment
 	return nil
 }
 

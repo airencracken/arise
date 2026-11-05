@@ -1046,12 +1046,10 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	}
 	var packageEvents []phaseproto.Event
 	runWithContext := func(phaseCtx context.Context, phaseName string) error {
-		if strings.HasPrefix(phaseName, "pkg_") && lifecycleOnlyDisabledUseGuards(ebuildFile, phaseName, cfg.UseFlags) {
-			return nil
-		}
 		request := base
 		request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + pf + "-" + phaseName)
 		request.Command, request.Phase = "run_phase", phaseName
+		request.SaveEnvironment = request.EnvironmentOverlay
 		request = applyPortageLifecyclePolicy(request, phaseName)
 		cfg.firePhaseStart(phaseName)
 		events, phaseErr := runPhaseWorker(phaseCtx, request, cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage, DurableLog: packageLog})
@@ -1086,14 +1084,6 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	}
 	runPostCommit := func(phaseName string) error { return runWithContext(postCommitCtx, phaseName) }
 	buildPhases := protocolBuildPhases(base.Policy)
-	filteredPhases := buildPhases[:0]
-	for _, phaseName := range buildPhases {
-		if strings.HasPrefix(phaseName, "pkg_") && lifecycleOnlyDisabledUseGuards(ebuildFile, phaseName, cfg.UseFlags) {
-			continue
-		}
-		filteredPhases = append(filteredPhases, phaseName)
-	}
-	buildPhases = filteredPhases
 	var replacedVDB string
 	var runOld func(string) error
 	if cfg.AllowLiveUpgrade || cfg.AllowLiveReplacement {
@@ -1125,6 +1115,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 			request := oldBase
 			request.ID = strings.NewReplacer("/", "-", ".", "-").Replace(cat + "-" + pf + "-old-" + phaseName)
 			request.Command, request.Phase = "run_phase", phaseName
+			request.SaveEnvironment = filepath.Join(workDir, "old-phase.environment")
 			request = applyPortageLifecyclePolicy(request, phaseName)
 			cfg.firePhaseStart(phaseName)
 			phaseCtx := ctx
@@ -1142,6 +1133,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 			if phaseErr != nil {
 				return fmt.Errorf("old %s: %w", phaseName, phaseErr)
 			}
+			oldBase.EnvironmentOverlay = request.SaveEnvironment
 			return nil
 		}
 	}
@@ -1190,7 +1182,10 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	if err := expandBuiltSlotOperators(vdbMetadata, cfg); err != nil {
 		return fmt.Errorf("rebuild: expand built slot operators: %w", err)
 	}
-	environment := protocolEnvironmentSnapshot(base)
+	environment, err := savedProtocolEnvironment(base)
+	if err != nil {
+		return fmt.Errorf("rebuild: save build environment: %w", err)
+	}
 	if cfg.BuildPackage {
 		cfg.fireStage("package")
 		if _, err := publishBuiltGPKG(ctx, cfg, cat, pf, destDir, vdbMetadata, environment); err != nil {
@@ -1228,6 +1223,10 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	if err := run("pkg_preinst"); err != nil {
 		return err
 	}
+	environment, err = savedProtocolEnvironment(base)
+	if err != nil {
+		return fmt.Errorf("rebuild: save pre-install environment: %w", err)
+	}
 	journalDir := cfg.JournalDir
 	if journalDir == "" {
 		journalDir = filepath.Join(workDir, "journal")
@@ -1247,9 +1246,10 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		// then preserves the same committed-state lifecycle semantics.
 		AfterCommit: func() error {
 			postinstErr := runPostCommit("pkg_postinst")
+			stateErr := saveInstalledProtocolEnvironment(filepath.Join(cfg.VdbDir, cat, pf), base)
 			refreshLiveInfoIndex(cfg, destDir, "/usr/bin/install-info")
 			envErr := refreshLiveEnvironment(cfg)
-			return errors.Join(postinstErr, envErr)
+			return errors.Join(postinstErr, stateErr, envErr)
 		},
 	}
 	if runOld != nil {
@@ -1270,9 +1270,10 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		}
 		mergeCfg.AfterCommit = func() error {
 			postinstErr := runPostCommit("pkg_postinst")
+			stateErr := saveInstalledProtocolEnvironment(filepath.Join(cfg.VdbDir, cat, pf), base)
 			refreshLiveInfoIndex(cfg, destDir, "/usr/bin/install-info")
 			envErr := refreshLiveEnvironment(cfg)
-			return errors.Join(postinstErr, envErr)
+			return errors.Join(postinstErr, stateErr, envErr)
 		}
 	}
 	if cfg.Features != nil && cfg.Features.IsEnabled(features.FeatPreserveLibs) {
@@ -1995,6 +1996,9 @@ func findInstalledReplacement(vdbDir, category, packageName, newVersion, slot st
 func protocolEnvironmentSnapshot(request phaseproto.Request) []byte {
 	values := make(map[string]string, len(request.Env)+32)
 	for name, value := range request.Env {
+		if strings.HasPrefix(name, "SANDBOX_") || strings.HasPrefix(name, "ARISE_") || name == "LD_PRELOAD" {
+			continue
+		}
 		values[name] = value
 	}
 	ebuildRoot := phaseproto.EbuildPathVariable(request.EAPI, request.RootDir)
@@ -2244,6 +2248,7 @@ func applyPortageLifecyclePolicy(request phaseproto.Request, phaseName string) p
 	request.Policy.DropPrivileges = false
 	switch phaseName {
 	case "pkg_setup", "pkg_pretend":
+		request.Policy.Configured = true
 		request.Policy.Sandbox = false
 		request.Policy.NetworkSandbox = false
 		request.Policy.IPCSandbox = false
@@ -2280,6 +2285,7 @@ func applyPortageLifecyclePolicy(request phaseproto.Request, phaseName string) p
 	// lifecycle phases with free=True. SANDBOX_WRITE=/ is not equivalent:
 	// the LD_PRELOAD sandbox can still reject capability and other xattr
 	// operations required by helpers such as fcaps.eclass.
+	request.Policy.Configured = true
 	request.Policy.Sandbox = false
 	request.Policy.NetworkSandbox = false
 	request.Policy.IPCSandbox = false

@@ -2,24 +2,24 @@
 
 exec 3>&1
 readonly ARISE_WORKER_PID=$BASHPID
-sequence_file=
-log_file=
+ARISE_SEQUENCE_FILE=
+ARISE_LOG_FILE=
 cleanup_worker_temporaries() {
-	if [[ $BASHPID == "$ARISE_WORKER_PID" && ${ARISE_RESULT_EMITTED-} != 1 && -f $sequence_file ]]; then
-		if [[ -f $log_file ]]; then
-			emit '"kind":"log","stream":"stdout","message":"'"$(escape_json "$(<"$log_file")")"'"'
+	if [[ $BASHPID == "$ARISE_WORKER_PID" && ${ARISE_RESULT_EMITTED-} != 1 && -f $ARISE_SEQUENCE_FILE ]]; then
+		if [[ -f $ARISE_LOG_FILE ]]; then
+			emit '"kind":"log","stream":"stdout","message":"'"$(escape_json "$(<"$ARISE_LOG_FILE")")"'"'
 		fi
 		emit '"kind":"result","exit_code":1'
 	fi
-  [[ -z $sequence_file ]] || rm -f -- "$sequence_file"
-  [[ -z $log_file ]] || rm -f -- "$log_file"
+  [[ -z $ARISE_SEQUENCE_FILE ]] || rm -f -- "$ARISE_SEQUENCE_FILE"
+  [[ -z $ARISE_LOG_FILE ]] || rm -f -- "$ARISE_LOG_FILE"
 }
 trap cleanup_worker_temporaries EXIT
-sequence_file=$(mktemp) || {
+ARISE_SEQUENCE_FILE=$(mktemp) || {
   printf 'phase worker: cannot create sequence file\n' >&2
   exit 1
 }
-printf '0\n' > "$sequence_file"
+printf '0\n' > "$ARISE_SEQUENCE_FILE"
 declare -A ARISE_INHERITING=()
 declare -A ARISE_INHERITED=()
 declare -A ARISE_ECLASS_METADATA=()
@@ -51,9 +51,9 @@ escape_json() {
 }
 emit() {
   local sequence
-  sequence=$(<"$sequence_file")
+  sequence=$(<"$ARISE_SEQUENCE_FILE")
   printf '{"protocol":1,"id":"%s","sequence":%d,%s}\n' "$ARISE_ID" "$sequence" "$1" >&3
-  printf '%d\n' "$((sequence+1))" > "$sequence_file"
+  printf '%d\n' "$((sequence+1))" > "$ARISE_SEQUENCE_FILE"
 }
 die() { printf '%s\n' "${*:-die called}"; exit 1; }
 arise_elog() { local class=$1; shift; printf '\036ARISE_ELOG|%s|%s\n' "$class" "$*"; }
@@ -899,34 +899,88 @@ arise_run_install_qa_checks() {
 	done <<< "${ARISE_INSTALL_QA_CHECKS-}"
 	return 0
 }
-log_file=$(mktemp) || {
+arise_persist_variable() {
+	case $1 in
+		S|ARISE_INHERITED|ARISE_DOCOMPRESS|ARISE_DOCOMPRESS_SKIP|ARISE_DOSTRIP|ARISE_DOSTRIP_SKIP) return 0 ;;
+		ARISE_*|SANDBOX_*|LD_PRELOAD|BASH*|BASHPID|EUID|UID|PPID|SHELLOPTS|FUNCNAME|GROUPS|PIPESTATUS|DIRSTACK|LINENO|RANDOM|SECONDS|SHLVL|_|PWD|OLDPWD) return 1 ;;
+		CATEGORY|PN|PV|PR|P|PVR|PF|SLOT|ROOT|EROOT|SYSROOT|ESYSROOT|BROOT|WORKDIR|D|ED|T|FILESDIR|DISTDIR|HOME|TMPDIR|TMP|TEMP|EBUILD_PHASE|EBUILD_PHASE_FUNC|PORTAGE_LOG_FILE|PORTAGE_BUILDDIR|PORTAGE_CONFIGROOT) return 1 ;;
+	esac
+	[[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
+}
+arise_validate_source_directory() {
+	local ARISE_RESOLVED_SOURCE ARISE_RESOLVED_WORK
+	[[ ${S-} ]] || S=$ARISE_SAVED_S
+	if [[ ${S-} == "$ARISE_SAVED_S" ]]; then
+		# An explicit request can bind S separately from WORKDIR. A default
+		# source below WORKDIR still needs checking after unpack replaces it.
+		if [[ ! ${ARISE_SAVED_WORKDIR-} || ! ${S-} || ( $S != "$ARISE_SAVED_WORKDIR" && $S != "$ARISE_SAVED_WORKDIR"/* ) ]]; then
+			return 0
+		fi
+	fi
+	if [[ ${S-} != /* || ! ${ARISE_SAVED_WORKDIR-} ]]; then
+		printf 'ebuild S escapes WORKDIR: %s\n' "${S-}"
+		return 126
+	fi
+	ARISE_RESOLVED_SOURCE=$(realpath -m -- "$S") || return
+	ARISE_RESOLVED_WORK=$(realpath -m -- "$ARISE_SAVED_WORKDIR") || return
+	if [[ $ARISE_RESOLVED_SOURCE != "$ARISE_RESOLVED_WORK" && $ARISE_RESOLVED_SOURCE != "$ARISE_RESOLVED_WORK"/* ]]; then
+		printf 'ebuild S escapes WORKDIR: %s\n' "$S"
+		return 126
+	fi
+}
+declare -A ARISE_INITIAL_VARIABLES=() ARISE_WORKER_FUNCTIONS=()
+while IFS= read -r ARISE_NAME; do
+	arise_persist_variable "$ARISE_NAME" && ARISE_INITIAL_VARIABLES["$ARISE_NAME"]=1
+done < <(compgen -v)
+while IFS= read -r ARISE_NAME; do
+	ARISE_WORKER_FUNCTIONS["$ARISE_NAME"]=1
+done < <(compgen -A function)
+ARISE_LOG_FILE=$(mktemp) || {
   printf 'phase worker: cannot create log file\n' >&2
   exit 1
 }
-status=0
+ARISE_STATUS=0
 ARISE_DECLARED_S=
 readonly ARISE_SAVED_CATEGORY=${CATEGORY-} ARISE_SAVED_P=${P-} ARISE_SAVED_PF=${PF-} ARISE_SAVED_PN=${PN-}
 readonly ARISE_SAVED_PV=${PV-} ARISE_SAVED_PR=${PR-} ARISE_SAVED_PVR=${PVR-} ARISE_SAVED_SLOT=${SLOT-}
 readonly ARISE_SAVED_ROOT=${ROOT-} ARISE_SAVED_EROOT=${EROOT-} ARISE_SAVED_SYSROOT=${SYSROOT-} ARISE_SAVED_ESYSROOT=${ESYSROOT-} ARISE_SAVED_BROOT=${BROOT-}
 readonly ARISE_SAVED_WORKDIR=${WORKDIR-} ARISE_SAVED_S=${S-} ARISE_SAVED_D=${D-} ARISE_SAVED_ED=${ED-} ARISE_SAVED_T=${T-}
 readonly ARISE_SAVED_FILESDIR=${FILESDIR-} ARISE_SAVED_DISTDIR=${DISTDIR-} ARISE_SAVED_USE=${USE-}
+readonly ARISE_SAVED_HOME=${HOME-} ARISE_SAVED_TMPDIR=${TMPDIR-} ARISE_SAVED_TMP=${TMP-} ARISE_SAVED_TEMP=${TEMP-}
+readonly ARISE_SAVED_PATH=$PATH
+readonly ARISE_SAVED_BUILDDIR=${PORTAGE_BUILDDIR-} ARISE_SAVED_CONFIGROOT=${PORTAGE_CONFIGROOT-} ARISE_SAVED_LOG_FILE=${PORTAGE_LOG_FILE-}
 declare -A ARISE_SAVED_SANDBOX_VALUES=() ARISE_SAVED_SANDBOX_EXPORTED=()
-while IFS= read -r name; do
-  [[ $name == SANDBOX_* || $name == LD_PRELOAD ]] || continue
-  ARISE_SAVED_SANDBOX_VALUES["$name"]=${!name-}
-  [[ $(export -p 2>/dev/null) == *"declare -x $name="* || $(export -p 2>/dev/null) == *"declare -x $name" ]] &&
-    ARISE_SAVED_SANDBOX_EXPORTED["$name"]=1
+while IFS= read -r ARISE_NAME; do
+  [[ $ARISE_NAME == SANDBOX_* || $ARISE_NAME == LD_PRELOAD ]] || continue
+  ARISE_SAVED_SANDBOX_VALUES["$ARISE_NAME"]=${!ARISE_NAME-}
+  [[ $(export -p 2>/dev/null) == *"declare -x $ARISE_NAME="* || $(export -p 2>/dev/null) == *"declare -x $ARISE_NAME" ]] &&
+    ARISE_SAVED_SANDBOX_EXPORTED["$ARISE_NAME"]=1
 done < <(compgen -v)
 arise_restore_sandbox_environment() {
-  local name
-  while IFS= read -r name; do
-    [[ $name == SANDBOX_* || $name == LD_PRELOAD ]] || continue
-    unset "$name" 2>/dev/null || :
+  local ARISE_CONTROL_NAME ARISE_CONTROL_DECLARATION ARISE_CONTROL_FLAGS
+  while IFS= read -r ARISE_CONTROL_NAME; do
+    [[ $ARISE_CONTROL_NAME == SANDBOX_* || $ARISE_CONTROL_NAME == LD_PRELOAD ]] || continue
+	ARISE_CONTROL_DECLARATION=$(declare -p "$ARISE_CONTROL_NAME" 2>/dev/null) || continue
+	ARISE_CONTROL_FLAGS=${ARISE_CONTROL_DECLARATION#declare -}
+	ARISE_CONTROL_FLAGS=${ARISE_CONTROL_FLAGS%% *}
+	if [[ $ARISE_CONTROL_FLAGS == *r* ]]; then
+		if [[ ! ${ARISE_SAVED_SANDBOX_VALUES[$ARISE_CONTROL_NAME]+present} || ${!ARISE_CONTROL_NAME} != "${ARISE_SAVED_SANDBOX_VALUES[$ARISE_CONTROL_NAME]}" ]]; then
+			printf 'ebuild changed readonly isolation control: %s\n' "$ARISE_CONTROL_NAME"
+			return 125
+		fi
+		continue
+	fi
+    unset "$ARISE_CONTROL_NAME" 2>/dev/null || :
   done < <(compgen -v)
-  for name in "${!ARISE_SAVED_SANDBOX_VALUES[@]}"; do
-    printf -v "$name" '%s' "${ARISE_SAVED_SANDBOX_VALUES[$name]}"
-    [[ ${ARISE_SAVED_SANDBOX_EXPORTED[$name]-} ]] && export "$name"
+  for ARISE_CONTROL_NAME in "${!ARISE_SAVED_SANDBOX_VALUES[@]}"; do
+	ARISE_CONTROL_DECLARATION=$(declare -p "$ARISE_CONTROL_NAME" 2>/dev/null) || ARISE_CONTROL_DECLARATION=
+	ARISE_CONTROL_FLAGS=${ARISE_CONTROL_DECLARATION#declare -}
+	ARISE_CONTROL_FLAGS=${ARISE_CONTROL_FLAGS%% *}
+	[[ $ARISE_CONTROL_FLAGS != *r* ]] || continue
+    printf -v "$ARISE_CONTROL_NAME" '%s' "${ARISE_SAVED_SANDBOX_VALUES[$ARISE_CONTROL_NAME]}"
+    [[ ${ARISE_SAVED_SANDBOX_EXPORTED[$ARISE_CONTROL_NAME]-} ]] && export "$ARISE_CONTROL_NAME"
   done
+	return 0
 }
 arise_restore_managed_environment() {
 	[[ -z $ARISE_SAVED_CATEGORY ]] || CATEGORY=$ARISE_SAVED_CATEGORY
@@ -940,6 +994,13 @@ arise_restore_managed_environment() {
   ROOT=$ARISE_SAVED_ROOT EROOT=$ARISE_SAVED_EROOT SYSROOT=$ARISE_SAVED_SYSROOT ESYSROOT=$ARISE_SAVED_ESYSROOT BROOT=$ARISE_SAVED_BROOT
   WORKDIR=$ARISE_SAVED_WORKDIR S=$ARISE_SAVED_S D=$ARISE_SAVED_D ED=$ARISE_SAVED_ED T=$ARISE_SAVED_T
   FILESDIR=$ARISE_SAVED_FILESDIR DISTDIR=$ARISE_SAVED_DISTDIR USE=$ARISE_SAVED_USE
+  HOME=$ARISE_SAVED_HOME TMPDIR=$ARISE_SAVED_TMPDIR TMP=$ARISE_SAVED_TMP TEMP=$ARISE_SAVED_TEMP
+  PORTAGE_BUILDDIR=$ARISE_SAVED_BUILDDIR PORTAGE_CONFIGROOT=$ARISE_SAVED_CONFIGROOT PORTAGE_LOG_FILE=$ARISE_SAVED_LOG_FILE
+  export HOME TMPDIR TMP TEMP PORTAGE_BUILDDIR PORTAGE_CONFIGROOT PORTAGE_LOG_FILE
+	if [[ ${ARISE_ENVIRONMENT-} && ! ${ARISE_ENVIRONMENT_OVERLAY-} ]]; then
+		PATH=$ARISE_SAVED_PATH
+		export PATH
+	fi
   if [[ $ARISE_EAPI == 9 ]]; then
     export -n CATEGORY P PF PN PV PR PVR SLOT ROOT EROOT WORKDIR S D ED T FILESDIR DISTDIR USE 2>/dev/null || :
   else
@@ -949,8 +1010,8 @@ arise_restore_managed_environment() {
 }
 if [[ $ARISE_EAPI == 9 ]]; then
   (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3) )) || {
-    printf 'EAPI 9 requires Bash 5.3 or newer\n' >"$log_file"
-    status=126
+    printf 'EAPI 9 requires Bash 5.3 or newer\n' >"$ARISE_LOG_FILE"
+    ARISE_STATUS=126
   }
   export -n CATEGORY P PF PN PV PR PVR A FILESDIR DISTDIR WORKDIR S ROOT EROOT T EPREFIX D ED USE EBUILD_PHASE EBUILD_PHASE_FUNC MERGE_TYPE REPLACING_VERSIONS REPLACED_BY_VERSION ECLASS INHERITED DEFINED_PHASES ARCH CONFIG_PROTECT CONFIG_PROTECT_MASK USE_EXPAND USE_EXPAND_UNPREFIXED USE_EXPAND_HIDDEN USE_EXPAND_IMPLICIT IUSE_IMPLICIT 2>/dev/null || :
 fi
@@ -959,20 +1020,28 @@ if [[ $ARISE_COMMAND == evaluate_metadata ]]; then
 	EBUILD_PHASE=depend
 	EBUILD_PHASE_FUNC=
 	[[ $ARISE_EAPI == 9 ]] || export EBUILD_PHASE EBUILD_PHASE_FUNC
+elif [[ $ARISE_COMMAND == run_phase || $ARISE_COMMAND == run_phases ]]; then
+	EBUILD_PHASE_FUNC=${ARISE_PHASE:-${ARISE_PHASES%%$'\n'*}}
+	EBUILD_PHASE=${EBUILD_PHASE_FUNC#src_}
+	EBUILD_PHASE=${EBUILD_PHASE#pkg_}
+	if [[ $ARISE_EAPI == 9 ]]; then
+		export -n EBUILD_PHASE EBUILD_PHASE_FUNC
+	else
+		export EBUILD_PHASE EBUILD_PHASE_FUNC
+	fi
 fi
-if (( status == 0 )); then
-  source "${ARISE_ENVIRONMENT:-$ARISE_EBUILD}" >"$log_file" 2>&1
-  status=$?
-  for metadata_name in "${!ARISE_ECLASS_METADATA[@]}"; do
-    printf -v "$metadata_name" '%s%s' "${!metadata_name-}" "${ARISE_ECLASS_METADATA[$metadata_name]}"
+if (( ARISE_STATUS == 0 )); then
+  # A saved environment is the phase's complete package state. Re-sourcing the
+  # ebuild would resurrect unset variables/functions and overwrite phase changes.
+  source "${ARISE_ENVIRONMENT_OVERLAY:-${ARISE_ENVIRONMENT:-$ARISE_EBUILD}}" >"$ARISE_LOG_FILE" 2>&1
+  ARISE_STATUS=$?
+  for ARISE_METADATA_NAME in "${!ARISE_ECLASS_METADATA[@]}"; do
+    printf -v "$ARISE_METADATA_NAME" '%s%s' "${!ARISE_METADATA_NAME-}" "${ARISE_ECLASS_METADATA[$ARISE_METADATA_NAME]}"
   done
-  arise_restore_sandbox_environment
-  if [[ ${ARISE_ENVIRONMENT-} ]]; then ARISE_DECLARED_S=$ARISE_SAVED_S; else ARISE_DECLARED_S=${S-}; fi
+  arise_restore_sandbox_environment >>"$ARISE_LOG_FILE" 2>&1 || ARISE_STATUS=$?
+  if [[ ${ARISE_ENVIRONMENT-} && ! ${ARISE_ENVIRONMENT_OVERLAY-} ]]; then ARISE_DECLARED_S=$ARISE_SAVED_S; else ARISE_DECLARED_S=${S-}; fi
 fi
-if (( status == 0 )) && [[ ${ARISE_ENVIRONMENT_OVERLAY-} ]]; then
-  source "$ARISE_ENVIRONMENT_OVERLAY" >>"$log_file" 2>&1 || status=$?
-fi
-if (( status == 0 )); then
+if (( ARISE_STATUS == 0 )); then
   arise_restore_managed_environment
 	# Eclasses may add RESTRICT while the ebuild is sourced, after the Go-side
 	# static metadata pass. Honor the effective sourced restriction before any
@@ -980,19 +1049,24 @@ if (( status == 0 )); then
 	if [[ " ${RESTRICT-} " == *" strip "* ]]; then
 		ARISE_STRIP=0
 	fi
-	if [[ $ARISE_COMMAND != evaluate_metadata && $ARISE_DECLARED_S != "$ARISE_SAVED_S" && $ARISE_DECLARED_S != "$WORKDIR" && $ARISE_DECLARED_S != "$WORKDIR"/* ]]; then
-		printf 'ebuild S escapes WORKDIR: %s\n' "$ARISE_DECLARED_S" >>"$log_file"
-		status=126
-	else
-		S=$ARISE_DECLARED_S
-		[[ $ARISE_EAPI == 9 ]] || export S
+	S=$ARISE_DECLARED_S
+	[[ $ARISE_EAPI == 9 ]] || export S
+	if [[ $ARISE_COMMAND != evaluate_metadata ]]; then
+		arise_validate_source_directory >>"$ARISE_LOG_FILE" 2>&1 || ARISE_STATUS=$?
 	fi
 fi
-if (( status == 0 )) && [[ ${EAPI-} != "$ARISE_EAPI" ]]; then
-  printf 'ebuild EAPI %s does not match preflight EAPI %s\n' "${EAPI-<unset>}" "$ARISE_EAPI" >>"$log_file"
-  status=126
+if (( ARISE_STATUS == 0 )) && [[ ${EAPI-} != "$ARISE_EAPI" ]]; then
+  printf 'ebuild EAPI %s does not match preflight EAPI %s\n' "${EAPI-<unset>}" "$ARISE_EAPI" >>"$ARISE_LOG_FILE"
+  ARISE_STATUS=126
 fi
-if (( status == 0 )) && [[ ${ARISE_EMIT_METADATA-} == 1 || $ARISE_COMMAND == evaluate_metadata ]]; then
+arise_refresh_defined_phases() {
+  DEFINED_PHASES=
+  for ARISE_METADATA_PHASE in pkg_pretend pkg_setup src_unpack src_prepare src_configure src_compile src_test src_install pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
+    declare -F "$ARISE_METADATA_PHASE" >/dev/null && DEFINED_PHASES+="${DEFINED_PHASES:+ }${ARISE_METADATA_PHASE}"
+  done
+  return 0
+}
+arise_emit_metadata() {
   # Portage persists these two values as derived metadata.  Ebuilds normally do
   # not assign either variable themselves, so derive them after the complete
   # eclass/ebuild source pass rather than overwriting useful cache metadata with
@@ -1002,97 +1076,143 @@ if (( status == 0 )) && [[ ${ARISE_EMIT_METADATA-} == 1 || $ARISE_COMMAND == eva
     INHERITED=$(printf '%s\n' "${!ARISE_INHERITED[@]}" | LC_ALL=C sort | tr '\n' ' ')
     INHERITED=${INHERITED% }
   fi
-  DEFINED_PHASES=
-  for metadata_phase in pkg_pretend pkg_setup src_unpack src_prepare src_configure src_compile src_test src_install pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
-    declare -F "$metadata_phase" >/dev/null && DEFINED_PHASES+="${DEFINED_PHASES:+ }${metadata_phase}"
-  done
-  metadata_keys=( DEPEND RDEPEND BDEPEND IDEPEND PDEPEND IUSE REQUIRED_USE LICENSE PROPERTIES RESTRICT DEFINED_PHASES INHERITED )
+  arise_refresh_defined_phases
+  ARISE_METADATA_KEYS=( DEPEND RDEPEND BDEPEND IDEPEND PDEPEND IUSE REQUIRED_USE LICENSE PROPERTIES RESTRICT DEFINED_PHASES INHERITED )
   if [[ $ARISE_COMMAND == evaluate_metadata ]]; then
-    metadata_keys+=( EAPI SLOT KEYWORDS SRC_URI DESCRIPTION HOMEPAGE )
+    ARISE_METADATA_KEYS+=( EAPI SLOT KEYWORDS SRC_URI DESCRIPTION HOMEPAGE )
   fi
-  for metadata_name in "${metadata_keys[@]}"; do
-    metadata_value=${!metadata_name-}
-    escaped=$(escape_json "$metadata_value")
-    emit '"kind":"metadata","class":"'"$metadata_name"'","message":"'"$escaped"'"'
+  for ARISE_METADATA_NAME in "${ARISE_METADATA_KEYS[@]}"; do
+    ARISE_METADATA_VALUE=${!ARISE_METADATA_NAME-}
+    ARISE_METADATA_ESCAPED=$(escape_json "$ARISE_METADATA_VALUE")
+    emit '"kind":"metadata","class":"'"$ARISE_METADATA_NAME"'","message":"'"$ARISE_METADATA_ESCAPED"'"'
   done
+}
+if (( ARISE_STATUS == 0 )) && [[ ${ARISE_EMIT_METADATA-} == 1 || $ARISE_COMMAND == evaluate_metadata ]]; then
+  arise_emit_metadata
 fi
 run_one_phase() {
-  local phase_name=$1 phase_directory old_directory=$PWD phase_status=0
-  emit '"kind":"phase","message":"'"$phase_name"'"'
-  EBUILD_PHASE_FUNC=$phase_name
-  EBUILD_PHASE=${phase_name#src_}
+  local ARISE_RUNNING_PHASE=$1 ARISE_PHASE_DIRECTORY ARISE_OLD_DIRECTORY=$PWD ARISE_PHASE_STATUS=0 ARISE_EMPTY_DIRECTORY=
+  emit '"kind":"phase","message":"'"$ARISE_RUNNING_PHASE"'"'
+  local -r EBUILD_PHASE_FUNC=$ARISE_RUNNING_PHASE
+  local EBUILD_PHASE=${ARISE_RUNNING_PHASE#src_}
   EBUILD_PHASE=${EBUILD_PHASE#pkg_}
-  export EBUILD_PHASE EBUILD_PHASE_FUNC
-  phase_directory=${S:-${WORKDIR:-.}}
-  case $phase_name in
-    src_unpack|pkg_*) phase_directory=${WORKDIR:-.} ;;
+  if [[ $ARISE_EAPI == 9 ]]; then
+	export -n EBUILD_PHASE EBUILD_PHASE_FUNC
+  else
+	export EBUILD_PHASE EBUILD_PHASE_FUNC
+  fi
+  arise_validate_source_directory || return
+  ARISE_PHASE_DIRECTORY=${S:-${WORKDIR:-.}}
+  case $ARISE_RUNNING_PHASE in
+    src_unpack) ARISE_PHASE_DIRECTORY=${WORKDIR:-.} ;;
+    pkg_*)
+		if [[ $ARISE_EAPI == 8 || $ARISE_EAPI == 9 ]]; then
+			ARISE_EMPTY_DIRECTORY=$(mktemp -d "${T:-${WORKDIR:-/tmp}}/.arise-empty.XXXXXXXX") || return
+			ARISE_PHASE_DIRECTORY=$ARISE_EMPTY_DIRECTORY
+		else
+			ARISE_PHASE_DIRECTORY=${WORKDIR:-.}
+		fi
+		;;
   esac
-  cd "$phase_directory" || return
-  if declare -F "$phase_name" >/dev/null; then
-		"$phase_name" || phase_status=$?
+  if [[ $ARISE_RUNNING_PHASE == src_* && $ARISE_RUNNING_PHASE != src_unpack && ! -d $ARISE_PHASE_DIRECTORY ]]; then
+		local ARISE_PRIOR_PHASE ARISE_HAS_SOURCE_PHASE=0
+		for ARISE_PRIOR_PHASE in src_unpack src_prepare src_configure src_compile src_test src_install; do
+			declare -F "$ARISE_PRIOR_PHASE" >/dev/null && ARISE_HAS_SOURCE_PHASE=1
+			[[ $ARISE_PRIOR_PHASE == "$ARISE_RUNNING_PHASE" ]] && break
+		done
+		if [[ -z ${A-} && $ARISE_HAS_SOURCE_PHASE == 0 ]]; then
+			ARISE_PHASE_DIRECTORY=${WORKDIR:-.}
+		else
+			printf 'source directory does not exist before %s: %s\n' "$ARISE_RUNNING_PHASE" "$ARISE_PHASE_DIRECTORY"
+			return 1
+		fi
+  fi
+  cd "$ARISE_PHASE_DIRECTORY" || return
+  if declare -F "$ARISE_RUNNING_PHASE" >/dev/null; then
+		"$ARISE_RUNNING_PHASE" || ARISE_PHASE_STATUS=$?
 		# Portage's __ebuild_phase intentionally discards a phase function's
 		# ordinary return status. `die` exits the worker shell and remains fatal.
 		# Status 125 is reserved for Arise protocol/sandbox safety violations.
-		(( phase_status == 125 )) || phase_status=0
+		(( ARISE_PHASE_STATUS == 125 )) || ARISE_PHASE_STATUS=0
   else
-    case $phase_name in
+    case $ARISE_RUNNING_PHASE in
       src_unpack|src_prepare|src_configure|src_compile|src_test|src_install|pkg_pretend|pkg_setup|pkg_preinst|pkg_postinst|pkg_prerm|pkg_postrm|pkg_nofetch)
-        "default_$phase_name" || phase_status=$? ;;
-      *) printf 'phase function %s is not defined\n' "$phase_name"; phase_status=127 ;;
+        "default_$ARISE_RUNNING_PHASE" || ARISE_PHASE_STATUS=$? ;;
+      *) printf 'phase function %s is not defined\n' "$ARISE_RUNNING_PHASE"; ARISE_PHASE_STATUS=127 ;;
     esac
   fi
-	if (( phase_status == 0 )) && [[ $phase_name == src_unpack && ${S-} ]]; then
-		# Portage leaves S absent while src_unpack runs so custom unpack phases
-		# can rename an extracted tree into place, then guarantees the source
-		# directory exists before src_prepare. Source-less packages rely on the
-		# latter half of that contract.
-		mkdir -p -- "$S" || phase_status=$?
+	if (( ARISE_PHASE_STATUS == 0 )); then
+		arise_validate_source_directory || ARISE_PHASE_STATUS=$?
 	fi
-	if (( phase_status == 0 )) && [[ $phase_name == src_install ]]; then
-		arise_run_install_qa_checks || phase_status=$?
+	if (( ARISE_PHASE_STATUS == 0 )) && [[ $ARISE_RUNNING_PHASE == src_install ]]; then
+		arise_run_install_qa_checks || ARISE_PHASE_STATUS=$?
 	fi
-	if (( phase_status == 0 )) && [[ $phase_name == src_install ]]; then
-		arise_finalize_install_image || phase_status=$?
+	if (( ARISE_PHASE_STATUS == 0 )) && [[ $ARISE_RUNNING_PHASE == src_install ]]; then
+		arise_finalize_install_image || ARISE_PHASE_STATUS=$?
 	fi
-  cd "$old_directory" || return
-  return "$phase_status"
+  cd "$ARISE_OLD_DIRECTORY" || return
+  [[ ! $ARISE_EMPTY_DIRECTORY ]] || rm -rf -- "$ARISE_EMPTY_DIRECTORY"
+  ARISE_LAST_PHASE=$ARISE_RUNNING_PHASE
+  return "$ARISE_PHASE_STATUS"
 }
 
-arise_save_phase_environment() {
-	local output=${ARISE_SAVE_ENVIRONMENT-} temporary name declaration phase_name
-	[[ $output ]] || return 0
-	temporary=${output}.tmp.$$
-	: >"$temporary" || return
-	while IFS= read -r name; do
-		case $name in
-			ARISE_*|SANDBOX_*|LD_PRELOAD|BASH*|BASHPID|EUID|UID|PPID|SHELLOPTS|FUNCNAME|GROUPS|PIPESTATUS|DIRSTACK|LINENO|RANDOM|SECONDS|SHLVL|_|status|log_file|sequence_file) continue ;;
-			CATEGORY|PN|PV|PR|P|PVR|PF|SLOT|ROOT|EROOT|SYSROOT|ESYSROOT|BROOT|WORKDIR|S|D|ED|T|FILESDIR|DISTDIR|HOME|TMPDIR|TMP|TEMP|EBUILD_PHASE|EBUILD_PHASE_FUNC|PORTAGE_LOG_FILE|PORTAGE_BUILDDIR|PORTAGE_CONFIGROOT) continue ;;
-		esac
-		[[ $name =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-		declaration=$(declare -p "$name" 2>/dev/null) || continue
-		[[ $declaration == declare\ -r* || $declaration == declare\ -ar* || $declaration == declare\ -Ar* ]] && continue
-		printf '%s\n' "$declaration" >>"$temporary" || return
-	done < <(compgen -v | LC_ALL=C sort -u)
-	for phase_name in pkg_pretend pkg_setup pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
-		declare -F "$phase_name" >/dev/null || continue
-		declare -f "$phase_name" >>"$temporary" || return
+arise_write_phase_environment() {
+	local ARISE_SAVE_NAME ARISE_SAVE_DECLARATION
+	local -a ARISE_SAVE_FUNCTIONS=()
+	arise_refresh_defined_phases
+	printf '# ARISE_PHASE_STATE_V2\n' || return
+	for ARISE_SAVE_NAME in "${!ARISE_INITIAL_VARIABLES[@]}"; do
+		arise_persist_variable "$ARISE_SAVE_NAME" || continue
+		declare -p "$ARISE_SAVE_NAME" >/dev/null 2>&1 || printf 'unset -v %s\n' "$ARISE_SAVE_NAME" || return
 	done
-	mv -f -- "$temporary" "$output"
+	# Bash quotes newlines inside declarations, so each complete variable is
+	# emitted on one line. Dump in bulk to avoid a subshell per variable.
+	while IFS= read -r ARISE_SAVE_DECLARATION; do
+		ARISE_SAVE_NAME=${ARISE_SAVE_DECLARATION#declare }
+		ARISE_SAVE_NAME=${ARISE_SAVE_NAME#* }
+		ARISE_SAVE_NAME=${ARISE_SAVE_NAME%%=*}
+		arise_persist_variable "$ARISE_SAVE_NAME" || continue
+		printf '%s\n' "$ARISE_SAVE_DECLARATION" || return
+	done < <(declare -p | LC_ALL=C sort)
+	while IFS= read -r ARISE_SAVE_NAME; do
+		case $ARISE_SAVE_NAME in arise_*|run_one_phase) continue ;; esac
+		[[ ! ${ARISE_WORKER_FUNCTIONS[$ARISE_SAVE_NAME]-} ]] || continue
+		ARISE_SAVE_FUNCTIONS+=("$ARISE_SAVE_NAME")
+	done < <(compgen -A function | LC_ALL=C sort -u)
+	(( ${#ARISE_SAVE_FUNCTIONS[@]} == 0 )) || declare -f "${ARISE_SAVE_FUNCTIONS[@]}" || return
+	return 0
+}
+arise_save_phase_environment() {
+	local ARISE_SAVE_OUTPUT=${ARISE_SAVE_ENVIRONMENT-} ARISE_SAVE_TEMPORARY
+	[[ $ARISE_SAVE_OUTPUT ]] || return 0
+	[[ ${ARISE_LAST_PHASE-} != pkg_pretend ]] || return 0
+	ARISE_SAVE_TEMPORARY=$(mktemp "${ARISE_SAVE_OUTPUT}.tmp.XXXXXXXX") || return
+	if arise_write_phase_environment >"$ARISE_SAVE_TEMPORARY" && chmod 0644 "$ARISE_SAVE_TEMPORARY" && mv -f -- "$ARISE_SAVE_TEMPORARY" "$ARISE_SAVE_OUTPUT"; then
+		return 0
+	fi
+	rm -f -- "$ARISE_SAVE_TEMPORARY"
+	return 1
 }
 
-if (( status == 0 )) && [[ $ARISE_COMMAND == discover_phases ]]; then
+if (( ARISE_STATUS == 0 )) && [[ $ARISE_COMMAND == discover_phases ]]; then
   for phase in pkg_pretend pkg_setup src_unpack src_prepare src_configure src_compile src_test src_install pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
     declare -F "$phase" >/dev/null && emit '"kind":"phase","message":"'"$phase"'"'
   done
-elif (( status == 0 )) && [[ $ARISE_COMMAND == run_phase ]]; then
-	  ( run_one_phase "$ARISE_PHASE" && arise_save_phase_environment ) >>"$log_file" 2>&1 || status=$?
-elif (( status == 0 )) && [[ $ARISE_COMMAND == run_phases ]]; then
+elif (( ARISE_STATUS == 0 )) && [[ $ARISE_COMMAND == run_phase ]]; then
 	  (
-	    while IFS= read -r phase_name; do
-	      [[ $phase_name ]] || continue
-	      run_one_phase "$phase_name" || exit $?
+		run_one_phase "$ARISE_PHASE" || exit $?
+		[[ ${ARISE_EMIT_METADATA-} != 1 ]] || arise_emit_metadata
+		arise_save_phase_environment
+	  ) >>"$ARISE_LOG_FILE" 2>&1 || ARISE_STATUS=$?
+elif (( ARISE_STATUS == 0 )) && [[ $ARISE_COMMAND == run_phases ]]; then
+	  (
+	    while IFS= read -r ARISE_BATCH_PHASE; do
+	      [[ $ARISE_BATCH_PHASE ]] || continue
+	      run_one_phase "$ARISE_BATCH_PHASE" || exit $?
 	    done <<< "${ARISE_PHASES-}"
-	  ) >>"$log_file" 2>&1 || status=$?
+		[[ ${ARISE_EMIT_METADATA-} != 1 ]] || arise_emit_metadata
+		arise_save_phase_environment
+	  ) >>"$ARISE_LOG_FILE" 2>&1 || ARISE_STATUS=$?
 fi
 while IFS= read -r line; do
   if [[ $line == $'\036ARISE_ELOG|'* ]]; then
@@ -1105,11 +1225,11 @@ while IFS= read -r line; do
   fi
   escaped=$(escape_json "$line")
   emit '"kind":"log","stream":"stdout","message":"'"$escaped"'"'
-done <"$log_file"
-rm -f -- "$log_file"
-log_file=
+done <"$ARISE_LOG_FILE"
+rm -f -- "$ARISE_LOG_FILE"
+ARISE_LOG_FILE=
 ARISE_RESULT_EMITTED=1
-emit '"kind":"result","exit_code":'"$status"
-rm -f -- "$sequence_file"
-sequence_file=
-exit "$status"
+emit '"kind":"result","exit_code":'"$ARISE_STATUS"
+rm -f -- "$ARISE_SEQUENCE_FILE"
+ARISE_SEQUENCE_FILE=
+exit "$ARISE_STATUS"

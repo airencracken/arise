@@ -1832,9 +1832,9 @@ func TestRebuildPackageRevisionUsesPWithoutRevision(t *testing.T) {
 	}
 	ebuildContent := `EAPI=8
 src_unpack() {
-	[[ ${PV} == 1.2.3 && ${PR} == r1 && ${PVR} == 1.2.3-r1 ]] || return 41
-	[[ ${P} == revision-test-1.2.3 && ${PF} == revision-test-1.2.3-r1 ]] || return 42
-	[[ ${S} == "${WORKDIR}/revision-test-1.2.3" ]] || return 43
+	[[ ${PV} == 1.2.3 && ${PR} == r1 && ${PVR} == 1.2.3-r1 ]] || die assertion-41
+	[[ ${P} == revision-test-1.2.3 && ${PF} == revision-test-1.2.3-r1 ]] || die assertion-42
+	[[ ${S} == "${WORKDIR}/revision-test-1.2.3" ]] || die assertion-43
 	mkdir -p "${S}"
 	printf 'revision identity\n' > "${S}/payload"
 }

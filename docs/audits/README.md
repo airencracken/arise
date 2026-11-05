@@ -1,5 +1,9 @@
 # Audit evidence
 
+The [phase-state audit](PHASE_STATE_AUDIT_2026-11-04.md) covers state lost between
+workers, source directories, lifecycle snapshots, isolation bindings, and
+Portage differential tests prompted by the binutils-libs failure.
+
 The [world-update audit](WORLD_UPDATE_AUDIT_2026-10-11.md) records the blocker
 loop, ABI/validation regressions and measured latency correction.
 The [release review](../reviews/2026-10-11-stabilization-release.md) covers

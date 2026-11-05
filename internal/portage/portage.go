@@ -19,21 +19,15 @@ import (
 // PhaseEnvironmentABI identifies artifact-affecting package execution
 // semantics. Packages built by Arise persist this value in VDB so a later ABI
 // change cannot be hidden behind unchanged USE metadata.
-const PhaseEnvironmentABI = "4"
+const PhaseEnvironmentABI = "5"
 
 // PhaseEnvironmentABICompatible reports whether an installed Arise artifact
-// remains valid under the current execution ABI. ABI 3 changed only
-// architecture-aware distfile selection. ABI 4 adds a read-only fallback for
-// version queries which previously failed the phase instead of committing an
-// ambiguous artifact. Successfully committed ABI-2/3 artifacts therefore do
-// not require a mass rebuild.
+// remains valid under the current execution ABI. ABI 5 preserves complete phase
+// state. Earlier versions could silently lose values and helper settings that
+// affect installed payloads, so successfully committed older artifacts also
+// require rebuilding. Unmarked Portage artifacts are handled by the resolver.
 func PhaseEnvironmentABICompatible(installed string) bool {
-	switch installed {
-	case PhaseEnvironmentABI, "3", "2":
-		return true
-	default:
-		return false
-	}
+	return installed == PhaseEnvironmentABI
 }
 
 var refPattern = regexp.MustCompile(`\$\{([^}]+)\}`)

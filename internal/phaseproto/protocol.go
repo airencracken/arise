@@ -27,6 +27,10 @@ import (
 
 const Version = 1
 
+// SavedEnvironmentMarker identifies complete phase state, including functions
+// intentionally removed during the build. Older snapshots need legacy fallback.
+const SavedEnvironmentMarker = "# ARISE_PHASE_STATE_V2"
+
 type IsolationMode string
 
 const (
@@ -152,6 +156,13 @@ func (r Request) validateCommand() error {
 	validPhases := r.Command == "run_phases" && r.Phase == "" && len(r.Phases) != 0
 	validDiscovery := r.Command == "discover_phases" && r.Phase == "" && len(r.Phases) == 0
 	validMetadata := r.Command == "evaluate_metadata" && r.Phase == "" && len(r.Phases) == 0
+	if validPhases && len(r.Phases) > 1 {
+		for _, phase := range r.Phases {
+			if phase == "pkg_pretend" {
+				return fmt.Errorf("phase protocol: pkg_pretend must run separately from the build sequence")
+			}
+		}
+	}
 	if validPhase || validPhases || validDiscovery || validMetadata {
 		return nil
 	}
@@ -519,6 +530,7 @@ func warnNamespace(writer io.Writer, warning string) {
 }
 
 func isolatedBashCommand(ctx context.Context, request Request, isolateNetwork bool) (*exec.Cmd, Request, error) {
+	originalRequest := request
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
 		return nil, request, fmt.Errorf("phase isolation: bubblewrap is required: %w", err)
@@ -639,6 +651,7 @@ func isolatedBashCommand(ctx context.Context, request Request, isolateNetwork bo
 		bind("--bind", request.LogFile, "/run/arise/build.log")
 		request.LogFile = "/run/arise/build.log"
 	}
+	remapPhaseEnvironmentPaths(&request, originalRequest, bind)
 	if isolateNetwork {
 		args = append(args[:7], append([]string{"--unshare-net"}, args[7:]...)...)
 	}
@@ -648,6 +661,47 @@ func isolatedBashCommand(ctx context.Context, request Request, isolateNetwork bo
 	command.Dir = "/"
 	request.Ebuild = "/run/arise/ebuild"
 	return command, request, nil
+}
+
+func remapPhaseEnvironmentPaths(request *Request, original Request, bind func(string, string, string)) {
+	mapped := func(path string) (string, bool) {
+		for _, pair := range [][2]string{
+			{original.TempDir, request.TempDir}, {original.HomeDir, request.HomeDir},
+			{original.WorkDir, request.WorkDir}, {original.BuildDir, request.BuildDir},
+			{original.ImageDir, request.ImageDir},
+		} {
+			if pair[0] == "" || path == "" {
+				continue
+			}
+			relative, err := filepath.Rel(pair[0], path)
+			if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return filepath.Join(pair[1], relative), true
+			}
+		}
+		return "", false
+	}
+	outputParent := ""
+	if original.SaveEnvironment != "" {
+		if path, ok := mapped(original.SaveEnvironment); ok {
+			request.SaveEnvironment = path
+		} else {
+			outputParent = filepath.Dir(original.SaveEnvironment)
+			// Bind the parent, since atomic publication renames a temporary
+			// sibling over the output. A bind-mounted file cannot be replaced.
+			bind("--bind", outputParent, "/run/arise/phase-output")
+			request.SaveEnvironment = filepath.Join("/run/arise/phase-output", filepath.Base(original.SaveEnvironment))
+		}
+	}
+	if original.EnvironmentOverlay != "" {
+		if path, ok := mapped(original.EnvironmentOverlay); ok {
+			request.EnvironmentOverlay = path
+		} else if outputParent != "" && filepath.Dir(original.EnvironmentOverlay) == outputParent {
+			request.EnvironmentOverlay = filepath.Join("/run/arise/phase-output", filepath.Base(original.EnvironmentOverlay))
+		} else {
+			bind("--ro-bind", original.EnvironmentOverlay, "/run/arise/phase-input")
+			request.EnvironmentOverlay = "/run/arise/phase-input"
+		}
+	}
 }
 
 func runWorkerCommand(command *exec.Cmd, request Request) ([]Event, error) {
@@ -859,6 +913,9 @@ func runWorkerCommandWithOptions(command *exec.Cmd, request Request, cancelGrace
 		return events, fmt.Errorf("phase worker protocol: stream ended before terminal result; stderr: %s", strings.TrimSpace(stderr.String()))
 	}
 	if runErr != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return events, fmt.Errorf("phase worker: %w; stderr: %s", runErr, detail)
+		}
 		return events, fmt.Errorf("phase worker: %w", runErr)
 	}
 	if exitCode := events[len(events)-1].ExitCode; exitCode == nil || *exitCode != 0 {

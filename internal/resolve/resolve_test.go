@@ -3405,16 +3405,19 @@ func TestResolve_WorldSetEmpty(t *testing.T) {
 }
 
 func TestResolveReinstallsOlderArisePhaseEnvironmentABI(t *testing.T) {
-	g := makeGraph()
-	installed := pkg(g, "app-misc/example", "1", "0", "0", true, nil)
-	installed.InstalledPhaseEnvABI = "older"
-
-	result, err := Resolve(g, []string{"app-misc/example"}, DefaultResolveConfig())
-	if err != nil {
-		t.Fatalf("resolve: %v", err)
-	}
-	if len(result.Install) != 1 || result.Install[0].Action != "reinstall" {
-		t.Fatalf("environment ABI repair plan = %#v", result.Install)
+	for _, abi := range []string{"older", "2", "3", "4"} {
+		t.Run(abi, func(t *testing.T) {
+			g := makeGraph()
+			installed := pkg(g, "app-misc/example", "1", "0", "0", true, nil)
+			installed.InstalledPhaseEnvABI = abi
+			result, err := Resolve(g, []string{"app-misc/example"}, DefaultResolveConfig())
+			if err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if len(result.Install) != 1 || result.Install[0].Action != "reinstall" {
+				t.Fatalf("environment ABI repair plan = %#v", result.Install)
+			}
+		})
 	}
 }
 
@@ -3434,14 +3437,14 @@ func TestResolveDoesNotTreatUnmarkedPortagePackageAsOldAriseABI(t *testing.T) {
 func TestResolveRetainsCompatiblePhaseEnvironmentABI(t *testing.T) {
 	g := makeGraph()
 	installed := pkg(g, "app-misc/example", "1", "0", "0", true, nil)
-	installed.InstalledPhaseEnvABI = "2"
+	installed.InstalledPhaseEnvABI = portage.PhaseEnvironmentABI
 
 	result, err := Resolve(g, []string{"app-misc/example"}, DefaultResolveConfig())
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if len(result.Install) != 0 {
-		t.Fatalf("compatible ABI-2 artifact unexpectedly rebuilt: %#v", result.Install)
+		t.Fatalf("current execution ABI artifact unexpectedly rebuilt: %#v", result.Install)
 	}
 }
 

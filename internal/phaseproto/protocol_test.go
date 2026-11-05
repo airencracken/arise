@@ -717,7 +717,7 @@ func TestBashWorkerUnpackUsesWorkDirAndLifecycleDefaultsAreNoOps(t *testing.T) {
 		}
 	}
 	ebuild := filepath.Join(directory, "pkg-1.ebuild")
-	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_unpack() { [[ $PWD == $WORKDIR ]] || return 41; mkdir -p \"$S\"; }\n"), 0o644); err != nil {
+	if err := os.WriteFile(ebuild, []byte("EAPI=8\nsrc_unpack() { [[ $PWD == $WORKDIR ]] || die assertion-41; mkdir -p \"$S\"; }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	base := Request{Protocol: Version, EAPI: "8", Ebuild: ebuild, WorkDir: work, SourceDir: source, ImageDir: image}
@@ -1095,7 +1095,7 @@ func TestBashWorkerPreservesSafeEbuildSourceDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	ebuild := filepath.Join(directory, "pkg-1.ebuild")
-	content := "EAPI=8\nS=\"${WORKDIR}/Upstream-1\"\nsrc_prepare() { [[ $PWD == \"$S\" ]] || return 42; }\n"
+	content := "EAPI=8\nS=\"${WORKDIR}/Upstream-1\"\nsrc_prepare() { [[ $PWD == \"$S\" ]] || die assertion-42; }\n"
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1112,7 +1112,7 @@ func TestBashWorkerPreservesSafeEbuildSourceDirectory(t *testing.T) {
 	}
 }
 
-func TestBashWorkerCreatesSourceDirectoryAfterSourceLessUnpack(t *testing.T) {
+func TestBashWorkerSourceLessPhasesUseWorkdirWithoutCreatingS(t *testing.T) {
 	directory := t.TempDir()
 	work := filepath.Join(directory, "work")
 	source := filepath.Join(work, "source-less-1")
@@ -1130,10 +1130,12 @@ func TestBashWorkerCreatesSourceDirectoryAfterSourceLessUnpack(t *testing.T) {
 	if _, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
 		t.Fatalf("source-less src_unpack: %v", err)
 	}
-	if info, err := os.Stat(source); err != nil {
-		t.Fatalf("source directory was not created after src_unpack: %v", err)
-	} else if !info.IsDir() {
-		t.Fatalf("source path is not a directory: %s", source)
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("source-less unpack manufactured an empty source directory: %v", err)
+	}
+	request.ID, request.Phase = "source-less-prepare", "src_prepare"
+	if _, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
+		t.Fatalf("source-less default prepare did not fall back to WORKDIR: %v", err)
 	}
 }
 
@@ -1142,9 +1144,9 @@ func TestBashWorkerHasUsesExactArgumentMembership(t *testing.T) {
 	ebuild := filepath.Join(directory, "pkg-1.ebuild")
 	content := `EAPI=8
 src_compile() {
-  has 8 7 8 || return 31
-  ! has 8 7 80 || return 32
-  ! has 8 || return 33
+  has 8 7 8 || die assertion-31
+  ! has 8 7 80 || die assertion-32
+  ! has 8 || die assertion-33
 }`
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -1160,9 +1162,9 @@ func TestBashWorkerBestVersionUsesPreflightedDomainSnapshot(t *testing.T) {
 	ebuild := filepath.Join(directory, "pkg-1.ebuild")
 	content := `EAPI=8
 src_compile() {
-  [[ $(best_version -b dev-python/gpep517) == dev-python/gpep517-19 ]] || return 31
-  [[ $(best_version dev-python/gpep517) == dev-python/gpep517-18 ]] || return 32
-  [[ -z $(best_version -b dev-python/missing) ]] || return 33
+  [[ $(best_version -b dev-python/gpep517) == dev-python/gpep517-19 ]] || die assertion-31
+  [[ $(best_version dev-python/gpep517) == dev-python/gpep517-18 ]] || die assertion-32
+  [[ -z $(best_version -b dev-python/missing) ]] || die assertion-33
 }`
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -1236,18 +1238,18 @@ func TestBashWorkerUseHelperPrimitives(t *testing.T) {
 	content := `EAPI=8
 IUSE="+ssl -test examples"
 src_compile() {
-  in_iuse ssl || return 31
-  in_iuse test || return 32
-  ! in_iuse missing || return 33
-  [[ $(usev ssl) == ssl ]] || return 34
-  [[ $(usev ssl custom) == custom ]] || return 35
-  ! usev test >/dev/null || return 36
-  [[ $(use_with ssl crypto openssl) == --with-crypto=openssl ]] || return 37
-  [[ $(use_with test tests) == --without-tests ]] || return 38
-  [[ $(use_enable examples demos) == --enable-demos ]] || return 39
-  [[ $(use_enable test tests) == --disable-tests ]] || return 40
-  use '!test' || return 41
-  ! use '!ssl' || return 42
+  in_iuse ssl || die assertion-31
+  in_iuse test || die assertion-32
+  ! in_iuse missing || die assertion-33
+  [[ $(usev ssl) == ssl ]] || die assertion-34
+  [[ $(usev ssl custom) == custom ]] || die assertion-35
+  ! usev test >/dev/null || die assertion-36
+  [[ $(use_with ssl crypto openssl) == --with-crypto=openssl ]] || die assertion-37
+  [[ $(use_with test tests) == --without-tests ]] || die assertion-38
+  [[ $(use_enable examples demos) == --enable-demos ]] || die assertion-39
+  [[ $(use_enable test tests) == --disable-tests ]] || die assertion-40
+  use '!test' || die assertion-41
+  ! use '!ssl' || die assertion-42
 }`
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -1263,14 +1265,14 @@ func TestBashWorkerSandboxPathHelpers(t *testing.T) {
 	ebuild := filepath.Join(directory, "pkg-1.ebuild")
 	content := `EAPI=8
 src_configure() {
-  addwrite /run/sshd /var/lib/sshd || return 31
-  addread /etc/ssh || return 32
-  adddeny /root/secret || return 33
-  addpredict /var/cache/ssh || return 34
-  [[ ${SANDBOX_WRITE} == /existing:/run/sshd:/var/lib/sshd ]] || return 35
-  [[ ${SANDBOX_READ} == /etc/ssh ]] || return 36
-  [[ ${SANDBOX_DENY} == /root/secret ]] || return 37
-  [[ ${SANDBOX_PREDICT} == /var/cache/ssh ]] || return 38
+  addwrite /run/sshd /var/lib/sshd || die assertion-31
+  addread /etc/ssh || die assertion-32
+  adddeny /root/secret || die assertion-33
+  addpredict /var/cache/ssh || die assertion-34
+  [[ ${SANDBOX_WRITE} == /existing:/run/sshd:/var/lib/sshd ]] || die assertion-35
+  [[ ${SANDBOX_READ} == /etc/ssh ]] || die assertion-36
+  [[ ${SANDBOX_DENY} == /root/secret ]] || die assertion-37
+  [[ ${SANDBOX_PREDICT} == /var/cache/ssh ]] || die assertion-38
 }`
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -1290,7 +1292,7 @@ func TestBashWorkerFind0ConsumesNullTerminatedRoots(t *testing.T) {
 	content := `EAPI=8
 src_compile() {
   found=$(printf '%s\0' "${WORKDIR}" | find0 -type f -name config.log -print)
-  [[ ${found} == "${WORKDIR}/config.log" ]] || return 31
+  [[ ${found} == "${WORKDIR}/config.log" ]] || die assertion-31
 }`
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -1308,8 +1310,8 @@ func TestBashWorkerNonfatalContainsCommandFailureButNotDie(t *testing.T) {
 expected_failure() { printf expected; return 23; }
 src_compile() {
   nonfatal expected_failure
-  [[ $? == 23 ]] || return 31
-  [[ ${PORTAGE_NONFATAL-unset} == unset ]] || return 33
+  [[ $? == 23 ]] || die assertion-31
+  [[ ${PORTAGE_NONFATAL-unset} == unset ]] || die assertion-33
   printf 'survived\n'
 }`
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
@@ -2329,7 +2331,7 @@ func TestNamespaceCommandWrapsSandboxedWorkerAsOuterExecutable(t *testing.T) {
 func TestPhaseEnvironmentOverlayCarriesStateAcrossWorkers(t *testing.T) {
 	directory := t.TempDir()
 	ebuild := filepath.Join(directory, "pkg-1.ebuild")
-	content := "EAPI=8\npkg_setup() { PHASE_VALUE=from-setup; PHASE_ARRAY=(one two); SANDBOX_WRITE=/package-only; }\nsrc_prepare() { [[ $PHASE_VALUE == from-setup && ${PHASE_ARRAY[1]} == two ]]; }\n"
+	content := "EAPI=8\npkg_setup() { PHASE_VALUE=from-setup; PHASE_ARRAY=(one two); SANDBOX_WRITE=/package-only; }\nsrc_prepare() { [[ $PHASE_VALUE == from-setup && ${PHASE_ARRAY[1]} == two ]] || die 'phase state was lost'; }\n"
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
