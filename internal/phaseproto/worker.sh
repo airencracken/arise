@@ -887,18 +887,21 @@ arise_finalize_install_image() {
 	fi
 	return 0
 }
-arise_run_install_qa_checks() {
+arise_run_install_qa_checks() (
 	local check
 	: "${PORTAGE_INST_UID:=0}" "${PORTAGE_INST_GID:=0}"
 	: "${PORTAGE_TMPDIR:=${WORKDIR%/*}}" "${PORTAGE_PYTHON:=python3}"
 	while IFS= read -r check; do
 		[[ $check ]] || continue
-		if ! source "$check"; then
+		# Portage treats each QA check as an external script while passing the
+		# package environment through. Keep its image edits and diagnostics,
+		# but discard functions, options, variables, traps, and directory changes.
+		if ! ( source "$check" ); then
 			eerror "Install QA check ${check##*/} failed to run"
 		fi
 	done <<< "${ARISE_INSTALL_QA_CHECKS-}"
 	return 0
-}
+)
 arise_persist_variable() {
 	case $1 in
 		S|ARISE_INHERITED|ARISE_DOCOMPRESS|ARISE_DOCOMPRESS_SKIP|ARISE_DOSTRIP|ARISE_DOSTRIP_SKIP) return 0 ;;

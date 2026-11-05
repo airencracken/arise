@@ -15,6 +15,31 @@ import (
 	"github.com/airencracken/arise/internal/distfiles"
 )
 
+func TestLiveBashCompletionQADoesNotLeakIntoPreinst(t *testing.T) {
+	const check = "/usr/lib/portage/python3.14/install-qa-check.d/60bash-completion"
+	for _, path := range []string{check, "/usr/share/bash-completion/bash_completion"} {
+		if _, err := os.Stat(path); err != nil {
+			t.Skipf("Bash completion QA reference unavailable: %s", path)
+		}
+	}
+	request := phaseStateRequest(t, `src_unpack() { mkdir -p "$S"; }
+src_install() {
+	dodir /usr/share/bash-completion/completions
+	printf 'complete -F _comp_complete_minimal state-probe\n' > "$ED/usr/share/bash-completion/completions/state-probe"
+}
+pkg_preinst() {
+	! declare -F _comp_abspath >/dev/null || die 'Bash completion helpers leaked from QA'
+	! shopt -q extglob || die 'Bash completion options leaked from QA'
+	printf passed > "$T/observed"
+}`)
+	request.InstallQAChecks = []string{check}
+	runPhaseStateSequence(t, request, true, "src_unpack", "src_install", "pkg_preinst")
+	data, err := os.ReadFile(filepath.Join(request.TempDir, "observed"))
+	if err != nil || string(data) != "passed" {
+		t.Fatalf("pkg_preinst = %q, %v", data, err)
+	}
+}
+
 func TestLivePhaseStateMatchesPortage(t *testing.T) {
 	ebuildCommand, err := exec.LookPath("ebuild")
 	if err != nil {
