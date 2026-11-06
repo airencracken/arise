@@ -26,7 +26,8 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 		"acceptance gates",
 	)
 	assertPresent(t, readme,
-		"arise sync\narise -1 --reinstall =sys-apps/arise-"+projectReleaseVersion(t),
+		"bootstrap the replacement using Portage:",
+		"emaint sync -r arise-overlay\nemerge -1 =sys-apps/arise-"+projectReleaseVersion(t),
 		"sys-apps/arise ~amd64",
 		"sys-apps/arise-bin ~amd64",
 		"emerge --ask sys-apps/arise-bin",
