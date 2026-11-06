@@ -28,20 +28,28 @@ func TestSourcePhaseStateSurvivesInstallAndRemoval(t *testing.T) {
 	}
 	const content = `EAPI=8
 SLOT=0
-pkg_setup() { PHASE_VALUE=setup; }
+ARISE_DOCOMPRESS=package-private
+pkg_setup() { export PHASE_VALUE=setup; }
 src_unpack() {
 	S="${WORKDIR}/upstream-1"
 	mkdir -p "$S" || die
 	printf 'phase-state payload\n' > "$S/payload"
 	phase_helper() { printf '%s' "$PHASE_VALUE"; }
+	export -f phase_helper
 }
 src_prepare() { [[ $(phase_helper) == setup ]] || die 'lost setup state'; PHASE_VALUE=prepare; default; }
 src_install() {
+	: <<'PHASE_DOCUMENTATION'
+pkg_info ()
+{
+	printf 'documentation, not a hook'
+}
+PHASE_DOCUMENTATION
 	[[ $(phase_helper) == prepare ]] || die 'lost prepare state'
 	insinto /usr/share/state-probe; doins payload
 	unset -f pkg_info
-	pkg_config() { phase_helper > "$ROOT/config-state"; }
-	pkg_postinst() { [[ $(phase_helper) == preinst ]] || die 'lost preinst state'; PHASE_VALUE=postinst; }
+	pkg_config() { [[ $ARISE_DOCOMPRESS == package-private ]] || die 'package data was interpreted as legacy state'; bash -c phase_helper > "$ROOT/config-state"; }
+	pkg_postinst() { [[ $(bash -c phase_helper) == preinst ]] || die 'lost preinst state'; PHASE_VALUE=postinst; }
 }
 pkg_info() { die 'removed hook was resurrected'; }
 pkg_preinst() { [[ $(phase_helper) == prepare ]] || die 'lost build state'; PHASE_VALUE=preinst; }
@@ -59,6 +67,7 @@ pkg_postrm() { [[ $(phase_helper) == prerm ]] || die 'lost prerm state'; printf 
 		WorkDirBase: filepath.Join(base, "work"), DistfilesDir: filepath.Join(base, "distfiles"),
 		PhaseLogDir: filepath.Join(base, "logs"), JournalDir: filepath.Join(base, "journals"),
 		PhaseProtocol: true, Repository: "test", Repositories: []portage.RepoEntry{{Name: "test", Location: repo}},
+		CFLAGS: "first\n# ARISE_PHASE_STATE_V2\nlast",
 	}
 	if err := RebuildPackage(context.Background(), "app-misc/state-probe-1", &cfg); err != nil {
 		t.Fatal(err)
@@ -99,12 +108,12 @@ pkg_postrm() { [[ $(phase_helper) == prerm ]] || die 'lost prerm state'; printf 
 }
 
 func TestInstalledSnapshotExcludesWorkerIsolationControls(t *testing.T) {
-	request := phaseproto.Request{Env: map[string]string{"CFLAGS": "-O2", "SANDBOX_WRITE": "/old/build", "LD_PRELOAD": "/old/sandbox.so"}}
+	request := phaseproto.Request{Env: map[string]string{"CFLAGS": "-O2", "ARISE_COMMIT": "package-commit", "___ARISE_ID": "worker-id", "SANDBOX_WRITE": "/old/build", "LD_PRELOAD": "/old/sandbox.so"}}
 	state, err := savedProtocolEnvironment(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(state), "SANDBOX_WRITE") || strings.Contains(string(state), "LD_PRELOAD") || !strings.Contains(string(state), "export CFLAGS='-O2'") {
+	if strings.Contains(string(state), "SANDBOX_WRITE") || strings.Contains(string(state), "LD_PRELOAD") || strings.Contains(string(state), "___ARISE_ID") || !strings.Contains(string(state), "export CFLAGS='-O2'") || !strings.Contains(string(state), "export ARISE_COMMIT='package-commit'") {
 		t.Fatalf("installed state leaked worker controls or lost build flags: %s", state)
 	}
 }

@@ -1996,7 +1996,7 @@ func findInstalledReplacement(vdbDir, category, packageName, newVersion, slot st
 func protocolEnvironmentSnapshot(request phaseproto.Request) []byte {
 	values := make(map[string]string, len(request.Env)+32)
 	for name, value := range request.Env {
-		if strings.HasPrefix(name, "SANDBOX_") || strings.HasPrefix(name, "ARISE_") || name == "LD_PRELOAD" {
+		if strings.HasPrefix(name, "SANDBOX_") || strings.HasPrefix(name, "___ARISE_") || name == "LD_PRELOAD" {
 			continue
 		}
 		values[name] = value

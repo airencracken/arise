@@ -2499,7 +2499,7 @@ func TestWorkerEnvironmentIsMinimalAndExplicit(t *testing.T) {
 	content := `EAPI=8
 src_compile() {
   printf 'leak=%s custom=%s path=%s locale=%s id=%s phase=%s\n' \
-    "${HOST_ENV_LEAK-unset}" "${EXPLICIT_VALUE-unset}" "$PATH" "$LC_ALL" "$ARISE_ID" "$ARISE_PHASE"
+    "${HOST_ENV_LEAK-unset}" "${EXPLICIT_VALUE-unset}" "$PATH" "$LC_ALL" "$___ARISE_ID" "$___ARISE_PHASE"
 }
 `
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {

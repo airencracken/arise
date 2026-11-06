@@ -16,9 +16,19 @@ import (
 )
 
 func TestLiveBashCompletionQADoesNotLeakIntoPreinst(t *testing.T) {
-	const check = "/usr/lib/portage/python3.14/install-qa-check.d/60bash-completion"
+	binPath, err := exec.Command("portageq", "envvar", "PORTAGE_BIN_PATH").Output()
+	if err != nil {
+		if os.Getenv("ARISE_REQUIRE_PHASE_CONTRACT") == "1" {
+			t.Fatalf("required Portage QA reference unavailable: %v", err)
+		}
+		t.Skipf("Portage QA reference unavailable: %v", err)
+	}
+	check := filepath.Join(strings.TrimSpace(string(binPath)), "install-qa-check.d/60bash-completion")
 	for _, path := range []string{check, "/usr/share/bash-completion/bash_completion"} {
 		if _, err := os.Stat(path); err != nil {
+			if os.Getenv("ARISE_REQUIRE_PHASE_CONTRACT") == "1" {
+				t.Fatalf("required Bash completion QA reference unavailable: %s", path)
+			}
 			t.Skipf("Bash completion QA reference unavailable: %s", path)
 		}
 	}
@@ -43,17 +53,45 @@ pkg_preinst() {
 func TestLivePhaseStateMatchesPortage(t *testing.T) {
 	ebuildCommand, err := exec.LookPath("ebuild")
 	if err != nil {
+		if os.Getenv("ARISE_REQUIRE_PHASE_CONTRACT") == "1" {
+			t.Fatal("required Portage ebuild reference unavailable")
+		}
 		t.Skip("Portage ebuild command unavailable")
 	}
 	const body = `SLOT=0
 LICENSE=MIT
 KEYWORDS="~amd64"
-pkg_setup() { PHASE_VALUE=setup; PHASE_ARRAY=(one 'two words'); readonly PHASE_CONSTANT=constant; phase_helper() { printf '%s' "$PHASE_VALUE"; }; }
+ARISE_VERSION=package-version
+BASH_COMPLETION_COMPAT_DIR=package-completion
+PHASE_DELETE=global
+phase_removed_helper() { printf resurrected; }
+phase_replaced_helper() { printf initial; }
+pkg_setup() {
+	PHASE_VALUE=setup
+	PHASE_ARRAY=(one 'two words')
+	declare -gA PHASE_MAP=([key]=$'quoted "value"\nnext line')
+	declare -gi PHASE_INTEGER=17
+	declare -gl PHASE_LOWER=MiXeD
+	declare -gu PHASE_UPPER=MiXeD
+	declare -gn PHASE_REF=PHASE_VALUE
+	readonly PHASE_CONSTANT=constant
+	export PHASE_EXPORTED=exported-value
+	export XDG_CONFIG_HOME=contract-sentinel USER=contract-sentinel http_proxy=contract-sentinel CCACHE_DIR=contract-sentinel
+	phase_helper() { printf '%s' "$PHASE_VALUE"; }
+	phase_exported_helper() { printf exported-helper; }
+	export -f phase_exported_helper
+}
 src_unpack() { S="${WORKDIR}/upstream-1"; mkdir -p "$S" || die; }
-src_prepare() { PHASE_VALUE=prepare; docompress -x /usr/share/doc/state-probe-1; default; }
-src_compile() { PHASE_VALUE=compile; }
+src_prepare() { PHASE_VALUE=prepare; unset PHASE_DELETE; unset -f phase_removed_helper; phase_replaced_helper() { printf replaced; }; docompress -x /usr/share/doc/state-probe-1; default; }
+src_compile() { PHASE_VALUE=compile; export -n PHASE_EXPORTED; }
 src_install() {
 	printf '%s|%s|%s|%s|%s' "$(phase_helper)" "${PHASE_ARRAY[1]}" "$PHASE_CONSTANT" "${S##*/}" "${EBUILD_PHASE_FUNC@a}" > "$T/state"
+	printf '|%s|%s|%s|%s|%s|%s|%s|%s|%s' "$ARISE_VERSION" "$BASH_COMPLETION_COMPAT_DIR" "${PHASE_MAP[key]}" "$PHASE_INTEGER" "$PHASE_LOWER" "$PHASE_UPPER" "$PHASE_REF" "${PHASE_CONSTANT@a}" "$(bash -c phase_exported_helper)" >> "$T/state"
+	printf '|%s|%s|%s|%s' "${PHASE_EXPORTED@a}" "$PHASE_EXPORTED" "${PHASE_DELETE-unset}" "$(phase_replaced_helper)" >> "$T/state"
+	if declare -F phase_removed_helper >/dev/null; then printf '|resurrected'; else printf '|unset'; fi >> "$T/state"
+	for runtime_name in XDG_CONFIG_HOME USER http_proxy CCACHE_DIR; do
+		if [[ ${!runtime_name-} == contract-sentinel ]]; then printf '|stale'; else printf '|current'; fi
+	done >> "$T/state"
 	insinto /usr/share/doc/state-probe-1
 	newins "$T/state" state || die
 	printf '%0200d' 0 > "$T/plain"

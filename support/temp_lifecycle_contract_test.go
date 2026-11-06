@@ -37,7 +37,7 @@ func TestShellTemporaryCreatorsInstallCleanupTraps(t *testing.T) {
 	t.Parallel()
 
 	contracts := map[string]string{
-		"../internal/phaseproto/worker.sh":    "trap cleanup_worker_temporaries EXIT",
+		"../internal/phaseproto/worker.sh":    "trap ___arise_cleanup_worker_temporaries EXIT",
 		"../scripts/build-vendor-artifact.sh": "trap cleanup EXIT",
 		"../scripts/test-vendor-artifact.sh":  "trap cleanup EXIT",
 		"check-docs.sh":                       "trap cleanup EXIT",

@@ -68,9 +68,15 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 	if err != nil {
 		return fail(fmt.Errorf("installed lifecycle: read environment: %w", err))
 	}
-	environmentPhases, err := lifecycleFunctionsFromReader(strings.NewReader(string(environmentState)))
+	header, environmentPhases, err := phaseproto.ParseSavedEnvironmentHeader(environmentState)
 	if err != nil {
-		return fail(fmt.Errorf("installed lifecycle: inspect environment functions: %w", err))
+		return fail(fmt.Errorf("installed lifecycle: environment metadata: %w", err))
+	}
+	if header == nil {
+		environmentPhases, err = lifecycleFunctionsFromReader(strings.NewReader(string(environmentState)))
+		if err != nil {
+			return fail(fmt.Errorf("installed lifecycle: inspect legacy environment functions: %w", err))
+		}
 	}
 	repository := strings.TrimSpace(readInstalledValue(vdbPath, "repository"))
 	if repository == "" {
@@ -115,7 +121,7 @@ func OpenInstalledLifecycle(vdbPath string, cfg *RebuildConfig) (*InstalledLifec
 			phases[phase] = true
 		}
 	}
-	if strings.Contains("\n"+string(environmentState), "\n"+phaseproto.SavedEnvironmentMarker+"\n") {
+	if phaseproto.HasCompleteSavedEnvironment(environmentState) {
 		// Complete snapshots are authoritative even when a build phase added
 		// or deliberately removed hooks after the static metadata pass.
 		phases = environmentPhases

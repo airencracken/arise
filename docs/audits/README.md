@@ -1,5 +1,9 @@
 # Audit evidence
 
+The [shell-state contract audit](SHELL_STATE_CONTRACT_2026-11-05.md) follows the
+Arise self-upgrade failure across package names, attributes, eclass scope,
+snapshot migration, and the missing self-host release gate.
+
 The [install QA isolation follow-up](INSTALL_QA_ISOLATION_2026-11-05.md) records
 the QA shell boundary missed by the phase-state audit and the exact Bash
 completion syntax-error regression.

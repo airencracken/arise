@@ -9,6 +9,16 @@ import (
 	"github.com/airencracken/arise/internal/installedquery"
 )
 
+// A running older Arise can invoke the newly installed binary as its query
+// helper during a self-upgrade. Prefer the reserved protocol when present,
+// and accept its predecessor only when that protocol was not supplied.
+func phaseQueryEnvironment(name string) string {
+	if value, present := os.LookupEnv("___ARISE_" + name); present {
+		return value
+	}
+	return os.Getenv("ARISE_" + name)
+}
+
 // runPhaseQuery is an intentionally narrow, read-only subprocess interface
 // used by the isolated Bash worker when a version query was not statically
 // precomputed. It is handled before public CLI flag parsing.
@@ -21,9 +31,9 @@ func runPhaseQuery(args []string) int {
 	var vdb string
 	switch domain {
 	case "b":
-		vdb = os.Getenv("ARISE_QUERY_BROOT_VDB")
+		vdb = phaseQueryEnvironment("QUERY_BROOT_VDB")
 	case "d", "r":
-		vdb = os.Getenv("ARISE_QUERY_ROOT_VDB")
+		vdb = phaseQueryEnvironment("QUERY_ROOT_VDB")
 	default:
 		fmt.Fprintln(os.Stderr, "phase query: invalid dependency domain")
 		return 2

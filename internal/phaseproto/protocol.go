@@ -29,7 +29,18 @@ const Version = 1
 
 // SavedEnvironmentMarker identifies complete phase state, including functions
 // intentionally removed during the build. Older snapshots need legacy fallback.
-const SavedEnvironmentMarker = "# ARISE_PHASE_STATE_V2"
+const SavedEnvironmentMarker = "# ARISE_PHASE_STATE_V3"
+
+// HasCompleteSavedEnvironment also accepts the previous complete snapshot
+// format, whose helper state used names outside the reserved PM namespace.
+func HasCompleteSavedEnvironment(state []byte) bool {
+	if bytes.HasPrefix(state, []byte(SavedEnvironmentMarker+"\n")) {
+		_, _, err := ParseSavedEnvironmentHeader(state)
+		return err == nil
+	}
+	const legacy = "# ARISE_PHASE_STATE_V2\n"
+	return bytes.HasPrefix(state, []byte(legacy)) || bytes.Contains(state, []byte("\n"+legacy))
+}
 
 type IsolationMode string
 
@@ -719,37 +730,37 @@ func runWorkerCommandWithCancelGrace(command *exec.Cmd, request Request, cancelG
 func runWorkerCommandWithOptions(command *exec.Cmd, request Request, cancelGrace time.Duration, onEvent func(Event)) ([]Event, error) {
 	cancelled := configureProcessGroupCancellation(command, cancelGrace)
 	command.Env = []string{
-		"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "ARISE_ID=" + request.ID,
-		"ARISE_COMMAND=" + request.Command, "ARISE_PHASE=" + request.Phase, "ARISE_EAPI=" + request.EAPI, "ARISE_EBUILD=" + request.Ebuild,
+		"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "___ARISE_ID=" + request.ID,
+		"___ARISE_COMMAND=" + request.Command, "___ARISE_PHASE=" + request.Phase, "___ARISE_EAPI=" + request.EAPI, "___ARISE_EBUILD=" + request.Ebuild,
 	}
 	if request.Environment != "" {
-		command.Env = append(command.Env, "ARISE_ENVIRONMENT="+request.Environment)
+		command.Env = append(command.Env, "___ARISE_ENVIRONMENT="+request.Environment)
 	}
 	if request.EnvironmentOverlay != "" {
-		command.Env = append(command.Env, "ARISE_ENVIRONMENT_OVERLAY="+request.EnvironmentOverlay)
+		command.Env = append(command.Env, "___ARISE_ENVIRONMENT_OVERLAY="+request.EnvironmentOverlay)
 	}
 	if request.SaveEnvironment != "" {
-		command.Env = append(command.Env, "ARISE_SAVE_ENVIRONMENT="+request.SaveEnvironment)
+		command.Env = append(command.Env, "___ARISE_SAVE_ENVIRONMENT="+request.SaveEnvironment)
 	}
 	if request.EmitMetadata {
-		command.Env = append(command.Env, "ARISE_EMIT_METADATA=1")
+		command.Env = append(command.Env, "___ARISE_EMIT_METADATA=1")
 	}
 	if request.Policy.Configured && request.Policy.Strip {
-		command.Env = append(command.Env, "ARISE_STRIP=1")
+		command.Env = append(command.Env, "___ARISE_STRIP=1")
 	} else {
-		command.Env = append(command.Env, "ARISE_STRIP=0")
+		command.Env = append(command.Env, "___ARISE_STRIP=0")
 	}
 	if len(request.Phases) != 0 {
-		command.Env = append(command.Env, "ARISE_PHASES="+strings.Join(request.Phases, "\n"))
+		command.Env = append(command.Env, "___ARISE_PHASES="+strings.Join(request.Phases, "\n"))
 	}
 	if len(request.EclassDirs) != 0 {
-		command.Env = append(command.Env, "ARISE_ECLASS_DIRS="+strings.Join(request.EclassDirs, "\n"))
+		command.Env = append(command.Env, "___ARISE_ECLASS_DIRS="+strings.Join(request.EclassDirs, "\n"))
 	}
 	if len(request.UserPatchDirs) != 0 {
-		command.Env = append(command.Env, "ARISE_USER_PATCH_DIRS="+strings.Join(request.UserPatchDirs, "\n"))
+		command.Env = append(command.Env, "___ARISE_USER_PATCH_DIRS="+strings.Join(request.UserPatchDirs, "\n"))
 	}
 	if len(request.InstallQAChecks) != 0 {
-		command.Env = append(command.Env, "ARISE_INSTALL_QA_CHECKS="+strings.Join(request.InstallQAChecks, "\n"))
+		command.Env = append(command.Env, "___ARISE_INSTALL_QA_CHECKS="+strings.Join(request.InstallQAChecks, "\n"))
 	}
 	if len(request.HasVersion) != 0 {
 		queries := make([]string, 0, len(request.HasVersion))
@@ -766,7 +777,7 @@ func runWorkerCommandWithOptions(command *exec.Cmd, request Request, cancelGrace
 				encoded.WriteString("\t0\n")
 			}
 		}
-		command.Env = append(command.Env, "ARISE_HAS_VERSION="+encoded.String())
+		command.Env = append(command.Env, "___ARISE_HAS_VERSION="+encoded.String())
 	}
 	if len(request.BestVersion) != 0 {
 		queries := make([]string, 0, len(request.BestVersion))
@@ -781,13 +792,13 @@ func runWorkerCommandWithOptions(command *exec.Cmd, request Request, cancelGrace
 			encoded.WriteString(request.BestVersion[query])
 			encoded.WriteByte('\n')
 		}
-		command.Env = append(command.Env, "ARISE_BEST_VERSION="+encoded.String())
+		command.Env = append(command.Env, "___ARISE_BEST_VERSION="+encoded.String())
 	}
 	if request.QueryHelper != "" {
 		command.Env = append(command.Env,
-			"ARISE_QUERY_HELPER="+request.QueryHelper,
-			"ARISE_QUERY_ROOT_VDB="+request.QueryRootVDB,
-			"ARISE_QUERY_BROOT_VDB="+request.QueryBrootVDB,
+			"___ARISE_QUERY_HELPER="+request.QueryHelper,
+			"___ARISE_QUERY_ROOT_VDB="+request.QueryRootVDB,
+			"___ARISE_QUERY_BROOT_VDB="+request.QueryBrootVDB,
 		)
 	}
 	ebuildRoot := EbuildPathVariable(request.EAPI, request.RootDir)
@@ -844,7 +855,7 @@ func runWorkerCommandWithOptions(command *exec.Cmd, request Request, cancelGrace
 	sort.Strings(names)
 	for _, name := range names {
 		value := request.Env[name]
-		if !safeToken.MatchString(name) || strings.HasPrefix(name, "ARISE_") || packageIdentityEnvironment[name] || name == "PORTAGE_LOG_FILE" || name == "PORTAGE_BUILDDIR" || name == "PORTAGE_CONFIGROOT" || name == "EBUILD_PHASE" || name == "EBUILD_PHASE_FUNC" || name == "BASH_ENV" || name == "ENV" || name == "SHELLOPTS" || name == "PATH" || name == "WORKDIR" || name == "T" || name == "S" || name == "D" || name == "ED" || name == "ROOT" || name == "SYSROOT" || name == "BROOT" || name == "HOME" || name == "TMPDIR" || name == "TMP" || name == "TEMP" {
+		if !safeToken.MatchString(name) || strings.HasPrefix(name, "___ARISE_") || packageIdentityEnvironment[name] || name == "PORTAGE_LOG_FILE" || name == "PORTAGE_BUILDDIR" || name == "PORTAGE_CONFIGROOT" || name == "EBUILD_PHASE" || name == "EBUILD_PHASE_FUNC" || name == "BASH_ENV" || name == "ENV" || name == "SHELLOPTS" || name == "PATH" || name == "WORKDIR" || name == "T" || name == "S" || name == "D" || name == "ED" || name == "ROOT" || name == "SYSROOT" || name == "BROOT" || name == "HOME" || name == "TMPDIR" || name == "TMP" || name == "TEMP" {
 			return nil, fmt.Errorf("phase protocol: unsafe environment key %q", name)
 		}
 		command.Env = append(command.Env, name+"="+value)

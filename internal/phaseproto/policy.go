@@ -201,9 +201,9 @@ var packageEnvironmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // flags and package-specific variables, but may not replace the worker or its
 // controlled directory contract.
 var packageEnvironmentReserved = map[string]bool{
-	"ARISE_ID": true, "ARISE_COMMAND": true, "ARISE_PHASE": true,
-	"ARISE_EAPI": true, "ARISE_EBUILD": true, "ARISE_ECLASS_DIRS": true,
-	"ARISE_USER_PATCH_DIRS": true, "BASH_ENV": true, "ENV": true,
+	"___ARISE_ID": true, "___ARISE_COMMAND": true, "___ARISE_PHASE": true,
+	"___ARISE_EAPI": true, "___ARISE_EBUILD": true, "___ARISE_ECLASS_DIRS": true,
+	"___ARISE_USER_PATCH_DIRS": true, "BASH_ENV": true, "ENV": true,
 	"SHELLOPTS": true, "PATH": true, "WORKDIR": true, "T": true,
 	"S": true, "D": true, "ED": true, "ROOT": true, "SYSROOT": true,
 	"BROOT": true, "HOME": true, "TMPDIR": true, "TMP": true, "TEMP": true,
@@ -249,7 +249,7 @@ func packageIdentity(cpv, slot, repository string) (PackageIdentity, error) {
 func mergePackageEnvironment(base, command map[string]string) (map[string]string, error) {
 	result := make(map[string]string, len(base)+len(command))
 	for name, value := range base {
-		if !packageEnvironmentName.MatchString(name) || strings.HasPrefix(name, "ARISE_") || packageEnvironmentReserved[name] {
+		if !packageEnvironmentName.MatchString(name) || strings.HasPrefix(name, "___ARISE_") || packageEnvironmentReserved[name] {
 			return nil, fmt.Errorf("phase policy: package.env may not set %q", name)
 		}
 		result[name] = value

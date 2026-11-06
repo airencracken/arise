@@ -18,7 +18,15 @@ func savedProtocolEnvironment(request phaseproto.Request) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read final phase environment: %w", err)
 	}
-	return append(environment, state...), nil
+	// Frame the current format before the typed configuration header, so
+	// marker-like text inside a package value cannot select a legacy decoder.
+	header, _, err := phaseproto.ParseSavedEnvironmentHeader(state)
+	if err != nil {
+		return nil, fmt.Errorf("read final phase environment metadata: %w", err)
+	}
+	framed := append([]byte(nil), header...)
+	framed = append(framed, environment...)
+	return append(framed, state...), nil
 }
 
 // Installation has already committed when pkg_postinst finishes. Atomically

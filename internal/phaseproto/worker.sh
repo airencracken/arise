@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
 
 exec 3>&1
-readonly ARISE_WORKER_PID=$BASHPID
-ARISE_SEQUENCE_FILE=
-ARISE_LOG_FILE=
-cleanup_worker_temporaries() {
-	if [[ $BASHPID == "$ARISE_WORKER_PID" && ${ARISE_RESULT_EMITTED-} != 1 && -f $ARISE_SEQUENCE_FILE ]]; then
-		if [[ -f $ARISE_LOG_FILE ]]; then
-			emit '"kind":"log","stream":"stdout","message":"'"$(escape_json "$(<"$ARISE_LOG_FILE")")"'"'
+readonly ___ARISE_WORKER_PID=$BASHPID
+___ARISE_SEQUENCE_FILE=
+___ARISE_LOG_FILE=
+___arise_cleanup_worker_temporaries() {
+	if [[ $BASHPID == "$___ARISE_WORKER_PID" && ${___ARISE_RESULT_EMITTED-} != 1 && -f $___ARISE_SEQUENCE_FILE ]]; then
+		if [[ -f $___ARISE_LOG_FILE ]]; then
+			___arise_emit '"kind":"log","stream":"stdout","message":"'"$(___arise_escape_json "$(<"$___ARISE_LOG_FILE")")"'"'
 		fi
-		emit '"kind":"result","exit_code":1'
+		___arise_emit '"kind":"result","exit_code":1'
 	fi
-  [[ -z $ARISE_SEQUENCE_FILE ]] || rm -f -- "$ARISE_SEQUENCE_FILE"
-  [[ -z $ARISE_LOG_FILE ]] || rm -f -- "$ARISE_LOG_FILE"
+  [[ -z $___ARISE_SEQUENCE_FILE ]] || rm -f -- "$___ARISE_SEQUENCE_FILE"
+  [[ -z $___ARISE_LOG_FILE ]] || rm -f -- "$___ARISE_LOG_FILE"
+  [[ -z ${___ARISE_NORMALIZED_SNAPSHOT-} ]] || rm -f -- "$___ARISE_NORMALIZED_SNAPSHOT"
 }
-trap cleanup_worker_temporaries EXIT
-ARISE_SEQUENCE_FILE=$(mktemp) || {
+trap ___arise_cleanup_worker_temporaries EXIT
+___ARISE_SEQUENCE_FILE=$(mktemp) || {
   printf 'phase worker: cannot create sequence file\n' >&2
   exit 1
 }
-printf '0\n' > "$ARISE_SEQUENCE_FILE"
-declare -A ARISE_INHERITING=()
-declare -A ARISE_INHERITED=()
-declare -A ARISE_ECLASS_METADATA=()
-escape_json() {
+printf '0\n' > "$___ARISE_SEQUENCE_FILE"
+declare -A ___ARISE_INHERITING=()
+declare -A ___ARISE_INHERITED=()
+declare -A ___ARISE_ECLASS_METADATA=()
+___arise_escape_json() {
   local s=$1 out= ch escaped
   local i code
   for ((i=0; i<${#s}; i++)); do
@@ -49,27 +50,27 @@ escape_json() {
   done
   printf '%s' "$out"
 }
-emit() {
+___arise_emit() {
   local sequence
-  sequence=$(<"$ARISE_SEQUENCE_FILE")
-  printf '{"protocol":1,"id":"%s","sequence":%d,%s}\n' "$ARISE_ID" "$sequence" "$1" >&3
-  printf '%d\n' "$((sequence+1))" > "$ARISE_SEQUENCE_FILE"
+  sequence=$(<"$___ARISE_SEQUENCE_FILE")
+  printf '{"protocol":1,"id":"%s","sequence":%d,%s}\n' "$___ARISE_ID" "$sequence" "$1" >&3
+  printf '%d\n' "$((sequence+1))" > "$___ARISE_SEQUENCE_FILE"
 }
 die() { printf '%s\n' "${*:-die called}"; exit 1; }
-arise_elog() { local class=$1; shift; printf '\036ARISE_ELOG|%s|%s\n' "$class" "$*"; }
-einfo() { arise_elog INFO "$@"; }
-elog() { arise_elog LOG "$@"; }
-ewarn() { arise_elog WARN "$@"; }
-eerror() { arise_elog ERROR "$@"; }
-eqawarn() { arise_elog QA "$@"; }
+___arise_elog() { local class=$1; shift; printf '\036ARISE_ELOG|%s|%s\n' "$class" "$*"; }
+einfo() { ___arise_elog INFO "$@"; }
+elog() { ___arise_elog LOG "$@"; }
+ewarn() { ___arise_elog WARN "$@"; }
+eerror() { ___arise_elog ERROR "$@"; }
+eqawarn() { ___arise_elog QA "$@"; }
 eqatag() {
 	[[ ${1-} == -v ]] && shift
 	local tag=${1-}; shift || :
-	arise_elog QA "${tag}${*:+: $*}"
+	___arise_elog QA "${tag}${*:+: $*}"
 }
 contains_word() { has "$@"; }
 find0() { find -files0-from - "$@"; }
-arise_add_sandbox_path() {
+___arise_add_sandbox_path() {
 	local variable=${1-} path
 	shift || return 2
 	for path in "$@"; do
@@ -82,10 +83,10 @@ arise_add_sandbox_path() {
 	done
 	export "$variable"
 }
-addread() { arise_add_sandbox_path SANDBOX_READ "$@"; }
-addwrite() { arise_add_sandbox_path SANDBOX_WRITE "$@"; }
-adddeny() { arise_add_sandbox_path SANDBOX_DENY "$@"; }
-addpredict() { arise_add_sandbox_path SANDBOX_PREDICT "$@"; }
+addread() { ___arise_add_sandbox_path SANDBOX_READ "$@"; }
+addwrite() { ___arise_add_sandbox_path SANDBOX_WRITE "$@"; }
+adddeny() { ___arise_add_sandbox_path SANDBOX_DENY "$@"; }
+addpredict() { ___arise_add_sandbox_path SANDBOX_PREDICT "$@"; }
 ___eapi_has_version_functions() { [[ ${1-${EAPI-0}} != [0-6] ]]; }
 ___eapi_has_strict_keepdir() { [[ ${1-${EAPI-0}} != [0-7] ]]; }
 ___makeopts_jobs() {
@@ -107,14 +108,14 @@ ___parallel() (
 	while (( i-- > 0 )); do wait -n || retval=$?; done
 	return "$retval"
 )
-ebegin() { arise_elog INFO "$* ..."; }
+ebegin() { ___arise_elog INFO "$* ..."; }
 eend() {
   local status=${1-} message=${2-}
   [[ $status =~ ^[0-9]+$ ]] || return 2
   if (( status == 0 )); then
-    arise_elog INFO "${message:-ok}"
+    ___arise_elog INFO "${message:-ok}"
   else
-    arise_elog ERROR "${message:-failed}"
+    ___arise_elog ERROR "${message:-failed}"
   fi
   return "$status"
 }
@@ -194,18 +195,18 @@ has_version() {
     [[ ${line%$'\t'*} == "$key" ]] || continue
     [[ ${line##*$'\t'} == 1 ]]
     return
-  done <<< "${ARISE_HAS_VERSION-}"
+  done <<< "${___ARISE_HAS_VERSION-}"
   # Legacy caller-provided snapshots used an unqualified query key.
   while IFS= read -r line; do
     [[ ${line%%$'\t'*} == "$query" ]] || continue
     [[ ${line##*$'\t'} == 1 ]]
     return
-  done <<< "${ARISE_HAS_VERSION-}"
-  if [[ ${ARISE_QUERY_HELPER-} ]]; then
-    answer=$("$ARISE_QUERY_HELPER" __phase-query has-version "$domain" "$query" "${USE-}") || return 2
+  done <<< "${___ARISE_HAS_VERSION-}"
+  if [[ ${___ARISE_QUERY_HELPER-} ]]; then
+    answer=$("$___ARISE_QUERY_HELPER" __phase-query has-version "$domain" "$query" "${USE-}") || return 2
     case $answer in
-      1) ARISE_HAS_VERSION+="${key}"$'\t1\n'; return 0 ;;
-      0) ARISE_HAS_VERSION+="${key}"$'\t0\n'; return 1 ;;
+      1) ___ARISE_HAS_VERSION+="${key}"$'\t1\n'; return 0 ;;
+      0) ___ARISE_HAS_VERSION+="${key}"$'\t0\n'; return 1 ;;
       *) printf 'has_version helper returned invalid answer for %s\n' "$query" >&2; return 2 ;;
     esac
   fi
@@ -228,10 +229,10 @@ best_version() {
     [[ ${line%$'\t'*} == "$key" ]] || continue
     printf '%s\n' "${line##*$'\t'}"
     return 0
-  done <<< "${ARISE_BEST_VERSION-}"
-  if [[ ${ARISE_QUERY_HELPER-} ]]; then
-    answer=$("$ARISE_QUERY_HELPER" __phase-query best-version "$domain" "$query" "${USE-}") || return 2
-    ARISE_BEST_VERSION+="${key}"$'\t'"${answer}"$'\n'
+  done <<< "${___ARISE_BEST_VERSION-}"
+  if [[ ${___ARISE_QUERY_HELPER-} ]]; then
+    answer=$("$___ARISE_QUERY_HELPER" __phase-query best-version "$domain" "$query" "${USE-}") || return 2
+    ___ARISE_BEST_VERSION+="${key}"$'\t'"${answer}"$'\n'
     printf '%s\n' "$answer"
     return 0
   fi
@@ -239,51 +240,51 @@ best_version() {
 }
 __arise_ver_split() {
   local v=${1-} s c
-  ARISE_VER_COMPONENTS=()
+  ___ARISE_VER_COMPONENTS=()
   while [[ $v ]]; do
     s=${v%%[a-zA-Z0-9]*}
     v=${v:${#s}}
     [[ $v == [0-9]* ]] && c=${v%%[^0-9]*} || c=${v%%[^a-zA-Z]*}
     v=${v:${#c}}
-    ARISE_VER_COMPONENTS+=( "$s" "$c" )
+    ___ARISE_VER_COMPONENTS+=( "$s" "$c" )
   done
 }
 __arise_ver_range() {
   local range=${1-} max=${2-}
   [[ $range == [0-9]* ]] || return 2
-  ARISE_VER_START=${range%-*}
-  [[ $range == *-* ]] && ARISE_VER_END=${range#*-} || ARISE_VER_END=$ARISE_VER_START
-  [[ $ARISE_VER_END ]] || ARISE_VER_END=$max
-  [[ $ARISE_VER_START -le $ARISE_VER_END ]] || return 2
-  (( ARISE_VER_END > max )) && ARISE_VER_END=$max
+  ___ARISE_VER_START=${range%-*}
+  [[ $range == *-* ]] && ___ARISE_VER_END=${range#*-} || ___ARISE_VER_END=$___ARISE_VER_START
+  [[ $___ARISE_VER_END ]] || ___ARISE_VER_END=$max
+  [[ $___ARISE_VER_START -le $___ARISE_VER_END ]] || return 2
+  (( ___ARISE_VER_END > max )) && ___ARISE_VER_END=$max
   return 0
 }
 ver_cut() {
   local range=${1-} v=${2-${PV-}} max start end IFS=
   [[ $range && $v ]] || return 2
   __arise_ver_split "$v"
-  max=$((${#ARISE_VER_COMPONENTS[@]}/2))
+  max=$((${#___ARISE_VER_COMPONENTS[@]}/2))
   __arise_ver_range "$range" "$max" || return
-  start=$ARISE_VER_START end=$ARISE_VER_END
+  start=$___ARISE_VER_START end=$___ARISE_VER_END
   (( start > 0 )) && start=$((start*2-1))
-  printf '%s\n' "${ARISE_VER_COMPONENTS[*]:start:end*2-start}"
+  printf '%s\n' "${___ARISE_VER_COMPONENTS[*]:start:end*2-start}"
 }
 ver_rs() {
   local v start end i max IFS=
   (( $# & 1 )) && v=${@: -1} || v=${PV-}
   [[ $v ]] || return 2
   __arise_ver_split "$v"
-  max=$((${#ARISE_VER_COMPONENTS[@]}/2-1))
+  max=$((${#___ARISE_VER_COMPONENTS[@]}/2-1))
   while (( $# >= 2 )); do
     __arise_ver_range "$1" "$max" || return
-    start=$ARISE_VER_START end=$ARISE_VER_END
+    start=$___ARISE_VER_START end=$___ARISE_VER_END
     for ((i=start*2; i<=end*2; i+=2)); do
-      [[ $i -eq 0 && -z ${ARISE_VER_COMPONENTS[i]} ]] && continue
-      ARISE_VER_COMPONENTS[i]=$2
+      [[ $i -eq 0 && -z ${___ARISE_VER_COMPONENTS[i]} ]] && continue
+      ___ARISE_VER_COMPONENTS[i]=$2
     done
     shift 2
   done
-  printf '%s\n' "${ARISE_VER_COMPONENTS[*]}"
+  printf '%s\n' "${___ARISE_VER_COMPONENTS[*]}"
 }
 ver_test() {
   local left=${1-} op=${2-} right=${3-}
@@ -331,18 +332,18 @@ get_libdir() {
     *) [[ ${DEFAULT_ABI-} == amd64 ]] && printf 'lib64' || printf 'lib' ;;
   esac
 }
-DESTTREE=/usr
-INSDESTTREE=/
-EXEDESTTREE=/usr/bin
-DOCDESTTREE=
-declare -a INSOPTIONS=(-m0644)
-declare -a EXEOPTIONS=(-m0755)
-declare -a DIROPTIONS=(-m0755)
-declare -a ARISE_DOCOMPRESS=(/usr/share/doc /usr/share/info /usr/share/man)
-declare -a ARISE_DOCOMPRESS_SKIP=()
-declare -a ARISE_DOSTRIP=(/)
-declare -a ARISE_DOSTRIP_SKIP=()
-arise_image_path() {
+___ARISE_DESTTREE=/usr
+___ARISE_INSDESTTREE=/
+___ARISE_EXEDESTTREE=/usr/bin
+___ARISE_DOCDESTTREE=
+declare -a ___ARISE_INSOPTIONS=(-m0644)
+declare -a ___ARISE_EXEOPTIONS=(-m0755)
+declare -a ___ARISE_DIROPTIONS=(-m0755)
+declare -a ___ARISE_DOCOMPRESS=(/usr/share/doc /usr/share/info /usr/share/man)
+declare -a ___ARISE_DOCOMPRESS_SKIP=()
+declare -a ___ARISE_DOSTRIP=(/)
+declare -a ___ARISE_DOSTRIP_SKIP=()
+___arise_image_path() {
   local path=${1-} component
   local -a components=()
   [[ ${ED-} && $path == /* ]] || { printf 'image helper requires ED and an absolute destination\n'; return 125; }
@@ -352,19 +353,19 @@ arise_image_path() {
 	done
   printf '%s/%s' "${ED%/}" "${path#/}"
 }
-arise_safe_name() { [[ ${1-} && $1 != */* && $1 != . && $1 != .. ]]; }
-arise_install_dir() { install -d "${DIROPTIONS[@]}" -- "$@"; }
-into() { [[ ${1-} == /* ]] || { printf 'into requires an absolute prefix\n'; return 1; }; DESTTREE=${1%/}; [[ $DESTTREE ]] || DESTTREE=/; }
-insinto() { [[ ${1-} == /* ]] || { printf 'insinto requires absolute image path\n'; return 1; }; INSDESTTREE=$1; }
-exeinto() { [[ ${1-} == /* ]] || { printf 'exeinto requires absolute image path\n'; return 1; }; EXEDESTTREE=$1; }
-insopts() { (( $# > 0 )) || { printf 'insopts requires options\n'; return 1; }; INSOPTIONS=("$@"); }
-exeopts() { (( $# > 0 )) || { printf 'exeopts requires options\n'; return 1; }; EXEOPTIONS=("$@"); }
-diropts() { (( $# > 0 )) || { printf 'diropts requires options\n'; return 1; }; DIROPTIONS=("$@"); }
+___arise_safe_name() { [[ ${1-} && $1 != */* && $1 != . && $1 != .. ]]; }
+___arise_install_dir() { install -d "${___ARISE_DIROPTIONS[@]}" -- "$@"; }
+into() { [[ ${1-} == /* ]] || { printf 'into requires an absolute prefix\n'; return 1; }; ___ARISE_DESTTREE=${1%/}; [[ $___ARISE_DESTTREE ]] || ___ARISE_DESTTREE=/; }
+insinto() { [[ ${1-} == /* ]] || { printf 'insinto requires absolute image path\n'; return 1; }; ___ARISE_INSDESTTREE=$1; }
+exeinto() { [[ ${1-} == /* ]] || { printf 'exeinto requires absolute image path\n'; return 1; }; ___ARISE_EXEDESTTREE=$1; }
+insopts() { (( $# > 0 )) || { printf 'insopts requires options\n'; return 1; }; ___ARISE_INSOPTIONS=("$@"); }
+exeopts() { (( $# > 0 )) || { printf 'exeopts requires options\n'; return 1; }; ___ARISE_EXEOPTIONS=("$@"); }
+diropts() { (( $# > 0 )) || { printf 'diropts requires options\n'; return 1; }; ___ARISE_DIROPTIONS=("$@"); }
 libopts() { printf 'libopts is banned for EAPI %s\n' "${EAPI-unknown}"; return 1; }
 dohtml() { printf 'dohtml is banned for EAPI %s\n' "${EAPI-unknown}"; return 1; }
 dosed() { printf 'dosed is banned for EAPI %s\n' "${EAPI-unknown}"; return 1; }
 dolib() { printf 'dolib is banned for EAPI %s\n' "${EAPI-unknown}"; return 1; }
-arise_queue_paths() {
+___arise_queue_paths() {
   local target=$1 mode=include path component
   shift
   [[ ${1-} == -x ]] && { mode=exclude; shift; }
@@ -375,106 +376,106 @@ arise_queue_paths() {
     for component in "${components[@]}"; do [[ $component != .. ]] || { printf '%s path escapes image\n' "$target"; return 1; }; done
     path=${path%/}; [[ $path ]] || path=/
     case $target:$mode in
-      docompress:include) ARISE_DOCOMPRESS+=("$path") ;;
-      docompress:exclude) ARISE_DOCOMPRESS_SKIP+=("$path") ;;
-      dostrip:include) ARISE_DOSTRIP+=("$path") ;;
-      dostrip:exclude) ARISE_DOSTRIP_SKIP+=("$path") ;;
+      docompress:include) ___ARISE_DOCOMPRESS+=("$path") ;;
+      docompress:exclude) ___ARISE_DOCOMPRESS_SKIP+=("$path") ;;
+      dostrip:include) ___ARISE_DOSTRIP+=("$path") ;;
+      dostrip:exclude) ___ARISE_DOSTRIP_SKIP+=("$path") ;;
     esac
   done
 }
-docompress() { arise_queue_paths docompress "$@"; }
-dostrip() { arise_queue_paths dostrip "$@"; }
+docompress() { ___arise_queue_paths docompress "$@"; }
+dostrip() { ___arise_queue_paths dostrip "$@"; }
 docinto() {
   local path=${1-} component
   local -a components=()
 	[[ $path ]] || { printf 'docinto requires a documentation path\n'; return 1; }
-	[[ $path == / ]] && { DOCDESTTREE=; return 0; }
+	[[ $path == / ]] && { ___ARISE_DOCDESTTREE=; return 0; }
 	path=${path#/}
   IFS=/ read -r -a components <<< "$path"
   for component in "${components[@]}"; do [[ $component != .. ]] || { printf 'docinto path escapes documentation directory\n'; return 125; }; done
-	DOCDESTTREE=$path
+	___ARISE_DOCDESTTREE=$path
 }
 dobin() {
 	[[ ${ED-} ]] || { printf 'dobin requires ED\n'; return 1; }
 	(( $# > 0 )) || { printf 'dobin requires files\n'; return 1; }
 	local source destination
-	destination=$(arise_image_path "$DESTTREE/bin") || return
-	arise_install_dir "$destination" || return
-	for source in "$@"; do install "${EXEOPTIONS[@]}" -- "$source" "$destination/${source##*/}" || return; done
+	destination=$(___arise_image_path "$___ARISE_DESTTREE/bin") || return
+	___arise_install_dir "$destination" || return
+	for source in "$@"; do install "${___ARISE_EXEOPTIONS[@]}" -- "$source" "$destination/${source##*/}" || return; done
 }
 newbin() {
 	[[ $# == 2 ]] || { printf 'newbin requires source and name\n'; return 1; }
-	local old=$EXEDESTTREE
-	EXEDESTTREE=$DESTTREE/bin
+	local old=$___ARISE_EXEDESTTREE
+	___ARISE_EXEDESTTREE=$___ARISE_DESTTREE/bin
 	newexe "$@"
 	local status=$?
-	EXEDESTTREE=$old
+	___ARISE_EXEDESTTREE=$old
 	return "$status"
 }
-dosbin() { local saved=$DESTTREE; into "$DESTTREE" || return; local old=$EXEDESTTREE; EXEDESTTREE=$DESTTREE/sbin; doexe "$@"; local status=$?; EXEDESTTREE=$old; DESTTREE=$saved; return "$status"; }
-newsbin() { [[ $# == 2 ]] || { printf 'newsbin requires source and name\n'; return 1; }; local old=$EXEDESTTREE; EXEDESTTREE=$DESTTREE/sbin; newexe "$@"; local status=$?; EXEDESTTREE=$old; return "$status"; }
+dosbin() { local saved=$___ARISE_DESTTREE; into "$___ARISE_DESTTREE" || return; local old=$___ARISE_EXEDESTTREE; ___ARISE_EXEDESTTREE=$___ARISE_DESTTREE/sbin; doexe "$@"; local status=$?; ___ARISE_EXEDESTTREE=$old; ___ARISE_DESTTREE=$saved; return "$status"; }
+newsbin() { [[ $# == 2 ]] || { printf 'newsbin requires source and name\n'; return 1; }; local old=$___ARISE_EXEDESTTREE; ___ARISE_EXEDESTTREE=$___ARISE_DESTTREE/sbin; newexe "$@"; local status=$?; ___ARISE_EXEDESTTREE=$old; return "$status"; }
 doexe() {
   (( $# > 0 )) || { printf 'doexe requires files\n'; return 1; }
-  local source destination; destination=$(arise_image_path "$EXEDESTTREE") || return
-  arise_install_dir "$destination" || return
-  for source in "$@"; do install "${EXEOPTIONS[@]}" -- "$source" "$destination/${source##*/}" || return; done
+  local source destination; destination=$(___arise_image_path "$___ARISE_EXEDESTTREE") || return
+  ___arise_install_dir "$destination" || return
+  for source in "$@"; do install "${___ARISE_EXEOPTIONS[@]}" -- "$source" "$destination/${source##*/}" || return; done
 }
 newexe() {
   [[ $# == 2 ]] || { printf 'newexe requires source and name\n'; return 1; }
-  arise_safe_name "$2" || { printf 'newexe requires a safe name\n'; return 1; }
-  local destination source=$1 temporary=''; destination=$(arise_image_path "$EXEDESTTREE") || return
-  arise_install_dir "$destination" || return
+  ___arise_safe_name "$2" || { printf 'newexe requires a safe name\n'; return 1; }
+  local destination source=$1 temporary=''; destination=$(___arise_image_path "$___ARISE_EXEDESTTREE") || return
+  ___arise_install_dir "$destination" || return
   if [[ $source == - ]]; then
     temporary=$(mktemp "${T:-${TMPDIR:-/tmp}}/newexe-stdin.XXXXXXXX") || return
     cat > "$temporary" || { rm -f -- "$temporary"; return 1; }
     source=$temporary
   fi
-  install "${EXEOPTIONS[@]}" -- "$source" "$destination/$2"
+  install "${___ARISE_EXEOPTIONS[@]}" -- "$source" "$destination/$2"
   local status=$?
   [[ -z $temporary ]] || rm -f -- "$temporary"
   return "$status"
 }
-arise_source_eclass() {
-	local arise_metadata_name arise_source_status
-	local -a arise_metadata_keys=( IUSE REQUIRED_USE DEPEND BDEPEND RDEPEND PDEPEND IDEPEND )
+___arise_source_eclass() {
+	local ___arise_metadata_name ___arise_source_status
+	local -a ___arise_metadata_keys=( IUSE REQUIRED_USE DEPEND BDEPEND RDEPEND PDEPEND IDEPEND )
 	# PMS 10.2: eclass dependency keys accumulate; EAPI 8 adds these two.
-	[[ $EAPI == 8 || $EAPI == 9 ]] && arise_metadata_keys+=( PROPERTIES RESTRICT )
-	local -A arise_metadata_saved=()
-	for arise_metadata_name in "${arise_metadata_keys[@]}"; do
-		[[ -v $arise_metadata_name ]] && arise_metadata_saved[$arise_metadata_name]=${!arise_metadata_name}
-		unset "$arise_metadata_name"
+	[[ $EAPI == 8 || $EAPI == 9 ]] && ___arise_metadata_keys+=( PROPERTIES RESTRICT )
+	local -A ___arise_metadata_saved=()
+	for ___arise_metadata_name in "${___arise_metadata_keys[@]}"; do
+		[[ -v $___arise_metadata_name ]] && ___arise_metadata_saved[$___arise_metadata_name]=${!___arise_metadata_name}
+		unset "$___arise_metadata_name"
 	done
 	source "$1"
-	arise_source_status=$?
-	for arise_metadata_name in "${arise_metadata_keys[@]}"; do
-		if [[ ${!arise_metadata_name-} ]]; then
-			ARISE_ECLASS_METADATA[$arise_metadata_name]+=" ${!arise_metadata_name}"
+	___arise_source_status=$?
+	for ___arise_metadata_name in "${___arise_metadata_keys[@]}"; do
+		if [[ ${!___arise_metadata_name-} ]]; then
+			___ARISE_ECLASS_METADATA[$___arise_metadata_name]+=" ${!___arise_metadata_name}"
 		fi
-		if [[ -v arise_metadata_saved[$arise_metadata_name] ]]; then
-			printf -v "$arise_metadata_name" '%s' "${arise_metadata_saved[$arise_metadata_name]}"
+		if [[ -v ___arise_metadata_saved[$___arise_metadata_name] ]]; then
+			printf -v "$___arise_metadata_name" '%s' "${___arise_metadata_saved[$___arise_metadata_name]}"
 		else
-			unset "$arise_metadata_name"
+			unset "$___arise_metadata_name"
 		fi
 	done
-	return "$arise_source_status"
+	return "$___arise_source_status"
 }
 inherit() {
-  local name directory path old_eclass=${ECLASS-}
-  for name in "$@"; do
-    [[ $name =~ ^[A-Za-z0-9+_.-]+$ ]] || die "unsafe eclass name $name"
-    [[ ${ARISE_INHERITED[$name]-} ]] && continue
-    [[ ${ARISE_INHERITING[$name]-} ]] && die "circular eclass inherit: $name"
-    path=
-    while IFS= read -r directory; do
-      [[ -f $directory/$name.eclass ]] && { path=$directory/$name.eclass; break; }
-    done <<< "${ARISE_ECLASS_DIRS-}"
-    [[ $path ]] || die "inherited eclass $name not found"
-    ARISE_INHERITING[$name]=1
-    ECLASS=$name
-    arise_source_eclass "$path" || die "could not source eclass $name"
-    unset 'ARISE_INHERITING[$name]'
-    ARISE_INHERITED[$name]=1
-    ECLASS=$old_eclass
+  local ___arise_name ___arise_directory ___arise_path ___arise_old_eclass=${ECLASS-}
+  for ___arise_name in "$@"; do
+    [[ $___arise_name =~ ^[A-Za-z0-9+_.-]+$ ]] || die "unsafe eclass name $___arise_name"
+    [[ ${___ARISE_INHERITED[$___arise_name]-} ]] && continue
+    [[ ${___ARISE_INHERITING[$___arise_name]-} ]] && die "circular eclass inherit: $___arise_name"
+    ___arise_path=
+    while IFS= read -r ___arise_directory; do
+      [[ -f $___arise_directory/$___arise_name.eclass ]] && { ___arise_path=$___arise_directory/$___arise_name.eclass; break; }
+    done <<< "${___ARISE_ECLASS_DIRS-}"
+    [[ $___arise_path ]] || die "inherited eclass $___arise_name not found"
+    ___ARISE_INHERITING[$___arise_name]=1
+    ECLASS=$___arise_name
+    ___arise_source_eclass "$___arise_path" || die "could not source eclass $___arise_name"
+    unset '___ARISE_INHERITING[$___arise_name]'
+    ___ARISE_INHERITED[$___arise_name]=1
+    ECLASS=$___arise_old_eclass
   done
 }
 EXPORT_FUNCTIONS() {
@@ -506,7 +507,7 @@ eapply_user() {
         unset 'patch_by[$basename]'
       fi
     done
-  done <<< "${ARISE_USER_PATCH_DIRS-}"
+  done <<< "${___ARISE_USER_PATCH_DIRS-}"
   (( ${#patch_by[@]} == 0 )) && return 0
   while IFS= read -r -d '' basename; do
     patch_file=${patch_by[$basename]}
@@ -557,39 +558,39 @@ unpack() {
 }
 doins() {
 	[[ ${ED-} ]] || { printf 'doins requires ED\n'; return 1; }
-	local recursive=0 source destination; destination=$(arise_image_path "$INSDESTTREE") || return
+	local recursive=0 source destination; destination=$(___arise_image_path "$___ARISE_INSDESTTREE") || return
 	[[ ${1-} == -r ]] && { recursive=1; shift; }
 	(( $# > 0 )) || { printf 'doins requires files\n'; return 1; }
-	arise_install_dir "$destination" || return
+	___arise_install_dir "$destination" || return
 	for source in "$@"; do
 		if (( recursive )); then cp -R -- "$source" "$destination/" || return
-		else install "${INSOPTIONS[@]}" -- "$source" "$destination/" || return; fi
+		else install "${___ARISE_INSOPTIONS[@]}" -- "$source" "$destination/" || return; fi
 	done
 }
 newins() {
   [[ $# == 2 ]] || { printf 'newins requires source and name\n'; return 1; }
-  arise_safe_name "$2" || { printf 'newins requires a safe name\n'; return 1; }
-  local destination source=$1 temporary=''; destination=$(arise_image_path "$INSDESTTREE") || return
-  arise_install_dir "$destination" || return
+  ___arise_safe_name "$2" || { printf 'newins requires a safe name\n'; return 1; }
+  local destination source=$1 temporary=''; destination=$(___arise_image_path "$___ARISE_INSDESTTREE") || return
+  ___arise_install_dir "$destination" || return
   if [[ $source == - ]]; then
     temporary=$(mktemp "${T:-${TMPDIR:-/tmp}}/newins-stdin.XXXXXXXX") || return
     cat > "$temporary" || { rm -f -- "$temporary"; return 1; }
     source=$temporary
   fi
-  install "${INSOPTIONS[@]}" -- "$source" "$destination/$2"
+  install "${___ARISE_INSOPTIONS[@]}" -- "$source" "$destination/$2"
   local status=$?
   [[ -z $temporary ]] || rm -f -- "$temporary"
   return "$status"
 }
-arise_special_install() {
+___arise_special_install() {
   local destination=$1 mode=$2 rename=${3-} source target temporary=''
   shift 3
   (( $# > 0 )) || die "installation helper requires files"
-  target=$(arise_image_path "$destination") || return
+  target=$(___arise_image_path "$destination") || return
   install -d -m0755 -- "$target" || die "could not create installation directory $destination"
   if [[ $rename ]]; then
     [[ $# == 1 ]] || die "renaming helper requires one source"
-    arise_safe_name "$rename" || die "renaming helper requires a safe name"
+    ___arise_safe_name "$rename" || die "renaming helper requires a safe name"
     source=$1
     if [[ $source == - ]]; then
       temporary=$(mktemp "${T:-${TMPDIR:-/tmp}}/special-install-stdin.XXXXXXXX") || die "could not stage helper standard input"
@@ -607,30 +608,30 @@ arise_special_install() {
       die "could not install $source into $destination"
   done
 }
-doinitd() { arise_special_install /etc/init.d 0755 '' "$@"; }
-newinitd() { [[ $# == 2 ]] || { printf 'newinitd requires source and name\n'; return 1; }; arise_special_install /etc/init.d 0755 "$2" "$1"; }
-doconfd() { if [[ ${EAPI-} == 8 ]]; then arise_special_install /etc/conf.d 0644 '' "$@"; else local old=$INSDESTTREE; INSDESTTREE=/etc/conf.d; doins "$@"; local status=$?; INSDESTTREE=$old; return "$status"; fi; }
-newconfd() { [[ $# == 2 ]] || { printf 'newconfd requires source and name\n'; return 1; }; if [[ ${EAPI-} == 8 ]]; then arise_special_install /etc/conf.d 0644 "$2" "$1"; else local old=$INSDESTTREE; INSDESTTREE=/etc/conf.d; newins "$@"; local status=$?; INSDESTTREE=$old; return "$status"; fi; }
-doenvd() { if [[ ${EAPI-} == 8 ]]; then arise_special_install /etc/env.d 0644 '' "$@"; else local old=$INSDESTTREE; INSDESTTREE=/etc/env.d; doins "$@"; local status=$?; INSDESTTREE=$old; return "$status"; fi; }
-newenvd() { [[ $# == 2 ]] || { printf 'newenvd requires source and name\n'; return 1; }; if [[ ${EAPI-} == 8 ]]; then arise_special_install /etc/env.d 0644 "$2" "$1"; else local old=$INSDESTTREE; INSDESTTREE=/etc/env.d; newins "$@"; local status=$?; INSDESTTREE=$old; return "$status"; fi; }
-dodir() { local path destination; (( $# > 0 )) || { printf 'dodir requires paths\n'; return 1; }; for path in "$@"; do destination=$(arise_image_path "$path") || return; install -d "${DIROPTIONS[@]}" -- "$destination" || return; done; }
+doinitd() { ___arise_special_install /etc/init.d 0755 '' "$@"; }
+newinitd() { [[ $# == 2 ]] || { printf 'newinitd requires source and name\n'; return 1; }; ___arise_special_install /etc/init.d 0755 "$2" "$1"; }
+doconfd() { if [[ ${EAPI-} == 8 ]]; then ___arise_special_install /etc/conf.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+newconfd() { [[ $# == 2 ]] || { printf 'newconfd requires source and name\n'; return 1; }; if [[ ${EAPI-} == 8 ]]; then ___arise_special_install /etc/conf.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+doenvd() { if [[ ${EAPI-} == 8 ]]; then ___arise_special_install /etc/env.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+newenvd() { [[ $# == 2 ]] || { printf 'newenvd requires source and name\n'; return 1; }; if [[ ${EAPI-} == 8 ]]; then ___arise_special_install /etc/env.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+dodir() { local path destination; (( $# > 0 )) || { printf 'dodir requires paths\n'; return 1; }; for path in "$@"; do destination=$(___arise_image_path "$path") || return; install -d "${___ARISE_DIROPTIONS[@]}" -- "$destination" || return; done; }
 keepdir() {
   local path destination keep=${CATEGORY:-category}_${PN:-package}_${SLOT:-0}
   keep=${keep//\//_}
-  for path in "$@"; do dodir "$path" || return; destination=$(arise_image_path "$path") || return; : > "$destination/.keep_$keep" || return; done
+  for path in "$@"; do dodir "$path" || return; destination=$(___arise_image_path "$path") || return; : > "$destination/.keep_$keep" || return; done
 }
-doheader() { local old=$INSDESTTREE oldopts=("${INSOPTIONS[@]}") olddiropts=("${DIROPTIONS[@]}"); INSDESTTREE=/usr/include; if [[ ${EAPI-} == 8 ]]; then INSOPTIONS=(-m0644); DIROPTIONS=(-m0755); fi; doins "$@"; local status=$?; INSDESTTREE=$old; INSOPTIONS=("${oldopts[@]}"); DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
-newheader() { [[ $# == 2 ]] || { printf 'newheader requires source and name\n'; return 1; }; local old=$INSDESTTREE oldopts=("${INSOPTIONS[@]}") olddiropts=("${DIROPTIONS[@]}"); INSDESTTREE=/usr/include; if [[ ${EAPI-} == 8 ]]; then INSOPTIONS=(-m0644); DIROPTIONS=(-m0755); fi; newins "$@"; local status=$?; INSDESTTREE=$old; INSOPTIONS=("${oldopts[@]}"); DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
-dolib.a() { local old=$INSDESTTREE oldopts=("${INSOPTIONS[@]}"); INSDESTTREE=$DESTTREE/$(get_libdir); INSOPTIONS=(-m0644); doins "$@"; local status=$?; INSDESTTREE=$old; INSOPTIONS=("${oldopts[@]}"); return "$status"; }
-dolib.so() { local old=$INSDESTTREE oldopts=("${INSOPTIONS[@]}"); INSDESTTREE=$DESTTREE/$(get_libdir); INSOPTIONS=(-m0755); doins "$@"; local status=$?; INSDESTTREE=$old; INSOPTIONS=("${oldopts[@]}"); return "$status"; }
-newlib.a() { [[ $# == 2 ]] || { printf 'newlib.a requires source and name\n'; return 1; }; local old=$INSDESTTREE oldopts=("${INSOPTIONS[@]}"); INSDESTTREE=$DESTTREE/$(get_libdir); INSOPTIONS=(-m0644); newins "$@"; local status=$?; INSDESTTREE=$old; INSOPTIONS=("${oldopts[@]}"); return "$status"; }
-newlib.so() { [[ $# == 2 ]] || { printf 'newlib.so requires source and name\n'; return 1; }; local old=$INSDESTTREE oldopts=("${INSOPTIONS[@]}"); INSDESTTREE=$DESTTREE/$(get_libdir); INSOPTIONS=(-m0755); newins "$@"; local status=$?; INSDESTTREE=$old; INSOPTIONS=("${oldopts[@]}"); return "$status"; }
+doheader() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == 8 ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
+newheader() { [[ $# == 2 ]] || { printf 'newheader requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == 8 ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
+dolib.a() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0644); doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
+dolib.so() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0755); doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
+newlib.a() { [[ $# == 2 ]] || { printf 'newlib.a requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0644); newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
+newlib.so() { [[ $# == 2 ]] || { printf 'newlib.so requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0755); newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
 fperms() {
 	[[ ${ED-} ]] || { printf 'fperms requires ED\n'; return 1; }
 	local mode=${1-} path destination
 	[[ $mode ]] || return 1
 	shift
-	for path in "$@"; do destination=$(arise_image_path "$path") || return; chmod "$mode" "$destination" || return; done
+	for path in "$@"; do destination=$(___arise_image_path "$path") || return; chmod "$mode" "$destination" || return; done
 }
 dosym() {
 	[[ ${ED-} ]] || { printf 'dosym requires ED\n'; return 1; }
@@ -677,8 +678,8 @@ dosym() {
 		target=${target#/}
 		[[ $target ]] || target=.
 	fi
-	image_destination=$(arise_image_path "$destination") || return
-	arise_install_dir "${image_destination%/*}" || return
+	image_destination=$(___arise_image_path "$destination") || return
+	___arise_install_dir "${image_destination%/*}" || return
 	ln -snf -- "$target" "$image_destination"
 }
 dohard() { printf 'dohard is banned for EAPI %s\n' "${EAPI-unknown}"; return 125; }
@@ -686,7 +687,7 @@ fowners() {
   [[ $# -ge 2 ]] || { printf 'fowners requires owner and paths\n'; return 1; }
   local owner=$1 path destination
   shift
-  for path in "$@"; do destination=$(arise_image_path "$path") || return; chown -- "$owner" "$destination" || return; done
+  for path in "$@"; do destination=$(___arise_image_path "$path") || return; chown -- "$owner" "$destination" || return; done
 }
 emake() {
   local -a makeopts=()
@@ -746,7 +747,7 @@ econf() {
 }
 dodoc() {
 	[[ ${ED-} ]] || { printf 'dodoc requires ED\n'; return 1; }
-	local recursive=0 destination=$ED/usr/share/doc/${PF:-package}${DOCDESTTREE:+/$DOCDESTTREE} file
+	local recursive=0 destination=$ED/usr/share/doc/${PF:-package}${___ARISE_DOCDESTTREE:+/$___ARISE_DOCDESTTREE} file
 	[[ ${1-} == -r ]] && { recursive=1; shift; }
 	[[ ${1-} == -- ]] && shift
 	(( $# > 0 )) || { printf 'dodoc requires files\n'; return 1; }
@@ -761,28 +762,28 @@ dodoc() {
 }
 newdoc() {
   [[ $# == 2 ]] || { printf 'newdoc requires source and name\n'; return 1; }
-  arise_safe_name "$2" || { printf 'newdoc requires a safe name\n'; return 1; }
-  local old=$INSDESTTREE oldopts=("${INSOPTIONS[@]}") olddiropts=("${DIROPTIONS[@]}"); INSDESTTREE=/usr/share/doc/${PF:-package}${DOCDESTTREE:+/$DOCDESTTREE}; INSOPTIONS=(-m0644); DIROPTIONS=(-m0755); newins "$@"; local status=$?; INSDESTTREE=$old; INSOPTIONS=("${oldopts[@]}"); DIROPTIONS=("${olddiropts[@]}"); return "$status"
+  ___arise_safe_name "$2" || { printf 'newdoc requires a safe name\n'; return 1; }
+  local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/share/doc/${PF:-package}${___ARISE_DOCDESTTREE:+/$___ARISE_DOCDESTTREE}; ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"
 }
 doman() {
   local file section destination
   for file in "$@"; do
     section=${file##*.}; [[ $section =~ ^[0-9][A-Za-z]*$ ]] || { printf 'doman cannot determine section for %s\n' "$file"; return 1; }
-    destination=$(arise_image_path "/usr/share/man/man${section:0:1}") || return
+    destination=$(___arise_image_path "/usr/share/man/man${section:0:1}") || return
     mkdir -p "$destination" || return
     install -m0644 -- "$file" "$destination/${file##*/}" || return
   done
 }
 newman() {
   [[ $# == 2 ]] || { printf 'newman requires source and name\n'; return 1; }
-  arise_safe_name "$2" || { printf 'newman requires a safe name\n'; return 1; }
+  ___arise_safe_name "$2" || { printf 'newman requires a safe name\n'; return 1; }
   local section=${2##*.} destination
   [[ $section =~ ^[0-9][A-Za-z]*$ ]] || { printf 'newman cannot determine section for %s\n' "$2"; return 1; }
-  destination=$(arise_image_path "/usr/share/man/man${section:0:1}") || return
+  destination=$(___arise_image_path "/usr/share/man/man${section:0:1}") || return
   mkdir -p "$destination" || return
   install -m0644 -- "$1" "$destination/$2"
 }
-doinfo() { arise_special_install /usr/share/info 0644 '' "$@"; }
+doinfo() { ___arise_special_install /usr/share/info 0644 '' "$@"; }
 domo() {
 	[[ ${EAPI-} != 9 ]] || { printf 'domo is banned in EAPI 9\n'; return 1; }
   (( $# > 0 )) || { printf 'domo requires files\n'; return 1; }
@@ -790,7 +791,7 @@ domo() {
   for source in "$@"; do
     [[ -f $source ]] || { printf 'domo source not found: %s\n' "$source"; return 1; }
     locale=${source##*/}; locale=${locale%.*}
-    destination=$(arise_image_path "/usr/share/locale/$locale/LC_MESSAGES") || return
+    destination=$(___arise_image_path "/usr/share/locale/$locale/LC_MESSAGES") || return
     install -d -m0755 -- "$destination" || return
     install -m0644 -- "$source" "$destination/${MOPREFIX:-${PN:-messages}}.mo" || return
   done
@@ -840,7 +841,7 @@ default() {
   declare -F "$implementation" >/dev/null || { printf 'default phase unavailable: %s\n' "${EBUILD_PHASE-}"; return 1; }
   "$implementation" "$@"
 }
-arise_finalize_install_image() {
+___arise_finalize_install_image() {
   [[ ${ED-} ]] || return 0
   local relative path queued skip excluded compressor=${PORTAGE_COMPRESS:-gzip} suffix
   local -a compress_flags=()
@@ -851,12 +852,12 @@ arise_finalize_install_image() {
 	fi
   [[ ${PORTAGE_COMPRESS_FLAGS-} ]] && read -r -a compress_flags <<< "$PORTAGE_COMPRESS_FLAGS"
 	case $compressor in gzip) suffix=.gz ;; bzip2) suffix=.bz2 ;; xz) suffix=.xz ;; zstd) suffix=.zst ;; *) printf 'unsupported PORTAGE_COMPRESS: %s\n' "$compressor"; return 1 ;; esac
-  for queued in "${ARISE_DOCOMPRESS[@]}"; do
-    path=$(arise_image_path "$queued") || return
+  for queued in "${___ARISE_DOCOMPRESS[@]}"; do
+    path=$(___arise_image_path "$queued") || return
     [[ -e $path ]] || continue
     while IFS= read -r -d '' path; do
       relative=/${path#"${ED%/}"/}; excluded=0
-      for skip in "${ARISE_DOCOMPRESS_SKIP[@]}" "/usr/share/doc/${PF:-package}/html"; do
+      for skip in "${___ARISE_DOCOMPRESS_SKIP[@]}" "/usr/share/doc/${PF:-package}/html"; do
         [[ $relative == "$skip" || $relative == "$skip"/* ]] && { excluded=1; break; }
       done
       (( excluded )) && continue
@@ -869,13 +870,13 @@ arise_finalize_install_image() {
 		esac
     done < <(find "$path" -type f -size +128c -print0)
   done
-  if [[ ${ARISE_STRIP-0} == 1 ]]; then
-    for queued in "${ARISE_DOSTRIP[@]}"; do
-      path=$(arise_image_path "$queued") || return
+  if [[ ${___ARISE_STRIP-0} == 1 ]]; then
+    for queued in "${___ARISE_DOSTRIP[@]}"; do
+      path=$(___arise_image_path "$queued") || return
       [[ -e $path ]] || continue
       while IFS= read -r -d '' path; do
         relative=/${path#"${ED%/}"/}; excluded=0
-        for skip in "${ARISE_DOSTRIP_SKIP[@]}"; do [[ $relative == "$skip" || $relative == "$skip"/* ]] && { excluded=1; break; }; done
+        for skip in "${___ARISE_DOSTRIP_SKIP[@]}"; do [[ $relative == "$skip" || $relative == "$skip"/* ]] && { excluded=1; break; }; done
         (( excluded )) && continue
         readelf -h "$path" >/dev/null 2>&1 || continue
         strip --strip-unneeded -- "$path" || return
@@ -887,7 +888,7 @@ arise_finalize_install_image() {
 	fi
 	return 0
 }
-arise_run_install_qa_checks() (
+___arise_run_install_qa_checks() (
 	local check
 	: "${PORTAGE_INST_UID:=0}" "${PORTAGE_INST_GID:=0}"
 	: "${PORTAGE_TMPDIR:=${WORKDIR%/*}}" "${PORTAGE_PYTHON:=python3}"
@@ -899,347 +900,460 @@ arise_run_install_qa_checks() (
 		if ! ( source "$check" ); then
 			eerror "Install QA check ${check##*/} failed to run"
 		fi
-	done <<< "${ARISE_INSTALL_QA_CHECKS-}"
+	done <<< "${___ARISE_INSTALL_QA_CHECKS-}"
 	return 0
 )
-arise_persist_variable() {
+___arise_persist_variable() {
+	[[ ! ${___ARISE_BASH_VARIABLES[$1]-} ]] || return 1
 	case $1 in
-		S|ARISE_INHERITED|ARISE_DOCOMPRESS|ARISE_DOCOMPRESS_SKIP|ARISE_DOSTRIP|ARISE_DOSTRIP_SKIP) return 0 ;;
-		ARISE_*|SANDBOX_*|LD_PRELOAD|BASH*|BASHPID|EUID|UID|PPID|SHELLOPTS|FUNCNAME|GROUPS|PIPESTATUS|DIRSTACK|LINENO|RANDOM|SECONDS|SHLVL|_|PWD|OLDPWD) return 1 ;;
+		S|___ARISE_INHERITED|___ARISE_DOCOMPRESS|___ARISE_DOCOMPRESS_SKIP|___ARISE_DOSTRIP|___ARISE_DOSTRIP_SKIP) return 0 ;;
+		___ARISE_DESTTREE|___ARISE_INSDESTTREE|___ARISE_EXEDESTTREE|___ARISE_DOCDESTTREE|___ARISE_INSOPTIONS|___ARISE_EXEOPTIONS|___ARISE_DIROPTIONS) return 0 ;;
+		___ARISE_*|SANDBOX_*|LD_PRELOAD|BASHPID|EUID|UID|PPID|SHELLOPTS|FUNCNAME|GROUPS|PIPESTATUS|DIRSTACK|LINENO|RANDOM|SECONDS|SHLVL|_|PWD|OLDPWD) return 1 ;;
+		BASH_COMPAT|BASH_ENV|BASH_REMATCH|BASH_TRAPSIG|BASH_XTRACEFD|COMP_CWORD|COMP_POINT|COMP_WORDS|CHILD_MAX|COMPREPLY|COMP_LINE|COMP_TYPE|COMP_KEY|COLUMNS|CDPATH|COPROC|EXECIGNORE|ENV|FUNCNEST|FIGNORE|FCEDIT|GLOBIGNORE|GLOBSORT|HISTTIMEFORMAT|HISTFILESIZE|HISTCONTROL|HISTIGNORE|HISTFILE|HISTSIZE|HOSTFILE|INSIDE_EMACS|IGNOREEOF|INPUTRC|LINES|MAILCHECK|MAILPATH|MAPFILE|MAIL|OPTARG|POSIXLY_CORRECT|PROMPT_COMMAND|PROMPT_DIRTRIM|PS0|PS1|PS2|PS3|READLINE_ARGUMENT|READLINE_POINT|READLINE_LINE|READLINE_MARK|REPLY|TIMEFORMAT|TMOUT|auto_resume|histchars) return 1 ;;
+		# Portage excludes ambient session/tool configuration when saving state.
+		BLOCK_SIZE|COLORTERM|DF_BLOCK_SIZE|DU_BLOCK_SIZE|LS_BLOCK_SIZE|LS_COLORS|QUOTING_STYLE|TABSIZE|TERM|TIME_STYLE|DISPLAY|EDITOR|LESS|LESSOPEN|LOGNAME|PAGER|TERMCAP|USER|ftp_proxy|http_proxy|https_proxy|no_proxy|SSH_*|XDG_CONFIG_*|XDG_CURRENT_*|XDG_DATA_*|XDG_MENU_*|XDG_RUNTIME_*|XDG_SEAT_*|XDG_SESSION_*|XDG_VTNR|CVS_RSH|ECHANGELOG_USER|GPG_AGENT_INFO|SHELL_SETS_TITLE|STY|WINDOW|XAUTHORITY|CCACHE_*|DISTCC_*) return 1 ;;
+		ACCEPT_LICENSE|BUILD_PREFIX|DOC_SYMLINKS_DIR|EBUILD_FORCE_TEST|FAKEROOTKEY|NOCOLOR|NO_COLOR|PKGDIR|PKGUSE|PKG_LOGDIR|PKG_TMPDIR|PORTAGE_BASHRC_FILES|PORTAGE_COMPRESS|PORTAGE_COMPRESS_EXCLUDE_SUFFIXES|PORTAGE_DOHTML_UNWARNED_SKIPPED_EXTENSIONS|PORTAGE_DOHTML_UNWARNED_SKIPPED_FILES|PORTAGE_DOHTML_WARN_ON_SKIPPED_FILES|PORTAGE_QUIET|PORTAGE_SANDBOX_DENY|PORTAGE_SANDBOX_PREDICT|PORTAGE_SANDBOX_READ|PORTAGE_SANDBOX_WRITE|PORTAGE_SOCKS5_PROXY|PREROOTPATH|ROOTPATH|RPMDIR|USE_EXPAND|COLS|EBUILD_MASTER_PID|ECLASS_DEPTH|ENDCOL|HOME|LAST_E_CMD|LAST_E_LEN|MISC_FUNCTIONS_ARGS|MOPREFIX|PORTAGE_BASHRCS_SOURCED|PORTAGE_COLOR_*|PORTAGE_NONFATAL|QA_INTERCEPTORS|RC_ENDCOL|XARGS|_RC_GET_KV_CACHE|INSTALL_MASK|PKG_INSTALL_MASK) return 1 ;;
 		CATEGORY|PN|PV|PR|P|PVR|PF|SLOT|ROOT|EROOT|SYSROOT|ESYSROOT|BROOT|WORKDIR|D|ED|T|FILESDIR|DISTDIR|HOME|TMPDIR|TMP|TEMP|EBUILD_PHASE|EBUILD_PHASE_FUNC|PORTAGE_LOG_FILE|PORTAGE_BUILDDIR|PORTAGE_CONFIGROOT) return 1 ;;
 	esac
 	[[ $1 =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]
 }
-arise_validate_source_directory() {
-	local ARISE_RESOLVED_SOURCE ARISE_RESOLVED_WORK
-	[[ ${S-} ]] || S=$ARISE_SAVED_S
-	if [[ ${S-} == "$ARISE_SAVED_S" ]]; then
+___arise_write_declaration() {
+	local ___ARISE_DECLARATION_FLAGS=${1#declare -}
+	___ARISE_DECLARATION_FLAGS=${___ARISE_DECLARATION_FLAGS%% *}
+	# Portage retains package values but removes readonly when restoring state.
+	___ARISE_DECLARATION_FLAGS=${___ARISE_DECLARATION_FLAGS//r/}
+	printf 'declare -%s %s\n' "${___ARISE_DECLARATION_FLAGS:--}" "${1#declare -* }"
+}
+___arise_refresh_defined_phases() {
+  DEFINED_PHASES=
+  for ___ARISE_METADATA_PHASE in pkg_pretend pkg_setup src_unpack src_prepare src_configure src_compile src_test src_install pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
+    declare -F "$___ARISE_METADATA_PHASE" >/dev/null && DEFINED_PHASES+="${DEFINED_PHASES:+ }${___ARISE_METADATA_PHASE}"
+  done
+  return 0
+}
+___arise_write_phase_environment() {
+	local ___ARISE_SAVE_NAME ___ARISE_SAVE_DECLARATION
+	local -a ___ARISE_SAVE_FUNCTIONS=()
+	___arise_refresh_defined_phases
+	printf '# ARISE_PHASE_STATE_V3\n' || return
+	printf '# ARISE_LIFECYCLE_PHASES' || return
+	for ___ARISE_SAVE_NAME in $DEFINED_PHASES; do
+		[[ $___ARISE_SAVE_NAME != pkg_* ]] || printf ' %s' "$___ARISE_SAVE_NAME" || return
+	done
+	printf '\n' || return
+	for ___ARISE_SAVE_NAME in "${!___ARISE_INITIAL_VARIABLES[@]}"; do
+		___arise_persist_variable "$___ARISE_SAVE_NAME" || continue
+		declare -p "$___ARISE_SAVE_NAME" >/dev/null 2>&1 || printf 'unset -v %s\n' "$___ARISE_SAVE_NAME" || return
+	done
+	# Bash quotes newlines inside declarations, so each complete variable is
+	# emitted on one line. Dump in bulk to avoid a subshell per variable.
+	while IFS= read -r ___ARISE_SAVE_DECLARATION; do
+		___ARISE_SAVE_NAME=${___ARISE_SAVE_DECLARATION#declare }
+		___ARISE_SAVE_NAME=${___ARISE_SAVE_NAME#* }
+		___ARISE_SAVE_NAME=${___ARISE_SAVE_NAME%%=*}
+		___arise_persist_variable "$___ARISE_SAVE_NAME" || continue
+		___arise_write_declaration "$___ARISE_SAVE_DECLARATION" || return
+	done < <(declare -p | /usr/bin/env LC_ALL=C PATH=/usr/bin:/bin sort)
+	while IFS= read -r ___ARISE_SAVE_NAME; do
+		case $___ARISE_SAVE_NAME in ___arise_*|___arise_run_one_phase) continue ;; esac
+		[[ ! ${___ARISE_WORKER_FUNCTIONS[$___ARISE_SAVE_NAME]-} ]] || continue
+		___ARISE_SAVE_FUNCTIONS+=("$___ARISE_SAVE_NAME")
+	done < <(compgen -A function | /usr/bin/env LC_ALL=C PATH=/usr/bin:/bin sort -u)
+	(( ${#___ARISE_SAVE_FUNCTIONS[@]} == 0 )) || declare -f "${___ARISE_SAVE_FUNCTIONS[@]}" || return
+	if (( ${#___ARISE_SAVE_FUNCTIONS[@]} )); then
+		# Read attributes separately so declaration-like text inside a function's
+		# here-documents is never rewritten. Plain -f would print its body again.
+		while IFS= read -r ___ARISE_SAVE_DECLARATION; do
+			[[ $___ARISE_SAVE_DECLARATION == 'declare -f '* || $___ARISE_SAVE_DECLARATION == 'declare -fr '* ]] && continue
+			___arise_write_declaration "$___ARISE_SAVE_DECLARATION" || return
+		done < <(shopt -u extdebug; declare -Fp "${___ARISE_SAVE_FUNCTIONS[@]}")
+	fi
+	return 0
+}
+___arise_load_legacy_helpers() {
+	local ___ARISE_LEGACY_LINE ___ARISE_LEGACY_NAME ___ARISE_LEGACY_DECLARATION
+	[[ $___ARISE_SNAPSHOT_INPUT ]] || return 0
+	while IFS= read -r ___ARISE_LEGACY_LINE; do
+		[[ $___ARISE_LEGACY_LINE != '# ARISE_PHASE_STATE_V3' ]] || return 0
+		[[ $___ARISE_LEGACY_LINE == '# ARISE_PHASE_STATE_V2' ]] || continue
+		# V2 helper state used unreserved names. Import only these known fields.
+		for ___ARISE_LEGACY_NAME in ARISE_INHERITED ARISE_DOCOMPRESS ARISE_DOCOMPRESS_SKIP ARISE_DOSTRIP ARISE_DOSTRIP_SKIP DESTTREE INSDESTTREE EXEDESTTREE DOCDESTTREE INSOPTIONS EXEOPTIONS DIROPTIONS; do
+			___ARISE_LEGACY_DECLARATION=$(declare -p "$___ARISE_LEGACY_NAME" 2>/dev/null) || continue
+			___ARISE_LEGACY_DECLARATION=${___ARISE_LEGACY_DECLARATION/ ${___ARISE_LEGACY_NAME}=/ ___ARISE_${___ARISE_LEGACY_NAME#ARISE_}=}
+			builtin eval "${___ARISE_LEGACY_DECLARATION/declare /declare -g }" || return
+			unset -v "$___ARISE_LEGACY_NAME" || return
+		done
+		return 0
+	done < "$___ARISE_SNAPSHOT_INPUT"
+	return 0
+}
+___arise_source_package_state() {
+	# Select the source path here, then source it at global scope below.
+	# declare statements sourced inside a function would otherwise be local.
+	local ___ARISE_MARKER_LINE ___ARISE_NORMALIZE_STATUS
+	[[ $___ARISE_SNAPSHOT_INPUT ]] || return 0
+	while IFS= read -r ___ARISE_MARKER_LINE; do
+		if [[ $___ARISE_MARKER_LINE == '# ARISE_PHASE_STATE_V3' ]]; then
+			IFS= read -r ___ARISE_MARKER_LINE || return 2
+			[[ $___ARISE_MARKER_LINE == '# ARISE_LIFECYCLE_PHASES' || $___ARISE_MARKER_LINE == '# ARISE_LIFECYCLE_PHASES '* ]] || {
+				printf 'phase environment: missing lifecycle metadata\n' >&2
+				return 2
+			}
+			return 0
+		fi
+		[[ $___ARISE_MARKER_LINE == '# ARISE_PHASE_STATE_V2' ]] || continue
+		___ARISE_NORMALIZED_SNAPSHOT=$(mktemp "${___ARISE_SAVED_T:-/tmp}/.arise-state.XXXXXXXX") || return
+		# Bash parses legacy values and functions in a child shell. Emitting
+		# V3 there removes readonly without rewriting quoted data or function
+		# here-documents as text, and without changing the original snapshot.
+		if (
+			source "$___ARISE_SNAPSHOT_INPUT" >>"$___ARISE_LOG_FILE" 2>&1 || exit $?
+			___arise_load_legacy_helpers || exit $?
+			___arise_write_phase_environment
+		) > "$___ARISE_NORMALIZED_SNAPSHOT"; then
+			return 0
+		else
+			___ARISE_NORMALIZE_STATUS=$?
+		fi
+		printf 'phase worker: legacy environment normalization failed: %s\n' "$___ARISE_SNAPSHOT_INPUT" >&2
+		rm -f -- "$___ARISE_NORMALIZED_SNAPSHOT"
+		___ARISE_NORMALIZED_SNAPSHOT=
+		return "$___ARISE_NORMALIZE_STATUS"
+	done < "$___ARISE_SNAPSHOT_INPUT"
+	return 0
+}
+___arise_validate_source_directory() {
+	local ___ARISE_RESOLVED_SOURCE ___ARISE_RESOLVED_WORK
+	[[ ${S-} ]] || S=$___ARISE_SAVED_S
+	if [[ ${S-} == "$___ARISE_SAVED_S" ]]; then
 		# An explicit request can bind S separately from WORKDIR. A default
 		# source below WORKDIR still needs checking after unpack replaces it.
-		if [[ ! ${ARISE_SAVED_WORKDIR-} || ! ${S-} || ( $S != "$ARISE_SAVED_WORKDIR" && $S != "$ARISE_SAVED_WORKDIR"/* ) ]]; then
+		if [[ ! ${___ARISE_SAVED_WORKDIR-} || ! ${S-} || ( $S != "$___ARISE_SAVED_WORKDIR" && $S != "$___ARISE_SAVED_WORKDIR"/* ) ]]; then
 			return 0
 		fi
 	fi
-	if [[ ${S-} != /* || ! ${ARISE_SAVED_WORKDIR-} ]]; then
+	if [[ ${S-} != /* || ! ${___ARISE_SAVED_WORKDIR-} ]]; then
 		printf 'ebuild S escapes WORKDIR: %s\n' "${S-}"
 		return 126
 	fi
-	ARISE_RESOLVED_SOURCE=$(realpath -m -- "$S") || return
-	ARISE_RESOLVED_WORK=$(realpath -m -- "$ARISE_SAVED_WORKDIR") || return
-	if [[ $ARISE_RESOLVED_SOURCE != "$ARISE_RESOLVED_WORK" && $ARISE_RESOLVED_SOURCE != "$ARISE_RESOLVED_WORK"/* ]]; then
+	___ARISE_RESOLVED_SOURCE=$(realpath -m -- "$S") || return
+	___ARISE_RESOLVED_WORK=$(realpath -m -- "$___ARISE_SAVED_WORKDIR") || return
+	if [[ $___ARISE_RESOLVED_SOURCE != "$___ARISE_RESOLVED_WORK" && $___ARISE_RESOLVED_SOURCE != "$___ARISE_RESOLVED_WORK"/* ]]; then
 		printf 'ebuild S escapes WORKDIR: %s\n' "$S"
 		return 126
 	fi
 }
-declare -A ARISE_INITIAL_VARIABLES=() ARISE_WORKER_FUNCTIONS=()
-while IFS= read -r ARISE_NAME; do
-	arise_persist_variable "$ARISE_NAME" && ARISE_INITIAL_VARIABLES["$ARISE_NAME"]=1
+declare -A ___ARISE_INITIAL_VARIABLES=() ___ARISE_WORKER_FUNCTIONS=() ___ARISE_BASH_VARIABLES=()
+# Discover the running Bash version's own variables in a clean interpreter.
+# Prefix guessing would discard application variables such as BASH_COMPLETION_*.
+___ARISE_CLEAN_BASH_VARIABLES=$(env -i "$BASH" --noprofile --norc -c 'compgen -v') || {
+	printf 'phase worker: cannot identify Bash runtime variables\n' >&2
+	exit 1
+}
+while IFS= read -r ___ARISE_NAME; do
+	[[ $___ARISE_NAME == PATH || $___ARISE_NAME == SHELL ]] || ___ARISE_BASH_VARIABLES[$___ARISE_NAME]=1
+done <<< "$___ARISE_CLEAN_BASH_VARIABLES"
+unset ___ARISE_CLEAN_BASH_VARIABLES
+while IFS= read -r ___ARISE_NAME; do
+	___arise_persist_variable "$___ARISE_NAME" && ___ARISE_INITIAL_VARIABLES["$___ARISE_NAME"]=1
 done < <(compgen -v)
-while IFS= read -r ARISE_NAME; do
-	ARISE_WORKER_FUNCTIONS["$ARISE_NAME"]=1
+while IFS= read -r ___ARISE_NAME; do
+	___ARISE_WORKER_FUNCTIONS["$___ARISE_NAME"]=1
 done < <(compgen -A function)
-ARISE_LOG_FILE=$(mktemp) || {
+___ARISE_LOG_FILE=$(mktemp) || {
   printf 'phase worker: cannot create log file\n' >&2
   exit 1
 }
-ARISE_STATUS=0
-ARISE_DECLARED_S=
-readonly ARISE_SNAPSHOT_INPUT=${ARISE_ENVIRONMENT_OVERLAY:-${ARISE_ENVIRONMENT:-}}
-readonly ARISE_SNAPSHOT_EXTGLOB=$(shopt -p extglob)
-readonly ARISE_SAVED_CATEGORY=${CATEGORY-} ARISE_SAVED_P=${P-} ARISE_SAVED_PF=${PF-} ARISE_SAVED_PN=${PN-}
-readonly ARISE_SAVED_PV=${PV-} ARISE_SAVED_PR=${PR-} ARISE_SAVED_PVR=${PVR-} ARISE_SAVED_SLOT=${SLOT-}
-readonly ARISE_SAVED_ROOT=${ROOT-} ARISE_SAVED_EROOT=${EROOT-} ARISE_SAVED_SYSROOT=${SYSROOT-} ARISE_SAVED_ESYSROOT=${ESYSROOT-} ARISE_SAVED_BROOT=${BROOT-}
-readonly ARISE_SAVED_WORKDIR=${WORKDIR-} ARISE_SAVED_S=${S-} ARISE_SAVED_D=${D-} ARISE_SAVED_ED=${ED-} ARISE_SAVED_T=${T-}
-readonly ARISE_SAVED_FILESDIR=${FILESDIR-} ARISE_SAVED_DISTDIR=${DISTDIR-} ARISE_SAVED_USE=${USE-}
-readonly ARISE_SAVED_HOME=${HOME-} ARISE_SAVED_TMPDIR=${TMPDIR-} ARISE_SAVED_TMP=${TMP-} ARISE_SAVED_TEMP=${TEMP-}
-readonly ARISE_SAVED_PATH=$PATH
-readonly ARISE_SAVED_BUILDDIR=${PORTAGE_BUILDDIR-} ARISE_SAVED_CONFIGROOT=${PORTAGE_CONFIGROOT-} ARISE_SAVED_LOG_FILE=${PORTAGE_LOG_FILE-}
-declare -A ARISE_SAVED_SANDBOX_VALUES=() ARISE_SAVED_SANDBOX_EXPORTED=()
-while IFS= read -r ARISE_NAME; do
-  [[ $ARISE_NAME == SANDBOX_* || $ARISE_NAME == LD_PRELOAD ]] || continue
-  ARISE_SAVED_SANDBOX_VALUES["$ARISE_NAME"]=${!ARISE_NAME-}
-  [[ $(export -p 2>/dev/null) == *"declare -x $ARISE_NAME="* || $(export -p 2>/dev/null) == *"declare -x $ARISE_NAME" ]] &&
-    ARISE_SAVED_SANDBOX_EXPORTED["$ARISE_NAME"]=1
+___ARISE_STATUS=0
+___ARISE_DECLARED_S=
+readonly ___ARISE_SNAPSHOT_INPUT=${___ARISE_ENVIRONMENT_OVERLAY:-${___ARISE_ENVIRONMENT:-}}
+readonly ___ARISE_SNAPSHOT_EXTGLOB=$(shopt -p extglob)
+readonly ___ARISE_SAVED_CATEGORY=${CATEGORY-} ___ARISE_SAVED_P=${P-} ___ARISE_SAVED_PF=${PF-} ___ARISE_SAVED_PN=${PN-}
+readonly ___ARISE_SAVED_PV=${PV-} ___ARISE_SAVED_PR=${PR-} ___ARISE_SAVED_PVR=${PVR-} ___ARISE_SAVED_SLOT=${SLOT-}
+readonly ___ARISE_SAVED_ROOT=${ROOT-} ___ARISE_SAVED_EROOT=${EROOT-} ___ARISE_SAVED_SYSROOT=${SYSROOT-} ___ARISE_SAVED_ESYSROOT=${ESYSROOT-} ___ARISE_SAVED_BROOT=${BROOT-}
+readonly ___ARISE_SAVED_WORKDIR=${WORKDIR-} ___ARISE_SAVED_S=${S-} ___ARISE_SAVED_D=${D-} ___ARISE_SAVED_ED=${ED-} ___ARISE_SAVED_T=${T-}
+readonly ___ARISE_SAVED_FILESDIR=${FILESDIR-} ___ARISE_SAVED_DISTDIR=${DISTDIR-} ___ARISE_SAVED_USE=${USE-}
+readonly ___ARISE_SAVED_HOME=${HOME-} ___ARISE_SAVED_TMPDIR=${TMPDIR-} ___ARISE_SAVED_TMP=${TMP-} ___ARISE_SAVED_TEMP=${TEMP-}
+readonly ___ARISE_SAVED_PATH=$PATH
+declare -a ___ARISE_RUNTIME_VARIABLES=( FEATURES PORTAGE_FEATURES LC_MESSAGES LC_MONETARY LC_COLLATE LC_NUMERIC LC_CTYPE LC_PAPER LC_TIME LC_ALL LANG )
+declare -A ___ARISE_SAVED_RUNTIME_SETTINGS=()
+for ___ARISE_NAME in "${___ARISE_RUNTIME_VARIABLES[@]}"; do
+	[[ ! -v $___ARISE_NAME ]] || ___ARISE_SAVED_RUNTIME_SETTINGS[$___ARISE_NAME]=${!___ARISE_NAME}
+done
+readonly ___ARISE_SAVED_BUILDDIR=${PORTAGE_BUILDDIR-} ___ARISE_SAVED_CONFIGROOT=${PORTAGE_CONFIGROOT-} ___ARISE_SAVED_LOG_FILE=${PORTAGE_LOG_FILE-}
+declare -A ___ARISE_SAVED_SANDBOX_VALUES=() ___ARISE_SAVED_SANDBOX_EXPORTED=()
+while IFS= read -r ___ARISE_NAME; do
+  [[ $___ARISE_NAME == SANDBOX_* || $___ARISE_NAME == LD_PRELOAD ]] || continue
+  ___ARISE_SAVED_SANDBOX_VALUES["$___ARISE_NAME"]=${!___ARISE_NAME-}
+  [[ $(export -p 2>/dev/null) == *"declare -x $___ARISE_NAME="* || $(export -p 2>/dev/null) == *"declare -x $___ARISE_NAME" ]] &&
+    ___ARISE_SAVED_SANDBOX_EXPORTED["$___ARISE_NAME"]=1
 done < <(compgen -v)
-arise_restore_sandbox_environment() {
-  local ARISE_CONTROL_NAME ARISE_CONTROL_DECLARATION ARISE_CONTROL_FLAGS
-  while IFS= read -r ARISE_CONTROL_NAME; do
-    [[ $ARISE_CONTROL_NAME == SANDBOX_* || $ARISE_CONTROL_NAME == LD_PRELOAD ]] || continue
-	ARISE_CONTROL_DECLARATION=$(declare -p "$ARISE_CONTROL_NAME" 2>/dev/null) || continue
-	ARISE_CONTROL_FLAGS=${ARISE_CONTROL_DECLARATION#declare -}
-	ARISE_CONTROL_FLAGS=${ARISE_CONTROL_FLAGS%% *}
-	if [[ $ARISE_CONTROL_FLAGS == *r* ]]; then
-		if [[ ! ${ARISE_SAVED_SANDBOX_VALUES[$ARISE_CONTROL_NAME]+present} || ${!ARISE_CONTROL_NAME} != "${ARISE_SAVED_SANDBOX_VALUES[$ARISE_CONTROL_NAME]}" ]]; then
-			printf 'ebuild changed readonly isolation control: %s\n' "$ARISE_CONTROL_NAME"
+___arise_restore_sandbox_environment() {
+  local ___ARISE_CONTROL_NAME ___ARISE_CONTROL_DECLARATION ___ARISE_CONTROL_FLAGS
+  while IFS= read -r ___ARISE_CONTROL_NAME; do
+    [[ $___ARISE_CONTROL_NAME == SANDBOX_* || $___ARISE_CONTROL_NAME == LD_PRELOAD ]] || continue
+	___ARISE_CONTROL_DECLARATION=$(declare -p "$___ARISE_CONTROL_NAME" 2>/dev/null) || continue
+	___ARISE_CONTROL_FLAGS=${___ARISE_CONTROL_DECLARATION#declare -}
+	___ARISE_CONTROL_FLAGS=${___ARISE_CONTROL_FLAGS%% *}
+	if [[ $___ARISE_CONTROL_FLAGS == *r* ]]; then
+		if [[ ! ${___ARISE_SAVED_SANDBOX_VALUES[$___ARISE_CONTROL_NAME]+present} || ${!___ARISE_CONTROL_NAME} != "${___ARISE_SAVED_SANDBOX_VALUES[$___ARISE_CONTROL_NAME]}" ]]; then
+			printf 'ebuild changed readonly isolation control: %s\n' "$___ARISE_CONTROL_NAME"
 			return 125
 		fi
 		continue
 	fi
-    unset "$ARISE_CONTROL_NAME" 2>/dev/null || :
+    unset "$___ARISE_CONTROL_NAME" 2>/dev/null || :
   done < <(compgen -v)
-  for ARISE_CONTROL_NAME in "${!ARISE_SAVED_SANDBOX_VALUES[@]}"; do
-	ARISE_CONTROL_DECLARATION=$(declare -p "$ARISE_CONTROL_NAME" 2>/dev/null) || ARISE_CONTROL_DECLARATION=
-	ARISE_CONTROL_FLAGS=${ARISE_CONTROL_DECLARATION#declare -}
-	ARISE_CONTROL_FLAGS=${ARISE_CONTROL_FLAGS%% *}
-	[[ $ARISE_CONTROL_FLAGS != *r* ]] || continue
-    printf -v "$ARISE_CONTROL_NAME" '%s' "${ARISE_SAVED_SANDBOX_VALUES[$ARISE_CONTROL_NAME]}"
-    [[ ${ARISE_SAVED_SANDBOX_EXPORTED[$ARISE_CONTROL_NAME]-} ]] && export "$ARISE_CONTROL_NAME"
+  for ___ARISE_CONTROL_NAME in "${!___ARISE_SAVED_SANDBOX_VALUES[@]}"; do
+	___ARISE_CONTROL_DECLARATION=$(declare -p "$___ARISE_CONTROL_NAME" 2>/dev/null) || ___ARISE_CONTROL_DECLARATION=
+	___ARISE_CONTROL_FLAGS=${___ARISE_CONTROL_DECLARATION#declare -}
+	___ARISE_CONTROL_FLAGS=${___ARISE_CONTROL_FLAGS%% *}
+	[[ $___ARISE_CONTROL_FLAGS != *r* ]] || continue
+    printf -v "$___ARISE_CONTROL_NAME" '%s' "${___ARISE_SAVED_SANDBOX_VALUES[$___ARISE_CONTROL_NAME]}"
+    [[ ${___ARISE_SAVED_SANDBOX_EXPORTED[$___ARISE_CONTROL_NAME]-} ]] && export "$___ARISE_CONTROL_NAME"
   done
 	return 0
 }
-arise_restore_managed_environment() {
-	[[ -z $ARISE_SAVED_CATEGORY ]] || CATEGORY=$ARISE_SAVED_CATEGORY
-	[[ -z $ARISE_SAVED_P ]] || P=$ARISE_SAVED_P
-	[[ -z $ARISE_SAVED_PF ]] || PF=$ARISE_SAVED_PF
-	[[ -z $ARISE_SAVED_PN ]] || PN=$ARISE_SAVED_PN
-	[[ -z $ARISE_SAVED_PV ]] || PV=$ARISE_SAVED_PV
-	[[ -z $ARISE_SAVED_PR ]] || PR=$ARISE_SAVED_PR
-	[[ -z $ARISE_SAVED_PVR ]] || PVR=$ARISE_SAVED_PVR
-	[[ $ARISE_COMMAND == evaluate_metadata || -z $ARISE_SAVED_SLOT ]] || SLOT=$ARISE_SAVED_SLOT
-  ROOT=$ARISE_SAVED_ROOT EROOT=$ARISE_SAVED_EROOT SYSROOT=$ARISE_SAVED_SYSROOT ESYSROOT=$ARISE_SAVED_ESYSROOT BROOT=$ARISE_SAVED_BROOT
-  WORKDIR=$ARISE_SAVED_WORKDIR S=$ARISE_SAVED_S D=$ARISE_SAVED_D ED=$ARISE_SAVED_ED T=$ARISE_SAVED_T
-  FILESDIR=$ARISE_SAVED_FILESDIR DISTDIR=$ARISE_SAVED_DISTDIR USE=$ARISE_SAVED_USE
-  HOME=$ARISE_SAVED_HOME TMPDIR=$ARISE_SAVED_TMPDIR TMP=$ARISE_SAVED_TMP TEMP=$ARISE_SAVED_TEMP
-  PORTAGE_BUILDDIR=$ARISE_SAVED_BUILDDIR PORTAGE_CONFIGROOT=$ARISE_SAVED_CONFIGROOT PORTAGE_LOG_FILE=$ARISE_SAVED_LOG_FILE
+___arise_restore_managed_environment() {
+	local ___ARISE_RUNTIME_NAME
+	[[ -z $___ARISE_SAVED_CATEGORY ]] || CATEGORY=$___ARISE_SAVED_CATEGORY
+	[[ -z $___ARISE_SAVED_P ]] || P=$___ARISE_SAVED_P
+	[[ -z $___ARISE_SAVED_PF ]] || PF=$___ARISE_SAVED_PF
+	[[ -z $___ARISE_SAVED_PN ]] || PN=$___ARISE_SAVED_PN
+	[[ -z $___ARISE_SAVED_PV ]] || PV=$___ARISE_SAVED_PV
+	[[ -z $___ARISE_SAVED_PR ]] || PR=$___ARISE_SAVED_PR
+	[[ -z $___ARISE_SAVED_PVR ]] || PVR=$___ARISE_SAVED_PVR
+	[[ $___ARISE_COMMAND == evaluate_metadata || -z $___ARISE_SAVED_SLOT ]] || SLOT=$___ARISE_SAVED_SLOT
+  ROOT=$___ARISE_SAVED_ROOT EROOT=$___ARISE_SAVED_EROOT SYSROOT=$___ARISE_SAVED_SYSROOT ESYSROOT=$___ARISE_SAVED_ESYSROOT BROOT=$___ARISE_SAVED_BROOT
+  WORKDIR=$___ARISE_SAVED_WORKDIR S=$___ARISE_SAVED_S D=$___ARISE_SAVED_D ED=$___ARISE_SAVED_ED T=$___ARISE_SAVED_T
+  FILESDIR=$___ARISE_SAVED_FILESDIR DISTDIR=$___ARISE_SAVED_DISTDIR USE=$___ARISE_SAVED_USE
+  HOME=$___ARISE_SAVED_HOME TMPDIR=$___ARISE_SAVED_TMPDIR TMP=$___ARISE_SAVED_TMP TEMP=$___ARISE_SAVED_TEMP
+  PORTAGE_BUILDDIR=$___ARISE_SAVED_BUILDDIR PORTAGE_CONFIGROOT=$___ARISE_SAVED_CONFIGROOT PORTAGE_LOG_FILE=$___ARISE_SAVED_LOG_FILE
   export HOME TMPDIR TMP TEMP PORTAGE_BUILDDIR PORTAGE_CONFIGROOT PORTAGE_LOG_FILE
-	if [[ ${ARISE_ENVIRONMENT-} && ! ${ARISE_ENVIRONMENT_OVERLAY-} ]]; then
-		PATH=$ARISE_SAVED_PATH
+	if [[ ${___ARISE_ENVIRONMENT-} && ! ${___ARISE_ENVIRONMENT_OVERLAY-} ]]; then
+		PATH=$___ARISE_SAVED_PATH
 		export PATH
+		for ___ARISE_RUNTIME_NAME in "${___ARISE_RUNTIME_VARIABLES[@]}"; do
+			if [[ ${___ARISE_SAVED_RUNTIME_SETTINGS[$___ARISE_RUNTIME_NAME]+present} ]]; then
+				printf -v "$___ARISE_RUNTIME_NAME" '%s' "${___ARISE_SAVED_RUNTIME_SETTINGS[$___ARISE_RUNTIME_NAME]}" || return 125
+				export "$___ARISE_RUNTIME_NAME"
+			else
+				unset -v "$___ARISE_RUNTIME_NAME" || return 125
+			fi
+		done
 	fi
-  if [[ $ARISE_EAPI == 9 ]]; then
+  if [[ $___ARISE_EAPI == 9 ]]; then
     export -n CATEGORY P PF PN PV PR PVR SLOT ROOT EROOT WORKDIR S D ED T FILESDIR DISTDIR USE 2>/dev/null || :
   else
     export CATEGORY P PF PN PV PR PVR SLOT ROOT EROOT WORKDIR S D ED T FILESDIR DISTDIR USE
   fi
   export SYSROOT ESYSROOT BROOT
 }
-if [[ $ARISE_EAPI == 9 ]]; then
+if [[ $___ARISE_EAPI == 9 ]]; then
   (( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3) )) || {
-    printf 'EAPI 9 requires Bash 5.3 or newer\n' >"$ARISE_LOG_FILE"
-    ARISE_STATUS=126
+    printf 'EAPI 9 requires Bash 5.3 or newer\n' >"$___ARISE_LOG_FILE"
+    ___ARISE_STATUS=126
   }
   export -n CATEGORY P PF PN PV PR PVR A FILESDIR DISTDIR WORKDIR S ROOT EROOT T EPREFIX D ED USE EBUILD_PHASE EBUILD_PHASE_FUNC MERGE_TYPE REPLACING_VERSIONS REPLACED_BY_VERSION ECLASS INHERITED DEFINED_PHASES ARCH CONFIG_PROTECT CONFIG_PROTECT_MASK USE_EXPAND USE_EXPAND_UNPREFIXED USE_EXPAND_HIDDEN USE_EXPAND_IMPLICIT IUSE_IMPLICIT 2>/dev/null || :
 fi
-if [[ $ARISE_COMMAND == evaluate_metadata ]]; then
+if [[ $___ARISE_COMMAND == evaluate_metadata ]]; then
 	unset SLOT
 	EBUILD_PHASE=depend
 	EBUILD_PHASE_FUNC=
-	[[ $ARISE_EAPI == 9 ]] || export EBUILD_PHASE EBUILD_PHASE_FUNC
-elif [[ $ARISE_COMMAND == run_phase || $ARISE_COMMAND == run_phases ]]; then
-	EBUILD_PHASE_FUNC=${ARISE_PHASE:-${ARISE_PHASES%%$'\n'*}}
+	[[ $___ARISE_EAPI == 9 ]] || export EBUILD_PHASE EBUILD_PHASE_FUNC
+elif [[ $___ARISE_COMMAND == run_phase || $___ARISE_COMMAND == run_phases ]]; then
+	EBUILD_PHASE_FUNC=${___ARISE_PHASE:-${___ARISE_PHASES%%$'\n'*}}
 	EBUILD_PHASE=${EBUILD_PHASE_FUNC#src_}
 	EBUILD_PHASE=${EBUILD_PHASE#pkg_}
-	if [[ $ARISE_EAPI == 9 ]]; then
+	if [[ $___ARISE_EAPI == 9 ]]; then
 		export -n EBUILD_PHASE EBUILD_PHASE_FUNC
 	else
 		export EBUILD_PHASE EBUILD_PHASE_FUNC
 	fi
 fi
-if (( ARISE_STATUS == 0 )); then
+if (( ___ARISE_STATUS == 0 )); then
   # A saved environment is the phase's complete package state. Re-sourcing the
   # ebuild would resurrect unset variables/functions and overwrite phase changes.
 	# declare -f can contain extended case patterns even when the original
 	# function restored extglob after its definition. Enable it only for parsing
 	# saved state, then restore the worker's option before executing any hook.
-	[[ ! $ARISE_SNAPSHOT_INPUT ]] || builtin shopt -s extglob
-  source "${ARISE_ENVIRONMENT_OVERLAY:-${ARISE_ENVIRONMENT:-$ARISE_EBUILD}}" >"$ARISE_LOG_FILE" 2>&1
-  ARISE_STATUS=$?
-	[[ ! $ARISE_SNAPSHOT_INPUT ]] || builtin eval "$ARISE_SNAPSHOT_EXTGLOB"
-  for ARISE_METADATA_NAME in "${!ARISE_ECLASS_METADATA[@]}"; do
-    printf -v "$ARISE_METADATA_NAME" '%s%s' "${!ARISE_METADATA_NAME-}" "${ARISE_ECLASS_METADATA[$ARISE_METADATA_NAME]}"
+	[[ ! $___ARISE_SNAPSHOT_INPUT ]] || builtin shopt -s extglob
+	___ARISE_NORMALIZED_SNAPSHOT=
+	if ___arise_source_package_state >>"$___ARISE_LOG_FILE" 2>&1; then
+		source "${___ARISE_NORMALIZED_SNAPSHOT:-${___ARISE_ENVIRONMENT_OVERLAY:-${___ARISE_ENVIRONMENT:-$___ARISE_EBUILD}}}" >>"$___ARISE_LOG_FILE" 2>&1
+		___ARISE_STATUS=$?
+	else
+		___ARISE_STATUS=$?
+	fi
+	[[ ! $___ARISE_NORMALIZED_SNAPSHOT ]] || rm -f -- "$___ARISE_NORMALIZED_SNAPSHOT"
+	[[ ! $___ARISE_SNAPSHOT_INPUT ]] || builtin eval "$___ARISE_SNAPSHOT_EXTGLOB"
+	if (( ___ARISE_STATUS == 0 )); then
+		___arise_load_legacy_helpers >>"$___ARISE_LOG_FILE" 2>&1 || ___ARISE_STATUS=$?
+	fi
+  for ___ARISE_METADATA_NAME in "${!___ARISE_ECLASS_METADATA[@]}"; do
+    printf -v "$___ARISE_METADATA_NAME" '%s%s' "${!___ARISE_METADATA_NAME-}" "${___ARISE_ECLASS_METADATA[$___ARISE_METADATA_NAME]}"
   done
-  arise_restore_sandbox_environment >>"$ARISE_LOG_FILE" 2>&1 || ARISE_STATUS=$?
-  if [[ ${ARISE_ENVIRONMENT-} && ! ${ARISE_ENVIRONMENT_OVERLAY-} ]]; then ARISE_DECLARED_S=$ARISE_SAVED_S; else ARISE_DECLARED_S=${S-}; fi
+  ___arise_restore_sandbox_environment >>"$___ARISE_LOG_FILE" 2>&1 || ___ARISE_STATUS=$?
+  if [[ ${___ARISE_ENVIRONMENT-} && ! ${___ARISE_ENVIRONMENT_OVERLAY-} ]]; then ___ARISE_DECLARED_S=$___ARISE_SAVED_S; else ___ARISE_DECLARED_S=${S-}; fi
 fi
-if (( ARISE_STATUS == 0 )); then
-  arise_restore_managed_environment
+if (( ___ARISE_STATUS == 0 )); then
+  ___arise_restore_managed_environment >>"$___ARISE_LOG_FILE" 2>&1 || ___ARISE_STATUS=$?
 	# Eclasses may add RESTRICT while the ebuild is sourced, after the Go-side
 	# static metadata pass. Honor the effective sourced restriction before any
 	# image finalization so source packages such as kernel-2 are never stripped.
 	if [[ " ${RESTRICT-} " == *" strip "* ]]; then
-		ARISE_STRIP=0
+		___ARISE_STRIP=0
 	fi
-	S=$ARISE_DECLARED_S
-	[[ $ARISE_EAPI == 9 ]] || export S
-	if [[ $ARISE_COMMAND != evaluate_metadata ]]; then
-		arise_validate_source_directory >>"$ARISE_LOG_FILE" 2>&1 || ARISE_STATUS=$?
+	S=$___ARISE_DECLARED_S
+	[[ $___ARISE_EAPI == 9 ]] || export S
+	if [[ $___ARISE_COMMAND != evaluate_metadata ]]; then
+		___arise_validate_source_directory >>"$___ARISE_LOG_FILE" 2>&1 || ___ARISE_STATUS=$?
 	fi
 fi
-if (( ARISE_STATUS == 0 )) && [[ ${EAPI-} != "$ARISE_EAPI" ]]; then
-  printf 'ebuild EAPI %s does not match preflight EAPI %s\n' "${EAPI-<unset>}" "$ARISE_EAPI" >>"$ARISE_LOG_FILE"
-  ARISE_STATUS=126
+if (( ___ARISE_STATUS == 0 )) && [[ ${EAPI-} != "$___ARISE_EAPI" ]]; then
+  printf 'ebuild EAPI %s does not match preflight EAPI %s\n' "${EAPI-<unset>}" "$___ARISE_EAPI" >>"$___ARISE_LOG_FILE"
+  ___ARISE_STATUS=126
 fi
-arise_refresh_defined_phases() {
-  DEFINED_PHASES=
-  for ARISE_METADATA_PHASE in pkg_pretend pkg_setup src_unpack src_prepare src_configure src_compile src_test src_install pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
-    declare -F "$ARISE_METADATA_PHASE" >/dev/null && DEFINED_PHASES+="${DEFINED_PHASES:+ }${ARISE_METADATA_PHASE}"
-  done
-  return 0
-}
-arise_emit_metadata() {
+___arise_emit_metadata() {
   # Portage persists these two values as derived metadata.  Ebuilds normally do
   # not assign either variable themselves, so derive them after the complete
   # eclass/ebuild source pass rather than overwriting useful cache metadata with
   # an empty string.
   INHERITED=
-  if (( ${#ARISE_INHERITED[@]} )); then
-    INHERITED=$(printf '%s\n' "${!ARISE_INHERITED[@]}" | LC_ALL=C sort | tr '\n' ' ')
+  if (( ${#___ARISE_INHERITED[@]} )); then
+    INHERITED=$(printf '%s\n' "${!___ARISE_INHERITED[@]}" | LC_ALL=C sort | tr '\n' ' ')
     INHERITED=${INHERITED% }
   fi
-  arise_refresh_defined_phases
-  ARISE_METADATA_KEYS=( DEPEND RDEPEND BDEPEND IDEPEND PDEPEND IUSE REQUIRED_USE LICENSE PROPERTIES RESTRICT DEFINED_PHASES INHERITED )
-  if [[ $ARISE_COMMAND == evaluate_metadata ]]; then
-    ARISE_METADATA_KEYS+=( EAPI SLOT KEYWORDS SRC_URI DESCRIPTION HOMEPAGE )
+  ___arise_refresh_defined_phases
+  ___ARISE_METADATA_KEYS=( DEPEND RDEPEND BDEPEND IDEPEND PDEPEND IUSE REQUIRED_USE LICENSE PROPERTIES RESTRICT DEFINED_PHASES INHERITED )
+  if [[ $___ARISE_COMMAND == evaluate_metadata ]]; then
+    ___ARISE_METADATA_KEYS+=( EAPI SLOT KEYWORDS SRC_URI DESCRIPTION HOMEPAGE )
   fi
-  for ARISE_METADATA_NAME in "${ARISE_METADATA_KEYS[@]}"; do
-    ARISE_METADATA_VALUE=${!ARISE_METADATA_NAME-}
-    ARISE_METADATA_ESCAPED=$(escape_json "$ARISE_METADATA_VALUE")
-    emit '"kind":"metadata","class":"'"$ARISE_METADATA_NAME"'","message":"'"$ARISE_METADATA_ESCAPED"'"'
+  for ___ARISE_METADATA_NAME in "${___ARISE_METADATA_KEYS[@]}"; do
+    ___ARISE_METADATA_VALUE=${!___ARISE_METADATA_NAME-}
+    ___ARISE_METADATA_ESCAPED=$(___arise_escape_json "$___ARISE_METADATA_VALUE")
+    ___arise_emit '"kind":"metadata","class":"'"$___ARISE_METADATA_NAME"'","message":"'"$___ARISE_METADATA_ESCAPED"'"'
   done
 }
-if (( ARISE_STATUS == 0 )) && [[ ${ARISE_EMIT_METADATA-} == 1 || $ARISE_COMMAND == evaluate_metadata ]]; then
-  arise_emit_metadata
+if (( ___ARISE_STATUS == 0 )) && [[ ${___ARISE_EMIT_METADATA-} == 1 || $___ARISE_COMMAND == evaluate_metadata ]]; then
+  ___arise_emit_metadata
 fi
-run_one_phase() {
-  local ARISE_RUNNING_PHASE=$1 ARISE_PHASE_DIRECTORY ARISE_OLD_DIRECTORY=$PWD ARISE_PHASE_STATUS=0 ARISE_EMPTY_DIRECTORY=
-  emit '"kind":"phase","message":"'"$ARISE_RUNNING_PHASE"'"'
-  local -r EBUILD_PHASE_FUNC=$ARISE_RUNNING_PHASE
-  local EBUILD_PHASE=${ARISE_RUNNING_PHASE#src_}
+___arise_run_one_phase() {
+  local ___ARISE_RUNNING_PHASE=$1 ___ARISE_PHASE_DIRECTORY ___ARISE_OLD_DIRECTORY=$PWD ___ARISE_PHASE_STATUS=0 ___ARISE_EMPTY_DIRECTORY=
+  ___arise_emit '"kind":"phase","message":"'"$___ARISE_RUNNING_PHASE"'"'
+  local -r EBUILD_PHASE_FUNC=$___ARISE_RUNNING_PHASE
+  local EBUILD_PHASE=${___ARISE_RUNNING_PHASE#src_}
   EBUILD_PHASE=${EBUILD_PHASE#pkg_}
-  if [[ $ARISE_EAPI == 9 ]]; then
+  if [[ $___ARISE_EAPI == 9 ]]; then
 	export -n EBUILD_PHASE EBUILD_PHASE_FUNC
   else
 	export EBUILD_PHASE EBUILD_PHASE_FUNC
   fi
-  arise_validate_source_directory || return
-  ARISE_PHASE_DIRECTORY=${S:-${WORKDIR:-.}}
-  case $ARISE_RUNNING_PHASE in
-    src_unpack) ARISE_PHASE_DIRECTORY=${WORKDIR:-.} ;;
+  ___arise_validate_source_directory || return
+  ___ARISE_PHASE_DIRECTORY=${S:-${WORKDIR:-.}}
+  case $___ARISE_RUNNING_PHASE in
+    src_unpack) ___ARISE_PHASE_DIRECTORY=${WORKDIR:-.} ;;
     pkg_*)
-		if [[ $ARISE_EAPI == 8 || $ARISE_EAPI == 9 ]]; then
-			ARISE_EMPTY_DIRECTORY=$(mktemp -d "${T:-${WORKDIR:-/tmp}}/.arise-empty.XXXXXXXX") || return
-			ARISE_PHASE_DIRECTORY=$ARISE_EMPTY_DIRECTORY
+		if [[ $___ARISE_EAPI == 8 || $___ARISE_EAPI == 9 ]]; then
+			___ARISE_EMPTY_DIRECTORY=$(mktemp -d "${T:-${WORKDIR:-/tmp}}/.arise-empty.XXXXXXXX") || return
+			___ARISE_PHASE_DIRECTORY=$___ARISE_EMPTY_DIRECTORY
 		else
-			ARISE_PHASE_DIRECTORY=${WORKDIR:-.}
+			___ARISE_PHASE_DIRECTORY=${WORKDIR:-.}
 		fi
 		;;
   esac
-  if [[ $ARISE_RUNNING_PHASE == src_* && $ARISE_RUNNING_PHASE != src_unpack && ! -d $ARISE_PHASE_DIRECTORY ]]; then
-		local ARISE_PRIOR_PHASE ARISE_HAS_SOURCE_PHASE=0
-		for ARISE_PRIOR_PHASE in src_unpack src_prepare src_configure src_compile src_test src_install; do
-			declare -F "$ARISE_PRIOR_PHASE" >/dev/null && ARISE_HAS_SOURCE_PHASE=1
-			[[ $ARISE_PRIOR_PHASE == "$ARISE_RUNNING_PHASE" ]] && break
+  if [[ $___ARISE_RUNNING_PHASE == src_* && $___ARISE_RUNNING_PHASE != src_unpack && ! -d $___ARISE_PHASE_DIRECTORY ]]; then
+		local ___ARISE_PRIOR_PHASE ___ARISE_HAS_SOURCE_PHASE=0
+		for ___ARISE_PRIOR_PHASE in src_unpack src_prepare src_configure src_compile src_test src_install; do
+			declare -F "$___ARISE_PRIOR_PHASE" >/dev/null && ___ARISE_HAS_SOURCE_PHASE=1
+			[[ $___ARISE_PRIOR_PHASE == "$___ARISE_RUNNING_PHASE" ]] && break
 		done
-		if [[ -z ${A-} && $ARISE_HAS_SOURCE_PHASE == 0 ]]; then
-			ARISE_PHASE_DIRECTORY=${WORKDIR:-.}
+		if [[ -z ${A-} && $___ARISE_HAS_SOURCE_PHASE == 0 ]]; then
+			___ARISE_PHASE_DIRECTORY=${WORKDIR:-.}
 		else
-			printf 'source directory does not exist before %s: %s\n' "$ARISE_RUNNING_PHASE" "$ARISE_PHASE_DIRECTORY"
+			printf 'source directory does not exist before %s: %s\n' "$___ARISE_RUNNING_PHASE" "$___ARISE_PHASE_DIRECTORY"
 			return 1
 		fi
   fi
-  cd "$ARISE_PHASE_DIRECTORY" || return
-  if declare -F "$ARISE_RUNNING_PHASE" >/dev/null; then
-		"$ARISE_RUNNING_PHASE" || ARISE_PHASE_STATUS=$?
+  cd "$___ARISE_PHASE_DIRECTORY" || return
+  # Package descendants must not hold the manager's event pipe open after
+  # the worker exits. Bash restores this descriptor after the function call.
+  if declare -F "$___ARISE_RUNNING_PHASE" >/dev/null; then
+		"$___ARISE_RUNNING_PHASE" 3>&- || ___ARISE_PHASE_STATUS=$?
 		# Portage's __ebuild_phase intentionally discards a phase function's
 		# ordinary return status. `die` exits the worker shell and remains fatal.
 		# Status 125 is reserved for Arise protocol/sandbox safety violations.
-		(( ARISE_PHASE_STATUS == 125 )) || ARISE_PHASE_STATUS=0
+		(( ___ARISE_PHASE_STATUS == 125 )) || ___ARISE_PHASE_STATUS=0
   else
-    case $ARISE_RUNNING_PHASE in
+    case $___ARISE_RUNNING_PHASE in
       src_unpack|src_prepare|src_configure|src_compile|src_test|src_install|pkg_pretend|pkg_setup|pkg_preinst|pkg_postinst|pkg_prerm|pkg_postrm|pkg_nofetch)
-        "default_$ARISE_RUNNING_PHASE" || ARISE_PHASE_STATUS=$? ;;
-      *) printf 'phase function %s is not defined\n' "$ARISE_RUNNING_PHASE"; ARISE_PHASE_STATUS=127 ;;
+        "default_$___ARISE_RUNNING_PHASE" 3>&- || ___ARISE_PHASE_STATUS=$? ;;
+      *) printf 'phase function %s is not defined\n' "$___ARISE_RUNNING_PHASE"; ___ARISE_PHASE_STATUS=127 ;;
     esac
   fi
-	if (( ARISE_PHASE_STATUS == 0 )); then
-		arise_validate_source_directory || ARISE_PHASE_STATUS=$?
+	if (( ___ARISE_PHASE_STATUS == 0 )); then
+		___arise_validate_source_directory || ___ARISE_PHASE_STATUS=$?
 	fi
-	if (( ARISE_PHASE_STATUS == 0 )) && [[ $ARISE_RUNNING_PHASE == src_install ]]; then
-		arise_run_install_qa_checks || ARISE_PHASE_STATUS=$?
+	if (( ___ARISE_PHASE_STATUS == 0 )) && [[ $___ARISE_RUNNING_PHASE == src_install ]]; then
+		___arise_run_install_qa_checks || ___ARISE_PHASE_STATUS=$?
 	fi
-	if (( ARISE_PHASE_STATUS == 0 )) && [[ $ARISE_RUNNING_PHASE == src_install ]]; then
-		arise_finalize_install_image || ARISE_PHASE_STATUS=$?
+	if (( ___ARISE_PHASE_STATUS == 0 )) && [[ $___ARISE_RUNNING_PHASE == src_install ]]; then
+		___arise_finalize_install_image || ___ARISE_PHASE_STATUS=$?
 	fi
-  cd "$ARISE_OLD_DIRECTORY" || return
-  [[ ! $ARISE_EMPTY_DIRECTORY ]] || rm -rf -- "$ARISE_EMPTY_DIRECTORY"
-  ARISE_LAST_PHASE=$ARISE_RUNNING_PHASE
-  return "$ARISE_PHASE_STATUS"
+  cd "$___ARISE_OLD_DIRECTORY" || return
+  [[ ! $___ARISE_EMPTY_DIRECTORY ]] || rm -rf -- "$___ARISE_EMPTY_DIRECTORY"
+  ___ARISE_LAST_PHASE=$___ARISE_RUNNING_PHASE
+  return "$___ARISE_PHASE_STATUS"
 }
 
-arise_write_phase_environment() {
-	local ARISE_SAVE_NAME ARISE_SAVE_DECLARATION
-	local -a ARISE_SAVE_FUNCTIONS=()
-	arise_refresh_defined_phases
-	printf '# ARISE_PHASE_STATE_V2\n' || return
-	for ARISE_SAVE_NAME in "${!ARISE_INITIAL_VARIABLES[@]}"; do
-		arise_persist_variable "$ARISE_SAVE_NAME" || continue
-		declare -p "$ARISE_SAVE_NAME" >/dev/null 2>&1 || printf 'unset -v %s\n' "$ARISE_SAVE_NAME" || return
-	done
-	# Bash quotes newlines inside declarations, so each complete variable is
-	# emitted on one line. Dump in bulk to avoid a subshell per variable.
-	while IFS= read -r ARISE_SAVE_DECLARATION; do
-		ARISE_SAVE_NAME=${ARISE_SAVE_DECLARATION#declare }
-		ARISE_SAVE_NAME=${ARISE_SAVE_NAME#* }
-		ARISE_SAVE_NAME=${ARISE_SAVE_NAME%%=*}
-		arise_persist_variable "$ARISE_SAVE_NAME" || continue
-		printf '%s\n' "$ARISE_SAVE_DECLARATION" || return
-	done < <(declare -p | LC_ALL=C sort)
-	while IFS= read -r ARISE_SAVE_NAME; do
-		case $ARISE_SAVE_NAME in arise_*|run_one_phase) continue ;; esac
-		[[ ! ${ARISE_WORKER_FUNCTIONS[$ARISE_SAVE_NAME]-} ]] || continue
-		ARISE_SAVE_FUNCTIONS+=("$ARISE_SAVE_NAME")
-	done < <(compgen -A function | LC_ALL=C sort -u)
-	(( ${#ARISE_SAVE_FUNCTIONS[@]} == 0 )) || declare -f "${ARISE_SAVE_FUNCTIONS[@]}" || return
-	return 0
-}
-arise_save_phase_environment() {
-	local ARISE_SAVE_OUTPUT=${ARISE_SAVE_ENVIRONMENT-} ARISE_SAVE_TEMPORARY
-	[[ $ARISE_SAVE_OUTPUT ]] || return 0
-	[[ ${ARISE_LAST_PHASE-} != pkg_pretend ]] || return 0
-	ARISE_SAVE_TEMPORARY=$(mktemp "${ARISE_SAVE_OUTPUT}.tmp.XXXXXXXX") || return
-	if arise_write_phase_environment >"$ARISE_SAVE_TEMPORARY" && chmod 0644 "$ARISE_SAVE_TEMPORARY" && mv -f -- "$ARISE_SAVE_TEMPORARY" "$ARISE_SAVE_OUTPUT"; then
+___arise_save_phase_environment() {
+	local ___ARISE_SAVE_OUTPUT=${___ARISE_SAVE_ENVIRONMENT-} ___ARISE_SAVE_TEMPORARY
+	[[ $___ARISE_SAVE_OUTPUT ]] || return 0
+	[[ ${___ARISE_LAST_PHASE-} != pkg_pretend ]] || return 0
+	___ARISE_SAVE_TEMPORARY=$(mktemp "${___ARISE_SAVE_OUTPUT}.tmp.XXXXXXXX") || return
+	if ___arise_write_phase_environment >"$___ARISE_SAVE_TEMPORARY" && chmod 0644 "$___ARISE_SAVE_TEMPORARY" && mv -f -- "$___ARISE_SAVE_TEMPORARY" "$___ARISE_SAVE_OUTPUT"; then
 		return 0
 	fi
-	rm -f -- "$ARISE_SAVE_TEMPORARY"
+	rm -f -- "$___ARISE_SAVE_TEMPORARY"
 	return 1
 }
 
-if (( ARISE_STATUS == 0 )) && [[ $ARISE_COMMAND == discover_phases ]]; then
+if (( ___ARISE_STATUS == 0 )) && [[ $___ARISE_COMMAND == discover_phases ]]; then
   for phase in pkg_pretend pkg_setup src_unpack src_prepare src_configure src_compile src_test src_install pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
-    declare -F "$phase" >/dev/null && emit '"kind":"phase","message":"'"$phase"'"'
+    declare -F "$phase" >/dev/null && ___arise_emit '"kind":"phase","message":"'"$phase"'"'
   done
-elif (( ARISE_STATUS == 0 )) && [[ $ARISE_COMMAND == run_phase ]]; then
+elif (( ___ARISE_STATUS == 0 )) && [[ $___ARISE_COMMAND == run_phase ]]; then
 	  (
-		run_one_phase "$ARISE_PHASE" || exit $?
-		[[ ${ARISE_EMIT_METADATA-} != 1 ]] || arise_emit_metadata
-		arise_save_phase_environment
-	  ) >>"$ARISE_LOG_FILE" 2>&1 || ARISE_STATUS=$?
-elif (( ARISE_STATUS == 0 )) && [[ $ARISE_COMMAND == run_phases ]]; then
+		___arise_run_one_phase "$___ARISE_PHASE" || exit $?
+		[[ ${___ARISE_EMIT_METADATA-} != 1 ]] || ___arise_emit_metadata
+		___arise_save_phase_environment
+	  ) >>"$___ARISE_LOG_FILE" 2>&1 || ___ARISE_STATUS=$?
+elif (( ___ARISE_STATUS == 0 )) && [[ $___ARISE_COMMAND == run_phases ]]; then
 	  (
-	    while IFS= read -r ARISE_BATCH_PHASE; do
-	      [[ $ARISE_BATCH_PHASE ]] || continue
-	      run_one_phase "$ARISE_BATCH_PHASE" || exit $?
-	    done <<< "${ARISE_PHASES-}"
-		[[ ${ARISE_EMIT_METADATA-} != 1 ]] || arise_emit_metadata
-		arise_save_phase_environment
-	  ) >>"$ARISE_LOG_FILE" 2>&1 || ARISE_STATUS=$?
+	    while IFS= read -r ___ARISE_BATCH_PHASE; do
+	      [[ $___ARISE_BATCH_PHASE ]] || continue
+	      ___arise_run_one_phase "$___ARISE_BATCH_PHASE" || exit $?
+	    done <<< "${___ARISE_PHASES-}"
+		[[ ${___ARISE_EMIT_METADATA-} != 1 ]] || ___arise_emit_metadata
+		___arise_save_phase_environment
+	  ) >>"$___ARISE_LOG_FILE" 2>&1 || ___ARISE_STATUS=$?
 fi
 while IFS= read -r line; do
   if [[ $line == $'\036ARISE_ELOG|'* ]]; then
     payload=${line#$'\036ARISE_ELOG|'}
     class=${payload%%|*}
     message=${payload#*|}
-    escaped=$(escape_json "$message")
-    emit '"kind":"elog","class":"'"$class"'","message":"'"$escaped"'"'
+    escaped=$(___arise_escape_json "$message")
+    ___arise_emit '"kind":"elog","class":"'"$class"'","message":"'"$escaped"'"'
     continue
   fi
-  escaped=$(escape_json "$line")
-  emit '"kind":"log","stream":"stdout","message":"'"$escaped"'"'
-done <"$ARISE_LOG_FILE"
-rm -f -- "$ARISE_LOG_FILE"
-ARISE_LOG_FILE=
-ARISE_RESULT_EMITTED=1
-emit '"kind":"result","exit_code":'"$ARISE_STATUS"
-rm -f -- "$ARISE_SEQUENCE_FILE"
-ARISE_SEQUENCE_FILE=
-exit "$ARISE_STATUS"
+  escaped=$(___arise_escape_json "$line")
+  ___arise_emit '"kind":"log","stream":"stdout","message":"'"$escaped"'"'
+done <"$___ARISE_LOG_FILE"
+rm -f -- "$___ARISE_LOG_FILE"
+___ARISE_LOG_FILE=
+___ARISE_RESULT_EMITTED=1
+___arise_emit '"kind":"result","exit_code":'"$___ARISE_STATUS"
+rm -f -- "$___ARISE_SEQUENCE_FILE"
+___ARISE_SEQUENCE_FILE=
+exit "$___ARISE_STATUS"

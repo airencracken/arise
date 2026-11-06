@@ -1,4 +1,4 @@
-.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-coverage test-coverage-network test-coverage-benchmark test-vendor-artifact audit-repo audit-complexity vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke check-release-version deps deps-cache
+.PHONY: all build static test test-v test-worker test-shellcheck test-unit test-adversarial test-mutation test-mutation-analysis test-race test-bench test-integration test-live-portage-compile test-live-self-host test-live-phase-contract test-coverage test-coverage-network test-coverage-benchmark test-vendor-artifact audit-repo audit-complexity vet lint clean install uninstall man info bench bench-quick bench-compare bench-json perf-harness perf-table perf-prepare perf-smoke check-release-version deps deps-cache
 
 BINARY := arise
 MODULE := github.com/airencracken/arise
@@ -69,6 +69,13 @@ test-integration:
 
 test-live-portage-compile:
 	$(GO) test -tags=live_portage ./internal/integration ./internal/benchmark ./internal/phaseproto ./internal/rebuild -run '^$$' -count=1
+
+test-live-self-host:
+	@test -n "$${ARISE_SELF_EBUILD:-}" && test -n "$${ARISE_SELF_DISTFILES:-}" || { echo "ARISE_SELF_EBUILD and ARISE_SELF_DISTFILES are required" >&2; exit 1; }
+	$(GO) test -tags=live_portage ./internal/rebuild -run '^TestLiveAriseSelfHost$$' -count=1 -v -timeout 10m
+
+test-live-phase-contract:
+	ARISE_REQUIRE_PHASE_CONTRACT=1 $(GO) test -tags=live_portage ./internal/phaseproto -run '^(TestLivePhaseStateMatchesPortage|TestLiveBashCompletionQADoesNotLeakIntoPreinst)$$' -count=1 -v -timeout 5m
 
 PORTAGE_REPO ?= /var/db/repos/gentoo
 AUDIT_OUTPUT ?= /tmp/arise-repository-compatibility.json
