@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.51](0.0.51.md) revalidates unrelated concurrent installs and isolates
+resume checkpoints between Arise transactions.
+
 [0.0.50](0.0.50.md) corrects retained-package warnings after external updates
 and adds the missing metadata refresh to the Portage bootstrap instructions.
 
