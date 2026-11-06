@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.50](0.0.50.md) corrects retained-package warnings after external updates
+and adds the missing metadata refresh to the Portage bootstrap instructions.
+
 [0.0.49](0.0.49.md) repairs the package shell-state contract, adds Portage
 comparison and self-build release gates, and advances the execution ABI to 6.
 
