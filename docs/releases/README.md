@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.49](0.0.49.md) repairs the package shell-state contract, adds Portage
+comparison and self-build release gates, and advances the execution ABI to 6.
+
 [0.0.48](0.0.48.md) isolates install QA scripts so Bash completion helpers cannot
 leak into saved package environments and break pre-install hooks.
 

@@ -35,11 +35,12 @@ emerge --ask sys-apps/arise-bin
 The two packages are mutually exclusive. Source releases build offline from a
 verified vendor archive; the optional `pie` USE flag selects a PIE build.
 
-To update a source installation:
+To update a source installation from an older Arise with broken phase state,
+bootstrap the replacement using Portage:
 
 ```sh
-arise sync
-arise -1 --reinstall =sys-apps/arise-0.0.48
+emaint sync -r arise-overlay
+emerge -1 =sys-apps/arise-0.0.49
 ```
 
 ## Use
@@ -110,7 +111,7 @@ make vet
 ```
 
 See the [development guide](docs/development.md), [open work](PUNCHLIST.md) and
-[0.0.48 release notes](docs/releases/0.0.48.md). Arise is maintained by one
+[0.0.49 release notes](docs/releases/0.0.49.md). Arise is maintained by one
 developer with AI assistance. Portage, Gentoo, eix, Gentoolkit, portage-utils and
 pkgcore/pkgcheck provide the reference behavior and comparison tools.
 
