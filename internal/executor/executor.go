@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -60,8 +61,14 @@ type Config struct {
 	WorldSelections []string
 	Rebuild         rebuild.RebuildConfig
 	ResumePath      string
-	Jobs            int
-	LoadAverage     float64
+	Resume          bool
+	ResumeSHA256    string
+	OnResumePath    func(string)
+	// FinishTransaction commits caller bookkeeping while the checkpoint lease
+	// is still held, preventing a concurrent command from replacing progress.
+	FinishTransaction func() error
+	Jobs              int
+	LoadAverage       float64
 	// TmpdirRequireFreeGB mirrors emerge's --jobs-tmpdir-require-free-gb:
 	// parallel job admission is reduced when the scaled reserve is unavailable.
 	TmpdirRequireFreeGB int
@@ -89,7 +96,7 @@ type Config struct {
 	removalCount    int
 }
 
-func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) error {
+func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) (returnErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -220,8 +227,36 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 		}
 	}
 	if cfg.ResumePath != "" {
+		checkpoint, checkpointErr := reserveResumeCheckpoint(cfg.ResumePath, cfg.Resume)
+		if checkpointErr != nil {
+			return checkpointErr
+		}
+		defer func() { returnErr = errors.Join(returnErr, checkpoint.release()) }()
+		if cfg.Resume {
+			if err := checkResumeSnapshot(cfg.ResumePath, cfg.ResumeSHA256); err != nil {
+				return err
+			}
+		}
+		if checkpoint.path != cfg.ResumePath && cfg.OnResumePath != nil {
+			cfg.OnResumePath(checkpoint.path)
+		}
+		cfg.ResumePath = checkpoint.path
 		if err := resolve.SaveResumeWithWorldSelections(cfg.ResumePath, result, cfg.WorldSelections); err != nil {
+			if checkpoint.private {
+				if info, statErr := os.Stat(checkpoint.path); statErr == nil && info.Size() == 0 {
+					_ = os.Remove(checkpoint.path)
+				}
+			}
 			return fmt.Errorf("executor: initialize resume state: %w", err)
+		}
+		if checkpoint.private {
+			defer func() {
+				if returnErr == nil {
+					returnErr = resolve.RemoveCompletedResume(cfg.ResumePath)
+				} else {
+					returnErr = fmt.Errorf("%w (saved progress: %s)", returnErr, cfg.ResumePath)
+				}
+			}()
 		}
 	}
 	for index, action := range result.Install {
@@ -241,6 +276,9 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) err
 	}
 	if len(removals.completed) != len(removals.actions) {
 		return fmt.Errorf("executor: package runner did not execute planned blocker removals")
+	}
+	if cfg.FinishTransaction != nil {
+		return cfg.FinishTransaction()
 	}
 	return nil
 }

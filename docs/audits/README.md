@@ -1,5 +1,9 @@
 # Audit evidence
 
+The [concurrent package-state audit](CONCURRENT_PACKAGE_STATE_2026-11-06.md)
+records live-state revalidation and checkpoint isolation for independent
+package installs during a long world update.
+
 The [shell-state contract audit](SHELL_STATE_CONTRACT_2026-11-05.md) follows the
 Arise self-upgrade failure across package names, attributes, eclass scope,
 snapshot migration, and the missing self-host release gate.

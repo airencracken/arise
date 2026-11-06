@@ -124,15 +124,30 @@ func canonicalPlanSHA256(targets []string, cfg resolve.ResolveConfig, result *re
 // host paths. Resolution is rerun before execution, so unrelated repository
 // files do not invalidate an otherwise identical approved plan.
 func mutationStateSHA256(vdbDir, worldPath, configRoot string, actions []resolve.PkgAction) (string, error) {
+	state, err := captureMutationState(vdbDir, worldPath, configRoot, actions)
+	return state.sha256, err
+}
+
+type mutationStateSnapshot struct {
+	sha256     string
+	policy     string
+	vdb        string
+	vdbEntries map[string]string
+}
+
+func captureMutationState(vdbDir, worldPath, configRoot string, actions []resolve.PkgAction) (mutationStateSnapshot, error) {
 	hash := sha256.New()
+	policy := sha256.New()
+	installed := sha256.New()
+	entries := make(map[string]string)
 	// Command-facing Portage variables are part of the effective policy even
 	// though they are not files. Bind their presence and exact value so an
 	// approval produced with a temporary FEATURES/USE override cannot authorize
 	// a differently configured execution.
 	for _, name := range []string{"FEATURES", "USE", "ACCEPT_KEYWORDS", "ACCEPT_LICENSE", "ARCH", "CHOST", "CBUILD", "CTARGET", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "FFLAGS", "FCFLAGS", "LDFLAGS", "MAKEOPTS", "CC", "CXX", "CPP", "AR", "AS", "LD", "NM", "OBJCOPY", "OBJDUMP", "RANLIB", "READELF", "STRIP"} {
 		value, present := os.LookupEnv(name)
-		if _, err := io.WriteString(hash, "command-env\x00"+name+"\x00"+strconv.FormatBool(present)+"\x00"+value+"\x00"); err != nil {
-			return "", err
+		if _, err := io.WriteString(io.MultiWriter(hash, policy), "command-env\x00"+name+"\x00"+strconv.FormatBool(present)+"\x00"+value+"\x00"); err != nil {
+			return mutationStateSnapshot{}, err
 		}
 	}
 	seen := make(map[string]bool)
@@ -155,14 +170,42 @@ func mutationStateSHA256(vdbDir, worldPath, configRoot string, actions []resolve
 			continue
 		}
 		seen[identity] = true
-		if err := hashStatePath(hash, input.label, input.path); err != nil {
-			return "", err
+		var writer io.Writer = hash
+		var entryDigests map[string]string
+		inputPath := input.path
+		switch input.label {
+		case "vdb":
+			entryDigests = entries
+			resolved, err := filepath.EvalSymlinks(inputPath)
+			if err == nil {
+				inputPath = resolved
+			} else if !os.IsNotExist(err) {
+				return mutationStateSnapshot{}, fmt.Errorf("resolve installed database path: %w", err)
+			}
+		case "world":
+		default:
+			writer = io.MultiWriter(hash, policy)
+		}
+		if err := hashStatePathEntries(writer, input.label, inputPath, entryDigests); err != nil {
+			return mutationStateSnapshot{}, err
 		}
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	paths := make([]string, 0, len(entries))
+	for path := range entries {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		_, _ = io.WriteString(installed, path+"\x00"+entries[path]+"\x00")
+	}
+	return mutationStateSnapshot{sha256: hex.EncodeToString(hash.Sum(nil)), policy: hex.EncodeToString(policy.Sum(nil)), vdb: hex.EncodeToString(installed.Sum(nil)), vdbEntries: entries}, nil
 }
 
 func hashStatePath(dst io.Writer, label, path string) error {
+	return hashStatePathEntries(dst, label, path, nil)
+}
+
+func hashStatePathEntries(dst io.Writer, label, path string, entries map[string]string) error {
 	root := filepath.Clean(path)
 	// Hide os.File's WriterTo method and reuse one buffer across the complete
 	// tree. io.Copy's generic file path otherwise allocates a fresh 32 KiB
@@ -179,7 +222,13 @@ func hashStatePath(dst io.Writer, label, path string) error {
 		return fmt.Errorf("fingerprint %s: %w", label, err)
 	}
 	writeEntry := func(relative, current string, info os.FileInfo) error {
-		if _, err := io.WriteString(dst, label+"\x00"+filepath.ToSlash(relative)+"\x00"+strconv.FormatUint(uint64(info.Mode()), 10)+"\x00"); err != nil {
+		writer := dst
+		if entries != nil {
+			digest := sha256.New()
+			writer = io.MultiWriter(dst, digest)
+			defer func() { entries[filepath.ToSlash(relative)] = hex.EncodeToString(digest.Sum(nil)) }()
+		}
+		if _, err := io.WriteString(writer, label+"\x00"+filepath.ToSlash(relative)+"\x00"+strconv.FormatUint(uint64(info.Mode()), 10)+"\x00"); err != nil {
 			return err
 		}
 		switch {
@@ -191,7 +240,7 @@ func hashStatePath(dst io.Writer, label, path string) error {
 			if err != nil {
 				return err
 			}
-			_, copyErr := io.CopyBuffer(dst, readerOnly{file}, buffer)
+			_, copyErr := io.CopyBuffer(writer, readerOnly{file}, buffer)
 			closeErr := file.Close()
 			if copyErr != nil {
 				return copyErr
@@ -202,7 +251,7 @@ func hashStatePath(dst io.Writer, label, path string) error {
 			if err != nil {
 				return err
 			}
-			_, err = io.WriteString(dst, target)
+			_, err = io.WriteString(writer, target)
 			return err
 		default:
 			return nil

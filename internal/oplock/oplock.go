@@ -16,6 +16,8 @@ type Lock struct {
 	path string
 }
 
+var ErrBusy = errors.New("operation lock is busy")
+
 // PortageLockPath mirrors portage.locks.lockdir: a directory lock is stored in
 // its parent as .<basename>.portage_lockfile.
 func PortageLockPath(directory string) string {
@@ -75,7 +77,7 @@ func tryAcquire(path string) (*Lock, error) {
 	if err := unix.FcntlFlock(file.Fd(), unix.F_SETLK, &flock); err != nil {
 		file.Close()
 		if errors.Is(err, unix.EACCES) || errors.Is(err, unix.EAGAIN) {
-			return nil, fmt.Errorf("operation lock: Portage VDB is busy (%s): %w", path, err)
+			return nil, fmt.Errorf("operation lock: Portage VDB is busy (%s): %w", path, errors.Join(ErrBusy, err))
 		}
 		return nil, fmt.Errorf("operation lock: acquire %s: %w", path, err)
 	}

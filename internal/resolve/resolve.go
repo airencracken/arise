@@ -5,6 +5,8 @@ package resolve
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -7587,9 +7589,16 @@ func LoadResume(path string) ([]string, error) {
 // LoadResumeWithWorldSelections reads package progress and original favorites
 // from the same checkpoint. Legacy records have no favorites to invent.
 func LoadResumeWithWorldSelections(path string) ([]string, []string, error) {
+	remaining, selections, _, err := LoadResumeSnapshot(path)
+	return remaining, selections, err
+}
+
+// LoadResumeSnapshot binds a resume request to one coherent checkpoint read.
+// Callers verify the digest after reserving the checkpoint for execution.
+func LoadResumeSnapshot(path string) ([]string, []string, string, error) {
 	state, err := readResumeState(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve: could not load saved build progress: %w", err)
+		return nil, nil, "", fmt.Errorf("resolve: could not load saved build progress: %w", err)
 	}
 	var result []string
 	for _, p := range state.Packages {
@@ -7597,7 +7606,12 @@ func LoadResumeWithWorldSelections(path string) ([]string, []string, error) {
 			result = append(result, p.Atom)
 		}
 	}
-	return result, append([]string(nil), state.WorldSelections...), nil
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	digest := sha256.Sum256(encoded)
+	return result, append([]string(nil), state.WorldSelections...), hex.EncodeToString(digest[:]), nil
 }
 
 func validateResumeWorldSelections(selections []string) error {
