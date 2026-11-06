@@ -181,7 +181,11 @@ func reportIndependentPlanAudit(writer io.Writer, stage string, result planvalid
 	}
 	const maxDisplayedViolations = 5
 	total := len(result.Violations) + result.OmittedViolations
-	fmt.Fprintf(writer, "arise: plan safety check failed at %s; no package changes were made.\n", stage)
+	mutationStatus := "no package changes were made"
+	if strings.HasPrefix(stage, "locked-") {
+		mutationStatus = "the current package was not merged"
+	}
+	fmt.Fprintf(writer, "arise: plan safety check failed at %s; %s.\n", stage, mutationStatus)
 	if len(result.Violations) > maxDisplayedViolations {
 		fmt.Fprintf(writer, "  Found %s; showing the first %d.\n", auditIssueCount(total), maxDisplayedViolations)
 	} else {

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/executor"
 	"github.com/airencracken/arise/internal/resolve"
 )
 
@@ -35,12 +36,17 @@ func removeNoopResume(path string, pretend, preflight bool) {
 }
 
 func loadResumeRequest(path string, skipFirst bool) ([]string, []string, error) {
+	remaining, selections, _, err := loadResumeRequestSnapshot(path, skipFirst)
+	return remaining, selections, err
+}
+
+func loadResumeRequestSnapshot(path string, skipFirst bool) ([]string, []string, string, error) {
 	// Planning must preserve the checkpoint through confirmation, approval and
 	// preflight failures. The executor saves the selected remaining plan only
 	// when it is ready to start execution.
-	remaining, selections, err := resolve.LoadResumeWithWorldSelections(path)
+	remaining, selections, digest, err := resolve.LoadResumeSnapshot(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	if skipFirst && len(remaining) > 0 {
 		remaining = remaining[1:]
@@ -53,14 +59,25 @@ func loadResumeRequest(path string, skipFirst bool) ([]string, []string, error) 
 		// command-line requests require an explicit operator for versions.
 		parsed, err := atom.Parse(target)
 		if err != nil || parsed.Version == nil || parsed.Op != "" {
-			return nil, nil, fmt.Errorf("resume: invalid saved package atom %q", target)
+			return nil, nil, "", fmt.Errorf("resume: invalid saved package atom %q", target)
 		}
 		remaining[index] = "=" + target
 	}
-	return remaining, selections, nil
+	return remaining, selections, digest, nil
 }
 
-func finishEmptyResume(path, worldPath string, cfg resolve.ResolveConfig, preflight bool, selections []string) error {
+func finishEmptyResume(path, worldPath string, cfg resolve.ResolveConfig, preflight bool, selections []string, expected ...string) error {
+	if !cfg.Pretend && !preflight {
+		digest := ""
+		if len(expected) != 0 {
+			digest = expected[0]
+		}
+		return executor.FinalizeResumeCheckpoint(path, digest, func() error { return finishEmptyResumeOwned(path, worldPath, cfg, preflight, selections) })
+	}
+	return finishEmptyResumeOwned(path, worldPath, cfg, preflight, selections)
+}
+
+func finishEmptyResumeOwned(path, worldPath string, cfg resolve.ResolveConfig, preflight bool, selections []string) error {
 	if *approvePlanSHA256 != "" || *approvePlan != "" {
 		return fmt.Errorf("resume: completed checkpoint has no package plan to approve; use a separately reviewed world operation")
 	}

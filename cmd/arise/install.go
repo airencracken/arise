@@ -383,8 +383,9 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 
 	// --resume: load remaining packages from previous interrupted operation
 	var resumeSelections []string
+	resumeSHA256 := ""
 	if cfg.Resume {
-		remaining, selections, err := loadResumeRequest(*resumeFile, cfg.SkipFirst)
+		remaining, selections, digest, err := loadResumeRequestSnapshot(*resumeFile, cfg.SkipFirst)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "resume: load: %v\n", err)
 			os.Exit(1)
@@ -392,8 +393,9 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if !cfg.Oneshot && !cfg.OnlyDeps && !cfg.BuildPkgOnly {
 			resumeSelections = selections
 		}
+		resumeSHA256 = digest
 		if len(remaining) == 0 {
-			if err := finishEmptyResume(*resumeFile, *worldFile, cfg, *preflightOnly, resumeSelections); err != nil {
+			if err := finishEmptyResume(*resumeFile, *worldFile, cfg, *preflightOnly, resumeSelections, resumeSHA256); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
@@ -524,9 +526,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	}
 	resolutionDuration := time.Since(resolutionStarted)
 	stateSHA256 := ""
+	var executionState mutationStateSnapshot
 	stateFingerprintStarted := time.Now()
 	if result.Verified && (jsonMode || *savePlan != "" || *approvePlanSHA256 != "" || *approvePlan != "" || (!cfg.Pretend && !*preflightOnly)) {
-		stateSHA256, err = mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
+		executionState, err = captureMutationState(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
+		stateSHA256 = executionState.sha256
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "arise: fingerprint mutation state: %v\n", err)
 			exitAfterRuntimeProfiles(1)
@@ -754,25 +758,36 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 
 	worldSelections := cfg.WorldSelections
 	if len(result.Install) == 0 && len(result.Uninstall) == 0 {
-		if !cfg.Pretend && !*preflightOnly {
-			if !confirmInstall(os.Stdin, os.Stdout, cfg.Ask) {
-				fmt.Println("Aborted.")
-				return
+		finish := func() error {
+			if !cfg.Pretend && !*preflightOnly {
+				if !confirmInstall(os.Stdin, os.Stdout, cfg.Ask) {
+					fmt.Println("Aborted.")
+					return nil
+				}
+				if _, err := authorizeInstallExecution(targets, cfg, result, stateSHA256); err != nil {
+					return fmt.Errorf("refusing execution: %w", err)
+				}
+				if err := updateInstallWorld(*worldFile, worldSelections); err != nil {
+					return fmt.Errorf("update world selection: %w", err)
+				}
 			}
-			if _, err := authorizeInstallExecution(targets, cfg, result, stateSHA256); err != nil {
-				fmt.Fprintf(os.Stderr, "arise: refusing execution: %v\n", err)
-				os.Exit(1)
+			if !cfg.Quiet {
+				fmt.Println("\nNothing to do.")
 			}
-			if err := updateInstallWorld(*worldFile, worldSelections); err != nil {
-				fmt.Fprintf(os.Stderr, "arise: update world selection: %v\n", err)
-				os.Exit(1)
+			if cfg.Resume {
+				removeNoopResume(*resumeFile, cfg.Pretend, *preflightOnly)
 			}
+			return nil
 		}
-		if !cfg.Quiet {
-			fmt.Println("\nNothing to do.")
+		var finishErr error
+		if cfg.Resume && !cfg.Pretend && !*preflightOnly {
+			finishErr = executor.FinalizeResumeCheckpoint(*resumeFile, resumeSHA256, finish)
+		} else {
+			finishErr = finish()
 		}
-		if cfg.Resume {
-			removeNoopResume(*resumeFile, cfg.Pretend, *preflightOnly)
+		if finishErr != nil {
+			fmt.Fprintf(os.Stderr, "arise: %v\n", finishErr)
+			os.Exit(1)
 		}
 		return
 	}
@@ -871,34 +886,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
 			rebuildCfg.AllowLiveRoot = true
 		}
-		expectedStateSHA256 := stateSHA256
-		var expectedStateLock sync.Mutex
-		lockedStateValidation := func() error {
-			expectedStateLock.Lock()
-			defer expectedStateLock.Unlock()
-			lockedStateSHA256, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
-			if err != nil {
-				return err
-			}
-			if lockedStateSHA256 != expectedStateSHA256 {
-				return fmt.Errorf("package state or policy changed before the operation lock; resolve and approve the new plan")
-			}
-			if planAudit != nil {
-				if err := enforceIndependentPlanAudit(os.Stderr, "locked-pre-mutation", planAudit); err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-		recordLockedMutation := func() error {
-			expectedStateLock.Lock()
-			defer expectedStateLock.Unlock()
-			updated, err := mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
-			if err != nil {
-				return fmt.Errorf("record committed package state: %w", err)
-			}
-			expectedStateSHA256 = updated
-			return nil
+		mutationGuard := &packageMutationGuard{
+			vdbDir: *vdbDir, worldPath: *worldFile, configRoot: *portageConfigRoot,
+			actions: result.Install, snapshot: executionState, audit: planAudit, output: os.Stderr,
+			onRevalidate: func() { executionProgress.message(">>> Installed state changed; remaining package plan revalidated") },
 		}
 		compatLog, logErr := openPackageExecutionLog(*emergeLog, cfg.BuildPkgOnly)
 		if logErr != nil {
@@ -983,9 +974,33 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
 			processesBefore = restartneeded.Snapshot("/proc")
 		}
+		executionResumePath := *resumeFile
+		var bookkeepingErr error
 		executionErr := executor.Execute(execCtx, result, executor.Config{
 			WorldSelections: worldSelections,
-			Rebuild:         *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: lockedStateValidation, RecordLockedMutation: recordLockedMutation, PrepareMutation: prepareMutation,
+			Resume:          cfg.Resume,
+			ResumeSHA256:    resumeSHA256,
+			OnResumePath: func(path string) {
+				executionResumePath = path
+				executionProgress.message(fmt.Sprintf(">>> Concurrent transaction progress saved separately: %s (use --resume-file with this path if interrupted)", path))
+			},
+			FinishTransaction: func() error {
+				if cfg.BuildPkgOnly {
+					return nil
+				}
+				if err := updateInstallWorld(*worldFile, worldSelections); err != nil {
+					bookkeepingErr = fmt.Errorf("packages committed but world selection failed: %w", err)
+					return bookkeepingErr
+				}
+				if cfg.Resume {
+					if err := resolve.RemoveCompletedResume(executionResumePath); err != nil {
+						bookkeepingErr = fmt.Errorf("retire completed resume: %w", err)
+						return bookkeepingErr
+					}
+				}
+				return nil
+			},
+			Rebuild: *rebuildCfg, ResumePath: *resumeFile, Jobs: cfg.Jobs, LoadAverage: cfg.LoadAverage, TmpdirRequireFreeGB: *jobsTmpdirRequireFreeGB, ValidateLocked: mutationGuard.validate, RecordLockedMutation: mutationGuard.record, PrepareMutation: prepareMutation,
 			OnSpaceWait: func(path string, available, required uint64) {
 				executionProgress.message(fmt.Sprintf("%s %s has insufficient free space; package parallelism reduced (free: %s, required: %s)", colorExecutionStage("Warning:"), path, formatSize(int64(available)), formatSize(int64(required))))
 			},
@@ -1040,6 +1055,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				}
 			},
 			OnActionComplete: func(index, total int, action resolve.PkgAction) {
+				mutationGuard.complete(action)
 				liveEstimate.complete(action)
 				executionProgress.clearProgress()
 				executionProgress.message(fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage("Completed package"), index, total, colorActionAtom(action)))
@@ -1075,6 +1091,10 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			}
 		}
 		if executionErr != nil {
+			if bookkeepingErr != nil {
+				fmt.Fprintf(os.Stderr, "arise: %v\n", bookkeepingErr)
+				os.Exit(1)
+			}
 			if errors.Is(executionErr, context.Canceled) {
 				printExecutionInterrupted(os.Stderr)
 				os.Exit(130)
@@ -1085,16 +1105,6 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if cfg.BuildPkgOnly {
 			printSuccessfulExecution(os.Stdout, cfg, rebuildCfg, repoDir)
 			return
-		}
-		if err := updateInstallWorld(*worldFile, worldSelections); err != nil {
-			fmt.Fprintf(os.Stderr, "arise: packages committed but world selection failed: %v\n", err)
-			os.Exit(1)
-		}
-		if cfg.Resume {
-			if err := resolve.RemoveCompletedResume(*resumeFile); err != nil {
-				fmt.Fprintf(os.Stderr, "arise: retire completed resume: %v\n", err)
-				os.Exit(1)
-			}
 		}
 		printSuccessfulExecution(os.Stdout, cfg, rebuildCfg, repoDir)
 		return

@@ -317,7 +317,7 @@ func TestIndependentPlanAuditEnforcementFailsClosed(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "locked-pre-mutation") {
 		t.Fatalf("invalid plan enforcement error = %v", err)
 	}
-	if !strings.Contains(output.String(), "no package changes were made") {
+	if !strings.Contains(output.String(), "the current package was not merged") || strings.Contains(output.String(), "no package changes were made") {
 		t.Fatalf("invalid plan enforcement output = %q", output.String())
 	}
 
