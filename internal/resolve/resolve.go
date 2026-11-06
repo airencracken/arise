@@ -1601,11 +1601,46 @@ type dependencyOrigin struct {
 	condition string
 }
 
-func (r *resolver) warnRetainedInstalled(cp, version string) {
+func (r *resolver) warnRetainedInstalled(node *PkgNode, constraint *atom.Atom, installed *VersionInfo) {
+	cp, version := node.Atom.CP(), installed.Version.Raw
+	var blocked []string
+	for _, candidate := range node.Versions {
+		if candidate == nil || !candidate.Available ||
+			!versionAtomMatches(node.Atom, constraint, candidate, r.candidateUseFlags(node, candidate)) {
+			continue
+		}
+		var reasons []string
+		if r.versionExcluded(node, candidate) {
+			reasons = append(reasons, "--exclude")
+		}
+		if r.versionMaskStatus(node, candidate).Masked {
+			reasons = append(reasons, "package masking")
+		}
+		if !r.versionKeywordAccepted(node, candidate) {
+			reasons = append(reasons, "keyword acceptance")
+		}
+		if len(reasons) == 0 {
+			// Retaining an installed version newer than the indexed ebuilds
+			// does not mean the selection has no repository candidates.
+			return
+		}
+		blocked = append(blocked, reasons...)
+	}
+	if len(blocked) != 0 {
+		prefix := "retaining installed dependency " + cp + "-" + version
+		if r.worldTargets[cp] {
+			prefix = "world selection " + constraint.String() + "; retained installed " + cp + "-" + version
+		}
+		r.warnings = append(r.warnings, fmt.Sprintf(
+			"%s; matching repository candidates are blocked by current policy (%s)",
+			prefix, strings.Join(nonemptySortedUnique(blocked), "; "),
+		))
+		return
+	}
 	if r.worldTargets[cp] {
 		r.warnings = append(r.warnings, fmt.Sprintf(
-			"world selection %s has no installable repository candidate; retained installed %s-%s (after confirming it is obsolete, run: arise deselect %s)",
-			cp, cp, version, cp,
+			"world selection %s has no installable repository candidate; retained installed %s-%s (run arise index after external repository updates; after confirming it is obsolete, run: arise deselect %s)",
+			constraint.String(), cp, version, cp,
 		))
 		return
 	}
@@ -2440,7 +2475,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 				return nil
 			}
 			if !r.explicitTargets[cp] {
-				r.warnRetainedInstalled(cp, installed.Version.Raw)
+				r.warnRetainedInstalled(node, matchTarget, installed)
 				if r.config.Deep {
 					return r.processDeps(node, installed, target.String(), depth+1, DomainROOT)
 				}
@@ -2485,7 +2520,7 @@ func (r *resolver) planPackage(target *atom.Atom, reason string, depth int) erro
 	}
 	if vi.Installed && !vi.Available {
 		if !r.explicitTargets[cp] {
-			r.warnRetainedInstalled(cp, vi.Version.Raw)
+			r.warnRetainedInstalled(node, matchTarget, vi)
 			if r.config.Deep {
 				return r.processDeps(node, vi, target.String(), depth+1, DomainROOT)
 			}

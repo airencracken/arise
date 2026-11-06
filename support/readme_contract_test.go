@@ -27,7 +27,7 @@ func TestActiveDocumentationTracksImplementedOperationalSurface(t *testing.T) {
 	)
 	assertPresent(t, readme,
 		"bootstrap the replacement using Portage:",
-		"emaint sync -r arise-overlay\nemerge -1 =sys-apps/arise-"+projectReleaseVersion(t),
+		"emaint sync -r arise-overlay\nemerge -1 =sys-apps/arise-"+projectReleaseVersion(t)+"\narise index",
 		"sys-apps/arise ~amd64",
 		"sys-apps/arise-bin ~amd64",
 		"emerge --ask sys-apps/arise-bin",

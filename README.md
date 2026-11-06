@@ -41,7 +41,11 @@ bootstrap the replacement using Portage:
 ```sh
 emaint sync -r arise-overlay
 emerge -1 =sys-apps/arise-0.0.49
+arise index
 ```
+
+The final command refreshes Arise's metadata index after Portage synchronizes
+the overlay; installing Arise does not refresh that index automatically.
 
 ## Use
 
