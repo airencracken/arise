@@ -843,7 +843,7 @@ default() {
 }
 ___arise_finalize_install_image() {
   [[ ${ED-} ]] || return 0
-  local relative path queued skip excluded compressor=${PORTAGE_COMPRESS:-gzip} suffix
+  local relative path queued skip excluded file_kind compressor=${PORTAGE_COMPRESS:-gzip} suffix
   local -a compress_flags=()
 	# Portage regenerates the canonical GNU Info directory index on the live
 	# system. It must never escape the build image or become package-owned.
@@ -878,8 +878,17 @@ ___arise_finalize_install_image() {
         relative=/${path#"${ED%/}"/}; excluded=0
         for skip in "${___ARISE_DOSTRIP_SKIP[@]}"; do [[ $relative == "$skip" || $relative == "$skip"/* ]] && { excluded=1; break; }; done
         (( excluded )) && continue
-        readelf -h "$path" >/dev/null 2>&1 || continue
-        strip --strip-unneeded -- "$path" || return
+		# readelf also accepts archives, including thin archives whose members
+		# live outside the image. Match Portage's estrip object classification:
+		# leave thin archives alone and retain regular archives' link symbols.
+		file_kind=$(LC_ALL=C file -b -- "$path") || return
+		case $file_kind in
+		  *"current ar archive"*)
+		    strip -g -- "$path" || return
+		    ranlib -- "$path" || return ;;
+		  *"SB executable"*|*"SB pie executable"*|*"SB shared object"*|*"SB relocatable"*)
+		    strip --strip-unneeded -- "$path" || return ;;
+		esac
       done < <(find "$path" -type f -print0)
     done
   fi
@@ -892,6 +901,10 @@ ___arise_run_install_qa_checks() (
 	local check
 	: "${PORTAGE_INST_UID:=0}" "${PORTAGE_INST_GID:=0}"
 	: "${PORTAGE_TMPDIR:=${WORKDIR%/*}}" "${PORTAGE_PYTHON:=python3}"
+	# Install QA scripts use these Portage logging helpers. Define them only
+	# inside the QA subshell so they cannot enter the package environment.
+	__quiet_mode() { [[ ${PORTAGE_QUIET:-0} -eq 1 ]]; }
+	__vecho() { __quiet_mode || echo "$@" >&2; }
 	while IFS= read -r check; do
 		[[ $check ]] || continue
 		# Portage treats each QA check as an external script while passing the
