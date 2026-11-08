@@ -18,5 +18,6 @@ against its staged source ebuild and verified distfiles. This uses Arise's own
 rebuild driver in a disposable root, in addition to Portage's packaging checks.
 The ledger's `self_host_verified` field records that gate. See the
 [shell-state audit](../docs/audits/SHELL_STATE_CONTRACT_2026-11-05.md).
-`make test-live-phase-contract` requires the EAPI 7/8/9 Portage comparisons and
-completion QA regression first; missing reference prerequisites fail that lane.
+`make test-live-phase-contract` requires the EAPI 7/8/9 Portage comparisons,
+archive finalization comparisons, and completion and executable QA regressions
+first; missing reference prerequisites fail that lane.

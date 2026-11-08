@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.52](0.0.52.md) fixes thin-archive finalization, preserves regular-archive
+symbols and supplies the verbose helper used by Portage executable QA checks.
+
 [0.0.51](0.0.51.md) revalidates unrelated concurrent installs and isolates
 resume checkpoints between Arise transactions.
 

@@ -40,7 +40,7 @@ bootstrap the replacement using Portage:
 
 ```sh
 emaint sync -r arise-overlay
-emerge -1 =sys-apps/arise-0.0.51
+emerge -1 =sys-apps/arise-0.0.52
 arise index
 ```
 
@@ -115,7 +115,7 @@ make vet
 ```
 
 See the [development guide](docs/development.md), [open work](PUNCHLIST.md) and
-[0.0.51 release notes](docs/releases/0.0.51.md). Arise is maintained by one
+[0.0.52 release notes](docs/releases/0.0.52.md). Arise is maintained by one
 developer with AI assistance. Portage, Gentoo, eix, Gentoolkit, portage-utils and
 pkgcore/pkgcheck provide the reference behavior and comparison tools.
 
