@@ -75,7 +75,7 @@ test-live-self-host:
 	$(GO) test -tags=live_portage ./internal/rebuild -run '^TestLiveAriseSelfHost$$' -count=1 -v -timeout 10m
 
 test-live-phase-contract:
-	ARISE_REQUIRE_PHASE_CONTRACT=1 $(GO) test -tags=live_portage ./internal/phaseproto -run '^(TestLivePhaseStateMatchesPortage|TestLiveBashCompletionQADoesNotLeakIntoPreinst)$$' -count=1 -v -timeout 5m
+	ARISE_REQUIRE_PHASE_CONTRACT=1 $(GO) test -tags=live_portage ./internal/phaseproto -run '^(TestLivePhaseStateMatchesPortage|TestLiveBashCompletionQADoesNotLeakIntoPreinst|TestLiveInstallStripMatchesPortage|TestLiveExecutableQASupportsVerboseHelper)$$' -count=1 -v -timeout 5m
 
 PORTAGE_REPO ?= /var/db/repos/gentoo
 AUDIT_OUTPUT ?= /tmp/arise-repository-compatibility.json
