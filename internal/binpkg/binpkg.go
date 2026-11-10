@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/sha512"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -24,12 +25,51 @@ import (
 	"time"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/portage"
 	"golang.org/x/crypto/blake2b"
 )
 
 const xpakMagic = "XPAKSTOP"
 const xpakTrailerLen = 4096
 const maxXPAKMetadataBytes = 64 << 20
+
+// BinaryExecutionABIError rejects known Arise artifacts built with incompatible
+// execution semantics. Unmarked Portage packages retain their normal policy.
+func BinaryExecutionABIError(abi string) error {
+	if abi != "" && !portage.PhaseEnvironmentABICompatible(abi) {
+		return fmt.Errorf("binpkg: Arise execution ABI %s requires rebuilding for execution ABI %s", abi, portage.PhaseEnvironmentABI)
+	}
+	return nil
+}
+
+func capturedPhaseEnvironmentABI(metadata map[string]string) (string, error) {
+	abi := metadata["ARISE_PHASE_ENV_ABI"]
+	if metadata[recoveryManifestKey] == "" {
+		return abi, nil
+	}
+	// Older Arise XPAKs omitted this top-level field, but their complete VDB
+	// snapshot still contains it. Do not let those captures masquerade as
+	// unmarked Portage packages and undo an execution-ABI repair.
+	manifest, err := decodeRecoveryManifest(metadata)
+	if err != nil {
+		return "", err
+	}
+	for _, evidence := range manifest.SourceVDB {
+		if evidence.Path != "ARISE_PHASE_ENV_ABI" {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(evidence.ContentBase64)
+		if err != nil {
+			return "", fmt.Errorf("binpkg: decode captured execution ABI: %w", err)
+		}
+		captured := strings.TrimSpace(string(data))
+		if abi != "" && abi != captured {
+			return "", fmt.Errorf("binpkg: execution ABI disagrees with captured VDB")
+		}
+		return captured, nil
+	}
+	return abi, nil
+}
 
 type ExtractionPolicy struct {
 	MaxEntries        int
@@ -58,6 +98,7 @@ type BinPkgInfo struct {
 	Repository    string
 	CHOST         string
 	ABI           string
+	PhaseEnvABI   string
 	IUse          string
 	DefinedPhases string
 	Size          int64
@@ -120,6 +161,7 @@ func ReadInfo(path string) (*BinPkgInfo, error) {
 		result.BuildTime, _ = strconv.ParseInt(meta["BUILD_TIME"], 10, 64)
 		result.BuildID, result.Repository = meta["BUILD_ID"], meta["repository"]
 		result.CHOST, result.ABI, result.IUse = meta["CHOST"], meta["ABI"], meta["IUSE"]
+		result.PhaseEnvABI = meta["ARISE_PHASE_ENV_ABI"]
 		if result.Package == "" || result.Version == "" {
 			pf := meta["PF"]
 			if parsed, parseErr := atom.Parse(result.Category + "/" + pf); parseErr == nil && parsed.Version != nil {
@@ -166,6 +208,10 @@ func ReadInfo(path string) (*BinPkgInfo, error) {
 	}
 	info.BuildID, info.Repository = meta["BUILD_ID"], meta["repository"]
 	info.CHOST, info.ABI, info.IUse = meta["CHOST"], meta["ABI"], meta["IUSE"]
+	info.PhaseEnvABI, err = capturedPhaseEnvironmentABI(meta)
+	if err != nil {
+		return nil, err
+	}
 
 	if info.Version == "" {
 		pf := meta["PF"]
@@ -1038,7 +1084,7 @@ func buildXPAKMetadata(meta map[string]string) []byte {
 	values := make(map[string][]byte)
 	for _, key := range []string{
 		"CATEGORY", "PF", "PACKAGE", "VERSION", "SLOT", "USE", "EAPI", "BUILD_TIME", "CHOST", "repository",
-		"BUILD_ID", "ABI", "CBUILD", "CTARGET",
+		"BUILD_ID", "ABI", "CBUILD", "CTARGET", "ARISE_PHASE_ENV_ABI",
 		recoveryManifestKey, recoveryManifestSHA256Key,
 	} {
 		if v, ok := meta[key]; ok {
@@ -1076,7 +1122,7 @@ func readVDBMetadata(vdbPath string) (map[string]string, error) {
 	meta := make(map[string]string)
 	files := []string{
 		"CATEGORY", "PF", "SLOT", "USE", "EAPI", "BUILD_TIME", "BUILD_ID",
-		"ABI", "CBUILD", "CHOST", "CTARGET", "repository",
+		"ABI", "CBUILD", "CHOST", "CTARGET", "repository", "ARISE_PHASE_ENV_ABI",
 	}
 
 	for _, fn := range files {
@@ -1443,6 +1489,9 @@ func FindCompatibleCandidate(pkgs []*BinPkgInfo, atomStr string, policy Compatib
 			continue
 		}
 
+		if BinaryExecutionABIError(p.PhaseEnvABI) != nil {
+			continue
+		}
 		if policy.CHOST != "" && p.CHOST != "" && policy.CHOST != p.CHOST {
 			continue
 		}

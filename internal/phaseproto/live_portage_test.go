@@ -209,8 +209,34 @@ func TestLivePortageInstallHelperImageTree(t *testing.T) {
 	}
 }
 
-func compareLivePortageHelperImage(t *testing.T, ebuildCommand, eapi string) {
+func TestLiveProfileLibraryLayoutsMatchPortage(t *testing.T) {
+	ebuildCommand, err := exec.LookPath("ebuild")
+	if err != nil {
+		if os.Getenv("ARISE_REQUIRE_PHASE_CONTRACT") == "1" {
+			t.Fatal("required Portage ebuild reference unavailable")
+		}
+		t.Skip("Portage ebuild command unavailable")
+	}
+	for _, eapi := range []string{"7", "8", "9"} {
+		for name, environment := range map[string]map[string]string{
+			"x86 lib":   {"ABI": "x86", "LIBDIR_x86": "lib"},
+			"x86 lib32": {"ABI": "x86", "LIBDIR_x86": "lib32"},
+			"x32":       {"ABI": "x32", "LIBDIR_x32": "libx32"},
+			"nested":    {"ABI": "lp64d", "LIBDIR_lp64d": "lib64/lp64d"},
+		} {
+			t.Run("EAPI-"+eapi+"/"+name, func(t *testing.T) {
+				compareLivePortageHelperImage(t, ebuildCommand, eapi, environment)
+			})
+		}
+	}
+}
+
+func compareLivePortageHelperImage(t *testing.T, ebuildCommand, eapi string, profiles ...map[string]string) {
 	t.Helper()
+	profile := map[string]string{"ABI": "amd64", "LIBDIR_amd64": "lib64"}
+	if len(profiles) != 0 {
+		profile = profiles[0]
+	}
 	directory := t.TempDir()
 	repository := filepath.Join(directory, "repo")
 	packageDir := filepath.Join(repository, "app-misc", "arise-helper-probe")
@@ -264,12 +290,24 @@ src_install() {
   doman probe.1
   newman probe.1 renamed.5
   doinfo data
-  domo fr.mo
+  if [[ ${EAPI} == 9 ]]; then
+    insinto /usr/share/locale/fr/LC_MESSAGES
+    doins fr.mo
+  else
+    domo fr.mo
+  fi
   docompress -x /usr/share/info
   dosym ../../opt/probe/bin/tool /usr/bin/probe-link
   fperms 0750 /opt/probe/bin/renamed
 }
 `, eapi)
+	// Supply the same effective profile values to both implementations. The
+	// configuration-to-worker transport is covered separately.
+	var assignments strings.Builder
+	for name, value := range profile {
+		fmt.Fprintf(&assignments, "export %s=%q\n", name, value)
+	}
+	body = strings.Replace(body, "\nSLOT=0", "\n"+assignments.String()+"SLOT=0", 1)
 	if err := os.WriteFile(ebuild, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +349,7 @@ src_install() {
 		Protocol: Version, ID: "helper-image-differential", Command: "run_phase", Phase: "src_install", EAPI: eapi, Ebuild: ebuild,
 		WorkDir: ariseBuild, BuildDir: ariseBuild, SourceDir: ariseBuild, ImageDir: ariseImage, TempDir: filepath.Join(ariseBuild, "temp"), HomeDir: filepath.Join(ariseBuild, "home"),
 		Package: PackageIdentity{Category: "app-misc", PN: "arise-helper-probe", PV: "1", PR: "r0", P: "arise-helper-probe-1", PVR: "1", PF: "arise-helper-probe-1", Slot: "0", Repository: "arise-helper-probe"},
-		Env:     map[string]string{"ABI": "amd64", "PORTAGE_COMPRESS": "bzip2"},
+		Env:     map[string]string{"ABI": "amd64", "LIBDIR_amd64": "lib64", "PORTAGE_COMPRESS": "bzip2"},
 	}
 	if events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request); err != nil {
 		t.Fatalf("Arise helper probe: %v; events=%#v", err, events)

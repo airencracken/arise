@@ -19,14 +19,14 @@ import (
 // PhaseEnvironmentABI identifies artifact-affecting package execution
 // semantics. Packages built by Arise persist this value in VDB so a later ABI
 // change cannot be hidden behind unchanged USE metadata.
-const PhaseEnvironmentABI = "6"
+const PhaseEnvironmentABI = "7"
 
 // PhaseEnvironmentABICompatible reports whether an installed Arise artifact
-// remains valid under the current execution ABI. ABI 6 separates worker and
-// package names and preserves exported functions. Earlier versions could
-// silently lose values and helper settings that
-// affect installed payloads, so successfully committed older artifacts also
-// require rebuilding. Unmarked Portage artifacts are handled by the resolver.
+// remains valid under the current execution ABI. ABI 7 honors profile ABI
+// library directories and transports toolchain layout controls. Earlier
+// versions could install libraries and startup objects outside the compiler's
+// search paths, so committed older artifacts require rebuilding. Unmarked
+// Portage artifacts are handled by the resolver.
 func PhaseEnvironmentABICompatible(installed string) bool {
 	return installed == PhaseEnvironmentABI
 }
@@ -542,6 +542,7 @@ var packageExecutionEnvironmentVariables = map[string]bool{
 	"USE": true, "FEATURES": true, "ACCEPT_KEYWORDS": true, "ACCEPT_LICENSE": true, "ALLOW_TEST": true,
 	"ARCH": true, "CHOST": true, "CBUILD": true, "CTARGET": true,
 	"ABI": true, "DEFAULT_ABI": true, "MULTILIB_ABIS": true,
+	"SYMLINK_LIB": true, "KERNEL_ABI": true,
 	"CFLAGS": true, "CXXFLAGS": true, "CPPFLAGS": true, "FFLAGS": true,
 	"FCFLAGS": true, "ADAFLAGS": true, "GDCFLAGS": true, "RUSTFLAGS": true,
 	"LDFLAGS": true, "MAKEOPTS": true, "NINJAFLAGS": true,
@@ -562,7 +563,7 @@ func isPackageExecutionEnvironmentVariable(name string) bool {
 	// dropping them can silently configure a compiler for an empty target.
 	for _, prefix := range []string{
 		"CHOST_", "CTARGET_", "CFLAGS_", "CXXFLAGS_", "CPPFLAGS_", "LDFLAGS_", "LIBDIR_",
-		"BUILD_",
+		"BUILD_", "FAKE_TARGETS_",
 	} {
 		if strings.HasPrefix(name, prefix) {
 			return true

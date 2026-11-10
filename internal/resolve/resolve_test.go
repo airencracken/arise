@@ -3405,7 +3405,7 @@ func TestResolve_WorldSetEmpty(t *testing.T) {
 }
 
 func TestResolveReinstallsOlderArisePhaseEnvironmentABI(t *testing.T) {
-	for _, abi := range []string{"older", "2", "3", "4", "5"} {
+	for _, abi := range []string{"older", "2", "3", "4", "5", "6"} {
 		t.Run(abi, func(t *testing.T) {
 			g := makeGraph()
 			installed := pkg(g, "app-misc/example", "1", "0", "0", true, nil)

@@ -200,6 +200,9 @@ func InstallBinaryPackage(ctx context.Context, atomStr string, cfg *RebuildConfi
 	if err := binpkg.BinaryLifecycleError(info.DefinedPhases); err != nil {
 		return err
 	}
+	if err := binpkg.BinaryExecutionABIError(info.PhaseEnvABI); err != nil {
+		return err
+	}
 	if cfg.SelectedSlot != "" {
 		selectedSlot := info.Slot
 		if info.Subslot != "" {
@@ -351,6 +354,9 @@ func PreflightBinaryPackage(atomStr string, cfg *RebuildConfig) error {
 		return fmt.Errorf("rebuild: preflight binary identity mismatch")
 	}
 	if err := binpkg.BinaryLifecycleError(info.DefinedPhases); err != nil {
+		return err
+	}
+	if err := binpkg.BinaryExecutionABIError(info.PhaseEnvABI); err != nil {
 		return err
 	}
 	if cfg.AllowLiveUpgrade || cfg.AllowLiveReplacement {
