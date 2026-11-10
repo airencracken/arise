@@ -71,18 +71,19 @@ type Config struct {
 	LoadAverage       float64
 	// TmpdirRequireFreeGB mirrors emerge's --jobs-tmpdir-require-free-gb:
 	// parallel job admission is reduced when the scaled reserve is unavailable.
-	TmpdirRequireFreeGB int
-	FreeSpace           FreeSpace
-	AcquireMutationLock MutationLockAcquirer
-	Runner              PackageRunner
-	Preflight           ActionPreflight
-	OnActionStart       func(index, total int, action resolve.PkgAction)
-	OnActionInstall     func(index, total int, action resolve.PkgAction)
-	OnActionStage       func(index, total int, action resolve.PkgAction, stage string)
-	OnActionProgress    func(index, total int, action resolve.PkgAction, stage string, current, stageTotal int)
-	OnActionNotice      func(index, total int, action resolve.PkgAction, class, message string)
-	OnActionComplete    func(index, total int, action resolve.PkgAction)
-	OnSpaceWait         func(path string, available, required uint64)
+	TmpdirRequireFreeGB   int
+	FreeSpace             FreeSpace
+	AcquireMutationLock   MutationLockAcquirer
+	Runner                PackageRunner
+	Preflight             ActionPreflight
+	OnActionStart         func(index, total int, action resolve.PkgAction)
+	OnActionInstall       func(index, total int, action resolve.PkgAction)
+	OnActionStage         func(index, total int, action resolve.PkgAction, stage string)
+	OnActionProgress      func(index, total int, action resolve.PkgAction, stage string, current, stageTotal int)
+	OnActionNotice        func(index, total int, action resolve.PkgAction, class, message string)
+	OnActionFollowUpError func(index, total int, action resolve.PkgAction, err error)
+	OnActionComplete      func(index, total int, action resolve.PkgAction)
+	OnSpaceWait           func(path string, available, required uint64)
 	// ValidateLocked reruns state authorization after acquiring the live VDB
 	// lock and immediately before each prepared package mutates live state.
 	ValidateLocked func() error
@@ -483,7 +484,9 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 			err = errors.Join(err, callbackErr)
 			var postCommit *merge.PostCommitError
 			if errors.As(err, &postCommit) && transactionCommitted.Load() && callbackErr == nil {
-				if cfg.OnActionNotice != nil {
+				if cfg.OnActionFollowUpError != nil {
+					cfg.OnActionFollowUpError(index+1, totalActions, action, &ActionError{Package: actionLabel(action), Err: err})
+				} else if cfg.OnActionNotice != nil {
 					cfg.OnActionNotice(index+1, totalActions, action, "WARN", "committed package has a post-commit lifecycle failure: "+err.Error())
 				}
 				err = nil
@@ -519,11 +522,18 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 		running--
 		if outcome.err != nil {
 			cancel()
+			failures := []error{&ActionError{Package: actionLabel(actions[outcome.index]), Err: outcome.err}}
 			for running > 0 {
-				<-results
+				peer := <-results
+				if peer.err != nil && !errors.Is(peer.err, context.Canceled) {
+					failures = append(failures, &ActionError{Package: actionLabel(actions[peer.index]), Err: peer.err})
+				}
 				running--
 			}
-			return fmt.Errorf("executor: %s: %w", actionLabel(actions[outcome.index]), outcome.err)
+			if len(failures) == 1 {
+				return failures[0]
+			}
+			return errors.Join(failures...)
 		}
 		completed++
 		for _, dependent := range dependents[outcome.index] {

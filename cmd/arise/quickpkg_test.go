@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -17,7 +18,7 @@ func TestRecoveryArtifactNoticeExposesClassificationSchemaAndDigest(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"host-recovery", "schema=1", "manifest-sha256="} {
+	for _, required := range []string{"host-recovery", fmt.Sprintf("schema=%d", binpkg.RecoveryManifestSchema), "manifest-sha256="} {
 		if !strings.Contains(notice, required) {
 			t.Errorf("notice %q omits %q", notice, required)
 		}

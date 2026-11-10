@@ -1054,6 +1054,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 					}
 				}
 			},
+			OnActionFollowUpError: func(index, total int, action resolve.PkgAction, err error) {
+				var message bytes.Buffer
+				printExecutionErrorWithOptions(&message, err, *verbose)
+				executionProgress.message(strings.TrimSpace(message.String()))
+			},
 			OnActionComplete: func(index, total int, action resolve.PkgAction) {
 				mutationGuard.complete(action)
 				liveEstimate.complete(action)
@@ -1099,7 +1104,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				printExecutionInterrupted(os.Stderr)
 				os.Exit(130)
 			}
-			printExecutionError(os.Stderr, executionErr)
+			printExecutionErrorWithOptions(os.Stderr, executionErr, *verbose)
 			os.Exit(1)
 		}
 		if cfg.BuildPkgOnly {
@@ -1509,11 +1514,10 @@ func warningDiagnostics(details []resolve.WarningDiagnostic, summary string) []r
 }
 
 func printExecutionError(w io.Writer, err error) {
-	fmt.Fprintln(w, "arise: package transaction failed")
-	fmt.Fprintln(w)
-	if hint := executionStorageHint(err); hint != "" {
-		fmt.Fprintf(w, "  %s\n", hint)
-	}
+	printExecutionErrorWithOptions(w, err, false)
+}
+
+func executionErrorDetails(err error) ([]string, string) {
 	const maxDetails = 10
 	details := make([]string, 0, maxDetails)
 	durableLog := ""
@@ -1543,15 +1547,7 @@ func printExecutionError(w io.Writer, err error) {
 		}
 		err = cause
 	}
-	for _, detail := range details {
-		fmt.Fprintf(w, "  %s\n", detail)
-	}
-	if durableLog != "" {
-		fmt.Fprintln(w)
-		fmt.Fprintln(w, "  Log file:")
-		fmt.Fprintf(w, "    '%s'\n", durableLog)
-	}
-	fmt.Fprintln(w)
+	return details, durableLog
 }
 
 func executionStorageHint(err error) string {

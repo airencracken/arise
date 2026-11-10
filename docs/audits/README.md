@@ -1,5 +1,9 @@
 # Audit evidence
 
+The [recovery capture and diagnostics audit](RECOVERY_CAPTURE_AND_DIAGNOSTICS_2026-11-09.md)
+records intentionally removed installed payloads, explicit absence in backups,
+restore behavior, and actionable transaction error reporting.
+
 The [concurrent package-state audit](CONCURRENT_PACKAGE_STATE_2026-11-06.md)
 records live-state revalidation and checkpoint isolation for independent
 package installs during a long world update.

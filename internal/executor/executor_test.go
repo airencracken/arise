@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -258,9 +259,11 @@ func TestExecuteMarksPostCommitLifecycleFailureComplete(t *testing.T) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	var followUp error
 	err := Execute(context.Background(), result, Config{
 		ResumePath: resume, Rebuild: rebuild.RebuildConfig{RootDir: root},
-		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		OnActionFollowUpError: func(_ int, _ int, _ resolve.PkgAction, err error) { followUp = err },
+		Preflight:             func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
 		Runner: func(_ context.Context, _ string, packageCfg *rebuild.RebuildConfig) error {
 			if err := packageCfg.OnTransactionCommit(nil); err != nil {
 				return err
@@ -271,9 +274,36 @@ func TestExecuteMarksPostCommitLifecycleFailureComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("committed lifecycle failure stopped execution: %v", err)
 	}
+	var committed *merge.PostCommitError
+	var actionError *ActionError
+	if !errors.As(followUp, &committed) || !errors.As(followUp, &actionError) || actionError.Package != "cat/pkg-1" {
+		t.Fatalf("follow-up callback lost package identity or committed state: %v", followUp)
+	}
 	remaining, loadErr := resolve.LoadResume(resume)
 	if loadErr != nil || len(remaining) != 0 {
 		t.Fatalf("remaining=%v err=%v", remaining, loadErr)
+	}
+}
+
+func TestExecuteRetainsSimultaneousPackageFailures(t *testing.T) {
+	first, second := action(t, "cat/first-1"), action(t, "cat/second-1")
+	result := &resolve.ResolveResult{Verified: true, Verification: resolve.VerificationVerified, Install: []resolve.PkgAction{first, second}}
+	root := t.TempDir()
+	var started sync.WaitGroup
+	started.Add(2)
+	err := Execute(context.Background(), result, Config{
+		Jobs: 2, ResumePath: filepath.Join(t.TempDir(), "resume.json"), Rebuild: rebuild.RebuildConfig{RootDir: root},
+		Preflight: func(resolve.PkgAction, *rebuild.RebuildConfig) error { return nil },
+		Runner: func(_ context.Context, label string, _ *rebuild.RebuildConfig) error {
+			started.Done()
+			started.Wait()
+			return fmt.Errorf("build error for %s", label)
+		},
+	})
+	for _, want := range []string{"build error for cat/first-1", "build error for cat/second-1"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("simultaneous failure lost %q: %v", want, err)
+		}
 	}
 }
 

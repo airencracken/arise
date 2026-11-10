@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	RecoveryManifestSchema = 1
+	RecoveryManifestSchema = 2
 	ArtifactKindRecovery   = "host-recovery"
 
 	recoveryManifestKey       = "ARISE_RECOVERY_MANIFEST_B64"
@@ -179,9 +179,17 @@ func capturePayloadEvidence(root string, entries []contentEntry) ([]FileEvidence
 		if err := rejectSymlinkParents(root, sourcePath); err != nil {
 			return nil, fmt.Errorf("binpkg: cannot capture installed path %s: %w", entry.Path, err)
 		}
-		item, err := fileEvidence(sourcePath, archivePath, entry.Type)
+		info, err := os.Lstat(sourcePath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				evidence = append(evidence, FileEvidence{Path: archivePath, Type: "absent", RecordedType: entry.Type})
+				continue
+			}
 			return nil, fmt.Errorf("binpkg: capture installed path %s: %w", entry.Path, err)
+		}
+		item, err := fileEvidenceFromInfo(sourcePath, archivePath, entry.Type, info)
+		if err != nil {
+			return nil, fmt.Errorf("binpkg: read installed path %s: %w", entry.Path, err)
 		}
 		switch entry.Type {
 		case "obj":
@@ -226,6 +234,11 @@ func fileEvidence(sourcePath, recordedPath, recordedType string) (FileEvidence, 
 	if err != nil {
 		return FileEvidence{}, err
 	}
+	return fileEvidenceFromInfo(sourcePath, recordedPath, recordedType, info)
+}
+
+func fileEvidenceFromInfo(sourcePath, recordedPath, recordedType string, info fs.FileInfo) (FileEvidence, error) {
+	var err error
 	item := FileEvidence{
 		Path: recordedPath, Mode: uint32(info.Mode()), Size: info.Size(),
 		MtimeUnixNano: info.ModTime().UnixNano(), RecordedType: recordedType,
@@ -372,8 +385,8 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 }
 
 func validateRecoveryManifest(manifest *RecoveryManifest) error {
-	if manifest.Schema != RecoveryManifestSchema {
-		return fmt.Errorf("binpkg: unsupported recovery manifest schema %d", manifest.Schema)
+	if manifest.Schema != 1 && manifest.Schema != RecoveryManifestSchema {
+		return &UnsupportedRecoverySchemaError{Schema: manifest.Schema}
 	}
 	if manifest.ArtifactKind != ArtifactKindRecovery {
 		return fmt.Errorf("binpkg: unsupported artifact kind %q", manifest.ArtifactKind)
@@ -404,13 +417,26 @@ func validateRecoveryManifest(manifest *RecoveryManifest) error {
 	if err := validateEvidencePaths(manifest.Payload, false); err != nil {
 		return fmt.Errorf("binpkg: invalid recovery manifest payload evidence: %w", err)
 	}
+	if manifest.Schema == 1 {
+		for _, item := range manifest.Payload {
+			if item.Type == "absent" {
+				return fmt.Errorf("binpkg: schema 1 cannot record absent payload paths")
+			}
+		}
+	}
 	return nil
 }
 
 func validateEvidencePaths(evidence []FileEvidence, requireFileContent bool) error {
+	absent := make(map[string]bool)
+	for _, item := range evidence {
+		if item.Type == "absent" {
+			absent[item.Path] = true
+		}
+	}
 	previous := ""
 	for _, item := range evidence {
-		if item.Path == "" || filepath.IsAbs(item.Path) {
+		if item.Path == "" || filepath.IsAbs(item.Path) || strings.ContainsRune(item.Path, 0) {
 			return fmt.Errorf("path %q is not relative", item.Path)
 		}
 		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(item.Path)))
@@ -421,7 +447,20 @@ func validateEvidencePaths(evidence []FileEvidence, requireFileContent bool) err
 			return fmt.Errorf("paths are duplicate or unsorted at %q", item.Path)
 		}
 		previous = item.Path
+		if item.Type != "absent" {
+			for parent := filepath.ToSlash(filepath.Dir(item.Path)); parent != "."; parent = filepath.ToSlash(filepath.Dir(parent)) {
+				if absent[parent] {
+					return fmt.Errorf("present path %q has absent parent %q", item.Path, parent)
+				}
+			}
+		}
 		switch item.Type {
+		case "absent":
+			if requireFileContent || (item.RecordedType != "obj" && item.RecordedType != "dir" && item.RecordedType != "sym") ||
+				item.Mode != 0 || item.UID != 0 || item.GID != 0 || item.Size != 0 || item.MtimeUnixNano != 0 ||
+				item.SHA256 != "" || item.LinkTarget != "" || item.ContentBase64 != "" || len(item.XAttrs) != 0 || len(item.SparseExtents) != 0 {
+				return fmt.Errorf("absent path %q has invalid evidence", item.Path)
+			}
 		case "file", "hardlink":
 			decodedDigest, err := hex.DecodeString(item.SHA256)
 			if err != nil || len(decodedDigest) != sha256.Size {

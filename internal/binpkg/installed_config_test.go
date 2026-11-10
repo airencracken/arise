@@ -47,12 +47,22 @@ func TestCaptureInstalledConfigUpdateLineage(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					wantEntries := 2
-					if pending {
-						wantEntries++
-					}
+					wantEntries := 4
 					if len(manifest.Payload) != wantEntries {
 						t.Fatalf("payload contains %d entries, want %d", len(manifest.Payload), wantEntries)
+					}
+					absent := 0
+					for _, item := range manifest.Payload {
+						if item.Type == "absent" {
+							absent++
+						}
+					}
+					wantAbsent := 2
+					if pending {
+						wantAbsent = 1
+					}
+					if absent != wantAbsent {
+						t.Fatalf("absent config records = %d; want %d", absent, wantAbsent)
 					}
 					foundContents := false
 					for _, evidence := range manifest.SourceVDB {
@@ -90,7 +100,7 @@ func TestCaptureInstalledConfigUpdateLineage(t *testing.T) {
 	}
 }
 
-func TestCaptureRejectsMissingOrdinaryAndMalformedConfigPaths(t *testing.T) {
+func TestCaptureMissingOrdinaryAndConfigLookalikesWithoutInferringOtherFiles(t *testing.T) {
 	for _, name := range []string{"runuser", "._cfg000_runuser", "._cfg00000_runuser", "._cfgxxxx_runuser", "._cfg0000_", "._cfg0000_..", "._cfg0000_."} {
 		t.Run(name, func(t *testing.T) {
 			base := t.TempDir()
@@ -106,8 +116,16 @@ func TestCaptureRejectsMissingOrdinaryAndMalformedConfigPaths(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if artifact, err := Create(context.Background(), vdb, root, filepath.Join(base, "packages")); err == nil || artifact != "" {
-				t.Fatalf("capture accepted missing path %q: %q, %v", name, artifact, err)
+			artifact, err := Create(context.Background(), vdb, root, filepath.Join(base, "packages"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := ReadRecoveryManifest(artifact)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(manifest.Payload) != 1 || manifest.Payload[0].Type != "absent" || manifest.Payload[0].Path != "etc/pam.d/"+name {
+				t.Fatalf("capture inferred configuration lineage for an ordinary missing path: %+v", manifest.Payload)
 			}
 		})
 	}
@@ -139,7 +157,7 @@ func TestCaptureConfigUpdateBoundaries(t *testing.T) {
 		current  bool
 		wantErr  bool
 	}{
-		{"neither file exists", "obj /etc/._cfg0000_runuser digest 1\n", false, false, true},
+		{"neither file exists", "obj /etc/._cfg0000_runuser digest 1\n", false, false, false},
 		{"pending without current", "obj /etc/._cfg0000_runuser digest 1\n", true, false, false},
 		{"current explicitly owned", "obj /etc/._cfg0000_runuser digest 1\nobj /etc/runuser digest 1\n", false, true, false},
 		{"duplicate original record", "obj /etc/._cfg0000_runuser digest 1\nobj /etc/._cfg0000_runuser digest 1\n", true, true, true},

@@ -37,7 +37,7 @@ func runQuickPkg(args []string) {
 	if gpkgFormat {
 		outPath, err := binpkg.CreateInstalledGPKG(ctx, vdbPath, commandEnv("ROOT", "/"), *binpkgDir)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "quickpkg: %v\n", err)
+			printCommandError(os.Stderr, "quickpkg: could not create package backup", err, *verbose)
 			os.Exit(1)
 		}
 		if _, err := binpkg.ReadGPKG(ctx, outPath); err != nil {
@@ -70,7 +70,7 @@ func runQuickPkg(args []string) {
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "quickpkg: %v\n", err)
+		printCommandError(os.Stderr, "quickpkg: could not create package backup", err, *verbose)
 		os.Exit(1)
 	}
 

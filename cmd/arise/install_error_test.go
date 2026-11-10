@@ -4,13 +4,42 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/airencracken/arise/internal/atom"
+	"github.com/airencracken/arise/internal/oplock"
+	"github.com/airencracken/arise/internal/recoveryset"
 	"github.com/airencracken/arise/internal/resolve"
 )
+
+func TestPrintExecutionErrorsGiveHumanExplanationAndNextStep(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		err             error
+		summary, action string
+	}{
+		{"backup permission", &recoveryset.CaptureError{VDBEntryPath: "/var/db/pkg/sys-kernel/gentoo-kernel-bin-6.18.62", Directory: "/var/cache/binpkgs/.arise-recovery", Err: &os.PathError{Op: "open", Path: "/usr/src/kernel/vmlinuz", Err: syscall.EACCES}}, "rollback backup for sys-kernel/gentoo-kernel-bin-6.18.62", "access permissions"},
+		{"busy", fmt.Errorf("acquire mutation lock: %w", oplock.ErrBusy), "Another package operation", "finish"},
+		{"storage", &os.PathError{Op: "write", Path: "/var/tmp/arise/build/output", Err: syscall.ENOSPC}, "storage is full", "Free space"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			printExecutionError(&output, fmt.Errorf("executor: app-arch/gzip-1.15: %w", test.err))
+			for _, want := range []string{test.summary, test.action, "Next step:"} {
+				if !strings.Contains(output.String(), want) {
+					t.Fatalf("missing %q:\n%s", want, output.String())
+				}
+			}
+			if strings.Contains(output.String(), "executor:") || strings.Contains(output.String(), "prepare mutation:") {
+				t.Fatalf("internal context replaced the human explanation:\n%s", output.String())
+			}
+		})
+	}
+}
 
 func TestPrintExecutionErrorSeparatesWrappedContext(t *testing.T) {
 	leaf := errors.New("exit status 1 (durable log: /var/log/portage/cat:pkg.log)")
@@ -19,14 +48,15 @@ func TestPrintExecutionErrorSeparatesWrappedContext(t *testing.T) {
 
 	printExecutionError(&output, err)
 
-	want := "arise: package transaction failed\n\n" +
-		"  executor: cat/pkg-1\n" +
-		"  rebuild: phase worker\n" +
-		"  exit status 1\n" +
-		"\n  Log file:\n" +
-		"    '/var/log/portage/cat:pkg.log'\n\n"
-	if output.String() != want {
-		t.Fatalf("unexpected output:\n%s\nwant:\n%s", output.String(), want)
+	if strings.Contains(output.String(), "executor:") || strings.Contains(output.String(), "rebuild: phase worker") || !strings.Contains(output.String(), "Next step:") || !strings.Contains(output.String(), "'/var/log/portage/cat:pkg.log'") {
+		t.Fatalf("default error is not human-readable:\n%s", output.String())
+	}
+	output.Reset()
+	printExecutionErrorWithOptions(&output, err, true)
+	for _, detail := range []string{"Technical details:", "executor: cat/pkg-1", "rebuild: phase worker", "exit status 1"} {
+		if !strings.Contains(output.String(), detail) {
+			t.Fatalf("verbose error lost %q:\n%s", detail, output.String())
+		}
 	}
 }
 
@@ -70,9 +100,8 @@ func TestPrintExecutionErrorIndentsMultilineLeaf(t *testing.T) {
 	var output bytes.Buffer
 	printExecutionError(&output, errors.New("first line\nsecond line"))
 
-	want := "arise: package transaction failed\n\n  first line\n  second line\n\n"
-	if output.String() != want {
-		t.Fatalf("unexpected output %q, want %q", output.String(), want)
+	if !strings.Contains(output.String(), "    first line\n    second line\n") || !strings.Contains(output.String(), "Next step:") {
+		t.Fatalf("multiline details were lost or not indented: %q", output.String())
 	}
 }
 

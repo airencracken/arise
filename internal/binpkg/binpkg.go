@@ -37,7 +37,7 @@ const maxXPAKMetadataBytes = 64 << 20
 // execution semantics. Unmarked Portage packages retain their normal policy.
 func BinaryExecutionABIError(abi string) error {
 	if abi != "" && !portage.PhaseEnvironmentABICompatible(abi) {
-		return fmt.Errorf("binpkg: Arise execution ABI %s requires rebuilding for execution ABI %s", abi, portage.PhaseEnvironmentABI)
+		return &IncompatibleExecutionABIError{ABI: abi}
 	}
 	return nil
 }
@@ -856,6 +856,13 @@ func CreateRecoveryArtifact(ctx context.Context, request CaptureRequest) (string
 			cleanup(tw, bzWriter, tmpF)
 			return "", fmt.Errorf("binpkg: invalid installed path %q: %w", entry.Path, err)
 		}
+		if payloadEvidence[archivePath].Type == "absent" {
+			if err := verifyAbsentCapturePath(rootDir, entry.Path); err != nil {
+				cleanup(tw, bzWriter, tmpF)
+				return "", err
+			}
+			continue
+		}
 		fi, err := os.Lstat(srcPath)
 		if err != nil {
 			cleanup(tw, bzWriter, tmpF)
@@ -939,7 +946,7 @@ func CreateRecoveryArtifact(ctx context.Context, request CaptureRequest) (string
 			captured := hex.EncodeToString(hash.Sum(nil))
 			if captured != payloadEvidence[archivePath].SHA256 {
 				cleanup(tw, bzWriter, tmpF)
-				return "", fmt.Errorf("binpkg: installed file %s changed while it was being captured", entry.Path)
+				return "", fmt.Errorf("binpkg: installed file %s changed while it was being captured: %w", entry.Path, ErrCaptureChanged)
 			}
 		case "sym":
 			if fi.Mode()&os.ModeSymlink == 0 {
@@ -1001,6 +1008,13 @@ func CreateRecoveryArtifact(ctx context.Context, request CaptureRequest) (string
 		return "", fmt.Errorf("binpkg: could not finalize the temporary package file: %w", err)
 	}
 
+	for _, evidence := range recoveryManifest.Payload {
+		if evidence.Type == "absent" {
+			if err := verifyAbsentCapturePath(rootDir, "/"+evidence.Path); err != nil {
+				return "", err
+			}
+		}
+	}
 	if err := os.Rename(tmpPath, outPath); err != nil {
 		return "", fmt.Errorf("binpkg: could not save the completed package: %w", err)
 	}

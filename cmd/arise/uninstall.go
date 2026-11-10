@@ -161,7 +161,7 @@ func runUninstall(args []string, dbPath, repoDir string) {
 		RepositoryFingerprint:    repositoryFingerprint,
 	}, recoveryset.Publish)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "uninstall: publish pre-removal recovery set: %v\n", err)
+		printCommandError(os.Stderr, "uninstall: could not save rollback backups", err, *verbose)
 		os.Exit(1)
 	}
 	fmt.Printf("Published complete pre-removal recovery set %s\n", recoveryPath)
