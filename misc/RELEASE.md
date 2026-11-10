@@ -21,3 +21,7 @@ The ledger's `self_host_verified` field records that gate. See the
 `make test-live-phase-contract` requires the EAPI 7/8/9 Portage comparisons,
 archive finalization comparisons, and completion and executable QA regressions
 first; missing reference prerequisites fail that lane.
+The same lane checks profile library layouts under EAPI 7/8/9, both Gentoo
+multilib directory conventions, and a real 32-bit consumer link. See the
+[profile library layout audit](../docs/audits/PROFILE_LIBRARY_LAYOUT_2026-11-09.md)
+for host recovery and older artifact repair requirements.

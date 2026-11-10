@@ -2299,6 +2299,22 @@ func TestPackageExecutionEnvironmentMaterializesUseExpandVariables(t *testing.T)
 	}
 }
 
+func TestPackageExecutionEnvironmentPreservesToolchainLayout(t *testing.T) {
+	want := map[string]string{
+		"ABI": "amd64", "DEFAULT_ABI": "amd64", "MULTILIB_ABIS": "amd64 x86",
+		"LIBDIR_amd64": "lib64", "LIBDIR_x86": "lib32", "SYMLINK_LIB": "yes",
+		"KERNEL_ABI": "amd64", "FAKE_TARGETS_x86": "i686-pc-linux-gnu",
+	}
+	cfg := &Config{MakeConf: want}
+	got, err := cfg.PackageExecutionEnvironmentFor("sys-libs/glibc-2.43-r4", "2.2", "gentoo", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("toolchain layout = %#v; want %#v", got, want)
+	}
+}
+
 func TestCommandEnvironmentAcceptsActiveUseExpandVariables(t *testing.T) {
 	cfg := &Config{
 		MakeConf: map[string]string{

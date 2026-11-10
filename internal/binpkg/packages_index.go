@@ -293,10 +293,13 @@ func NewPackageIndexEntry(packagePath, root string, info *BinPkgInfo, metadata m
 	if info.Subslot != "" && info.Subslot != info.Slot {
 		entry["SLOT"] += "/" + info.Subslot
 	}
-	for _, key := range []string{"BUILD_ID", "BUILD_TIME", "repository", "CHOST", "CBUILD", "ABI", "IUSE", "RDEPEND", "PDEPEND", "DEFINED_PHASES"} {
+	for _, key := range []string{"BUILD_ID", "BUILD_TIME", "repository", "CHOST", "CBUILD", "ABI", "IUSE", "RDEPEND", "PDEPEND", "DEFINED_PHASES", "ARISE_PHASE_ENV_ABI"} {
 		if value := strings.TrimSpace(string(metadata[key])); value != "" {
 			entry[key] = value
 		}
+	}
+	if info.PhaseEnvABI != "" {
+		entry["ARISE_PHASE_ENV_ABI"] = info.PhaseEnvABI
 	}
 	return entry, nil
 }

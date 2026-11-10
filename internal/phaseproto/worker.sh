@@ -326,11 +326,9 @@ assert() {
   done
 }
 get_libdir() {
-  case ${ABI-} in
-    amd64|x86_64) printf 'lib64' ;;
-    x86) printf 'lib32' ;;
-    *) [[ ${DEFAULT_ABI-} == amd64 ]] && printf 'lib64' || printf 'lib' ;;
-  esac
+	local libdir_var="LIBDIR_${ABI-}" libdir=lib
+	[[ -n ${ABI-} && -n ${!libdir_var-} ]] && libdir=${!libdir_var}
+	printf '%s\n' "$libdir"
 }
 ___ARISE_DESTTREE=/usr
 ___ARISE_INSDESTTREE=/
@@ -355,9 +353,14 @@ ___arise_image_path() {
 }
 ___arise_safe_name() { [[ ${1-} && $1 != */* && $1 != . && $1 != .. ]]; }
 ___arise_install_dir() { install -d "${___ARISE_DIROPTIONS[@]}" -- "$@"; }
-into() { [[ ${1-} == /* ]] || { printf 'into requires an absolute prefix\n'; return 1; }; ___ARISE_DESTTREE=${1%/}; [[ $___ARISE_DESTTREE ]] || ___ARISE_DESTTREE=/; }
-insinto() { [[ ${1-} == /* ]] || { printf 'insinto requires absolute image path\n'; return 1; }; ___ARISE_INSDESTTREE=$1; }
-exeinto() { [[ ${1-} == /* ]] || { printf 'exeinto requires absolute image path\n'; return 1; }; ___ARISE_EXEDESTTREE=$1; }
+___arise_ensure_destination() {
+	local destination
+	destination=$(___arise_image_path "$1") || return
+	[[ -d $destination ]] || install -d -m0755 -- "$destination"
+}
+into() { [[ ${1-} == /* ]] || { printf 'into requires an absolute prefix\n'; return 1; }; ___arise_ensure_destination "$1" || return; ___ARISE_DESTTREE=${1%/}; [[ $___ARISE_DESTTREE ]] || ___ARISE_DESTTREE=/; }
+insinto() { [[ ${1-} == /* ]] || { printf 'insinto requires absolute image path\n'; return 1; }; ___arise_ensure_destination "$1" || return; ___ARISE_INSDESTTREE=$1; }
+exeinto() { [[ ${1-} == /* ]] || { printf 'exeinto requires absolute image path\n'; return 1; }; ___arise_ensure_destination "$1" || return; ___ARISE_EXEDESTTREE=$1; }
 insopts() { (( $# > 0 )) || { printf 'insopts requires options\n'; return 1; }; ___ARISE_INSOPTIONS=("$@"); }
 exeopts() { (( $# > 0 )) || { printf 'exeopts requires options\n'; return 1; }; ___ARISE_EXEOPTIONS=("$@"); }
 diropts() { (( $# > 0 )) || { printf 'diropts requires options\n'; return 1; }; ___ARISE_DIROPTIONS=("$@"); }
@@ -561,7 +564,7 @@ doins() {
 	local recursive=0 source destination; destination=$(___arise_image_path "$___ARISE_INSDESTTREE") || return
 	[[ ${1-} == -r ]] && { recursive=1; shift; }
 	(( $# > 0 )) || { printf 'doins requires files\n'; return 1; }
-	___arise_install_dir "$destination" || return
+	[[ -d $destination ]] || ___arise_install_dir "$destination" || return
 	for source in "$@"; do
 		if (( recursive )); then cp -R -- "$source" "$destination/" || return
 		else install "${___ARISE_INSOPTIONS[@]}" -- "$source" "$destination/" || return; fi
@@ -571,7 +574,7 @@ newins() {
   [[ $# == 2 ]] || { printf 'newins requires source and name\n'; return 1; }
   ___arise_safe_name "$2" || { printf 'newins requires a safe name\n'; return 1; }
   local destination source=$1 temporary=''; destination=$(___arise_image_path "$___ARISE_INSDESTTREE") || return
-  ___arise_install_dir "$destination" || return
+  [[ -d $destination ]] || ___arise_install_dir "$destination" || return
   if [[ $source == - ]]; then
     temporary=$(mktemp "${T:-${TMPDIR:-/tmp}}/newins-stdin.XXXXXXXX") || return
     cat > "$temporary" || { rm -f -- "$temporary"; return 1; }
@@ -610,18 +613,18 @@ ___arise_special_install() {
 }
 doinitd() { ___arise_special_install /etc/init.d 0755 '' "$@"; }
 newinitd() { [[ $# == 2 ]] || { printf 'newinitd requires source and name\n'; return 1; }; ___arise_special_install /etc/init.d 0755 "$2" "$1"; }
-doconfd() { if [[ ${EAPI-} == 8 ]]; then ___arise_special_install /etc/conf.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
-newconfd() { [[ $# == 2 ]] || { printf 'newconfd requires source and name\n'; return 1; }; if [[ ${EAPI-} == 8 ]]; then ___arise_special_install /etc/conf.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
-doenvd() { if [[ ${EAPI-} == 8 ]]; then ___arise_special_install /etc/env.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
-newenvd() { [[ $# == 2 ]] || { printf 'newenvd requires source and name\n'; return 1; }; if [[ ${EAPI-} == 8 ]]; then ___arise_special_install /etc/env.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+doconfd() { if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/conf.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+newconfd() { [[ $# == 2 ]] || { printf 'newconfd requires source and name\n'; return 1; }; if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/conf.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+doenvd() { if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/env.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+newenvd() { [[ $# == 2 ]] || { printf 'newenvd requires source and name\n'; return 1; }; if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/env.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
 dodir() { local path destination; (( $# > 0 )) || { printf 'dodir requires paths\n'; return 1; }; for path in "$@"; do destination=$(___arise_image_path "$path") || return; install -d "${___ARISE_DIROPTIONS[@]}" -- "$destination" || return; done; }
 keepdir() {
   local path destination keep=${CATEGORY:-category}_${PN:-package}_${SLOT:-0}
   keep=${keep//\//_}
   for path in "$@"; do dodir "$path" || return; destination=$(___arise_image_path "$path") || return; : > "$destination/.keep_$keep" || return; done
 }
-doheader() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == 8 ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
-newheader() { [[ $# == 2 ]] || { printf 'newheader requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == 8 ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
+doheader() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == [89] ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
+newheader() { [[ $# == 2 ]] || { printf 'newheader requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == [89] ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
 dolib.a() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0644); doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
 dolib.so() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0755); doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
 newlib.a() { [[ $# == 2 ]] || { printf 'newlib.a requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0644); newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
@@ -892,7 +895,7 @@ ___arise_finalize_install_image() {
       done < <(find "$path" -type f -print0)
     done
   fi
-	if [[ ${EAPI-} == 8 ]]; then
+	if [[ ${EAPI-} == [89] ]]; then
 		find "$ED" -depth -mindepth 1 -type d -empty -delete || return
 	fi
 	return 0

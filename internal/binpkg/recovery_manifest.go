@@ -302,6 +302,37 @@ func ReadRecoveryManifest(path string) (*RecoveryManifest, error) {
 	if err != nil {
 		return nil, err
 	}
+	manifest, err := decodeRecoveryManifest(meta)
+	if err != nil {
+		return nil, err
+	}
+	slot, subslot := parseSlot(meta["SLOT"])
+	buildTime, buildTimeErr := strconv.ParseInt(meta["BUILD_TIME"], 10, 64)
+	if buildTimeErr != nil && meta["BUILD_TIME"] != "" {
+		return nil, fmt.Errorf("binpkg: invalid package BUILD_TIME: %w", buildTimeErr)
+	}
+	if manifest.Package.Category != meta["CATEGORY"] ||
+		manifest.Package.Package != meta["PACKAGE"] ||
+		manifest.Package.Version != meta["VERSION"] ||
+		manifest.Package.Slot != slot ||
+		manifest.Package.Subslot != subslot ||
+		manifest.Package.Repository != meta["repository"] ||
+		manifest.Package.EAPI != meta["EAPI"] ||
+		manifest.Package.Use != meta["USE"] ||
+		manifest.Package.BuildID != meta["BUILD_ID"] ||
+		manifest.Package.ABI != meta["ABI"] ||
+		manifest.Package.CBuild != meta["CBUILD"] ||
+		manifest.Package.CHOST != meta["CHOST"] ||
+		manifest.Package.CTarget != meta["CTARGET"] ||
+		manifest.Package.BuildTime != buildTime {
+		return nil, fmt.Errorf("binpkg: recovery manifest package identity disagrees with package metadata")
+	}
+	return manifest, nil
+}
+
+// Decoding validates the captured evidence independently of mutable top-level
+// XPAK metadata. Recovery restoration additionally checks package identity.
+func decodeRecoveryManifest(meta map[string]string) (*RecoveryManifest, error) {
 	raw, ok := meta[recoveryManifestKey]
 	if !ok {
 		return nil, fmt.Errorf("binpkg: package is not an Arise recovery artifact")
@@ -325,27 +356,6 @@ func ReadRecoveryManifest(path string) (*RecoveryManifest, error) {
 	}
 	if err := validateRecoveryManifest(&manifest); err != nil {
 		return nil, err
-	}
-	slot, subslot := parseSlot(meta["SLOT"])
-	buildTime, buildTimeErr := strconv.ParseInt(meta["BUILD_TIME"], 10, 64)
-	if buildTimeErr != nil && meta["BUILD_TIME"] != "" {
-		return nil, fmt.Errorf("binpkg: invalid package BUILD_TIME: %w", buildTimeErr)
-	}
-	if manifest.Package.Category != meta["CATEGORY"] ||
-		manifest.Package.Package != meta["PACKAGE"] ||
-		manifest.Package.Version != meta["VERSION"] ||
-		manifest.Package.Slot != slot ||
-		manifest.Package.Subslot != subslot ||
-		manifest.Package.Repository != meta["repository"] ||
-		manifest.Package.EAPI != meta["EAPI"] ||
-		manifest.Package.Use != meta["USE"] ||
-		manifest.Package.BuildID != meta["BUILD_ID"] ||
-		manifest.Package.ABI != meta["ABI"] ||
-		manifest.Package.CBuild != meta["CBUILD"] ||
-		manifest.Package.CHOST != meta["CHOST"] ||
-		manifest.Package.CTarget != meta["CTARGET"] ||
-		manifest.Package.BuildTime != buildTime {
-		return nil, fmt.Errorf("binpkg: recovery manifest package identity disagrees with package metadata")
 	}
 	return &manifest, nil
 }

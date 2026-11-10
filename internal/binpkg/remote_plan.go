@@ -57,7 +57,8 @@ func PackageInfoFromIndex(entry PackageIndexEntry, destination string) (*BinPkgI
 		Category: parsed.Category, Package: parsed.Package, Version: parsed.Version.Raw,
 		Slot: slot, Subslot: subslot, EAPI: entry["EAPI"], Use: entry["USE"], IUse: entry["IUSE"],
 		Repository: entry["repository"], CHOST: entry["CHOST"], ABI: entry["ABI"],
-		BuildID: entry["BUILD_ID"], BuildTime: buildTime, Size: size,
+		PhaseEnvABI: entry["ARISE_PHASE_ENV_ABI"],
+		BuildID:     entry["BUILD_ID"], BuildTime: buildTime, Size: size,
 		DefinedPhases: entry["DEFINED_PHASES"],
 		Path:          filepath.Join(destination, filepath.FromSlash(path)),
 	}, nil

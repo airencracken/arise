@@ -212,7 +212,7 @@ src_install() {
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	request := Request{Protocol: Version, ID: "install-family", Command: "run_phase", Phase: "src_install", EAPI: "8", Ebuild: ebuild, WorkDir: source, SourceDir: source, ImageDir: image, Package: PackageIdentity{Category: "app-misc", PN: "pkg", PV: "1", PR: "r0", P: "pkg-1", PVR: "1", PF: "pkg-1", Slot: "0", Repository: "test"}, Env: map[string]string{"ABI": "amd64"}}
+	request := Request{Protocol: Version, ID: "install-family", Command: "run_phase", Phase: "src_install", EAPI: "8", Ebuild: ebuild, WorkDir: source, SourceDir: source, ImageDir: image, Package: PackageIdentity{Category: "app-misc", PN: "pkg", PV: "1", PR: "r0", P: "pkg-1", PVR: "1", PF: "pkg-1", Slot: "0", Repository: "test"}, Env: map[string]string{"ABI": "amd64", "LIBDIR_amd64": "lib64"}}
 	events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), request)
 	if err != nil {
 		t.Fatalf("install helper family: %v; events=%#v", err, events)
@@ -965,7 +965,7 @@ printf '%s\n' "$@" > "$T/configure.args"
 	if err := os.MkdirAll(temp, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	request := Request{Protocol: Version, ID: "econf-layout", Command: "run_phase", Phase: "src_configure", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: filepath.Join(directory, "image"), TempDir: temp, Env: map[string]string{"DEFAULT_ABI": "amd64", "CHOST": "x86_64-pc-linux-gnu"}}
+	request := Request{Protocol: Version, ID: "econf-layout", Command: "run_phase", Phase: "src_configure", EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory, ImageDir: filepath.Join(directory, "image"), TempDir: temp, Env: map[string]string{"ABI": "amd64", "LIBDIR_amd64": "lib64", "DEFAULT_ABI": "amd64", "CHOST": "x86_64-pc-linux-gnu"}}
 	if events, err := RunBashWorker(context.Background(), request); err != nil {
 		t.Fatalf("econf: %v; events=%#v", err, events)
 	}
@@ -1004,7 +1004,7 @@ printf '%s\n' "$@" > "$T/configure.args"
 		Protocol: Version, ID: "econf-custom-prefix", Command: "run_phase", Phase: "src_configure",
 		EAPI: "8", Ebuild: ebuild, WorkDir: directory, SourceDir: directory,
 		ImageDir: filepath.Join(directory, "image"), TempDir: temp,
-		Env: map[string]string{"DEFAULT_ABI": "amd64", "CHOST": "x86_64-pc-linux-gnu"},
+		Env: map[string]string{"ABI": "amd64", "LIBDIR_amd64": "lib64", "DEFAULT_ABI": "amd64", "CHOST": "x86_64-pc-linux-gnu"},
 	}
 	if events, err := RunBashWorker(context.Background(), request); err != nil {
 		t.Fatalf("econf custom prefix: %v; events=%#v", err, events)
@@ -1042,7 +1042,7 @@ mkdir qt zbarcam
 		Protocol: Version, ID: "econf-dependency-tracking", Command: "run_phase",
 		Phase: "src_configure", EAPI: "8", Ebuild: ebuild, WorkDir: directory,
 		SourceDir: directory, ImageDir: filepath.Join(directory, "image"),
-		Env: map[string]string{"DEFAULT_ABI": "amd64", "CHOST": "x86_64-pc-linux-gnu"},
+		Env: map[string]string{"ABI": "amd64", "LIBDIR_amd64": "lib64", "DEFAULT_ABI": "amd64", "CHOST": "x86_64-pc-linux-gnu"},
 	}
 	if events, err := RunBashWorker(context.Background(), request); err != nil {
 		t.Fatalf("econf dependency-tracking parity: %v; events=%#v", err, events)
