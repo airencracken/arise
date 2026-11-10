@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.54](0.0.54.md) captures intentionally removed installed files without
+blocking updates and makes execution errors explain the cause and next step.
+
 [0.0.53](0.0.53.md) corrects profile library layouts and execution provenance,
 adds multilib release checks, and advances the execution ABI to 7 for repairs.
 
