@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.53](0.0.53.md) corrects profile library layouts and execution provenance,
+adds multilib release checks, and advances the execution ABI to 7 for repairs.
+
 [0.0.52](0.0.52.md) fixes thin-archive finalization, preserves regular-archive
 symbols and supplies the verbose helper used by Portage executable QA checks.
 
