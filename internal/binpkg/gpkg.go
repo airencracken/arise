@@ -879,6 +879,9 @@ func buildInstalledGPKGImageArchive(ctx context.Context, root string, entries []
 		}
 		info, err := os.Lstat(sourcePath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return nil, err
 		}
 		link := ""

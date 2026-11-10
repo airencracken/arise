@@ -993,7 +993,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		defer func() {
 			if finalizeErr := packageLog.Finalize(cfg.CompressLogs); finalizeErr != nil {
 				if returnErr != nil {
-					returnErr = fmt.Errorf("%v; rebuild: finalize durable phase log %s: %w", returnErr, packageLog.Path(), finalizeErr)
+					returnErr = errors.Join(returnErr, fmt.Errorf("rebuild: finalize durable phase log %s: %w", packageLog.Path(), finalizeErr))
 				} else {
 					returnErr = fmt.Errorf("rebuild: finalize durable phase log %s: %w", packageLog.Path(), finalizeErr)
 				}
@@ -1061,19 +1061,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		}
 		cfg.firePhaseEnd(phaseName, phaseErr)
 		if phaseErr != nil {
-			var logs []string
-			for _, event := range events {
-				if event.Kind == "log" && event.Message != "" {
-					logs = append(logs, event.Message)
-				}
-			}
-			if len(logs) > 20 {
-				logs = logs[len(logs)-20:]
-			}
-			if len(logs) != 0 {
-				return fmt.Errorf("rebuild: phase protocol %s: %w: %s", phaseName, phaseErr, strings.Join(logs, "\n"))
-			}
-			return fmt.Errorf("rebuild: phase protocol %s: %w", phaseName, phaseErr)
+			return phaseExecutionError(cat+"/"+pf, phaseName, events, base.LogFile, phaseErr)
 		}
 		return nil
 	}
@@ -1131,7 +1119,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 			}
 			cfg.firePhaseEnd(phaseName, phaseErr)
 			if phaseErr != nil {
-				return fmt.Errorf("old %s: %w", phaseName, phaseErr)
+				return phaseExecutionError(cat+"/"+filepath.Base(replacedVDB), phaseName, events, base.LogFile, phaseErr)
 			}
 			oldBase.EnvironmentOverlay = request.SaveEnvironment
 			return nil
@@ -1158,11 +1146,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		packageEvents = append(packageEvents, events...)
 		cfg.firePhaseEnd(phaseName, phaseErr)
 		if phaseErr != nil {
-			logs := phaseFailureDiagnostics(events, 20)
-			if len(logs) != 0 {
-				return fmt.Errorf("rebuild: phase protocol %s: %w: %s", phaseName, phaseErr, strings.Join(logs, "\n"))
-			}
-			return fmt.Errorf("rebuild: phase protocol %s: %w", phaseName, phaseErr)
+			return phaseExecutionError(cat+"/"+pf, phaseName, events, base.LogFile, phaseErr)
 		}
 	}
 	base.EnvironmentOverlay = phaseEnvironment

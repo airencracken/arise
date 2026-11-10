@@ -23,6 +23,24 @@ the independent validator; live correctness-equivalent comparisons against
 `emerge` remain release gates. See
 [`testing/TEST_LANES.md`](testing/TEST_LANES.md).
 
+## Actionable execution errors
+
+An execution error should explain the failed operation, identify the affected
+package or path, preserve the actual cause and log location, and give a concrete
+next step. Internal wrapper names belong in verbose output. Add a typed error
+implementing `diagnostic.Reporter` where the cause and recovery action are known;
+preserve underlying errors with `%w` or `errors.Join`.
+
+Do not suggest rerunning an installation when its files and database have
+already been committed. Report failed follow-up work as such. If automatic
+rollback fails, direct the user to inspect recovery status before applying
+recovery. Concurrent failures must retain every package's cause and log.
+
+Test default and verbose CLI output, cause preservation, and the real producer
+of the error. A formatter test alone does not establish that build or install
+failures actually reach it. See the
+[recovery and diagnostics audit](audits/RECOVERY_CAPTURE_AND_DIAGNOSTICS_2026-11-09.md).
+
 ## Architecture
 
 ```text

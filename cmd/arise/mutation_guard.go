@@ -41,7 +41,7 @@ func (guard *packageMutationGuard) validate() error {
 		return err
 	}
 	if current.policy != guard.snapshot.policy {
-		return fmt.Errorf("package policy or selected sources changed while building; resolve and approve the new plan")
+		return &planChangeError{reason: "Package settings or selected sources changed while this package was building."}
 	}
 	// World bookkeeping may be updated by another install after it releases
 	// the VDB lock. It neither changes the frozen actions nor grants new ones.
@@ -50,7 +50,7 @@ func (guard *packageMutationGuard) validate() error {
 		return nil
 	}
 	if guard.audit == nil {
-		return fmt.Errorf("cannot revalidate package state without the approved plan evidence")
+		return &planChangeError{reason: "Arise cannot verify the current package state because the approved plan evidence is unavailable."}
 	}
 	pending := pendingMutationAudit(guard.audit, guard.completed)
 	pending.fixture.Installed, err = guard.installedState(current)
@@ -67,7 +67,7 @@ func (guard *packageMutationGuard) validate() error {
 	}
 	for _, cp := range changedMutationPackages(guard.snapshot.vdbEntries, current.vdbEntries) {
 		if protected[cp] {
-			return fmt.Errorf("installed package %s used by the remaining plan changed while building; run arise --resume to resolve the remaining packages again", cp)
+			return &planChangeError{reason: fmt.Sprintf("Installed package %s, which the remaining plan depends on, changed while this package was building.", cp), resume: true}
 		}
 	}
 	validation := pending.validate()
@@ -75,7 +75,7 @@ func (guard *packageMutationGuard) validate() error {
 		if guard.output != nil {
 			reportIndependentPlanAudit(guard.output, "locked-pre-mutation", validation)
 		}
-		return fmt.Errorf("concurrent package changes invalidate the remaining plan; run arise --resume to resolve the remaining packages again")
+		return &planChangeError{reason: "Concurrent package changes invalidate the remaining plan: required dependencies no longer match.", resume: true}
 	}
 	// Non-cooperating writers or policy changes must not be adopted merely
 	// because they happened while the independent validation was running.
@@ -84,7 +84,7 @@ func (guard *packageMutationGuard) validate() error {
 		return err
 	}
 	if after.policy != current.policy || after.vdb != current.vdb {
-		return fmt.Errorf("package state or policy changed during locked revalidation; run arise --resume")
+		return &planChangeError{reason: "Package state or settings changed while Arise was checking the remaining plan.", resume: true}
 	}
 	externalChange := current.vdb != guard.snapshot.vdb
 	guard.snapshot, guard.installed, guard.checked = after, pending.fixture.Installed, true

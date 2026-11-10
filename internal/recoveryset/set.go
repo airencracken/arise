@@ -118,7 +118,7 @@ func Publish(ctx context.Context, request Request) (string, error) {
 			Provenance:   objectProvenance,
 		})
 		if err != nil {
-			return "", fmt.Errorf("recovery set: capture %s: %w", pkg.VDBEntryPath, err)
+			return "", &CaptureError{VDBEntryPath: pkg.VDBEntryPath, Directory: request.Directory, Err: err}
 		}
 		artifact, err := verifyCapturedArtifact(staging, path, request)
 		if err != nil {

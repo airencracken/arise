@@ -164,7 +164,7 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 	}
 	if err := merge(ctx, destDir, cfg, j); err != nil {
 		if rollbackErr := j.Rollback(); rollbackErr != nil {
-			return fmt.Errorf("%v; merge: rollback journal %s: %w", err, j.Dir(), rollbackErr)
+			return &journal.RollbackError{Operation: "merge", Directory: j.Dir(), Cause: err, Err: rollbackErr}
 		}
 		return fmt.Errorf("%w (rolled back via %s)", err, j.Dir())
 	}
@@ -1510,7 +1510,7 @@ func UnmergeWithConfig(ctx context.Context, cfg UnmergeConfig) (returnErr error)
 	}
 	rollback := func(cause error) error {
 		if rollbackErr := operation.Rollback(); rollbackErr != nil {
-			return fmt.Errorf("%v; unmerge: rollback journal %s: %w", cause, operation.Dir(), rollbackErr)
+			return &journal.RollbackError{Operation: "unmerge", Directory: operation.Dir(), Cause: cause, Err: rollbackErr}
 		}
 		return fmt.Errorf("%w (rolled back via %s)", cause, operation.Dir())
 	}

@@ -10,7 +10,8 @@ import (
 // installedCaptureEntries follows ownership of protected configuration through
 // dispatch-conf: CONTENTS may name a staged update that has since been consumed.
 // Capture the current configuration as well as any still-pending update, without
-// changing the original VDB evidence or ignoring missing ordinary payloads.
+// changing the original VDB evidence. Ordinary missing payloads are represented
+// explicitly as absent in recovery evidence, rather than treated as read errors.
 func installedCaptureEntries(root string, entries []contentEntry) ([]contentEntry, error) {
 	recorded := make(map[string]bool, len(entries))
 	for _, entry := range entries {
@@ -42,9 +43,7 @@ func installedCaptureEntries(root string, entries []contentEntry) ([]contentEntr
 		if pendingErr != nil && !os.IsNotExist(pendingErr) {
 			return nil, fmt.Errorf("binpkg: inspect config update %s: %w", entry.Path, pendingErr)
 		}
-		if pendingErr == nil {
-			result = append(result, entry)
-		}
+		result = append(result, entry)
 		archivePath, currentPath, err := installedContentPath(root, current)
 		if err != nil {
 			return nil, err
@@ -53,10 +52,9 @@ func installedCaptureEntries(root string, entries []contentEntry) ([]contentEntr
 			return nil, fmt.Errorf("binpkg: cannot capture current config %s: %w", current, err)
 		}
 		if _, err := os.Lstat(currentPath); err != nil {
-			if os.IsNotExist(err) && pendingErr == nil {
-				continue
+			if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("binpkg: capture current config %s for update %s: %w", current, entry.Path, err)
 			}
-			return nil, fmt.Errorf("binpkg: capture current config %s for update %s: %w", current, entry.Path, err)
 		}
 		if !recorded[archivePath] && !added[archivePath] {
 			entry.Path = current

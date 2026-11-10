@@ -396,11 +396,21 @@ func TestCreate_NonexistentFile(t *testing.T) {
 	os.WriteFile(filepath.Join(rootDir, "usr", "bin", "broken"), []byte("binary"), 0755)
 
 	outPath, err := Create(context.Background(), vdbPath, rootDir, pkgDir)
-	if err == nil || outPath != "" {
-		t.Fatalf("Create() = %q, %v; want fail-closed missing-file error", outPath, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, statErr := os.Stat(filepath.Join(pkgDir, "sys-devel", "broken-1.0.tbz2")); !os.IsNotExist(statErr) {
-		t.Fatalf("failed capture published an artifact: %v", statErr)
+	manifest, err := ReadRecoveryManifest(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundAbsent := false
+	for _, item := range manifest.Payload {
+		if item.Path == "nonexistent/file" && item.Type == "absent" {
+			foundAbsent = true
+		}
+	}
+	if !foundAbsent {
+		t.Fatalf("capture lost absence evidence: %+v", manifest.Payload)
 	}
 	temporary, globErr := filepath.Glob(filepath.Join(pkgDir, "sys-devel", ".broken-1.0.tbz2.tmp-*"))
 	if globErr != nil || len(temporary) != 0 {
@@ -1407,6 +1417,9 @@ func TestCreateFailedReplacementPreservesPublishedArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Remove(item); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(item, 0755); err != nil {
 		t.Fatal(err)
 	}
 	if output, err := Create(context.Background(), vdb, root, pkgDir); err == nil || output != "" {
