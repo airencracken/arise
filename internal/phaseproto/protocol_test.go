@@ -1507,7 +1507,6 @@ src_compile() {
 	! pipestatus || die "pipestatus missed pipeline failure"
 	true | true
 	pipestatus || die "pipestatus rejected successful pipeline"
-	! domo missing.mo || die "EAPI 9 domo was not banned"
 }
 `
 	if err := os.WriteFile(ebuild, []byte(content), 0o644); err != nil {

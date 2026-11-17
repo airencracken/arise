@@ -393,10 +393,10 @@ ___arise_exeinto() { [[ ${1-} == /* ]] || { printf 'exeinto requires absolute im
 insopts() { (( $# > 0 )) || { printf 'insopts requires options\n'; return 1; }; ___ARISE_INSOPTIONS=("$@"); }
 exeopts() { (( $# > 0 )) || { printf 'exeopts requires options\n'; return 1; }; ___ARISE_EXEOPTIONS=("$@"); }
 diropts() { (( $# > 0 )) || { printf 'diropts requires options\n'; return 1; }; ___ARISE_DIROPTIONS=("$@"); }
-libopts() { printf 'libopts is banned for EAPI %s\n' "${EAPI-unknown}"; return 1; }
-dohtml() { printf 'dohtml is banned for EAPI %s\n' "${EAPI-unknown}"; return 1; }
-dosed() { printf 'dosed is banned for EAPI %s\n' "${EAPI-unknown}"; return 1; }
-dolib() { printf 'dolib is banned for EAPI %s\n' "${EAPI-unknown}"; return 1; }
+libopts() { die "libopts is banned for EAPI ${EAPI-unknown}"; }
+dohtml() { die "dohtml is banned for EAPI ${EAPI-unknown}"; }
+dosed() { die "dosed is banned for EAPI ${EAPI-unknown}"; }
+dolib() { die "dolib is banned for EAPI ${EAPI-unknown}"; }
 ___arise_queue_paths() {
   local target=$1 mode=include path component
   shift
@@ -768,7 +768,7 @@ ___arise_dosym() {
 	___arise_install_dir "${image_destination%/*}" || return
 	ln -snf -- "$target" "$image_destination"
 }
-dohard() { printf 'dohard is banned for EAPI %s\n' "${EAPI-unknown}"; return 125; }
+dohard() { die "dohard is banned for EAPI ${EAPI-unknown}"; }
 fowners() { ___arise_fowners "$@" || ___arise_helper_failure; }
 ___arise_fowners() {
   [[ $# -ge 2 ]] || { printf 'fowners requires owner and paths\n'; return 1; }
@@ -877,9 +877,8 @@ ___arise_newman() {
 doinfo() { ___arise_doinfo "$@" || ___arise_helper_failure; }
 ___arise_doinfo() { ___arise_special_install /usr/share/info 0644 '' "$@"; }
 domo() {
-	[[ ${EAPI-} != 9 ]] || { printf 'domo is banned in EAPI 9\n'; return 1; }
-  (( $# > 0 )) || { printf 'domo requires files\n'; return 1; }
-  ___arise_domo "$@" || ___arise_helper_failure
+	[[ ${EAPI-} != 9 ]] || die "domo is banned in EAPI 9"
+	___arise_domo "$@" || ___arise_helper_failure
 }
 ___arise_domo() {
   (( $# )) || return 1

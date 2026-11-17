@@ -19,6 +19,7 @@ func TestRequiredHelperFailureStopsPhase(t *testing.T) {
 		{"newexe", "newexe missing tool"},
 		{"dodoc", "dodoc missing"},
 		{"doman", "doman missing.1"},
+		{"domo", "domo"},
 		{"dosym", "touch \"$ED/file\" && dosym target /file/link"},
 		{"fperms", "fperms 0755 /missing"},
 	} {
@@ -94,5 +95,25 @@ func TestDefaultTestFallsBackToAvailableMakeTarget(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(r.TempDir, "result"))
 	if err != nil || string(got) != "tested\n" {
 		t.Fatalf("test target result %q: %v", got, err)
+	}
+}
+
+func TestBannedHelpersStopPhase(t *testing.T) {
+	for _, tc := range []struct{ eapi, call string }{
+		{"7", "dohard /src /dst"}, {"8", "dohtml doc.html"}, {"8", "dosed /foo"}, {"8", "dolib lib.a"}, {"8", "libopts -m0644"}, {"9", "domo example.mo"},
+	} {
+		t.Run(tc.call, func(t *testing.T) {
+			r := phaseStateRequestForEAPI(t, tc.eapi, "src_install() { "+tc.call+"; echo continued > \"$T/continued\"; }")
+			if err := os.Mkdir(r.SourceDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			r.ID, r.Command, r.Phase = "banned-helper", "run_phase", "src_install"
+			if events, err := runWorkerCommand(exec.CommandContext(context.Background(), "bash", "--noprofile", "--norc", "-c", bashWorker), r); err == nil {
+				t.Fatalf("accepted %s in EAPI %s: %+v", tc.call, tc.eapi, events)
+			}
+			if _, err := os.Stat(filepath.Join(r.TempDir, "continued")); !os.IsNotExist(err) {
+				t.Fatalf("phase continued after %s: %v", tc.call, err)
+			}
+		})
 	}
 }
