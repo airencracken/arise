@@ -1,5 +1,8 @@
 # Releases
 
+[0.0.55](0.0.55.md) fixes skipped ebuild patches and rejects builds with failed
+helpers or symlinks pointing into their temporary source tree.
+
 [0.0.54](0.0.54.md) captures intentionally removed installed files without
 blocking updates and makes execution errors explain the cause and next step.
 

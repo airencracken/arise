@@ -4,6 +4,7 @@ exec 3>&1
 readonly ___ARISE_WORKER_PID=$BASHPID
 ___ARISE_SEQUENCE_FILE=
 ___ARISE_LOG_FILE=
+___ARISE_DIE_FILE=
 ___arise_cleanup_worker_temporaries() {
 	if [[ $BASHPID == "$___ARISE_WORKER_PID" && ${___ARISE_RESULT_EMITTED-} != 1 && -f $___ARISE_SEQUENCE_FILE ]]; then
 		if [[ -f $___ARISE_LOG_FILE ]]; then
@@ -13,6 +14,7 @@ ___arise_cleanup_worker_temporaries() {
 	fi
   [[ -z $___ARISE_SEQUENCE_FILE ]] || rm -f -- "$___ARISE_SEQUENCE_FILE"
   [[ -z $___ARISE_LOG_FILE ]] || rm -f -- "$___ARISE_LOG_FILE"
+  [[ -z $___ARISE_DIE_FILE ]] || rm -f -- "$___ARISE_DIE_FILE"
   [[ -z ${___ARISE_NORMALIZED_SNAPSHOT-} ]] || rm -f -- "$___ARISE_NORMALIZED_SNAPSHOT"
 }
 trap ___arise_cleanup_worker_temporaries EXIT
@@ -56,7 +58,31 @@ ___arise_emit() {
   printf '{"protocol":1,"id":"%s","sequence":%d,%s}\n' "$___ARISE_ID" "$sequence" "$1" >&3
   printf '%d\n' "$((sequence+1))" > "$___ARISE_SEQUENCE_FILE"
 }
-die() { printf '%s\n' "${*:-die called}"; exit 1; }
+die() {
+	local status=$?
+	(( status )) || status=1
+	if [[ ${1-} == -n ]]; then
+		shift
+		if [[ ${PORTAGE_NONFATAL-} == 1 ]]; then
+			printf '%s\n' "${*:-die called}" >&2
+			return "$status"
+		fi
+	fi
+	printf '%s\n' "${*:-die called}" >&2
+	# A phase can discard the exit status of a subshell or command substitution.
+	if [[ ${___ARISE_TRACK_DIE-} == 1 ]]; then
+		printf 'failed\n' > "$___ARISE_DIE_FILE"
+	fi
+	exit 1
+}
+___arise_helper_failure() {
+	local status=$?
+	if [[ ${PORTAGE_NONFATAL-} == 1 ]]; then
+		printf '%s failed (status %s)\n' "${FUNCNAME[1]}" "$status" >&2
+		return "$status"
+	fi
+	die "${FUNCNAME[1]} failed (status $status)"
+}
 ___arise_elog() { local class=$1; shift; printf '\036ARISE_ELOG|%s|%s\n' "$class" "$*"; }
 einfo() { ___arise_elog INFO "$@"; }
 elog() { ___arise_elog LOG "$@"; }
@@ -358,9 +384,12 @@ ___arise_ensure_destination() {
 	destination=$(___arise_image_path "$1") || return
 	[[ -d $destination ]] || install -d -m0755 -- "$destination"
 }
-into() { [[ ${1-} == /* ]] || { printf 'into requires an absolute prefix\n'; return 1; }; ___arise_ensure_destination "$1" || return; ___ARISE_DESTTREE=${1%/}; [[ $___ARISE_DESTTREE ]] || ___ARISE_DESTTREE=/; }
-insinto() { [[ ${1-} == /* ]] || { printf 'insinto requires absolute image path\n'; return 1; }; ___arise_ensure_destination "$1" || return; ___ARISE_INSDESTTREE=$1; }
-exeinto() { [[ ${1-} == /* ]] || { printf 'exeinto requires absolute image path\n'; return 1; }; ___arise_ensure_destination "$1" || return; ___ARISE_EXEDESTTREE=$1; }
+into() { ___arise_into "$@" || ___arise_helper_failure; }
+___arise_into() { [[ ${1-} == /* ]] || { printf 'into requires an absolute prefix\n'; return 1; }; ___arise_ensure_destination "$1" || return; ___ARISE_DESTTREE=${1%/}; [[ $___ARISE_DESTTREE ]] || ___ARISE_DESTTREE=/; }
+insinto() { ___arise_insinto "$@" || ___arise_helper_failure; }
+___arise_insinto() { [[ ${1-} == /* ]] || { printf 'insinto requires absolute image path\n'; return 1; }; ___arise_ensure_destination "$1" || return; ___ARISE_INSDESTTREE=$1; }
+exeinto() { ___arise_exeinto "$@" || ___arise_helper_failure; }
+___arise_exeinto() { [[ ${1-} == /* ]] || { printf 'exeinto requires absolute image path\n'; return 1; }; ___arise_ensure_destination "$1" || return; ___ARISE_EXEDESTTREE=$1; }
 insopts() { (( $# > 0 )) || { printf 'insopts requires options\n'; return 1; }; ___ARISE_INSOPTIONS=("$@"); }
 exeopts() { (( $# > 0 )) || { printf 'exeopts requires options\n'; return 1; }; ___ARISE_EXEOPTIONS=("$@"); }
 diropts() { (( $# > 0 )) || { printf 'diropts requires options\n'; return 1; }; ___ARISE_DIROPTIONS=("$@"); }
@@ -388,7 +417,8 @@ ___arise_queue_paths() {
 }
 docompress() { ___arise_queue_paths docompress "$@"; }
 dostrip() { ___arise_queue_paths dostrip "$@"; }
-docinto() {
+docinto() { ___arise_docinto "$@" || ___arise_helper_failure; }
+___arise_docinto() {
   local path=${1-} component
   local -a components=()
 	[[ $path ]] || { printf 'docinto requires a documentation path\n'; return 1; }
@@ -398,7 +428,8 @@ docinto() {
   for component in "${components[@]}"; do [[ $component != .. ]] || { printf 'docinto path escapes documentation directory\n'; return 125; }; done
 	___ARISE_DOCDESTTREE=$path
 }
-dobin() {
+dobin() { ___arise_dobin "$@" || ___arise_helper_failure; }
+___arise_dobin() {
 	[[ ${ED-} ]] || { printf 'dobin requires ED\n'; return 1; }
 	(( $# > 0 )) || { printf 'dobin requires files\n'; return 1; }
 	local source destination
@@ -406,7 +437,8 @@ dobin() {
 	___arise_install_dir "$destination" || return
 	for source in "$@"; do install "${___ARISE_EXEOPTIONS[@]}" -- "$source" "$destination/${source##*/}" || return; done
 }
-newbin() {
+newbin() { ___arise_newbin "$@" || ___arise_helper_failure; }
+___arise_newbin() {
 	[[ $# == 2 ]] || { printf 'newbin requires source and name\n'; return 1; }
 	local old=$___ARISE_EXEDESTTREE
 	___ARISE_EXEDESTTREE=$___ARISE_DESTTREE/bin
@@ -415,15 +447,19 @@ newbin() {
 	___ARISE_EXEDESTTREE=$old
 	return "$status"
 }
-dosbin() { local saved=$___ARISE_DESTTREE; into "$___ARISE_DESTTREE" || return; local old=$___ARISE_EXEDESTTREE; ___ARISE_EXEDESTTREE=$___ARISE_DESTTREE/sbin; doexe "$@"; local status=$?; ___ARISE_EXEDESTTREE=$old; ___ARISE_DESTTREE=$saved; return "$status"; }
-newsbin() { [[ $# == 2 ]] || { printf 'newsbin requires source and name\n'; return 1; }; local old=$___ARISE_EXEDESTTREE; ___ARISE_EXEDESTTREE=$___ARISE_DESTTREE/sbin; newexe "$@"; local status=$?; ___ARISE_EXEDESTTREE=$old; return "$status"; }
-doexe() {
+dosbin() { ___arise_dosbin "$@" || ___arise_helper_failure; }
+___arise_dosbin() { local saved=$___ARISE_DESTTREE; into "$___ARISE_DESTTREE" || return; local old=$___ARISE_EXEDESTTREE; ___ARISE_EXEDESTTREE=$___ARISE_DESTTREE/sbin; doexe "$@"; local status=$?; ___ARISE_EXEDESTTREE=$old; ___ARISE_DESTTREE=$saved; return "$status"; }
+newsbin() { ___arise_newsbin "$@" || ___arise_helper_failure; }
+___arise_newsbin() { [[ $# == 2 ]] || { printf 'newsbin requires source and name\n'; return 1; }; local old=$___ARISE_EXEDESTTREE; ___ARISE_EXEDESTTREE=$___ARISE_DESTTREE/sbin; newexe "$@"; local status=$?; ___ARISE_EXEDESTTREE=$old; return "$status"; }
+doexe() { ___arise_doexe "$@" || ___arise_helper_failure; }
+___arise_doexe() {
   (( $# > 0 )) || { printf 'doexe requires files\n'; return 1; }
   local source destination; destination=$(___arise_image_path "$___ARISE_EXEDESTTREE") || return
   ___arise_install_dir "$destination" || return
   for source in "$@"; do install "${___ARISE_EXEOPTIONS[@]}" -- "$source" "$destination/${source##*/}" || return; done
 }
-newexe() {
+newexe() { ___arise_newexe "$@" || ___arise_helper_failure; }
+___arise_newexe() {
   [[ $# == 2 ]] || { printf 'newexe requires source and name\n'; return 1; }
   ___arise_safe_name "$2" || { printf 'newexe requires a safe name\n'; return 1; }
   local destination source=$1 temporary=''; destination=$(___arise_image_path "$___ARISE_EXEDESTTREE") || return
@@ -489,7 +525,8 @@ EXPORT_FUNCTIONS() {
     eval "$phase() { ${ECLASS}_${phase} \"\$@\"; }"
   done
 }
-eapply_user() {
+eapply_user() { ___arise_eapply_user "$@" || ___arise_helper_failure; }
+___arise_eapply_user() {
   local basename directory patch_file tagfile
   local -A patch_by=()
   [[ ${WORKDIR-} ]] || { printf 'eapply_user requires WORKDIR\n'; return 1; }
@@ -497,10 +534,10 @@ eapply_user() {
   mkdir -p "$T" || return
   tagfile=$T/.portage_user_patches_applied
   [[ -f $tagfile ]] && return
-  : > "$tagfile" || return
   while IFS= read -r directory; do
     [[ $directory ]] || continue
-    [[ -e $directory && ! -d $directory ]] && { printf 'user patch path is not a directory: %s\n' "$directory"; return 1; }
+    [[ -e $directory || -L $directory ]] || continue
+    [[ -d $directory && -r $directory && -x $directory ]] || { printf 'cannot read user patch directory: %s\n' "$directory"; return 1; }
     for patch_file in "$directory"/*.patch "$directory"/*.diff; do
       [[ -e $patch_file || -L $patch_file ]] || continue
       basename=${patch_file##*/}
@@ -511,11 +548,13 @@ eapply_user() {
       fi
     done
   done <<< "${___ARISE_USER_PATCH_DIRS-}"
-  (( ${#patch_by[@]} == 0 )) && return 0
-  while IFS= read -r -d '' basename; do
-    patch_file=${patch_by[$basename]}
-    ( cd "${S:-$WORKDIR}" && patch -p1 -f --no-backup-if-mismatch < "$patch_file" ) || return
-  done < <(printf '%s\0' "${!patch_by[@]}" | LC_ALL=C sort -z)
+  if (( ${#patch_by[@]} )); then
+    while IFS= read -r -d '' basename; do
+      patch_file=${patch_by[$basename]}
+      ( cd "${S:-$WORKDIR}" && eapply -- "$patch_file" ) || return
+    done < <(printf '%s\0' "${!patch_by[@]}" | LC_ALL=C sort -z)
+  fi
+  : > "$tagfile"
 }
 eapply() {
 	local path patch_file separator=0
@@ -564,29 +603,31 @@ eapply() {
 }
 unpack() {
   local archive source basename output
+  (( $# )) || die "unpack: missing archive"
   for archive in "$@"; do
     source=$archive
     [[ -e $source ]] || source=${DISTDIR-}/$archive
-    [[ -f $source ]] || { printf 'unpack: archive not found: %s\n' "$archive"; return 1; }
+    [[ -f $source ]] || die "unpack: archive not found: $archive"
     case $source in
-      *.tar.gz|*.tgz) tar --no-same-owner -xzf "$source" || return ;;
-      *.tar.bz2|*.tbz2) tar --no-same-owner -xjf "$source" || return ;;
-      *.tar.xz|*.txz) tar --no-same-owner -xJf "$source" || return ;;
-      *.tar.zst|*.tzst) tar --no-same-owner --zstd -xf "$source" || return ;;
-      *.tar) tar --no-same-owner -xf "$source" || return ;;
-      *.gz) basename=${archive##*/}; output=${basename%.gz}; gzip -dc "$source" > "$output" || return ;;
-      *.bz2) basename=${archive##*/}; output=${basename%.bz2}; bzip2 -dc "$source" > "$output" || return ;;
-      *.xz) basename=${archive##*/}; output=${basename%.xz}; xz -dc "$source" > "$output" || return ;;
-      *.zip) unzip -qo "$source" || return ;;
-      *.deb) ar p "$source" data.tar.xz | tar --no-same-owner -xJf - || ar p "$source" data.tar.zst | tar --no-same-owner --zstd -xf - || return ;;
+      *.tar.gz|*.tgz) tar --no-same-owner -xzf "$source" ;;
+      *.tar.bz2|*.tbz2) tar --no-same-owner -xjf "$source" ;;
+      *.tar.xz|*.txz) tar --no-same-owner -xJf "$source" ;;
+      *.tar.zst|*.tzst) tar --no-same-owner --zstd -xf "$source" ;;
+      *.tar) tar --no-same-owner -xf "$source" ;;
+      *.gz) basename=${archive##*/}; output=${basename%.gz}; gzip -dc "$source" > "$output" ;;
+      *.bz2) basename=${archive##*/}; output=${basename%.bz2}; bzip2 -dc "$source" > "$output" ;;
+      *.xz) basename=${archive##*/}; output=${basename%.xz}; xz -dc "$source" > "$output" ;;
+      *.zip) unzip -qo "$source" ;;
+      *.deb) ar p "$source" data.tar.xz | tar --no-same-owner -xJf - || ar p "$source" data.tar.zst | tar --no-same-owner --zstd -xf - ;;
       # PMS requires unpack to silently skip files with unsupported suffixes.
       # This is essential for default_src_unpack, since A also contains patch,
       # signature, and other non-archive distfiles used by later phases.
       *) continue ;;
-    esac
+    esac || die "unpack: could not extract $archive"
   done
 }
-doins() {
+doins() { ___arise_doins "$@" || ___arise_helper_failure; }
+___arise_doins() {
 	[[ ${ED-} ]] || { printf 'doins requires ED\n'; return 1; }
 	local recursive=0 source destination; destination=$(___arise_image_path "$___ARISE_INSDESTTREE") || return
 	[[ ${1-} == -r ]] && { recursive=1; shift; }
@@ -597,7 +638,8 @@ doins() {
 		else install "${___ARISE_INSOPTIONS[@]}" -- "$source" "$destination/" || return; fi
 	done
 }
-newins() {
+newins() { ___arise_newins "$@" || ___arise_helper_failure; }
+___arise_newins() {
   [[ $# == 2 ]] || { printf 'newins requires source and name\n'; return 1; }
   ___arise_safe_name "$2" || { printf 'newins requires a safe name\n'; return 1; }
   local destination source=$1 temporary=''; destination=$(___arise_image_path "$___ARISE_INSDESTTREE") || return
@@ -615,55 +657,69 @@ newins() {
 ___arise_special_install() {
   local destination=$1 mode=$2 rename=${3-} source target temporary=''
   shift 3
-  (( $# > 0 )) || die "installation helper requires files"
+  (( $# > 0 )) || return 1
   target=$(___arise_image_path "$destination") || return
-  install -d -m0755 -- "$target" || die "could not create installation directory $destination"
+  install -d -m0755 -- "$target" || return
   if [[ $rename ]]; then
-    [[ $# == 1 ]] || die "renaming helper requires one source"
-    ___arise_safe_name "$rename" || die "renaming helper requires a safe name"
+    [[ $# == 1 ]] || return 1
+    ___arise_safe_name "$rename" || return 1
     source=$1
     if [[ $source == - ]]; then
-      temporary=$(mktemp "${T:-${TMPDIR:-/tmp}}/special-install-stdin.XXXXXXXX") || die "could not stage helper standard input"
-      cat > "$temporary" || { rm -f -- "$temporary"; die "could not read helper standard input"; }
+      temporary=$(mktemp "${T:-${TMPDIR:-/tmp}}/special-install-stdin.XXXXXXXX") || return
+      cat > "$temporary" || { rm -f -- "$temporary"; return 1; }
       source=$temporary
     fi
     install -m "$mode" -- "$source" "$target/$rename"
     local status=$?
     [[ -z $temporary ]] || rm -f -- "$temporary"
-    (( status == 0 )) || die "could not install $source as $destination/$rename"
-    return 0
+    return "$status"
   fi
   for source in "$@"; do
-    install -m "$mode" -- "$source" "$target/${source##*/}" ||
-      die "could not install $source into $destination"
+    install -m "$mode" -- "$source" "$target/${source##*/}" || return
   done
 }
-doinitd() { ___arise_special_install /etc/init.d 0755 '' "$@"; }
-newinitd() { [[ $# == 2 ]] || { printf 'newinitd requires source and name\n'; return 1; }; ___arise_special_install /etc/init.d 0755 "$2" "$1"; }
-doconfd() { if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/conf.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
-newconfd() { [[ $# == 2 ]] || { printf 'newconfd requires source and name\n'; return 1; }; if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/conf.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
-doenvd() { if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/env.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
-newenvd() { [[ $# == 2 ]] || { printf 'newenvd requires source and name\n'; return 1; }; if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/env.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
-dodir() { local path destination; (( $# > 0 )) || { printf 'dodir requires paths\n'; return 1; }; for path in "$@"; do destination=$(___arise_image_path "$path") || return; install -d "${___ARISE_DIROPTIONS[@]}" -- "$destination" || return; done; }
-keepdir() {
+doinitd() { ___arise_doinitd "$@" || ___arise_helper_failure; }
+___arise_doinitd() { ___arise_special_install /etc/init.d 0755 '' "$@"; }
+newinitd() { ___arise_newinitd "$@" || ___arise_helper_failure; }
+___arise_newinitd() { [[ $# == 2 ]] || { printf 'newinitd requires source and name\n'; return 1; }; ___arise_special_install /etc/init.d 0755 "$2" "$1"; }
+doconfd() { ___arise_doconfd "$@" || ___arise_helper_failure; }
+___arise_doconfd() { if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/conf.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+newconfd() { ___arise_newconfd "$@" || ___arise_helper_failure; }
+___arise_newconfd() { [[ $# == 2 ]] || { printf 'newconfd requires source and name\n'; return 1; }; if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/conf.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/conf.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+doenvd() { ___arise_doenvd "$@" || ___arise_helper_failure; }
+___arise_doenvd() { if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/env.d 0644 '' "$@"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+newenvd() { ___arise_newenvd "$@" || ___arise_helper_failure; }
+___arise_newenvd() { [[ $# == 2 ]] || { printf 'newenvd requires source and name\n'; return 1; }; if [[ ${EAPI-} == [89] ]]; then ___arise_special_install /etc/env.d 0644 "$2" "$1"; else local old=$___ARISE_INSDESTTREE; ___ARISE_INSDESTTREE=/etc/env.d; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; return "$status"; fi; }
+dodir() { ___arise_dodir "$@" || ___arise_helper_failure; }
+___arise_dodir() { local path destination; (( $# > 0 )) || { printf 'dodir requires paths\n'; return 1; }; for path in "$@"; do destination=$(___arise_image_path "$path") || return; install -d "${___ARISE_DIROPTIONS[@]}" -- "$destination" || return; done; }
+keepdir() { ___arise_keepdir "$@" || ___arise_helper_failure; }
+___arise_keepdir() {
   local path destination keep=${CATEGORY:-category}_${PN:-package}_${SLOT:-0}
   keep=${keep//\//_}
   for path in "$@"; do dodir "$path" || return; destination=$(___arise_image_path "$path") || return; : > "$destination/.keep_$keep" || return; done
 }
-doheader() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == [89] ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
-newheader() { [[ $# == 2 ]] || { printf 'newheader requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == [89] ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
-dolib.a() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0644); doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
-dolib.so() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0755); doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
-newlib.a() { [[ $# == 2 ]] || { printf 'newlib.a requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0644); newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
-newlib.so() { [[ $# == 2 ]] || { printf 'newlib.so requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0755); newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
-fperms() {
+doheader() { ___arise_doheader "$@" || ___arise_helper_failure; }
+___arise_doheader() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == [89] ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
+newheader() { ___arise_newheader "$@" || ___arise_helper_failure; }
+___arise_newheader() { [[ $# == 2 ]] || { printf 'newheader requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/include; if [[ ${EAPI-} == [89] ]]; then ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); fi; newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"; }
+dolib.a() { ___arise_dolib.a "$@" || ___arise_helper_failure; }
+___arise_dolib.a() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0644); doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
+dolib.so() { ___arise_dolib.so "$@" || ___arise_helper_failure; }
+___arise_dolib.so() { local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0755); doins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
+newlib.a() { ___arise_newlib.a "$@" || ___arise_helper_failure; }
+___arise_newlib.a() { [[ $# == 2 ]] || { printf 'newlib.a requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0644); newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
+newlib.so() { ___arise_newlib.so "$@" || ___arise_helper_failure; }
+___arise_newlib.so() { [[ $# == 2 ]] || { printf 'newlib.so requires source and name\n'; return 1; }; local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}"); ___ARISE_INSDESTTREE=$___ARISE_DESTTREE/$(get_libdir); ___ARISE_INSOPTIONS=(-m0755); newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); return "$status"; }
+fperms() { ___arise_fperms "$@" || ___arise_helper_failure; }
+___arise_fperms() {
 	[[ ${ED-} ]] || { printf 'fperms requires ED\n'; return 1; }
 	local mode=${1-} path destination
-	[[ $mode ]] || return 1
+	[[ $mode && $# -ge 2 ]] || return 1
 	shift
 	for path in "$@"; do destination=$(___arise_image_path "$path") || return; chmod "$mode" "$destination" || return; done
 }
-dosym() {
+dosym() { ___arise_dosym "$@" || ___arise_helper_failure; }
+___arise_dosym() {
 	[[ ${ED-} ]] || { printf 'dosym requires ED\n'; return 1; }
 	local relative= target destination image_destination
 	if [[ ${1-} == -r ]]; then
@@ -713,7 +769,8 @@ dosym() {
 	ln -snf -- "$target" "$image_destination"
 }
 dohard() { printf 'dohard is banned for EAPI %s\n' "${EAPI-unknown}"; return 125; }
-fowners() {
+fowners() { ___arise_fowners "$@" || ___arise_helper_failure; }
+___arise_fowners() {
   [[ $# -ge 2 ]] || { printf 'fowners requires owner and paths\n'; return 1; }
   local owner=$1 path destination
   shift
@@ -722,7 +779,7 @@ fowners() {
 emake() {
   local -a makeopts=()
   [[ ${MAKEOPTS-} ]] && read -r -a makeopts <<< "$MAKEOPTS"
-  "${MAKE:-make}" "${makeopts[@]}" ${EXTRA_EMAKE-} "$@"
+  "${MAKE:-make}" "${makeopts[@]}" ${EXTRA_EMAKE-} "$@" || ___arise_helper_failure
 }
 econf() {
   local source=${ECONF_SOURCE:-.} prefix=${EPREFIX-}/usr conf_prefix=${EPREFIX-}/usr build=${CBUILD:-${CHOST-}} argument
@@ -775,12 +832,13 @@ econf() {
   [[ ${PORTAGE_NONFATAL-} ]] && return "$status"
   die "econf failed with status $status"
 }
-dodoc() {
+dodoc() { ___arise_dodoc "$@" || ___arise_helper_failure; }
+___arise_dodoc() {
 	[[ ${ED-} ]] || { printf 'dodoc requires ED\n'; return 1; }
 	local recursive=0 destination=$ED/usr/share/doc/${PF:-package}${___ARISE_DOCDESTTREE:+/$___ARISE_DOCDESTTREE} file
 	[[ ${1-} == -r ]] && { recursive=1; shift; }
 	[[ ${1-} == -- ]] && shift
-	(( $# > 0 )) || { printf 'dodoc requires files\n'; return 1; }
+	(( $# > 0 )) || return 0
   mkdir -p "$destination" || return
   for file in "$@"; do
 		if [[ -d $file && $recursive == 0 ]]; then
@@ -790,12 +848,14 @@ dodoc() {
 		cp -R -- "$file" "$destination/" || return
 	done
 }
-newdoc() {
+newdoc() { ___arise_newdoc "$@" || ___arise_helper_failure; }
+___arise_newdoc() {
   [[ $# == 2 ]] || { printf 'newdoc requires source and name\n'; return 1; }
   ___arise_safe_name "$2" || { printf 'newdoc requires a safe name\n'; return 1; }
   local old=$___ARISE_INSDESTTREE oldopts=("${___ARISE_INSOPTIONS[@]}") olddiropts=("${___ARISE_DIROPTIONS[@]}"); ___ARISE_INSDESTTREE=/usr/share/doc/${PF:-package}${___ARISE_DOCDESTTREE:+/$___ARISE_DOCDESTTREE}; ___ARISE_INSOPTIONS=(-m0644); ___ARISE_DIROPTIONS=(-m0755); newins "$@"; local status=$?; ___ARISE_INSDESTTREE=$old; ___ARISE_INSOPTIONS=("${oldopts[@]}"); ___ARISE_DIROPTIONS=("${olddiropts[@]}"); return "$status"
 }
-doman() {
+doman() { ___arise_doman "$@" || ___arise_helper_failure; }
+___arise_doman() {
   local file section destination
   for file in "$@"; do
     section=${file##*.}; [[ $section =~ ^[0-9][A-Za-z]*$ ]] || { printf 'doman cannot determine section for %s\n' "$file"; return 1; }
@@ -804,7 +864,8 @@ doman() {
     install -m0644 -- "$file" "$destination/${file##*/}" || return
   done
 }
-newman() {
+newman() { ___arise_newman "$@" || ___arise_helper_failure; }
+___arise_newman() {
   [[ $# == 2 ]] || { printf 'newman requires source and name\n'; return 1; }
   ___arise_safe_name "$2" || { printf 'newman requires a safe name\n'; return 1; }
   local section=${2##*.} destination
@@ -813,10 +874,15 @@ newman() {
   mkdir -p "$destination" || return
   install -m0644 -- "$1" "$destination/$2"
 }
-doinfo() { ___arise_special_install /usr/share/info 0644 '' "$@"; }
+doinfo() { ___arise_doinfo "$@" || ___arise_helper_failure; }
+___arise_doinfo() { ___arise_special_install /usr/share/info 0644 '' "$@"; }
 domo() {
 	[[ ${EAPI-} != 9 ]] || { printf 'domo is banned in EAPI 9\n'; return 1; }
   (( $# > 0 )) || { printf 'domo requires files\n'; return 1; }
+  ___arise_domo "$@" || ___arise_helper_failure
+}
+___arise_domo() {
+  (( $# )) || return 1
   local source locale destination
   for source in "$@"; do
     [[ -f $source ]] || { printf 'domo source not found: %s\n' "$source"; return 1; }
@@ -848,8 +914,8 @@ default_src_unpack() { [[ -z ${A-} ]] || unpack $A; }
 default_src_configure() { [[ ! -x ${ECONF_SOURCE:-.}/configure ]] || econf; }
 default_src_compile() { [[ ! -f Makefile && ! -f GNUmakefile && ! -f makefile ]] || emake; }
 default_src_test() {
-  if emake check -n >/dev/null 2>&1; then emake check
-  elif emake test -n >/dev/null 2>&1; then emake test
+  if nonfatal emake check -n >/dev/null 2>&1; then emake check
+  elif nonfatal emake test -n >/dev/null 2>&1; then emake test
   fi
 }
 default_src_install() {
@@ -1322,7 +1388,7 @@ ___arise_run_one_phase() {
   # Package descendants must not hold the manager's event pipe open after
   # the worker exits. Bash restores this descriptor after the function call.
   if declare -F "$___ARISE_RUNNING_PHASE" >/dev/null; then
-		"$___ARISE_RUNNING_PHASE" 3>&- || ___ARISE_PHASE_STATUS=$?
+		___ARISE_TRACK_DIE=1 "$___ARISE_RUNNING_PHASE" 3>&- || ___ARISE_PHASE_STATUS=$?
 		# Portage's __ebuild_phase intentionally discards a phase function's
 		# ordinary return status. `die` exits the worker shell and remains fatal.
 		# Status 125 is reserved for Arise protocol/sandbox safety violations.
@@ -1330,10 +1396,11 @@ ___arise_run_one_phase() {
   else
     case $___ARISE_RUNNING_PHASE in
       src_unpack|src_prepare|src_configure|src_compile|src_test|src_install|pkg_pretend|pkg_setup|pkg_preinst|pkg_postinst|pkg_prerm|pkg_postrm|pkg_nofetch)
-        "default_$___ARISE_RUNNING_PHASE" 3>&- || ___ARISE_PHASE_STATUS=$? ;;
+        ___ARISE_TRACK_DIE=1 "default_$___ARISE_RUNNING_PHASE" 3>&- || ___ARISE_PHASE_STATUS=$? ;;
       *) printf 'phase function %s is not defined\n' "$___ARISE_RUNNING_PHASE"; ___ARISE_PHASE_STATUS=127 ;;
     esac
   fi
+	[[ ! -s $___ARISE_DIE_FILE ]] || ___ARISE_PHASE_STATUS=1
 	if (( ___ARISE_PHASE_STATUS == 0 )); then
 		___arise_validate_source_directory || ___ARISE_PHASE_STATUS=$?
 	fi
@@ -1361,6 +1428,9 @@ ___arise_save_phase_environment() {
 	return 1
 }
 
+if [[ $___ARISE_COMMAND == run_phase || $___ARISE_COMMAND == run_phases ]]; then
+	___ARISE_DIE_FILE=$(mktemp) || exit 1
+fi
 if (( ___ARISE_STATUS == 0 )) && [[ $___ARISE_COMMAND == discover_phases ]]; then
   for phase in pkg_pretend pkg_setup src_unpack src_prepare src_configure src_compile src_test src_install pkg_preinst pkg_postinst pkg_prerm pkg_postrm pkg_config pkg_info pkg_nofetch; do
     declare -F "$phase" >/dev/null && ___arise_emit '"kind":"phase","message":"'"$phase"'"'

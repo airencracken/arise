@@ -18,7 +18,7 @@ func TestBinaryExecutionABIRejectsBeforeMutation(t *testing.T) {
 		Path: path, Basename: "demo-1", ImageRoot: image,
 		Metadata: map[string][]byte{
 			"CATEGORY": []byte("app-misc\n"), "PF": []byte("demo-1\n"),
-			"SLOT": []byte("0\n"), "EAPI": []byte("8\n"), "ARISE_PHASE_ENV_ABI": []byte("6\n"),
+			"SLOT": []byte("0\n"), "EAPI": []byte("8\n"), "ARISE_PHASE_ENV_ABI": []byte("7\n"),
 		},
 	}); err != nil {
 		t.Fatal(err)

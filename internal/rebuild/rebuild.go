@@ -395,6 +395,9 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 		}
 	}
 
+	if err := checkWorkDirSymlinks(destDir, workDir); err != nil {
+		return err
+	}
 	mergeCfg := merge.MergeConfig{
 		RootDir:  cfg.RootDir,
 		VdbDir:   cfg.VdbDir,
@@ -1172,6 +1175,9 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	}
 	if cfg.BuildPackage {
 		cfg.fireStage("package")
+		if err := checkWorkDirSymlinks(destDir, workDir); err != nil {
+			return err
+		}
 		if _, err := publishBuiltGPKG(ctx, cfg, cat, pf, destDir, vdbMetadata, environment); err != nil {
 			return err
 		}
@@ -1205,6 +1211,9 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 	// after src_install has produced the image and before any payload is copied
 	// into ROOT. It cannot share the build worker's isolation policy.
 	if err := run("pkg_preinst"); err != nil {
+		return err
+	}
+	if err := checkWorkDirSymlinks(destDir, workDir); err != nil {
 		return err
 	}
 	environment, err = savedProtocolEnvironment(base)

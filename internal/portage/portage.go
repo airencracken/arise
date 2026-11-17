@@ -19,14 +19,12 @@ import (
 // PhaseEnvironmentABI identifies artifact-affecting package execution
 // semantics. Packages built by Arise persist this value in VDB so a later ABI
 // change cannot be hidden behind unchanged USE metadata.
-const PhaseEnvironmentABI = "7"
+const PhaseEnvironmentABI = "8"
 
 // PhaseEnvironmentABICompatible reports whether an installed Arise artifact
-// remains valid under the current execution ABI. ABI 7 honors profile ABI
-// library directories and transports toolchain layout controls. Earlier
-// versions could install libraries and startup objects outside the compiler's
-// search paths, so committed older artifacts require rebuilding. Unmarked
-// Portage artifacts are handled by the resolver.
+// remains valid under the current execution ABI. ABI 8 rejects artifacts built
+// by workers that could silently skip required patches and install operations.
+// The resolver handles unmarked Portage artifacts separately.
 func PhaseEnvironmentABICompatible(installed string) bool {
 	return installed == PhaseEnvironmentABI
 }

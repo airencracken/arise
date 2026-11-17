@@ -67,7 +67,7 @@ func TestLegacyXPAKExecutionABICannotBeHiddenOrOverridden(t *testing.T) {
 
 func TestBinaryExecutionABIIsPreservedAndChecked(t *testing.T) {
 	for _, format := range []string{"xpak", "gpkg"} {
-		for _, abi := range []string{"6", portage.PhaseEnvironmentABI, "", "unknown"} {
+		for _, abi := range []string{"6", "7", portage.PhaseEnvironmentABI, "", "unknown"} {
 			t.Run(format+"/"+abi, func(t *testing.T) {
 				base := t.TempDir()
 				vdb, root := createMockVDB(t, base)
