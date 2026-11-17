@@ -913,6 +913,72 @@ func TestBashWorkerEapplyDirectoryUsesSortedPatchAndDiffFiles(t *testing.T) {
 	}
 }
 
+func TestBashWorkerEapplyOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name, args string
+	}{
+		{"attached strip level", `-p2 "$WORKDIR/patch dir/-root.patch"`},
+		{"separate option value and directory", `-p 2 -- "$WORKDIR/patch dir"`},
+		{"option-like filename", `-p2 -- -root.patch`},
+		{"option-like directory", `-p2 -- -patches`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := phaseStateRequest(t, `src_unpack() {
+	mkdir -p "$S/-patches" "$WORKDIR/patch dir" || die
+	echo old > "$S/value"
+	cp "$T/change" "$WORKDIR/patch dir/-root.patch" || die
+	cp "$T/change" "$S/-root.patch" || die
+	cp "$T/change" "$S/-patches/root.patch" || die
+}
+src_prepare() {
+	eapply `+tc.args+`
+	echo finished
+}`)
+			patch := "--- a/image/value\n+++ b/image/value\n@@ -1 +1 @@\n-old\n+new\n"
+			if err := os.WriteFile(filepath.Join(request.TempDir, "change"), []byte(patch), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runPhaseStateSequence(t, request, false, "src_unpack", "src_prepare")
+			if got, err := os.ReadFile(filepath.Join(request.SourceDir, "value")); err != nil || string(got) != "new\n" {
+				t.Fatalf("patched file = %q, err = %v", got, err)
+			}
+		})
+	}
+}
+
+func TestBashWorkerEapplyFailures(t *testing.T) {
+	for _, tc := range []struct{ args, diagnostic string }{
+		{"", "no patch operands"},
+		{"missing.patch", "failed to apply missing.patch"},
+		{"empty-dir", "patch directory is empty"},
+		{"invalid.patch", "failed to apply invalid.patch"},
+		{"invalid.patch -p2", "options must precede patch operands"},
+	} {
+		t.Run("fatal "+tc.args, func(t *testing.T) {
+			request := phaseStateRequest(t, "src_prepare() { mkdir empty-dir; echo junk > invalid.patch; eapply "+tc.args+"; touch \"$T/continued\"; }")
+			if err := os.Mkdir(request.SourceDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			request.ID, request.Command, request.Phase = "bad-patch", "run_phase", "src_prepare"
+			events, err := RunBashWorker(context.Background(), request)
+			if err == nil || !strings.Contains(fmt.Sprint(events), tc.diagnostic) {
+				t.Fatalf("expected eapply failure %q, got %v: %+v", tc.diagnostic, err, events)
+			}
+			if _, err := os.Stat(filepath.Join(request.TempDir, "continued")); !os.IsNotExist(err) {
+				t.Fatalf("phase continued after eapply: %v", err)
+			}
+		})
+	}
+	t.Run("nonfatal patch failure", func(t *testing.T) {
+		request := phaseStateRequest(t, `src_unpack() { mkdir -p "$S"; }
+src_prepare() { echo junk > invalid.patch; nonfatal eapply invalid.patch && die "patch succeeded"; echo handled > "$T/result"; }`)
+		runPhaseStateSequence(t, request, false, "src_unpack", "src_prepare")
+		if got, err := os.ReadFile(filepath.Join(request.TempDir, "result")); err != nil || string(got) != "handled\n" {
+			t.Fatalf("nonfatal result = %q, err = %v", got, err)
+		}
+	})
+}
+
 func TestBashWorkerEscapesJSONControlCharacters(t *testing.T) {
 	directory := t.TempDir()
 	ebuild := filepath.Join(directory, "pkg-1.ebuild")

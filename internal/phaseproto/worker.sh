@@ -518,22 +518,49 @@ eapply_user() {
   done < <(printf '%s\0' "${!patch_by[@]}" | LC_ALL=C sort -z)
 }
 eapply() {
-  [[ ${1-} == -- ]] && shift
-  local patch_file candidate
-  local -a patches=()
-  for patch_file in "$@"; do
-    if [[ -d $patch_file ]]; then
-      patches=()
-      while IFS= read -r -d '' candidate; do patches+=("$candidate"); done < <(find "$patch_file" -maxdepth 1 -type f \( -name '*.patch' -o -name '*.diff' \) -print0 | LC_ALL=C sort -z)
-      (( ${#patches[@]} > 0 )) || { printf 'eapply: patch directory is empty: %s\n' "$patch_file"; return 1; }
-      for candidate in "${patches[@]}"; do
-        patch -p1 -f --no-backup-if-mismatch < "$candidate" || return
-      done
-      continue
-    fi
-    [[ -f $patch_file ]] || { printf 'eapply: patch not found: %s\n' "$patch_file"; return 1; }
-    patch -p1 -f --no-backup-if-mismatch < "$patch_file" || return
-  done
+	local path patch_file separator=0
+	local -a options=() patches=()
+
+	# With --, everything to its left belongs to patch, including option values.
+	has -- "$@" && separator=1
+	while (( $# )); do
+		if [[ $1 == -- ]]; then
+			shift
+			break
+		fi
+		(( separator )) || [[ $1 == -* ]] || break
+		options+=("$1")
+		shift
+	done
+	(( $# )) || die "eapply: no patch operands"
+	if (( ! separator )); then
+		for path in "$@"; do
+			[[ $path != -* ]] || die "eapply: options must precede patch operands"
+		done
+	fi
+
+	for path in "$@"; do
+		if [[ -d $path ]]; then
+			[[ $path == /* ]] || path=./$path
+			patches=()
+			while IFS= read -r -d '' patch_file; do
+				patches+=("$patch_file")
+			done < <(find "$path" -maxdepth 1 -type f \( -name '*.patch' -o -name '*.diff' \) -print0 | LC_ALL=C sort -z)
+			(( ${#patches[@]} )) || die "eapply: patch directory is empty: $path"
+		else
+			patches=("$path")
+		fi
+		for patch_file in "${patches[@]}"; do
+			if [[ -f $patch_file ]] && patch -p1 -f -g0 --no-backup-if-mismatch "${options[@]}" < "$patch_file"; then
+				continue
+			fi
+			if [[ ${PORTAGE_NONFATAL-} ]]; then
+				printf 'eapply: failed to apply %s\n' "$patch_file"
+				return 1
+			fi
+			die "eapply: failed to apply $patch_file"
+		done
+	done
 }
 unpack() {
   local archive source basename output
