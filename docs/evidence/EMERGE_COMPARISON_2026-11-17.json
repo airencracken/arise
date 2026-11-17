@@ -1,0 +1,379 @@
+{
+  "date": "2026-11-17",
+  "portage_version": "Portage 3.0.82.2 (python 3.14.10-final-0, default/linux/amd64/23.0/split-usr/desktop, gcc-14, glibc-2.43-r4, 6.0.5-gentoo-x86_64 x86_64)",
+  "arise_source": "2b7f170c90800c9218ed1d4b2760836e91b1a3c8",
+  "arise_binary_sha256": "73125d1c87c508a23a1e2987a34bd336011458d01d70f148d87cfde58fc90b1d",
+  "cpu": "AMD Ryzen 7 PRO 4750U",
+  "go": "go1.27.3-X:nodwarf5",
+  "snapshot": {
+    "repos": {
+      "mndz": "29819f8bf2b0ac32164d803addd76b50e5316622",
+      "arise-overlay": "fec2c04bc307096e1ef7ac2f5bc353d40c57ecac",
+      "supercoolsoftware": {
+        "commit": null,
+        "ebuilds": 1,
+        "herbe-9999.ebuild_sha256": "6bfdd7f4219101dc3bc814e4b2a5a599e9ca28440b74b1248d5d88a638bc6e7f"
+      },
+      "gentoo": "269b55c65eec3fe3d549addd99164713d2897b08",
+      "xlibre": "5a37ba9aca64e71ddf8a93ea3c96d450944aa103",
+      "guru": "949a279b16d2b63b3ca54e717b6e181eac3ac347"
+    },
+    "world_sha256": "00e3de2e065bfa843eec9eea6659233a2986d694cb328710f36ecb764e175d2e",
+    "profile": "/var/db/repos/gentoo/profiles/default/linux/amd64/23.0/split-usr/desktop",
+    "arise_plan_state_sha256": "5e47fa1a9fc2d9c1e45bdbbaf08ec081708056f0254f36e9c1b231394d5b1551"
+  },
+  "index_sha256": {
+    "names.arise": "fe07a7613e453d0718f263d9e64f362a8a6697144e91cf0d62b488d6c00f6b6a",
+    "resolver.arise": "f77fbe56b1345e579c6172c98fa0398e16a3de648a1b30faa4afc8a3623ae1c0"
+  },
+  "cache": "warm",
+  "warmup_pairs": 1,
+  "measured_pairs": 5,
+  "cases": {
+    "firefox-names": {
+      "arise_args": [
+        "--db",
+        "<index>",
+        "--color=n",
+        "--search-only-names",
+        "search",
+        "firefox"
+      ],
+      "emerge_args": [
+        "--color",
+        "n",
+        "--quiet",
+        "--search",
+        "%firefox"
+      ],
+      "emerge_env": [
+        "FEATURES=-news"
+      ],
+      "normalization": "search-package-names",
+      "equivalent": true,
+      "checks": {
+        "arise_count": 7,
+        "emerge_count": 7,
+        "full_cp_equal": true,
+        "arise_only": [],
+        "emerge_only": []
+      },
+      "arise_wall_ns": [
+        16394128,
+        16331131,
+        16286922,
+        15278758,
+        14904686
+      ],
+      "arise_normalized_sha256": "e9d4343300f9210448044eda970f5424cf89d5747f4a95cb0fe0a3fba2ea8bd2",
+      "emerge_wall_ns": [
+        709047497,
+        706393865,
+        709843760,
+        735808842,
+        695932640
+      ],
+      "emerge_normalized_sha256": "e9d4343300f9210448044eda970f5424cf89d5747f4a95cb0fe0a3fba2ea8bd2"
+    },
+    "dev-python-category": {
+      "arise_args": [
+        "--db",
+        "<index>",
+        "--color=n",
+        "--search-format",
+        "<category>/<name>",
+        "search",
+        "dev-python/"
+      ],
+      "emerge_args": [
+        "--color",
+        "n",
+        "--quiet",
+        "--search",
+        "%^dev-python/"
+      ],
+      "emerge_env": [
+        "FEATURES=-news"
+      ],
+      "normalization": "search-package-names",
+      "equivalent": false,
+      "checks": {
+        "arise_count": 2067,
+        "emerge_count": 2068,
+        "full_cp_equal": false,
+        "arise_only": [],
+        "emerge_only": [
+          "dev-python/ensurepip-wheels"
+        ]
+      },
+      "arise_wall_ns": [
+        1075102407,
+        1144981232,
+        1033230343,
+        1105594341,
+        1033540020
+      ],
+      "arise_normalized_sha256": "efe57ef9d4dd6d2236df611e485be50e21139ee5629d5abfb40ebd251b6b5ff4",
+      "emerge_wall_ns": [
+        11612139289,
+        11906369936,
+        11858693686,
+        11821415871,
+        12052338530
+      ],
+      "emerge_normalized_sha256": "907c3559848a48ee20b4c77d846266d1baf8d56df82e608d051d92a2baaa83ab"
+    },
+    "nano-update": {
+      "arise_args": [
+        "--db",
+        "<index>",
+        "--color=n",
+        "--pretend",
+        "--json",
+        "--update",
+        "install",
+        "app-editors/nano"
+      ],
+      "emerge_args": [
+        "--color",
+        "n",
+        "--pretend",
+        "--verbose",
+        "--update",
+        "app-editors/nano"
+      ],
+      "emerge_env": [
+        "FEATURES=-news"
+      ],
+      "normalization": "package-plan",
+      "equivalent": true,
+      "checks": {
+        "arise_count": 0,
+        "emerge_count": 0,
+        "arise_only": {},
+        "emerge_only": [],
+        "state_sha256": "95e159889e5be87b4af80e98ebf43949ae97bf2138c9aa3849a1e4ac71d45231"
+      },
+      "arise_wall_ns": [
+        1814844309,
+        1818190699,
+        1767753749,
+        1756040405,
+        1767792931
+      ],
+      "arise_normalized_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "emerge_wall_ns": [
+        2167661233,
+        2187017344,
+        2162017473,
+        2167586712,
+        2202523855
+      ],
+      "emerge_normalized_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    "nano-reinstall": {
+      "arise_args": [
+        "--db",
+        "<index>",
+        "--color=n",
+        "--pretend",
+        "--json",
+        "install",
+        "app-editors/nano"
+      ],
+      "emerge_args": [
+        "--color",
+        "n",
+        "--pretend",
+        "--verbose",
+        "app-editors/nano"
+      ],
+      "emerge_env": [
+        "FEATURES=-news"
+      ],
+      "normalization": "package-plan",
+      "equivalent": true,
+      "checks": {
+        "arise_count": 1,
+        "emerge_count": 1,
+        "arise_only": {},
+        "emerge_only": [],
+        "state_sha256": "ed9d3279506329f53926bf08126681d3b45dcf446a86beba85b8a390246ec478"
+      },
+      "arise_wall_ns": [
+        1744999985,
+        1823961850,
+        1872467819,
+        1765346869,
+        1831016760
+      ],
+      "arise_normalized_sha256": "41c5d44756d28dfb530e8a3e96e86f109dd0cc008625d040cb3d4a4722071455",
+      "emerge_wall_ns": [
+        2219565484,
+        2202336190,
+        2290671986,
+        2198723983,
+        2177878431
+      ],
+      "emerge_normalized_sha256": "ee610fc2128f6cd35be86cf37c571b250d53ddc48ca7d4da90f97d5f8b9b7f79"
+    },
+    "world-update": {
+      "arise_args": [
+        "--db",
+        "<index>",
+        "--color=n",
+        "--pretend",
+        "--json",
+        "--update",
+        "--deep",
+        "--newuse",
+        "install",
+        "@world"
+      ],
+      "emerge_args": [
+        "--color",
+        "n",
+        "--pretend",
+        "--verbose",
+        "--update",
+        "--deep",
+        "--newuse",
+        "@world"
+      ],
+      "emerge_env": [
+        "FEATURES=-news"
+      ],
+      "normalization": "package-plan",
+      "equivalent": false,
+      "checks": {
+        "arise_count": 83,
+        "emerge_count": 55,
+        "arise_only": {
+          "app-admin/eselect-1.4.32": "reinstall",
+          "app-admin/logrotate-3.22.0-r1": "reinstall",
+          "app-crypt/age-1.3.1-r1": "reinstall",
+          "app-eselect/eselect-repository-15": "reinstall",
+          "app-portage/golop-0.2.1-r1": "reinstall",
+          "app-portage/portage-utils-0.97.1": "reinstall",
+          "app-text/zathura-pdf-poppler-0.3.3": "reinstall",
+          "dev-debug/valgrind-3.27.1": "reinstall",
+          "dev-embedded/esptool-5.3.0": "reinstall",
+          "dev-lang/go-1.27.3": "reinstall",
+          "dev-util/scc-3.4.0": "reinstall",
+          "dev-vcs/subversion-1.14.5-r3": "reinstall",
+          "games-engines/minetest-5.11.0": "reinstall",
+          "media-gfx/zbar-0.23.93-r3": "reinstall",
+          "media-plugins/gst-plugins-gtk-1.26.11": "reinstall",
+          "media-radio/svxlink-25.05.1_p20250929-r1": "reinstall",
+          "media-video/mpv-0.41.0-r2": "reinstall",
+          "sys-apps/file-5.48": "reinstall",
+          "sys-apps/yarn-1.22.22": "reinstall",
+          "sys-kernel/genkernel-4.3.17-r4": "reinstall",
+          "sys-power/acpilight-1.2-r5": "reinstall",
+          "sys-process/iotop-0.6_p20230124": "reinstall",
+          "www-client/elinks-0.19.1": "reinstall",
+          "www-client/firefox-153.6.0": "reinstall",
+          "x11-base/xorg-drivers-21.1-r2": "reinstall",
+          "x11-drivers/xf86-video-amdgpu-25.0.0-r1": "reinstall",
+          "x11-drivers/xf86-video-ati-22.0.0": "reinstall",
+          "x11-libs/gtk+-3.24.52": "reinstall"
+        },
+        "emerge_only": [],
+        "state_sha256": "5e47fa1a9fc2d9c1e45bdbbaf08ec081708056f0254f36e9c1b231394d5b1551",
+        "extra_installed_execution_abi": {
+          "app-admin/eselect-1.4.32": "4",
+          "app-admin/logrotate-3.22.0-r1": "4",
+          "app-crypt/age-1.3.1-r1": "4",
+          "app-eselect/eselect-repository-15": "4",
+          "app-portage/golop-0.2.1-r1": "4",
+          "app-portage/portage-utils-0.97.1": "3",
+          "app-text/zathura-pdf-poppler-0.3.3": "2",
+          "dev-debug/valgrind-3.27.1": "4",
+          "dev-embedded/esptool-5.3.0": "4",
+          "dev-lang/go-1.27.3": "4",
+          "dev-util/scc-3.4.0": "4",
+          "dev-vcs/subversion-1.14.5-r3": "4",
+          "games-engines/minetest-5.11.0": "4",
+          "media-gfx/zbar-0.23.93-r3": "4",
+          "media-plugins/gst-plugins-gtk-1.26.11": "2",
+          "media-radio/svxlink-25.05.1_p20250929-r1": "4",
+          "media-video/mpv-0.41.0-r2": "2",
+          "sys-apps/file-5.48": "4",
+          "sys-apps/yarn-1.22.22": "4",
+          "sys-kernel/genkernel-4.3.17-r4": "4",
+          "sys-power/acpilight-1.2-r5": "2",
+          "sys-process/iotop-0.6_p20230124": "2",
+          "www-client/elinks-0.19.1": "2",
+          "www-client/firefox-153.6.0": "4",
+          "x11-base/xorg-drivers-21.1-r2": "4",
+          "x11-drivers/xf86-video-amdgpu-25.0.0-r1": "4",
+          "x11-drivers/xf86-video-ati-22.0.0": "4",
+          "x11-libs/gtk+-3.24.52": "2"
+        },
+        "normalized_action_differences": {
+          "only-arise": 28
+        }
+      },
+      "arise_wall_ns": [
+        3819601966,
+        3793658117,
+        3811238434,
+        3849732051,
+        4023089867
+      ],
+      "arise_normalized_sha256": "dfb769d2ccb85114ee7d5475426c0ff37625299a5cd2de0453dfb4e97fd7796b",
+      "emerge_wall_ns": [
+        15270526938,
+        15282697465,
+        15031328956,
+        15179290411,
+        15251865193
+      ],
+      "emerge_normalized_sha256": "0c430f363b8f63b33c313944449f6e0fda3d2121b349ea49da9849b43e1c7496"
+    },
+    "dev-python-py-prefix": {
+      "arise_args": [
+        "--db",
+        "<index>",
+        "--color=n",
+        "--search-format",
+        "<category>/<name>",
+        "search",
+        "dev-python/py"
+      ],
+      "emerge_args": [
+        "--color",
+        "n",
+        "--quiet",
+        "--search",
+        "%^dev-python/py"
+      ],
+      "emerge_env": [
+        "FEATURES=-news"
+      ],
+      "normalization": "search-package-names",
+      "equivalent": true,
+      "checks": {
+        "full_cp_equal": true,
+        "arise_count": 389,
+        "emerge_count": 389
+      },
+      "arise_wall_ns": [
+        594739426,
+        595989032,
+        607697278,
+        606007669,
+        647343351
+      ],
+      "arise_normalized_sha256": "aac099f9e1e22c359b942954531ede5483e926dd0e77d393df97bd9805b13e39",
+      "emerge_wall_ns": [
+        2806541668,
+        2918316374,
+        2943449293,
+        2865983784,
+        2816915311
+      ],
+      "emerge_normalized_sha256": "aac099f9e1e22c359b942954531ede5483e926dd0e77d393df97bd9805b13e39"
+    }
+  }
+}

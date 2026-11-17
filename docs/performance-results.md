@@ -40,6 +40,34 @@ The release profile attributed 34% of sampled CPU time to background garbage
 collection. This audit covered warm local searches and previews. Cold startup,
 building packages and merging files require separate measurements.
 
+### Comparison with emerge on theshire
+
+| Workload | Arise | emerge | Results (Arise / emerge) |
+|---|---:|---:|---|
+| Firefox name search | 0.016 s | 0.709 s | 7 packages |
+| dev-python/py prefix search | 0.606 s | 2.866 s | 389 packages |
+| Nano update preview | 1.768 s | 2.168 s | 0 actions |
+| Nano reinstall preview | 1.824 s | 2.202 s | 1 action |
+| Full dev-python category | 1.075 s | 11.859 s | 2,067 / 2,068 packages |
+| Deep world update preview | 3.820 s | 15.252 s | 83 / 55 actions |
+
+Medians are from five alternating pairs after a warm-up pair per workload.
+The audit candidate and Portage 3.0.82.2 read the same profile, world file,
+installed database and repositories. Arise used its warm local index.
+Portage ran with news bookkeeping disabled. Search comparisons checked full
+category/package names. Plan comparisons checked package versions, slots,
+repositories, merge types, actions and effective USE flags reported by emerge.
+
+The full category search differed by one installed package,
+`dev-python/ensurepip-wheels`, whose ebuild was absent from all the repositories.
+Only emerge included it. The 55 shared world actions matched. Arise additionally
+selected 28 same-version reinstalls for packages carrying execution ABI 2, 3
+or 4. The 0.0.55 worker uses ABI 8. The differing rows show elapsed times for
+each command without an equivalent-work speedup claim.
+
+The [paired samples, commands and input revisions](evidence/EMERGE_COMPARISON_2026-11-17.json) include the
+two mismatches and the installed ABI of each extra world action.
+
 ## 0.0.42 stabilization measurements
 
 | Warm workload | Arise median | Portage median | Speedup |
