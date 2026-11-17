@@ -6,6 +6,40 @@ options, tool/source identity, hardware, repeated samples and failed attempts.
 The [benchmark format](../misc/PERFORMANCE.md) records wall, CPU, I/O and
 process-tree memory without shell-wrapper overhead.
 
+## Search and planning audit, November 17, 2026
+
+| Warm workload | 0.0.55 median | Candidate median |
+|---|---:|---:|
+| Firefox names only | 0.015 s | 0.017 s |
+| dev-python search, 2,067 results | 1.651 s | 0.873 s |
+| Nano JSON update preview, zero actions | 1.775 s | 1.480 s |
+| Text world update preview, 83 actions | 3.120 s | 2.937 s |
+| JSON world update preview, 83 actions | 3.696 s | 3.347 s |
+| Synthetic search, 10,000 packages | 12.889 s | 0.790 s |
+
+Each CLI median covers five pairs after one warm-up pair on a Ryzen 7 PRO 4750U
+running Gentoo linux/amd64. Each process opened the same local copy of the
+November 6 index and read the workstation's installed packages and policy.
+The order alternated by pair. Both static binaries used a warm filesystem cache.
+Search stdout matched byte for byte. The two text plans differed only in the
+reported duration. JSON comparisons included actions, ordering, verification
+and approval hashes and excluded only timing and allocation counters.
+The separate in-memory Go benchmark used three single-iteration samples per
+implementation. The [individual samples and command arguments](evidence/PERFORMANCE_AUDIT_2026-11-17.json)
+identify both sources, binaries and index sidecars.
+
+Broad search spent 34% of sampled CPU time populating dependency fields.
+The candidate reuses preferred metadata from name lookups and walks recorded
+dependency edges to build reverse dependencies. Install planning skips reverse
+edges and CPV lookup maps used by graph queries. A JSON preview hashes the
+same policy and package state once. Execution still captures the per-file
+digests used to detect concurrent changes.
+
+The world solver still took 1.70 s and allocated 329 MB on this workload.
+The release profile attributed 34% of sampled CPU time to background garbage
+collection. This audit covered warm local searches and previews. Cold startup,
+building packages and merging files require separate measurements.
+
 ## 0.0.42 stabilization measurements
 
 | Warm workload | Arise median | Portage median | Speedup |

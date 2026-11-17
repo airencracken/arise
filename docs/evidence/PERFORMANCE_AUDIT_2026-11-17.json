@@ -1,0 +1,164 @@
+{
+  "date": "2026-11-17",
+  "source": {
+    "baseline": "ed32654a47c2c061c34e37a98121e7714a85359a",
+    "candidate": "2b7f170c90800c9218ed1d4b2760836e91b1a3c8"
+  },
+  "binary_sha256": {
+    "baseline": "16ea1b40c74e6a73f8a34a30e1631d13dd5d00fc9bba42157f30653223dbebe2",
+    "candidate": "73125d1c87c508a23a1e2987a34bd336011458d01d70f148d87cfde58fc90b1d"
+  },
+  "index_sha256": {
+    "names.arise": "fe07a7613e453d0718f263d9e64f362a8a6697144e91cf0d62b488d6c00f6b6a",
+    "resolver.arise": "f77fbe56b1345e579c6172c98fa0398e16a3de648a1b30faa4afc8a3623ae1c0"
+  },
+  "repo_timestamp": "2026-11-06T18:30:52Z",
+  "cpu": "AMD Ryzen 7 PRO 4750U",
+  "os_arch": "linux/amd64",
+  "go": "go1.27.3-X:nodwarf5",
+  "workloads": {
+    "names": {
+      "arguments": [
+        "--search-only-names",
+        "search",
+        "firefox"
+      ],
+      "wall_seconds": {
+        "candidate": [
+          0.021219,
+          0.018539,
+          0.016436,
+          0.017285,
+          0.015805
+        ],
+        "baseline": [
+          0.015083,
+          0.016383,
+          0.015001,
+          0.016267,
+          0.015093
+        ]
+      },
+      "normalized_stdout_sha256": "579a1377a0f2fca5d09e2c9db3437b633d22aa9f80a4829dc2c06f82e6a36df1"
+    },
+    "broad": {
+      "arguments": [
+        "--search-json",
+        "search",
+        "dev-python"
+      ],
+      "wall_seconds": {
+        "candidate": [
+          0.875004,
+          0.871844,
+          0.891823,
+          0.873417,
+          0.857972
+        ],
+        "baseline": [
+          1.64037,
+          1.599422,
+          1.650808,
+          1.711445,
+          1.671582
+        ]
+      },
+      "normalized_stdout_sha256": "de93329ea2fd9f8e007f497e5b53b3cd3904e36176eac3a1a944fee46d38f506"
+    },
+    "nano": {
+      "arguments": [
+        "--pretend",
+        "--update",
+        "--json",
+        "install",
+        "app-editors/nano"
+      ],
+      "wall_seconds": {
+        "candidate": [
+          1.480341,
+          1.477793,
+          1.478827,
+          1.511911,
+          1.495912
+        ],
+        "baseline": [
+          1.762399,
+          1.77506,
+          1.768732,
+          1.796542,
+          1.843815
+        ]
+      },
+      "normalized_stdout_sha256": "6c2adabb737d30c70a9f8d40a07e939e4bdc50564d2c0e9066f708beb63838aa",
+      "actions": 0,
+      "plan_sha256": "8442f0e7b265894be400c10a3ab8f5c1296826eec2fa79fc72c89a6c6fd655ee",
+      "state_sha256": "95e159889e5be87b4af80e98ebf43949ae97bf2138c9aa3849a1e4ac71d45231"
+    },
+    "world-text": {
+      "arguments": [
+        "-pvuDN",
+        "@world"
+      ],
+      "wall_seconds": {
+        "candidate": [
+          2.932374,
+          2.936643,
+          2.960701,
+          2.936448,
+          2.971986
+        ],
+        "baseline": [
+          3.121397,
+          3.066913,
+          3.120322,
+          3.130041,
+          3.099843
+        ]
+      },
+      "normalized_stdout_sha256": "5b83b141a679eb637ab505aa62e7d8293e8128cf6045da65a6466d2c8cb2d45c"
+    },
+    "world": {
+      "arguments": [
+        "--pretend",
+        "--update",
+        "--deep",
+        "--newuse",
+        "--json",
+        "install",
+        "@world"
+      ],
+      "wall_seconds": {
+        "candidate": [
+          3.411802,
+          3.347472,
+          3.333342,
+          3.367973,
+          3.342467
+        ],
+        "baseline": [
+          3.719683,
+          3.619859,
+          3.719869,
+          3.695692,
+          3.627395
+        ]
+      },
+      "normalized_stdout_sha256": "d9f8b894cde810fa02c3611d8293029666d4d2e1a58ab904dd44add2826491be",
+      "actions": 83,
+      "plan_sha256": "27db96ddce7364ed1d8e2c976ce9528bf8504337dfc7282009c921ecea6d193c",
+      "state_sha256": "5e47fa1a9fc2d9c1e45bdbbaf08ec081708056f0254f36e9c1b231394d5b1551"
+    }
+  },
+  "BenchmarkSearchAll_seconds": {
+    "baseline": [
+      12.350064611,
+      12.88917618,
+      12.906794702
+    ],
+    "candidate": [
+      0.798733958,
+      0.789578283,
+      0.775305454
+    ]
+  }
+}
