@@ -1,5 +1,7 @@
 # Releases
 
+[0.0.56](0.0.56.md) speeds up broad searches and dependency planning.
+
 [0.0.55](0.0.55.md) fixes skipped ebuild patches and rejects builds with failed
 helpers or symlinks pointing into their temporary source tree.
 
