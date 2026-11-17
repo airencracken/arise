@@ -2,6 +2,7 @@ package perf
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -76,7 +77,7 @@ func TestRunUsesPostBuildValidation(t *testing.T) {
 	aValidate := Command{Path: "printf", Args: []string{"app-editors/vim\n"}}
 	rValidate := Command{Path: "printf", Args: []string{"app-editors/vim\n"}}
 	w := Workload{Name: "index", Runs: 1, Cases: []Case{{
-		Name: "build", Normalize: "sorted-lines", MinSpeedup: speedupPtr(0),
+		Name: "build", Normalize: "sorted-lines",
 		Arise: Command{Path: "printf", Args: []string{"arise build log"}}, Reference: Command{Path: "printf", Args: []string{"eix build log"}},
 		AriseValidate: &aValidate, ReferenceValidate: &rValidate,
 	}}}
@@ -86,6 +87,10 @@ func TestRunUsesPostBuildValidation(t *testing.T) {
 	}
 	if !r.AllEquivalent {
 		t.Fatal("equivalent post-build indexes rejected because build logs differ")
+	}
+	result := r.Results[0]
+	if result.MinSpeedup != 1 || !result.PerformanceEnforced || r.AllPassed != (result.Speedup >= 1) {
+		t.Fatalf("default speedup target evaluated incorrectly: %+v", result)
 	}
 }
 
@@ -145,11 +150,10 @@ func TestRunUsesSemanticPackagePlanEquivalence(t *testing.T) {
 	}
 }
 
-func TestRunRejectsEquivalentButSlower(t *testing.T) {
+func TestRunRejectsEquivalentBelowSpeedupTarget(t *testing.T) {
 	w := Workload{Name: "test", Runs: 2, Cases: []Case{{
-		Name: "slow", Normalize: "exit-code",
-		Arise:     Command{Path: "sleep", Args: []string{"0.02"}},
-		Reference: Command{Path: "true"},
+		Name: "slow", Normalize: "exit-code", MinSpeedup: speedupPtr(math.MaxFloat64),
+		Arise: Command{Path: "true"}, Reference: Command{Path: "true"},
 	}}}
 	r, err := Run(context.Background(), w, "fixture-1")
 	if err != nil {
@@ -159,14 +163,14 @@ func TestRunRejectsEquivalentButSlower(t *testing.T) {
 		t.Fatal("commands should be behaviorally equivalent")
 	}
 	if r.AllPassed || r.Results[0].PerformancePass {
-		t.Fatal("equivalent but slower result passed")
+		t.Fatal("equivalent result below the required speedup passed")
 	}
 }
 
 func TestRunReportsButDoesNotEnforceAspirationalTarget(t *testing.T) {
 	w := Workload{Name: "test", Runs: 1, Cases: []Case{{
-		Name: "native target", Normalize: "exit-code", ReportOnly: true,
-		Arise: Command{Path: "sleep", Args: []string{"0.02"}}, Reference: Command{Path: "true"},
+		Name: "native target", Normalize: "exit-code", ReportOnly: true, MinSpeedup: speedupPtr(math.MaxFloat64),
+		Arise: Command{Path: "true"}, Reference: Command{Path: "true"},
 	}}}
 	r, err := Run(context.Background(), w, "fixture-1")
 	if err != nil {
