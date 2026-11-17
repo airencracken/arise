@@ -145,14 +145,18 @@ func BenchmarkSearchJSON(b *testing.B) {
 }
 
 func BenchmarkSearchAll(b *testing.B) {
-	db, err := CreateTestDB(10000)
+	const packages = 10000
+	db, err := CreateTestDB(packages)
 	if err != nil {
 		b.Fatalf("create test db: %v", err)
 	}
 	defer func() { _ = db.Close() }()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = search.Search(db, search.SearchConfig{})
+		results, err := search.Search(db, search.SearchConfig{})
+		if err != nil || len(results) != packages {
+			b.Fatalf("search returned %d of %d packages: %v", len(results), packages, err)
+		}
 	}
 }
 

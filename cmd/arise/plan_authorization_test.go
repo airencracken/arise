@@ -167,6 +167,10 @@ func TestMutationStateSHA256DetectsPolicyAndVDBChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	full, err := captureMutationState(vdb, world, config, []resolve.PkgAction{action})
+	if err != nil || full.sha256 != first || full.vdbEntries["cat/pkg-1/SLOT"] == "" || full.policy == "" {
+		t.Fatalf("execution state differs from plan digest or lacks validation data: %+v, %v", full, err)
+	}
 	if err := os.WriteFile(filepath.Join(config, "make.conf"), []byte("USE=\"test\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

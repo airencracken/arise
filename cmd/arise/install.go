@@ -471,7 +471,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 
 	stageStarted = time.Now()
 	progress.setStatus("Building installed-state graph...")
-	g, err := graph.BuildFromState(db, *vdbDir, 0)
+	nodes, err := graph.LoadResolverNodes(db, *vdbDir, 0)
 	if err != nil {
 		progress.stop()
 		fmt.Fprintf(os.Stderr, "resolve: build graph: %v\n", err)
@@ -487,7 +487,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 
 	stageStarted = time.Now()
 	progress.setStatus("Constructing resolver graph...")
-	rg := g.ToResolveGraph()
+	rg := nodes.ToResolveGraph()
 	if errors.Is(commandContext.Err(), context.Canceled) {
 		progress.stop()
 		_ = db.Close()
@@ -528,9 +528,14 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	stateSHA256 := ""
 	var executionState mutationStateSnapshot
 	stateFingerprintStarted := time.Now()
-	if result.Verified && (jsonMode || *savePlan != "" || *approvePlanSHA256 != "" || *approvePlan != "" || (!cfg.Pretend && !*preflightOnly)) {
-		executionState, err = captureMutationState(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
-		stateSHA256 = executionState.sha256
+	executing := !cfg.Pretend && !*preflightOnly
+	if result.Verified && (jsonMode || *savePlan != "" || *approvePlanSHA256 != "" || *approvePlan != "" || executing) {
+		if !executing {
+			stateSHA256, err = mutationStateSHA256(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
+		} else {
+			executionState, err = captureMutationState(*vdbDir, *worldFile, *portageConfigRoot, result.Install)
+			stateSHA256 = executionState.sha256
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "arise: fingerprint mutation state: %v\n", err)
 			exitAfterRuntimeProfiles(1)

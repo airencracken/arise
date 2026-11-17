@@ -124,7 +124,7 @@ func canonicalPlanSHA256(targets []string, cfg resolve.ResolveConfig, result *re
 // host paths. Resolution is rerun before execution, so unrelated repository
 // files do not invalidate an otherwise identical approved plan.
 func mutationStateSHA256(vdbDir, worldPath, configRoot string, actions []resolve.PkgAction) (string, error) {
-	state, err := captureMutationState(vdbDir, worldPath, configRoot, actions)
+	state, err := fingerprintMutationState(vdbDir, worldPath, configRoot, actions, nil)
 	return state.sha256, err
 }
 
@@ -136,17 +136,25 @@ type mutationStateSnapshot struct {
 }
 
 func captureMutationState(vdbDir, worldPath, configRoot string, actions []resolve.PkgAction) (mutationStateSnapshot, error) {
+	return fingerprintMutationState(vdbDir, worldPath, configRoot, actions, make(map[string]string))
+}
+
+// The overall hash binds the same bytes for display, approval, and execution.
+// Only execution needs individual entry digests for concurrent-change checks.
+func fingerprintMutationState(vdbDir, worldPath, configRoot string, actions []resolve.PkgAction, entries map[string]string) (mutationStateSnapshot, error) {
 	hash := sha256.New()
 	policy := sha256.New()
-	installed := sha256.New()
-	entries := make(map[string]string)
+	var policyWriter io.Writer = hash
+	if entries != nil {
+		policyWriter = io.MultiWriter(hash, policy)
+	}
 	// Command-facing Portage variables are part of the effective policy even
 	// though they are not files. Bind their presence and exact value so an
 	// approval produced with a temporary FEATURES/USE override cannot authorize
 	// a differently configured execution.
 	for _, name := range []string{"FEATURES", "USE", "ACCEPT_KEYWORDS", "ACCEPT_LICENSE", "ARCH", "CHOST", "CBUILD", "CTARGET", "CFLAGS", "CXXFLAGS", "CPPFLAGS", "FFLAGS", "FCFLAGS", "LDFLAGS", "MAKEOPTS", "CC", "CXX", "CPP", "AR", "AS", "LD", "NM", "OBJCOPY", "OBJDUMP", "RANLIB", "READELF", "STRIP"} {
 		value, present := os.LookupEnv(name)
-		if _, err := io.WriteString(io.MultiWriter(hash, policy), "command-env\x00"+name+"\x00"+strconv.FormatBool(present)+"\x00"+value+"\x00"); err != nil {
+		if _, err := io.WriteString(policyWriter, "command-env\x00"+name+"\x00"+strconv.FormatBool(present)+"\x00"+value+"\x00"); err != nil {
 			return mutationStateSnapshot{}, err
 		}
 	}
@@ -184,12 +192,17 @@ func captureMutationState(vdbDir, worldPath, configRoot string, actions []resolv
 			}
 		case "world":
 		default:
-			writer = io.MultiWriter(hash, policy)
+			writer = policyWriter
 		}
 		if err := hashStatePathEntries(writer, input.label, inputPath, entryDigests); err != nil {
 			return mutationStateSnapshot{}, err
 		}
 	}
+	snapshot := mutationStateSnapshot{sha256: hex.EncodeToString(hash.Sum(nil))}
+	if entries == nil {
+		return snapshot, nil
+	}
+	installed := sha256.New()
 	paths := make([]string, 0, len(entries))
 	for path := range entries {
 		paths = append(paths, path)
@@ -198,7 +211,10 @@ func captureMutationState(vdbDir, worldPath, configRoot string, actions []resolv
 	for _, path := range paths {
 		_, _ = io.WriteString(installed, path+"\x00"+entries[path]+"\x00")
 	}
-	return mutationStateSnapshot{sha256: hex.EncodeToString(hash.Sum(nil)), policy: hex.EncodeToString(policy.Sum(nil)), vdb: hex.EncodeToString(installed.Sum(nil)), vdbEntries: entries}, nil
+	snapshot.policy = hex.EncodeToString(policy.Sum(nil))
+	snapshot.vdb = hex.EncodeToString(installed.Sum(nil))
+	snapshot.vdbEntries = entries
+	return snapshot, nil
 }
 
 func hashStatePath(dst io.Writer, label, path string) error {

@@ -1023,6 +1023,45 @@ func TestSearch_InstalledVersion(t *testing.T) {
 	}
 }
 
+func TestSearchDependencyFieldsUsePreferredVersionAndReturnedRows(t *testing.T) {
+	db := openTestDB(t)
+	ingestTestData(t, db, []*metadata.PackageMetadata{
+		{Category: "cat", Package: "a", Version: "1", KEYWORDS: "amd64", DEPEND: "cat/old"},
+		{Category: "cat", Package: "a", Version: "2", KEYWORDS: "~arm", DEPEND: "cat/b cat/a", RDEPEND: "cat/b"},
+		{Category: "cat", Package: "b", Version: "1", KEYWORDS: "amd64", RDEPEND: "cat/a"},
+		{Category: "cat", Package: "c", Version: "1", KEYWORDS: "amd64", DEPEND: "cat/a"},
+	})
+	for _, cfg := range []SearchConfig{
+		{Query: "cat", Exact: true, Limit: 2},
+		{Keywords: "amd64", Limit: 2},
+	} {
+		cfg.VDBPath = t.TempDir()
+		got, err := Search(db, cfg)
+		if err != nil || len(got) != 2 {
+			t.Fatalf("Search(%+v): %v, %d rows", cfg, err, len(got))
+		}
+		if got[0].Package != "a" || !reflect.DeepEqual(got[0].DependsOn, []string{"cat/b", "cat/a"}) ||
+			!reflect.DeepEqual(got[0].RequiredBy, []string{"cat/b"}) || !reflect.DeepEqual(got[1].RequiredBy, []string{"cat/a"}) {
+			t.Fatalf("unexpected dependency fields for %+v: %+v", cfg, got)
+		}
+	}
+}
+
+func TestReverseDependenciesWithDuplicateVersionRows(t *testing.T) {
+	db := openTestDB(t)
+	ingestTestData(t, db, []*metadata.PackageMetadata{
+		{Category: "cat", Package: "a", Version: "1", DEPEND: "cat/a"},
+		{Category: "cat", Package: "b", Version: "1", DEPEND: "cat/a"},
+	})
+	rows := []SearchResult{{Category: "cat", Package: "a", Version: "1"}, {Category: "cat", Package: "b", Version: "1"}, {Category: "cat", Package: "a", Version: "2"}}
+	populateDepFields(db, rows, nil)
+	for i, want := range [][]string{{"cat/b", "cat/a"}, nil, {"cat/a", "cat/b"}} {
+		if !reflect.DeepEqual(rows[i].RequiredBy, want) {
+			t.Errorf("row %d required by %v, want %v", i, rows[i].RequiredBy, want)
+		}
+	}
+}
+
 func TestSearch_DependsOnField(t *testing.T) {
 	db := seedTestDB(t)
 	results, err := Search(db, SearchConfig{Query: "vim"})

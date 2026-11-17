@@ -789,6 +789,32 @@ func TestBuildFromStateSeparatesAvailableAndInstalled(t *testing.T) {
 	}
 }
 
+func TestLoadResolverNodesAndFullGraphIndexes(t *testing.T) {
+	db := openTestDB(t)
+	ingestEntries(t, db, []*metadata.PackageMetadata{
+		makeMeta("cat", "consumer", "2", "cat/library", "", ""),
+		makeMeta("cat", "library", "1", "", "", ""),
+	})
+	vdbPath := t.TempDir()
+	writeInstalledFixture(t, vdbPath, "cat", "consumer-1", "0")
+	nodes, err := LoadResolverNodes(db, vdbPath, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rg := nodes.ToResolveGraph()
+	if node := rg.Packages["cat/consumer"]; node == nil || len(node.Versions) != 2 || len(node.Deps) != 1 {
+		t.Fatalf("missing resolver versions or dependency: %+v", node)
+	}
+	full, err := BuildFromState(db, vdbPath, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.AllAtoms["cat/consumer-2"] == nil || full.InstalledAtoms["cat/consumer-1"] == nil ||
+		full.InstalledAtoms["cat/consumer-2"] != nil || len(full.ReverseDepsOf("cat/library")) != 1 {
+		t.Fatal("full graph lost installed, available, or reverse-dependency data")
+	}
+}
+
 func TestBuildFromStatePreservesAllAvailableVersionsForResolution(t *testing.T) {
 	db := openTestDB(t)
 	stable := makeMeta("sys-apps", "dbus", "1.16.2", "", "", "")

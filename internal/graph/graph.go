@@ -487,10 +487,17 @@ func walkCache(root string) (<-chan *metadata.PackageMetadata, <-chan error) {
 	return results, errs
 }
 
+// ResolverNodes holds the forward package data needed to construct the solver graph.
+type ResolverNodes map[string]*PkgNode
+
 func (g *DepGraph) ToResolveGraph() *resolve.DepGraph {
+	return ResolverNodes(g.Nodes).ToResolveGraph()
+}
+
+func (nodes ResolverNodes) ToResolveGraph() *resolve.DepGraph {
 	rg := resolve.NewDepGraph()
 
-	for cp, node := range g.Nodes {
+	for cp, node := range nodes {
 		available := node.AvailableVersions
 		// Older synthetic graphs stored repository metadata only in Metadata.
 		// A real installed-only node also has Metadata, but it came from VDB and
@@ -753,6 +760,33 @@ func BuildParallel(db *badger.DB, repoDir string, workers int) (*DepGraph, error
 // installed-VDB snapshots. Loading both snapshots overlaps because neither is
 // allowed to mutate during resolution.
 func BuildFromState(db *badger.DB, vdbPath string, workers int) (*DepGraph, error) {
+	nodes, err := LoadResolverNodes(db, vdbPath, workers)
+	if err != nil {
+		return nil, err
+	}
+	g := &DepGraph{Nodes: nodes, InstalledAtoms: make(map[string]*atom.Atom), AllAtoms: make(map[string]*atom.Atom)}
+	for cp, node := range nodes {
+		for _, m := range node.AvailableVersions {
+			cpv := cp + "-" + m.Version
+			if a, err := atom.Parse(cpv); err == nil {
+				g.AllAtoms[cpv] = a
+			}
+		}
+		for _, pkg := range node.InstalledVersions {
+			cpv := pkg.CPV()
+			if a, err := atom.Parse(cpv); err == nil {
+				g.InstalledAtoms[cpv] = a
+				g.AllAtoms[cpv] = a
+			}
+		}
+	}
+	g.computeRevDeps()
+	return g, nil
+}
+
+// LoadResolverNodes reads the same package versions and dependency edges as
+// BuildFromState. Only graph query callers need the CPV and reverse-edge indexes.
+func LoadResolverNodes(db *badger.DB, vdbPath string, workers int) (ResolverNodes, error) {
 	if workers <= 0 {
 		workers = runtime.GOMAXPROCS(0)
 	}
@@ -804,16 +838,13 @@ func BuildFromState(db *badger.DB, vdbPath string, workers int) (*DepGraph, erro
 		return nil, fmt.Errorf("graph: read installed package database: %w", installed.err)
 	}
 
-	g := &DepGraph{Nodes: make(map[string]*PkgNode), InstalledAtoms: make(map[string]*atom.Atom), AllAtoms: make(map[string]*atom.Atom)}
+	g := &DepGraph{Nodes: make(map[string]*PkgNode, len(available.packages))}
 	for cp, versions := range available.packages {
 		var selected *metadata.PackageMetadata
 		for _, m := range versions {
 			if selected == nil || versionGreater(m.Version, selected.Version) ||
 				(m.Version == selected.Version && repositoryPriority(m) > repositoryPriority(selected)) {
 				selected = m
-			}
-			if a, err := atom.Parse(cp + "-" + m.Version); err == nil {
-				g.AllAtoms[cp+"-"+m.Version] = a
 			}
 		}
 		node := g.getOrCreate(cp, selected)
@@ -836,13 +867,8 @@ func BuildFromState(db *badger.DB, vdbPath string, workers int) (*DepGraph, erro
 				break
 			}
 		}
-		if a, err := atom.Parse(installedPackage.CPV()); err == nil {
-			g.InstalledAtoms[installedPackage.CPV()] = a
-			g.AllAtoms[installedPackage.CPV()] = a
-		}
 	}
-	g.computeRevDeps()
-	return g, nil
+	return g.Nodes, nil
 }
 
 func repositoryPriority(m *metadata.PackageMetadata) int {

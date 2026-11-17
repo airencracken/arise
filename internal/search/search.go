@@ -144,12 +144,6 @@ type rxPair struct {
 	dependsRx *regexp.Regexp
 }
 
-type collectedEntry struct {
-	m         *metadata.PackageMetadata
-	nameMatch bool
-	descMatch bool
-}
-
 func compileRegex(cfg SearchConfig) (*rxPair, error) {
 	var rp rxPair
 	var err error
@@ -233,7 +227,9 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 		ss = loadSystemSet(cfg)
 	}
 
-	var allEntries []collectedEntry
+	var results []SearchResult
+	seen := make(map[string]bool)
+	var preferred map[string]*metadata.PackageMetadata
 	var maintainerPattern *regexp.Regexp
 	if cfg.Maintainer != "" && cfg.Regex {
 		maintainerPattern, err = regexp.Compile(cfg.Maintainer)
@@ -300,15 +296,22 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 			if !nameMatch && !descMatch {
 				return nil
 			}
-			allEntries = append(allEntries, collectedEntry{m: m, nameMatch: nameMatch, descMatch: descMatch})
-			return nil
 		}
 
-		allEntries = append(allEntries, collectedEntry{m: m, nameMatch: true, descMatch: false})
+		cp := m.Key()
+		if !seen[cp] {
+			seen[cp] = true
+			results = append(results, res)
+			if preferred != nil {
+				preferred[cp] = m
+			}
+		}
 		return nil
 	}
 
 	if cfg.Query != "" && !cfg.Description && !cfg.And {
+		// Query already selected the preferred version for each matching name.
+		preferred = make(map[string]*metadata.PackageMetadata)
 		var candidates []string
 		err = ingest.QueryKeys(db, "pkg:", func(cp string) error {
 			parts := strings.SplitN(cp, "/", 2)
@@ -353,8 +356,6 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 		return nil, err
 	}
 
-	results := mergeCollectedResults(allEntries, cfg, installed)
-
 	if cfg.World && ws != nil {
 		results = filterByWorldSet(results, ws)
 	}
@@ -391,7 +392,7 @@ func Search(db *badger.DB, cfg SearchConfig) ([]SearchResult, error) {
 		results = []SearchResult{}
 	}
 
-	populateDepFields(db, results)
+	populateDepFields(db, results, preferred)
 
 	return results, nil
 }
@@ -600,21 +601,6 @@ func postFilter(results []SearchResult, cfg SearchConfig) []SearchResult {
 			}
 		}
 		return filtered
-	}
-	return results
-}
-
-func mergeCollectedResults(entries []collectedEntry, cfg SearchConfig, installed map[string][]InstalledVersion) []SearchResult {
-	seen := make(map[string]bool)
-	var results []SearchResult
-	for _, e := range entries {
-		key := e.m.Category + "/" + e.m.Package
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		r := toSearchResult(e.m, installed[e.m.Key()])
-		results = append(results, r)
 	}
 	return results
 }
@@ -893,51 +879,49 @@ func bestVersionString(versions []string) string {
 	return best
 }
 
-func populateDepFields(db *badger.DB, results []SearchResult) {
-	if len(results) == 0 {
-		return
-	}
+func populateDepFields(db *badger.DB, results []SearchResult, preferred map[string]*metadata.PackageMetadata) {
+	// Filters, sorting, version expansion, and limits determine which rows
+	// participate in reverse dependencies and the order in which they appear.
+	rows := make(map[string][]int, len(results))
 	for i := range results {
-		r := &results[i]
-		m, err := ingest.Query(db, r.Category+"/"+r.Package)
-		if err != nil || m == nil {
-			continue
-		}
-		var deps []string
-		for _, d := range m.DependAtoms() {
-			cp := extractCP(d)
-			if cp != "" {
-				deps = append(deps, cp)
-			}
-		}
-		for _, d := range m.RDependAtoms() {
-			cp := extractCP(d)
-			if cp != "" {
-				deps = append(deps, cp)
-			}
-		}
-		r.DependsOn = uniqueStrings(deps)
+		cp := results[i].Category + "/" + results[i].Package
+		rows[cp] = append(rows[cp], i)
 	}
 
-	cpToIndex := make(map[string][]int)
-	for i, r := range results {
-		key := r.Category + "/" + r.Package
-		cpToIndex[key] = append(cpToIndex[key], i)
-	}
-
-	for i := range results {
-		var revDeps []string
-		for j, r2 := range results {
-			if i == j {
+	for cp, indices := range rows {
+		m := preferred[cp]
+		if m == nil {
+			// A range scan may have matched a non-preferred version. Dependency
+			// fields have always described the preferred record in the index.
+			var err error
+			m, err = ingest.Query(db, cp)
+			if err != nil || m == nil {
 				continue
 			}
-			for _, dep := range r2.DependsOn {
-				if dep == results[i].Category+"/"+results[i].Package {
-					revDeps = append(revDeps, r2.Category+"/"+r2.Package)
+		}
+		var deps []string
+		for _, dep := range append(m.DependAtoms(), m.RDependAtoms()...) {
+			if target := extractCP(dep); target != "" {
+				deps = append(deps, target)
+			}
+		}
+		deps = uniqueStrings(deps)
+		for _, i := range indices {
+			results[i].DependsOn = deps
+		}
+	}
+	for i := range results {
+		cp := results[i].Category + "/" + results[i].Package
+		for _, dep := range results[i].DependsOn {
+			for _, target := range rows[dep] {
+				if target != i {
+					results[target].RequiredBy = append(results[target].RequiredBy, cp)
 				}
 			}
 		}
-		results[i].RequiredBy = uniqueStrings(revDeps)
+	}
+	for i := range results {
+		results[i].RequiredBy = uniqueStrings(results[i].RequiredBy)
 	}
 }
 
