@@ -66,7 +66,7 @@ func TestTerminalProgressActivityIsTransientOnTerminal(t *testing.T) {
 	if strings.HasSuffix(got, "\n") {
 		t.Fatalf("transient terminal activity left a blank line: %q", got)
 	}
-	if !strings.HasSuffix(got, "\r\x1b[K") {
+	if !strings.HasSuffix(got, eraseProgressLine) {
 		t.Fatalf("terminal activity was not cleared: %q", got)
 	}
 }

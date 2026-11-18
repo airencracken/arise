@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be
+	github.com/clipperhouse/displaywidth v0.11.0
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/klauspost/compress v1.18.0
@@ -18,6 +19,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect

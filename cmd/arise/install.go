@@ -891,13 +891,15 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if filepath.Clean(rebuildCfg.RootDir) == string(filepath.Separator) {
 			rebuildCfg.AllowLiveRoot = true
 		}
+		var mutationDiagnostics bytes.Buffer
 		mutationGuard := &packageMutationGuard{
 			vdbDir: *vdbDir, worldPath: *worldFile, configRoot: *portageConfigRoot,
-			actions: result.Install, snapshot: executionState, audit: planAudit, output: os.Stderr,
+			actions: result.Install, snapshot: executionState, audit: planAudit, output: &mutationDiagnostics,
 			onRevalidate: func() { executionProgress.message(">>> Installed state changed; remaining package plan revalidated") },
 		}
 		compatLog, logErr := openPackageExecutionLog(*emergeLog, cfg.BuildPkgOnly)
 		if logErr != nil {
+			executionProgress.stopAndClear()
 			fmt.Fprintf(os.Stderr, "arise: open Portage-compatible merge log: %v\n", logErr)
 			os.Exit(1)
 		}
@@ -930,6 +932,8 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			if len(recoveryPackages) > 0 {
 				recoverySetID, idErr := recoveryset.NewID()
 				if idErr != nil {
+					stopEstimate()
+					executionProgress.stopAndClear()
 					fmt.Fprintf(os.Stderr, "arise: initialize recovery set: %v\n", idErr)
 					os.Exit(1)
 				}
@@ -1038,10 +1042,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				executionProgress.message(fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage("Installing into staging area"), index, total, colorActionAtom(action)))
 			},
 			OnActionStage: func(index, total int, action resolve.PkgAction, stage string) {
-				executionProgress.clearProgress()
-				if label := packageStageLabel(stage); label != "" {
-					executionProgress.message(fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage(label), index, total, colorActionAtom(action)))
+				label := packageStageLabel(stage)
+				if label != "" {
+					label = fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage(label), index, total, colorActionAtom(action))
 				}
+				executionProgress.stage(label, "")
 			},
 			OnActionProgress: func(index, total int, action resolve.PkgAction, stage string, current, stageTotal int) {
 				if stage == "merge" && stageTotal > 0 {
@@ -1049,15 +1054,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				}
 			},
 			OnActionNotice: func(index, total int, action resolve.PkgAction, class, message string) {
-				prefix := " *"
-				if class != "" && class != "INFO" {
-					prefix += " " + strings.ToLower(class) + ":"
-				}
-				for _, line := range strings.Split(message, "\n") {
-					if strings.TrimSpace(line) != "" {
-						executionProgress.message(prefix + " " + strings.TrimSpace(line))
-					}
-				}
+				executionProgress.notice(class, message)
 			},
 			OnActionFollowUpError: func(index, total int, action resolve.PkgAction, err error) {
 				var message bytes.Buffer
@@ -1067,8 +1064,6 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 			OnActionComplete: func(index, total int, action resolve.PkgAction) {
 				mutationGuard.complete(action)
 				liveEstimate.complete(action)
-				executionProgress.clearProgress()
-				executionProgress.message(fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage("Completed package"), index, total, colorActionAtom(action)))
 				completed := completedActions.Add(1)
 				status := fmt.Sprintf("%s %d of %d complete", colorExecutionStage("Jobs:"), completed, total)
 				if liveEstimate != nil {
@@ -1076,7 +1071,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 				} else if load := currentLoadAverages(); load != "" {
 					status += "    Load avg: " + load
 				}
-				executionProgress.setStatus(status)
+				executionProgress.stage(fmt.Sprintf("%s (%d of %d) %s", colorExecutionStage("Completed package"), index, total, colorActionAtom(action)), status)
 				if compatLog.event(true, index, total, action) != nil {
 					cancelExecution()
 				}
@@ -1084,6 +1079,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		})
 		stopEstimate()
 		executionProgress.stop()
+		mutationDiagnostics.WriteTo(os.Stderr)
 		if logErr := compatLog.close(); executionErr == nil && logErr != nil {
 			executionErr = fmt.Errorf("Portage-compatible merge log: %w", logErr)
 		}

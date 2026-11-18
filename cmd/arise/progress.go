@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/airencracken/arise/internal/color"
 	"github.com/airencracken/arise/internal/fetch"
+	"github.com/clipperhouse/displaywidth"
 	"golang.org/x/term"
 )
 
@@ -18,6 +20,7 @@ type terminalProgress struct {
 	terminal          bool
 	animate           bool
 	displayed         bool
+	stopped           bool
 	mu                sync.Mutex
 	writer            io.Writer
 	label             string
@@ -37,22 +40,29 @@ func startTerminalProgress(label string, enabled bool) *terminalProgress {
 }
 
 func startTerminalProgressMode(label string, output, animate bool) *terminalProgress {
-	terminal := output && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(os.Stdout.Fd()))
+	terminal := false
+	if output && os.Getenv("TERM") != "dumb" {
+		width, _, err := term.GetSize(int(os.Stdout.Fd()))
+		terminal = err == nil && width > 1
+	}
 	return startTerminalProgressWriter(label, output, animate, terminal, os.Stdout)
 }
 
 func startTerminalProgressWriter(label string, output, animate, terminal bool, writer io.Writer) *terminalProgress {
 	p := &terminalProgress{output: output, enabled: terminal && animate, terminal: terminal, animate: animate, writer: writer, label: label, progressBucket: -1}
 	if p.terminal && p.animate {
-		p.renderLocked()
+		p.writeFrameLocked("")
 	}
 	return p
 }
 
-func (p *terminalProgress) renderLocked() {
-	if !p.terminal {
-		return
-	}
+// Position explicitly: a tty can translate carriage returns in its output driver.
+const progressColumnOne = "\x1b[1G"
+const eraseProgressLine = progressColumnOne + "\x1b[K"
+
+var liveLineWhitespace = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ")
+
+func (p *terminalProgress) liveLine() string {
 	line := p.transient
 	if line == "" {
 		line = p.status
@@ -60,22 +70,49 @@ func (p *terminalProgress) renderLocked() {
 	if line == "" && p.animate {
 		line = progressFrames[p.frame] + " " + p.label
 	}
-	if line == "" {
-		return
-	}
+	line = liveLineWhitespace.Replace(line)
 	if file, ok := p.writer.(*os.File); ok {
-		if width, _, err := term.GetSize(int(file.Fd())); err == nil && width > 1 && len(line) >= width {
-			// Writing the final terminal column can trigger an automatic wrap.
-			// Leave one column unused so the next durable phase message can
-			// reliably erase this transient line.
-			line = line[:width-1]
+		width, _, err := term.GetSize(int(file.Fd()))
+		if err != nil || width <= 1 {
+			return ""
 		}
+		// Leave the final column unused, and keep color sequences intact.
+		return (displaywidth.Options{ControlSequences: true}).TruncateString(line, width-1, "")
 	}
-	if p.displayed && line == p.renderedLine {
+	return line
+}
+
+// record contains complete, newline-terminated messages. A single write commits
+// their insertion above the live row together with the replacement status.
+func (p *terminalProgress) writeFrameLocked(record string) {
+	if !p.terminal || p.stopped {
+		if record != "" {
+			io.WriteString(p.writer, record)
+		}
 		return
 	}
-	fmt.Fprintf(p.writer, "\r\033[K%s", line)
-	p.displayed = true
+	var line string
+	if record == "" || p.status != "" {
+		line = p.liveLine()
+	}
+	if record == "" && line == p.renderedLine {
+		return
+	}
+	var frame strings.Builder
+	frame.WriteString(eraseProgressLine)
+	if record != "" {
+		message := strings.TrimSuffix(record, "\n")
+		frame.WriteString(strings.ReplaceAll(message, "\n", "\n"+progressColumnOne))
+		frame.WriteByte('\n')
+	}
+	if line != "" {
+		if record != "" {
+			frame.WriteString(eraseProgressLine)
+		}
+		frame.WriteString(line)
+	}
+	io.WriteString(p.writer, frame.String())
+	p.displayed = line != ""
 	p.renderedLine = line
 }
 
@@ -93,7 +130,7 @@ func (p *terminalProgress) setLabel(label string) {
 	p.label = label
 	if p.terminal {
 		p.advanceActivityLocked()
-		p.renderLocked()
+		p.writeFrameLocked("")
 	}
 	p.mu.Unlock()
 }
@@ -111,7 +148,7 @@ func (p *terminalProgress) setActivity(activity string) {
 	p.transient = ""
 	if p.terminal {
 		p.advanceActivityLocked()
-		p.renderLocked()
+		p.writeFrameLocked("")
 	} else {
 		fmt.Fprintln(p.writer, activity)
 	}
@@ -125,7 +162,7 @@ func (p *terminalProgress) setStatus(status string) {
 	p.mu.Lock()
 	p.status = status
 	if p.terminal {
-		p.renderLocked()
+		p.writeFrameLocked("")
 	} else {
 		fmt.Fprintln(p.writer, status)
 	}
@@ -170,15 +207,7 @@ func (p *terminalProgress) setProgress(message string, current, total int) {
 			return
 		}
 		p.completedProgress[message] = true
-		if p.terminal && p.displayed {
-			fmt.Fprint(p.writer, "\r\033[K")
-			p.displayed = false
-			p.renderedLine = ""
-		}
-		fmt.Fprintln(p.writer, message)
-		if p.terminal && p.status != "" {
-			p.renderLocked()
-		}
+		p.writeFrameLocked(message + "\n")
 		return
 	}
 	p.transient = message
@@ -188,23 +217,31 @@ func (p *terminalProgress) setProgress(message string, current, total int) {
 	}
 	p.progressBucket = bucket
 	if p.terminal {
-		p.renderLocked()
+		p.writeFrameLocked("")
 		return
 	}
 	fmt.Fprintln(p.writer, message)
 }
 
-func (p *terminalProgress) clearProgress() {
+// stage ends the previous measurement and displays the next phase atomically.
+func (p *terminalProgress) stage(message, nextStatus string) {
 	if p == nil || !p.output {
 		return
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.transient = ""
 	p.progressBucket = -1
-	if p.terminal {
-		p.renderLocked()
+	if message != "" {
+		message += "\n"
 	}
-	p.mu.Unlock()
+	if nextStatus != "" {
+		p.status = nextStatus
+		if !p.terminal {
+			message += nextStatus + "\n"
+		}
+	}
+	p.writeFrameLocked(message)
 }
 
 func (p *terminalProgress) message(message string) {
@@ -213,14 +250,22 @@ func (p *terminalProgress) message(message string) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.terminal && p.displayed {
-		fmt.Fprint(p.writer, "\r\033[K")
-		p.displayed = false
-		p.renderedLine = ""
+	p.writeFrameLocked(message + "\n")
+}
+
+func (p *terminalProgress) notice(class, message string) {
+	prefix := " *"
+	if class != "" && class != "INFO" {
+		prefix += " " + strings.ToLower(class) + ":"
 	}
-	fmt.Fprintln(p.writer, message)
-	if p.terminal && p.status != "" {
-		p.renderLocked()
+	var notice []string
+	for _, line := range strings.Split(message, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			notice = append(notice, prefix+" "+line)
+		}
+	}
+	if len(notice) != 0 {
+		p.message(strings.Join(notice, "\n"))
 	}
 }
 
@@ -241,13 +286,15 @@ func (p *terminalProgress) stopMode(newline bool) {
 	}
 	p.mu.Lock()
 	if p.displayed {
-		fmt.Fprint(p.writer, "\r\033[K")
+		frame := eraseProgressLine
 		if newline {
-			fmt.Fprintln(p.writer)
+			frame += "\n"
 		}
+		io.WriteString(p.writer, frame)
 		p.displayed = false
 		p.renderedLine = ""
 	}
+	p.stopped = true
 	p.mu.Unlock()
 }
 

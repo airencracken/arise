@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -107,7 +110,7 @@ func TestTerminalProgressKeepsStatusBelowMessages(t *testing.T) {
 	if strings.Count(got, status) != 2 {
 		t.Fatalf("status was not restored below message: %q", got)
 	}
-	if !strings.Contains(got, "\r\033[K>>> Building package (20 of 206) dev-python/example-1\n\r\033[K"+status) {
+	if !strings.Contains(got, "\x1b[1G\x1b[K>>> Building package (20 of 206) dev-python/example-1\n\x1b[1G\x1b[K"+status) {
 		t.Fatalf("message/status terminal ordering = %q", got)
 	}
 }
@@ -127,15 +130,15 @@ func TestTerminalPackageProgressRewritesOneLine(t *testing.T) {
 	progress.setStatus(">>> Jobs: 15 of 19 complete")
 	progress.setProgress(">>> Installing package contents: 100/1000 entries (10.0%)", 100, 1000)
 	progress.setProgress(">>> Installing package contents: 200/1000 entries (20.0%)", 200, 1000)
-	progress.clearProgress()
+	progress.stage("", "")
 	got := output.String()
 	if strings.Count(got, "\n") != 0 {
 		t.Fatalf("transient terminal progress emitted durable lines: %q", got)
 	}
-	if !strings.Contains(got, "\r\033[K>>> Installing package contents: 200/1000 entries (20.0%)") {
+	if !strings.Contains(got, "\x1b[1G\x1b[K>>> Installing package contents: 200/1000 entries (20.0%)") {
 		t.Fatalf("latest transient progress was not rendered in place: %q", got)
 	}
-	if !strings.HasSuffix(got, "\r\033[K>>> Jobs: 15 of 19 complete") {
+	if !strings.HasSuffix(got, "\x1b[1G\x1b[K>>> Jobs: 15 of 19 complete") {
 		t.Fatalf("clearing progress did not restore job status: %q", got)
 	}
 }
@@ -149,7 +152,7 @@ func TestTerminalPackageProgressUsesBoundedMilestones(t *testing.T) {
 	progress.setProgress("duplicate completion", 1000, 1000)
 
 	got := output.String()
-	if renders := strings.Count(got, "\r\033[K"); renders != 11 {
+	if renders := strings.Count(got, "\x1b[1G\x1b[K"); renders != 11 {
 		t.Fatalf("terminal render count = %d, want 11 bounded milestones: %q", renders, got)
 	}
 	if strings.Contains(got, "duplicate completion") {
@@ -196,10 +199,10 @@ func TestConcurrentTerminalPackageProgressUsesDurableCompletionLines(t *testing.
 	if strings.Count(got, "first complete\n") != 1 {
 		t.Fatalf("concurrent completion was not one durable line: %q", got)
 	}
-	if !strings.Contains(got, "\r\033[Kfirst complete\n") {
+	if !strings.Contains(got, "\x1b[1G\x1b[Kfirst complete\n") {
 		t.Fatalf("completion did not clear the shared terminal line first: %q", got)
 	}
-	if !strings.Contains(got, "\r\033[K>>> Syncing package contents (1 of 2) cat/first-1\n") {
+	if !strings.Contains(got, "\x1b[1G\x1b[K>>> Syncing package contents (1 of 2) cat/first-1\n") {
 		t.Fatalf("next stage did not start on a clean durable line: %q", got)
 	}
 }
@@ -226,7 +229,7 @@ func TestNonAnimatedTerminalProgressHasNoBackgroundRedraw(t *testing.T) {
 	}
 	progress.setStatus(">>> Jobs: 0 of 1 complete")
 	progress.setProgress(">>> Installing package contents (1 of 1) cat/pkg-1", 1, 1)
-	progress.clearProgress()
+	progress.stage("", "")
 	progress.stop()
 
 	got := output.String()
@@ -255,7 +258,7 @@ func TestAnimatedTerminalProgressDoesNotRedrawUnchangedMeasuredProgress(t *testi
 	if count := strings.Count(got, message); count != 1 {
 		t.Fatalf("unchanged completion rendered %d times, want 1: %q", count, got)
 	}
-	if !strings.Contains(got, "\r\033[K"+message+"\r\033[K>>> Syncing package contents (2 of 14) dev-go/gopls-0.22.0:0::gentoo\n") {
+	if !strings.Contains(got, "\x1b[1G\x1b[K"+message+"\x1b[1G\x1b[K>>> Syncing package contents (2 of 14) dev-go/gopls-0.22.0:0::gentoo\n") {
 		t.Fatalf("next stage did not replace completion with a clean line: %q", got)
 	}
 }
@@ -291,7 +294,104 @@ func TestFetchProgressCanShareTerminalMessageOwner(t *testing.T) {
 	fp.line = terminal.message
 	fp.Report(fetch.Progress{Stage: fetch.ProgressChecking, Artifact: "source.tar.xz"})
 	got := output.String()
-	if !strings.Contains(got, "\r\033[K>>> Checking source.tar.xz\n\r\033[K>>> Jobs: 0 of 2 complete") {
+	if !strings.Contains(got, "\x1b[1G\x1b[K>>> Checking source.tar.xz\n\x1b[1G\x1b[K>>> Jobs: 0 of 2 complete") {
 		t.Fatalf("shared fetch/status ordering = %q", got)
+	}
+}
+
+type recordedProgressWrites struct{ frames []string }
+
+func (w *recordedProgressWrites) Write(data []byte) (int, error) {
+	w.frames = append(w.frames, string(data))
+	return len(data), nil
+}
+
+func TestConcurrentMessagesEachWriteOneTerminalFrame(t *testing.T) {
+	var output recordedProgressWrites
+	p := startTerminalProgressWriter("", true, false, true, &output)
+	const status = ">>> Jobs: 0 of 1 complete"
+	p.setStatus(status)
+	var workers sync.WaitGroup
+	for i := range 24 {
+		workers.Go(func() { p.message(fmt.Sprintf("worker %d starting\nworker %d finished", i, i)) })
+	}
+	workers.Wait()
+	want := map[string]bool{}
+	for i := range 24 {
+		want[fmt.Sprintf("worker %d starting\nworker %d finished", i, i)] = true
+	}
+	for _, frame := range output.frames[1:] {
+		start := strings.Index(frame, "worker ")
+		end := strings.LastIndex(frame, "\n")
+		if start < 0 || end < start || !want[strings.ReplaceAll(frame[start:end], progressColumnOne, "")] || !strings.HasSuffix(frame, status) {
+			t.Fatalf("incomplete, duplicate or interleaved terminal frame %q", frame)
+		}
+		delete(want, strings.ReplaceAll(frame[start:end], progressColumnOne, ""))
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing %d worker messages", len(want))
+	}
+}
+
+// Exercise the real terminal file descriptor and output processing. In this
+// mode a carriage return becomes a newline and cannot return to column one.
+func TestMergeProgressOnNarrowTTY(t *testing.T) {
+	const binEnv = "ARISE_TEST_PROGRESS_EXECUTABLE"
+	const status = ">>> Jobs: 0 of 1 complete"
+	const phase = ">>> Syncing package contents (1 of 1) sys-apps/arise-0.0.56:0::arise-overlay"
+	const prefix = ">>> Installing package contents: 15/15 (100%) "
+	const colored = "\x1b[32m界界sys-apps/arise-0.0.56\x1b[0m"
+	if os.Getenv(binEnv) != "" {
+		p := startTerminalProgressMode("", true, false)
+		p.setStatus(status)
+		p.setProgress(prefix+colored, 15, 15)
+		p.stage(phase, "")
+		p.stopAndClear()
+		return
+	}
+
+	script, err := exec.LookPath("script")
+	if err != nil {
+		t.Skip("util-linux script is required for the pseudo-terminal test")
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Allow the first double-width character and leave the final column unused.
+	width := len(prefix) + 3
+	command := fmt.Sprintf("stty rows 12 cols %d ocrnl -onlcr && exec \"$%s\" -test.run='^TestMergeProgressOnNarrowTTY$'", width, binEnv)
+	cmd := exec.Command(script, "-qec", command, "/dev/null")
+	cmd.Env = append(os.Environ(), binEnv+"="+binary, "TERM=xterm")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("PTY: %v: %s", err, out)
+	}
+	row := "\x1b[1G\x1b[K"
+	want := row + status + row + prefix + "\x1b[32m界\x1b[0m" + row + phase + "\n" + row + status + row
+	if !strings.HasPrefix(string(out), want) {
+		t.Fatalf("incorrect merge display on a %d-column terminal:\n got %q\nwant prefix %q", width, out, want)
+	}
+}
+
+func TestTransactionStageAndNoticeRecords(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		var output recordedProgressWrites
+		p := startTerminalProgressWriter("", true, false, terminal, &output)
+		p.setStatus("Jobs: 0 of 1")
+		p.setProgress("installing", 1, 1)
+		p.stage("completed", "Jobs: 1 of 1")
+		p.notice("WARN", "first\n\nsecond")
+		p.stopAndClear()
+		p.message("after transaction")
+
+		stage, notice := "completed\nJobs: 1 of 1\n", " * warn: first\n * warn: second\n"
+		if terminal {
+			stage = eraseProgressLine + "completed\n" + eraseProgressLine + "Jobs: 1 of 1"
+			notice = eraseProgressLine + " * warn: first\n" + progressColumnOne + " * warn: second\n" + eraseProgressLine + "Jobs: 1 of 1"
+		}
+		if len(output.frames) < 5 || output.frames[2] != stage || output.frames[3] != notice || output.frames[len(output.frames)-1] != "after transaction\n" {
+			t.Errorf("terminal=%t, transaction writes = %q", terminal, output.frames)
+		}
 	}
 }
