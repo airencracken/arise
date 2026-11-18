@@ -12,6 +12,18 @@ func phaseExecutionError(pkg, phase string, events []phaseproto.Event, logFile s
 	return &PhaseError{Package: pkg, Phase: phase, Output: phaseFailureDiagnostics(events, 20), LogFile: logFile, Err: err}
 }
 
+// Preflight has no persistent build log. Preserve the ebuild's instructions
+// in order, including lines a compiler-error filter would otherwise discard.
+func preflightPhaseError(pkg string, events []phaseproto.Event, err error) *PhaseError {
+	failure := &PhaseError{Package: pkg, Phase: "pkg_pretend", Err: err}
+	for _, event := range events {
+		if (event.Kind == "elog" || event.Kind == "log") && strings.TrimSpace(event.Message) != "" {
+			failure.Output = append(failure.Output, strings.Split(event.Message, "\n")...)
+		}
+	}
+	return failure
+}
+
 type PhaseError struct {
 	Package string
 	Phase   string
@@ -30,6 +42,17 @@ func (e *PhaseError) Error() string {
 func (e *PhaseError) Unwrap() error { return e.Err }
 
 func (e *PhaseError) UserDiagnostic() diagnostic.Message {
+	if e.Phase == "pkg_pretend" {
+		details := e.Output
+		if len(details) == 0 {
+			details = []string{e.Err.Error()}
+		}
+		return diagnostic.Message{
+			Summary:   fmt.Sprintf("Preflight failed for %s (pkg_pretend).", e.Package),
+			Details:   details,
+			NextSteps: []string{"Address the requirement reported by the ebuild, then rerun the original command."},
+		}
+	}
 	stages := map[string]string{
 		"pkg_setup": "preparing the build environment", "src_unpack": "unpacking sources",
 		"src_prepare": "preparing sources", "src_configure": "configuring the build",

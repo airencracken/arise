@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -175,5 +177,58 @@ func TestSingleJoinedPostCommitFailureRetainsOutcomeAndPackage(t *testing.T) {
 		!strings.Contains(output.String(), "Current package action: cat/pkg-1") ||
 		strings.Contains(output.String(), "package transaction failed") {
 		t.Fatalf("single joined cause lost committed outcome:\n%s", output.String())
+	}
+}
+
+func TestDefaultPreflightDiagnosticShowsEbuildRequirements(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	pkg := filepath.Join(repo, "www-client", "firefox")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const requirement = "There is NOT at least 9700 MiB disk space at"
+	const other = "Enable the required kernel option before rebuilding."
+	recipe := `EAPI=8
+SLOT=0
+pkg_pretend() {
+	eerror 'There is NOT at least 9700 MiB disk space at' "$T"
+	eerror '- add more space'
+	for i in {1..12}; do einfo "check $i"; done
+	eerror 'Enable the required kernel option before rebuilding.'
+	die 'Build requirements not met!'
+}
+`
+	if err := os.WriteFile(filepath.Join(pkg, "firefox-153.7.0.ebuild"), []byte(recipe), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &rebuild.RebuildConfig{RepoDir: repo, Repository: "gentoo", RootDir: filepath.Join(root, "target"),
+		VdbDir: filepath.Join(root, "target/var/db/pkg"), WorkDirBase: filepath.Join(root, "work"), PhaseLogDir: filepath.Join(root, "logs"), JournalDir: filepath.Join(root, "journal")}
+	err := rebuild.PreflightPackage("www-client/firefox-153.7.0", cfg)
+	if err == nil {
+		t.Fatal("failing pkg_pretend passed")
+	}
+	for _, verbose := range []bool{false, true} {
+		var out bytes.Buffer
+		printExecutionErrorWithOptions(&out, fmt.Errorf("executor: preflight www-client/firefox-153.7.0: %w", err), verbose)
+		for _, want := range []string{"www-client/firefox-153.7.0", "pkg_pretend", requirement, cfg.WorkDirBase, "- add more space", other, "Build requirements not met!"} {
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("verbose=%t: missing %q in %s", verbose, want, out.String())
+			}
+		}
+		if strings.Contains(out.String(), "Technical details:") != verbose {
+			t.Fatalf("verbose=%t: unexpected technical detail section in %s", verbose, out.String())
+		}
+	}
+}
+
+func TestUnknownCommandFailureShowsOperationAndStderr(t *testing.T) {
+	err := fmt.Errorf("verify artifact signature: %w; stderr: public key unavailable", errors.New("exit status 1"))
+	var output bytes.Buffer
+	printExecutionError(&output, fmt.Errorf("executor: preflight cat/example-1: %w", err))
+	for _, want := range []string{"cat/example-1", "verify artifact signature", "public key unavailable", "exit status 1"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("missing %q from %s", want, output.String())
+		}
 	}
 }

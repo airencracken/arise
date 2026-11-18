@@ -1518,7 +1518,7 @@ func printExecutionError(w io.Writer, err error) {
 	printExecutionErrorWithOptions(w, err, false)
 }
 
-func executionErrorDetails(err error) ([]string, string) {
+func executionErrorDetails(err error, technical bool) ([]string, string) {
 	const maxDetails = 10
 	details := make([]string, 0, maxDetails)
 	durableLog := ""
@@ -1526,8 +1526,17 @@ func executionErrorDetails(err error) ([]string, string) {
 		message := err.Error()
 		cause := errors.Unwrap(err)
 		if cause != nil {
-			if at := strings.Index(message, cause.Error()); at >= 0 {
-				message = message[:at] + message[at+len(cause.Error()):]
+			if before, after, ok := strings.Cut(message, cause.Error()); ok {
+				before = strings.TrimRight(before, ":; ")
+				after = strings.TrimLeft(after, ":; ")
+				message = before
+				if before != "" && after != "" {
+					message += ": "
+				}
+				message += after
+			}
+			if !technical {
+				message = strings.TrimPrefix(strings.TrimPrefix(message, "executor: "), "rebuild: ")
 			}
 		}
 		if start := strings.LastIndex(message, "(durable log: "); start >= 0 {

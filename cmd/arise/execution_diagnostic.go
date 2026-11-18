@@ -54,11 +54,8 @@ func executionDiagnostic(err error) diagnostic.Message {
 	if errors.Is(err, oplock.ErrBusy) {
 		return diagnostic.Message{Summary: "Another package operation is using the package database.", NextSteps: []string{"Let that operation finish, then rerun the original command."}}
 	}
-	leaf := err
-	for errors.Unwrap(leaf) != nil {
-		leaf = errors.Unwrap(leaf)
-	}
-	message = diagnostic.Message{Summary: "The package operation could not be completed.", Details: []string{leaf.Error()}, NextSteps: []string{"Read the error details and any log below; include them when reporting this problem."}}
+	details, _ := executionErrorDetails(err, false)
+	message = diagnostic.Message{Summary: "The package operation could not be completed.", Details: details, NextSteps: []string{"Read the error details and any log below; include them when reporting this problem."}}
 	return message
 }
 
@@ -84,7 +81,7 @@ func singleExecutionCause(err error) error {
 }
 
 func printCommandError(w io.Writer, heading string, err error, verbose bool) {
-	technical, logFile := executionErrorDetails(err)
+	technical, logFile := executionErrorDetails(err, true)
 	fmt.Fprintln(w, heading)
 	printExecutionExplanation(w, err, logFile)
 	if verbose {
@@ -108,7 +105,7 @@ func printExecutionExplanation(w io.Writer, err error, fallbackLog string) {
 		if committed, ok := current.(*merge.PostCommitError); ok {
 			if joined, ok := committed.Err.(interface{ Unwrap() []error }); ok && len(joined.Unwrap()) > 1 {
 				for _, cause := range joined.Unwrap() {
-					_, childLog := executionErrorDetails(cause)
+					_, childLog := executionErrorDetails(cause, true)
 					printExecutionExplanation(w, &merge.PostCommitError{Err: cause}, childLog)
 				}
 				return
@@ -120,7 +117,7 @@ func printExecutionExplanation(w io.Writer, err error, fallbackLog string) {
 				continue
 			}
 			for _, cause := range joined.Unwrap() {
-				_, childLog := executionErrorDetails(cause)
+				_, childLog := executionErrorDetails(cause, true)
 				printExecutionExplanation(w, cause, childLog)
 			}
 			return

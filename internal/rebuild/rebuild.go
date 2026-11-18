@@ -614,11 +614,7 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 	}
 	cfg.firePhaseEnd("pkg_pretend", pretendErr)
 	if pretendErr != nil {
-		diagnostics := phaseFailureDiagnostics(events, 20)
-		if len(diagnostics) != 0 {
-			return fmt.Errorf("rebuild: pkg_pretend: %w: %s", pretendErr, strings.Join(diagnostics, "\n"))
-		}
-		return fmt.Errorf("rebuild: pkg_pretend: %w", pretendErr)
+		return preflightPhaseError(atomStr, events, pretendErr)
 	}
 	return nil
 }
