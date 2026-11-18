@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/airencracken/arise/internal/diagnostic"
 )
 
 func TestAuditMissingContentsFailsCollisionCheck(t *testing.T) {
@@ -51,6 +54,10 @@ func TestAuditRetainedSlotOwnership(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("merge accepted a retained-slot ownership collision")
+	}
+	message, ok := diagnostic.Lookup(err)
+	if !ok || !strings.Contains(strings.Join(message.Details, " "), "/usr/bin/shared") || !strings.Contains(strings.Join(message.Details, " "), "cat/pkg") || !strings.Contains(strings.Join(message.NextSteps, " "), "arise installed --owner") {
+		t.Fatalf("missing ownership evidence or inspection command: %+v", message)
 	}
 	if _, err := os.Stat(filepath.Join(old, "CONTENTS")); err != nil {
 		t.Fatalf("collision changed retained package ownership: %v", err)

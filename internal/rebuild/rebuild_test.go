@@ -360,6 +360,20 @@ func TestPhaseFailureDiagnosticsNamesSilentFailingPhase(t *testing.T) {
 	}
 }
 
+func TestExplicitEbuildErrorsSurviveCompilerNoise(t *testing.T) {
+	events := []phaseproto.Event{}
+	for i := range 40 {
+		events = append(events, phaseproto.Event{Kind: "log", Message: fmt.Sprintf("compiler error: %d", i)})
+	}
+	const advice = "Enable CONFIG_USER_NS in your kernel configuration."
+	events = append(events, phaseproto.Event{Kind: "elog", Class: "ERROR", Message: advice})
+	failure := phaseExecutionError("cat/pkg-1", "src_compile", events, "/build.log", errors.New("exit status 1"))
+	got := failure.UserDiagnostic()
+	if len(got.Details) == 0 || got.Details[0] != advice || strings.Count(strings.Join(got.Details, "\n"), advice) != 1 || got.LogFile != "/build.log" {
+		t.Fatalf("lost explicit package advice: %+v", got)
+	}
+}
+
 func TestPhaseFailureDiagnosticsUsesFinalDieMessage(t *testing.T) {
 	events := []phaseproto.Event{
 		{Kind: "phase", Message: "src_compile"},

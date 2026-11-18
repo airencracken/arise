@@ -26,6 +26,7 @@ import (
 	"github.com/airencracken/arise/internal/fetch"
 	"github.com/airencracken/arise/internal/graph"
 	"github.com/airencracken/arise/internal/ingest"
+	"github.com/airencracken/arise/internal/merge"
 	"github.com/airencracken/arise/internal/phaseproto"
 	"github.com/airencracken/arise/internal/planvalidate"
 	"github.com/airencracken/arise/internal/portage"
@@ -387,7 +388,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 	if cfg.Resume {
 		remaining, selections, digest, err := loadResumeRequestSnapshot(*resumeFile, cfg.SkipFirst)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "resume: load: %v\n", err)
+			printResumeLoadError(os.Stderr, *resumeFile, err)
 			os.Exit(1)
 		}
 		if !cfg.Oneshot && !cfg.OnlyDeps && !cfg.BuildPkgOnly {
@@ -826,7 +827,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		if len(failures) > 0 {
 			fmt.Fprintf(os.Stderr, "Preflight found %d issue(s) across %d installs and %d blocker removals:\n\n", len(failures), len(result.Install), len(result.Uninstall))
 			for _, failure := range failures {
-				fmt.Fprintf(os.Stderr, "  %v\n", failure)
+				printCommandError(os.Stderr, failure.ErrorHeading(), failure.Err, *verbose)
 			}
 			exitAfterRuntimeProfiles(1)
 		}
@@ -860,7 +861,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		progress := newFetchProgress(!cfg.Quiet, cfg.Verbose, os.Stdout)
 		progress.setConcurrent(normalizedFetchJobs(*fetchJobs, len(result.Install)) > 1)
 		if err := fetchPlanActions(commandContext, result.Install, fetch.FetchConfig{DistfilesDir: *distfilesDir, GentooMirrors: strings.Fields(portageCfg.MakeConf["GENTOO_MIRRORS"]), Progress: progress.Report}, &fetch.Fetcher{}, *fetchJobs); err != nil {
-			fmt.Fprintf(os.Stderr, "arise: fetch-only failed: %v\n", err)
+			printCommandError(os.Stderr, "arise: fetch-only failed", err, *verbose)
 			os.Exit(1)
 		}
 		if !cfg.Quiet {
@@ -1080,9 +1081,7 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		stopEstimate()
 		executionProgress.stop()
 		mutationDiagnostics.WriteTo(os.Stderr)
-		if logErr := compatLog.close(); executionErr == nil && logErr != nil {
-			executionErr = fmt.Errorf("Portage-compatible merge log: %w", logErr)
-		}
+		executionErr = finishExecutionLog(compatLog, executionErr)
 		if publishedRecoverySet != "" {
 			if statusErr := markRecoverySetOutcome(publishedRecoverySet, executionErr); statusErr != nil {
 				executionProgress.message(" * warning: recovery set remains conservatively active: " + statusErr.Error())
@@ -1098,11 +1097,11 @@ func runResolve(targets []string, dbPath, repoDir string, cfg resolve.ResolveCon
 		}
 		if executionErr != nil {
 			if bookkeepingErr != nil {
-				fmt.Fprintf(os.Stderr, "arise: %v\n", bookkeepingErr)
+				printCommandError(os.Stderr, "arise: package transaction bookkeeping failed", &merge.PostCommitError{Err: executionErr}, *verbose)
 				os.Exit(1)
 			}
-			if errors.Is(executionErr, context.Canceled) {
-				printExecutionInterrupted(os.Stderr)
+			if executor.OnlyCanceled(executionErr) {
+				printExecutionInterrupted(os.Stderr, executionResumePath)
 				os.Exit(130)
 			}
 			printExecutionErrorWithOptions(os.Stderr, executionErr, *verbose)
@@ -1480,12 +1479,26 @@ func portageUseDisplayForVerbosity(action resolve.PkgAction, verbose bool) strin
 	return portageUseDisplay(action)
 }
 
-func printExecutionInterrupted(w io.Writer) {
+func printExecutionInterrupted(w io.Writer, checkpoint string) {
 	fmt.Fprintln(w, "arise: interrupted by user")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "  Completed package progress has been preserved.")
-	fmt.Fprintln(w, "  Rerun preflight to calculate a continuation plan.")
-	fmt.Fprintln(w)
+	_, err := os.Stat(checkpoint)
+	switch {
+	case checkpoint == "" || errors.Is(err, os.ErrNotExist):
+		fmt.Fprintln(w, "  No checkpoint was found for this operation. Rerun the original command with --pretend to review the remaining plan.")
+	case err != nil:
+		fmt.Fprintf(w, "  Could not inspect the resume checkpoint: %v\n", err)
+	default:
+		fmt.Fprintf(w, "  A checkpoint exists at %q. Inspect it with 'arise --resume --preflight-only' using that --resume-file.\n", checkpoint)
+	}
+}
+
+func printResumeLoadError(w io.Writer, path string, err error) {
+	fmt.Fprintf(w, "arise: could not resume from %q: %v\n", path, err)
+	if errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintln(w, "  Use --resume-file if the earlier transaction reported a different checkpoint. Otherwise rerun the original command with --pretend to review a fresh plan.")
+		return
+	}
+	fmt.Fprintln(w, "  Inspect this checkpoint with 'arise maintain resume --check' using the same --resume-file before continuing.")
 }
 
 func warningsForDisplay(warnings []string, verbose bool) []string {
@@ -1684,12 +1697,7 @@ func fetchPlanActions(ctx context.Context, actions []resolve.PkgAction, baseConf
 	}
 	close(indices)
 	workers.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func normalizedFetchJobs(jobs, actions int) int {
@@ -1723,16 +1731,9 @@ func fetchPlanAction(ctx context.Context, action resolve.PkgAction, baseConfig f
 	if err != nil {
 		return fmt.Errorf("%s: evaluate RESTRICT for fetch: %w", action.Atom, err)
 	}
-	for _, name := range restrict {
-		switch name {
-		case "mirror":
-			config.RestrictMirrors = true
-		case "primaryuri":
-			config.PrimaryURI = true
-		}
-	}
+	config.ApplyRestrictions(restrict)
 	if _, err := fetcher.AcquireManifest(ctx, manifest, action.SrcURI, action.UseFlags, config); err != nil {
-		return fmt.Errorf("%s: %w", action.Atom, err)
+		return &executor.ActionError{Package: executionActionLabel(action), Err: err}
 	}
 	return nil
 }

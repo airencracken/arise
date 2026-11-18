@@ -43,3 +43,17 @@ func (c *FetchConfig) defaults() {
 		c.Timeout = 120 * time.Second
 	}
 }
+
+// ApplyRestrictions applies the package's evaluated RESTRICT to either fetch path.
+func (c *FetchConfig) ApplyRestrictions(restrict []string) {
+	for _, name := range restrict {
+		switch name {
+		case "fetch":
+			c.ManualOnly = true
+		case "mirror":
+			c.RestrictMirrors = true
+		case "primaryuri":
+			c.PrimaryURI = true
+		}
+	}
+}

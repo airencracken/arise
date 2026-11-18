@@ -9,27 +9,44 @@ import (
 )
 
 func phaseExecutionError(pkg, phase string, events []phaseproto.Event, logFile string, err error) *PhaseError {
-	return &PhaseError{Package: pkg, Phase: phase, Output: phaseFailureDiagnostics(events, 20), LogFile: logFile, Err: err}
+	failure := &PhaseError{Package: pkg, Phase: phase, LogFile: logFile, Err: err}
+	// eerror is explicit package-author guidance. Retain it even when the
+	// compiler output fills the excerpt or the guidance contains no keyword.
+	explicit := make(map[string]bool)
+	for _, event := range events {
+		if event.Kind == "elog" && event.Class == "ERROR" && strings.TrimSpace(event.Message) != "" {
+			explicit[event.Message] = true
+			failure.Output = append(failure.Output, event.Message)
+		}
+	}
+	for _, line := range phaseFailureDiagnostics(events, 20) {
+		if !explicit[line] {
+			failure.Output = append(failure.Output, line)
+		}
+	}
+	return failure
 }
 
 // Preflight has no persistent build log. Preserve the ebuild's instructions
 // in order, including lines a compiler-error filter would otherwise discard.
-func preflightPhaseError(pkg string, events []phaseproto.Event, err error) *PhaseError {
+func preflightPhaseError(pkg string, events []phaseproto.Event, err error, tempDir, workDir string) *PhaseError {
 	failure := &PhaseError{Package: pkg, Phase: "pkg_pretend", Err: err}
 	for _, event := range events {
 		if (event.Kind == "elog" || event.Kind == "log") && strings.TrimSpace(event.Message) != "" {
 			failure.Output = append(failure.Output, strings.Split(event.Message, "\n")...)
 		}
 	}
+	failure.spaceAdvice = preflightSpaceAdvice(failure.Output, tempDir, workDir)
 	return failure
 }
 
 type PhaseError struct {
-	Package string
-	Phase   string
-	Output  []string
-	LogFile string
-	Err     error
+	Package     string
+	Phase       string
+	Output      []string
+	LogFile     string
+	Err         error
+	spaceAdvice string
 }
 
 func (e *PhaseError) Error() string {
@@ -47,10 +64,14 @@ func (e *PhaseError) UserDiagnostic() diagnostic.Message {
 		if len(details) == 0 {
 			details = []string{e.Err.Error()}
 		}
+		step := "Address the requirement reported by the ebuild, then rerun the original command."
+		if e.spaceAdvice != "" {
+			step = e.spaceAdvice
+		}
 		return diagnostic.Message{
 			Summary:   fmt.Sprintf("Preflight failed for %s (pkg_pretend).", e.Package),
 			Details:   details,
-			NextSteps: []string{"Address the requirement reported by the ebuild, then rerun the original command."},
+			NextSteps: []string{step},
 		}
 	}
 	stages := map[string]string{
@@ -66,7 +87,7 @@ func (e *PhaseError) UserDiagnostic() diagnostic.Message {
 	}
 	message := diagnostic.Message{
 		Summary: fmt.Sprintf("Failed while %s for %s.", stage, e.Package),
-		Context: []string{"Package: " + e.Package}, Details: []string{strings.Join(e.Output, "\n")}, LogFile: e.LogFile,
+		Context: []string{"Package: " + e.Package}, Details: e.Output, LogFile: e.LogFile,
 		NextSteps: []string{"Read the error output and build log, fix the reported cause, then rerun the original command."},
 	}
 	if len(e.Output) == 0 {

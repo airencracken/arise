@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/airencracken/arise/internal/diagnostic"
 	"github.com/airencracken/arise/internal/metadata"
 )
 
@@ -163,4 +164,21 @@ func pkgDirToCP(vdbRoot, pkgDir string) string {
 		return strings.ReplaceAll(rel, string(os.PathSeparator), "/")
 	}
 	return category + "/" + base
+}
+
+// ownershipConflict is returned before merging a conflicting image. The live
+// target checks can also find locally created files with no VDB owner.
+type ownershipConflict struct {
+	reason  string
+	details []string
+}
+
+func (e *ownershipConflict) Error() string { return e.reason + ": " + strings.Join(e.details, "; ") }
+
+func (e *ownershipConflict) UserDiagnostic() diagnostic.Message {
+	return diagnostic.Message{
+		Summary:   "Conflicting paths prevent this package from merging.",
+		Details:   e.details,
+		NextSteps: []string{"Use 'arise installed --owner PATH' for the listed paths. If another package owns a path, check whether the packages can coexist. For a local file, inspect its contents before deciding how to preserve it."},
+	}
 }

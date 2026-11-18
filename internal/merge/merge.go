@@ -122,7 +122,7 @@ func Merge(ctx context.Context, destDir string, cfg MergeConfig) (returnErr erro
 		return fmt.Errorf("merge: ownership preflight: %w", err)
 	}
 	if len(collisions) != 0 {
-		return fmt.Errorf("merge: ownership preflight failed: %s", strings.Join(collisions, "; "))
+		return &ownershipConflict{reason: "merge: ownership preflight failed", details: collisions}
 	}
 	if cfg.OnStage != nil {
 		cfg.OnStage("merge")
@@ -239,7 +239,7 @@ func validateLiveReplacementTargetsWithConfig(destDir, rootDir, vdbPath string, 
 			if generatedInfoDirectoryIndex(destDir, relative, entry, info) {
 				return nil
 			}
-			return fmt.Errorf("merge: live replacement target is not owned by replaced package: %s", target)
+			return &ownershipConflict{reason: "merge: live replacement target is not owned by replaced package", details: []string{fmt.Sprintf("%s already exists and is not owned by the package being replaced", target)}}
 		}
 		return nil
 	})
@@ -337,7 +337,7 @@ func validateLiveNewInstallTargets(destDir, rootDir string, configProtect, confi
 				return nil
 			}
 		}
-		return fmt.Errorf("merge: live new-install canary refuses existing target %s", target)
+		return &ownershipConflict{reason: "merge: new install refuses existing target", details: []string{fmt.Sprintf("%s already exists", target)}}
 	})
 }
 

@@ -31,8 +31,9 @@ type verifiedFile struct {
 // ManualFetchRequiredError reports a Manifest artifact which is unavailable
 // while RESTRICT=fetch forbids automatic acquisition.
 type ManualFetchRequiredError struct {
-	Artifact string
-	Cause    error
+	Artifact    string
+	Destination string
+	Cause       error
 }
 
 func (e *ManualFetchRequiredError) Error() string {
@@ -178,7 +179,7 @@ func (f *Fetcher) acquireLeader(ctx context.Context, directory string, artifact 
 		return nil
 	}
 	if cfg.ManualOnly {
-		return &ManualFetchRequiredError{Artifact: artifact.Name, Cause: verifyErr}
+		return &ManualFetchRequiredError{Artifact: artifact.Name, Destination: destination, Cause: verifyErr}
 	}
 	if len(artifact.Sources) == 0 {
 		return fmt.Errorf("fetch: %s is not verified and has no source URI", artifact.Name)
@@ -215,7 +216,10 @@ func (f *Fetcher) acquireLeader(ctx context.Context, directory string, artifact 
 		}
 		return nil
 	}
-	return fmt.Errorf("fetch: all sources failed for %s: %v", artifact.Name, failures)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return &sourcesFailedError{artifact: artifact.Name, destination: destination, failures: failures}
 }
 
 func (f *Fetcher) downloadVerified(ctx context.Context, source, destination string, artifact distfiles.Artifact, cfg FetchConfig) error {

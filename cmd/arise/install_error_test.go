@@ -60,14 +60,44 @@ func TestPrintExecutionErrorSeparatesWrappedContext(t *testing.T) {
 	}
 }
 
-func TestPrintExecutionInterruptedIsActionable(t *testing.T) {
-	var output bytes.Buffer
-	printExecutionInterrupted(&output)
-	want := "arise: interrupted by user\n\n" +
-		"  Completed package progress has been preserved.\n" +
-		"  Rerun preflight to calculate a continuation plan.\n\n"
-	if output.String() != want {
-		t.Fatalf("unexpected output %q, want %q", output.String(), want)
+func TestInterruptedTransactionReportsWhetherACheckpointExists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "concurrent-resume")
+	var out bytes.Buffer
+	printExecutionInterrupted(&out, path)
+	if !strings.Contains(out.String(), "interrupted by user") || !strings.Contains(out.String(), "No checkpoint") || !strings.Contains(out.String(), "--pretend") {
+		t.Fatal(out.String())
+	}
+	if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	printExecutionInterrupted(&out, path)
+	if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), "--resume --preflight-only") || !strings.Contains(out.String(), "--resume-file") {
+		t.Fatal(out.String())
+	}
+}
+
+func TestResumeLoadFailureKeepsPathAndDistinguishesMissingFromMalformed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "progress")
+	for _, missing := range []bool{true, false} {
+		if !missing {
+			if err := os.WriteFile(path, []byte("{broken"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, _, _, err := loadResumeRequestSnapshot(path, false)
+		if err == nil {
+			t.Fatal("invalid checkpoint accepted")
+		}
+		var out bytes.Buffer
+		printResumeLoadError(&out, path, err)
+		needed := "maintain resume --check"
+		if missing {
+			needed = "--pretend"
+		}
+		if !strings.Contains(out.String(), path) || !strings.Contains(out.String(), needed) {
+			t.Fatal(out.String())
+		}
 	}
 }
 

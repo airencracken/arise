@@ -56,3 +56,21 @@ src_configure() { printf 'configure: error: C compiler cannot create executables
 		t.Fatalf("diagnostic did not preserve the actual build log: %q, %v", log, readErr)
 	}
 }
+
+func TestPreflightSpaceAdviceUsesOnlyRecognizedBuildFilesystemFailures(t *testing.T) {
+	const tmp = "/unavailable-arise-fixture/temp"
+	for _, line := range []string{
+		"There is NOT at least 1 GiB disk space at \"/usr\"",
+		"There is NOT at least 512 MiB memory",
+		"There is NOT at least 18446744073709551615 TiB disk space at \"" + tmp + "\"",
+		"Checking for at least 1 GiB disk space at \"" + tmp + "\" ...",
+	} {
+		if got := preflightSpaceAdvice([]string{line}, tmp, "/work"); got != "" {
+			t.Errorf("%s produced build-space advice: %s", line, got)
+		}
+	}
+	got := preflightSpaceAdvice([]string{"There is NOT at least 2 GiB disk space at \"" + tmp + "\""}, tmp, "/work")
+	if !strings.Contains(got, "2048 MiB") || !strings.Contains(got, "/work") || !strings.Contains(got, "--work-dir") || strings.Contains(got, "MiB available") {
+		t.Errorf("unavailable filesystem: %s", got)
+	}
+}

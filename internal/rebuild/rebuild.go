@@ -311,18 +311,7 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 		if policyErr != nil {
 			return fmt.Errorf("rebuild: evaluate RESTRICT for fetch: %w", policyErr)
 		}
-		manualOnly := false
-		for _, name := range restrict {
-			switch name {
-			case "mirror":
-				fetchCfg.RestrictMirrors = true
-			case "primaryuri":
-				fetchCfg.PrimaryURI = true
-			case "fetch":
-				manualOnly = true
-			}
-		}
-		fetchCfg.ManualOnly = manualOnly
+		fetchCfg.ApplyRestrictions(restrict)
 		var err error
 		verified, err = cfg.fetcher().AcquireManifest(ctx, filepath.Join(filepath.Dir(ebuildFile), "Manifest"), srcURI, fetchUse, fetchCfg)
 		if err != nil {
@@ -330,7 +319,7 @@ func RebuildPackage(ctx context.Context, atomStr string, cfg *RebuildConfig) (er
 			_, customNofetch := eb.RawPhases["pkg_nofetch"]
 			if cfg.PhaseProtocol && (errors.As(err, &manual) || customNofetch) {
 				if nofetchErr := runPackageNofetch(ctx, atomStr, eb, ebuildFile, workDir, destDir, cfg); nofetchErr != nil {
-					err = fmt.Errorf("%w; pkg_nofetch: %v", err, nofetchErr)
+					err = errors.Join(err, fmt.Errorf("pkg_nofetch: %w", nofetchErr))
 				}
 			}
 			cfg.fireError(atomStr, fmt.Errorf("rebuild: failed to fetch source files: %w", err))
@@ -609,12 +598,12 @@ func PreflightPackage(atomStr string, cfg *RebuildConfig) error {
 	events, pretendErr := runPhaseWorker(context.Background(), pretend, cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage})
 	for _, event := range events {
 		if event.Kind == "elog" && strings.TrimSpace(event.Message) != "" {
-			cfg.fireNotice(event.Stream, strings.TrimSpace(event.Message))
+			cfg.fireNotice(event.Class, strings.TrimSpace(event.Message))
 		}
 	}
 	cfg.firePhaseEnd("pkg_pretend", pretendErr)
 	if pretendErr != nil {
-		return preflightPhaseError(atomStr, events, pretendErr)
+		return preflightPhaseError(atomStr, events, pretendErr, preflightTemp, cfg.WorkDirBase)
 	}
 	return nil
 }
@@ -926,7 +915,7 @@ func runPackageNofetch(ctx context.Context, atomStr string, eb *ebuild.Ebuild, e
 	events, phaseErr := runPhaseWorker(ctx, request, cfg, phaseproto.WorkerOptions{Isolation: phaseproto.IsolationPortage})
 	for _, event := range events {
 		if event.Kind == "elog" && strings.TrimSpace(event.Message) != "" {
-			cfg.fireNotice(event.Stream, strings.TrimSpace(event.Message))
+			cfg.fireNotice(event.Class, strings.TrimSpace(event.Message))
 		}
 	}
 	cfg.firePhaseEnd("pkg_nofetch", phaseErr)
@@ -1055,7 +1044,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 		packageEvents = append(packageEvents, events...)
 		for _, event := range events {
 			if event.Kind == "elog" && strings.TrimSpace(event.Message) != "" {
-				cfg.fireNotice(event.Stream, strings.TrimSpace(event.Message))
+				cfg.fireNotice(event.Class, strings.TrimSpace(event.Message))
 			}
 		}
 		cfg.firePhaseEnd(phaseName, phaseErr)
@@ -1113,7 +1102,7 @@ func rebuildWithPhaseProtocol(ctx context.Context, atomStr string, eb *ebuild.Eb
 			packageEvents = append(packageEvents, events...)
 			for _, event := range events {
 				if event.Kind == "elog" && strings.TrimSpace(event.Message) != "" {
-					cfg.fireNotice(event.Stream, strings.TrimSpace(event.Message))
+					cfg.fireNotice(event.Class, strings.TrimSpace(event.Message))
 				}
 			}
 			cfg.firePhaseEnd(phaseName, phaseErr)

@@ -239,8 +239,8 @@ func Verify(path string, artifact Artifact) error {
 		return err
 	}
 	for _, verifier := range verifiers {
-		if hex.EncodeToString(verifier.hash.Sum(nil)) != verifier.expected {
-			return fmt.Errorf("distfile %s: %s digest mismatch", artifact.Name, verifier.algorithm)
+		if received := hex.EncodeToString(verifier.hash.Sum(nil)); received != verifier.expected {
+			return fmt.Errorf("distfile %s: %s digest mismatch (Manifest %s, received %s)", artifact.Name, verifier.algorithm, verifier.expected, received)
 		}
 	}
 	return nil

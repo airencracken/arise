@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/airencracken/arise/internal/diagnostic"
+	"github.com/airencracken/arise/internal/journal"
 	"github.com/airencracken/arise/internal/merge"
 	"github.com/airencracken/arise/internal/oplock"
 )
@@ -17,6 +18,12 @@ func executionDiagnostic(err error) diagnostic.Message {
 	message, explained := diagnostic.Lookup(err)
 	var committed *merge.PostCommitError
 	if errors.As(err, &committed) {
+		var rollback *journal.RollbackError
+		if errors.As(committed.Err, &rollback) {
+			message = rollback.UserDiagnostic()
+			message.Context = append(message.Context, "The package changes had already been committed before the follow-up failure.")
+			return message
+		}
 		message.Summary = "Package changes were applied, but a follow-up step failed."
 		message.Context = append(message.Context, "The package files and database changes have already been committed.")
 		message.NextSteps = []string{"Complete the failed follow-up step described in the output or package log."}
@@ -31,9 +38,9 @@ func executionDiagnostic(err error) diagnostic.Message {
 	var pathError *os.PathError
 	if errors.As(err, &pathError) {
 		if errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT) {
-			return diagnostic.Message{Summary: "Required storage is full.", Context: []string{fmt.Sprintf("Affected path: %q", pathError.Path)}, Details: []string{pathError.Err.Error()}, NextSteps: []string{"Free space or quota on the filesystem containing this path, then rerun the original command."}}
+			return diagnostic.Message{Summary: "Required storage is full.", Context: []string{fmt.Sprintf("Affected path: %q", pathError.Path)}, Details: []string{pathError.Op + ": " + pathError.Err.Error()}, NextSteps: []string{"Free space or quota on the filesystem containing this path, then rerun the original command."}}
 		}
-		message = diagnostic.Message{Summary: "Arise could not access a required file or directory.", Context: []string{fmt.Sprintf("Affected path: %q", pathError.Path)}, Details: []string{pathError.Err.Error()}}
+		message = diagnostic.Message{Summary: "Arise could not access a required file or directory.", Context: []string{fmt.Sprintf("Affected path: %q", pathError.Path)}, Details: []string{pathError.Op + ": " + pathError.Err.Error()}}
 		switch {
 		case errors.Is(err, os.ErrPermission):
 			message.NextSteps = []string{"Check access permissions for the affected path before retrying."}
@@ -83,7 +90,7 @@ func singleExecutionCause(err error) error {
 func printCommandError(w io.Writer, heading string, err error, verbose bool) {
 	technical, logFile := executionErrorDetails(err, true)
 	fmt.Fprintln(w, heading)
-	printExecutionExplanation(w, err, logFile)
+	printExecutionExplanation(w, err, logFile, "")
 	if verbose {
 		fmt.Fprintln(w, "\n  Technical details:")
 		for _, line := range technical {
@@ -95,18 +102,22 @@ func printCommandError(w io.Writer, heading string, err error, verbose bool) {
 	fmt.Fprintln(w)
 }
 
-func printExecutionExplanation(w io.Writer, err error, fallbackLog string) {
+func printExecutionExplanation(w io.Writer, err error, fallbackLog, pkg string) {
 	// Preserve each branch of a concurrent failure. A single errors.As lookup
 	// would otherwise hide the other package's cause and recovery instructions.
 	for current := err; current != nil; current = singleExecutionCause(current) {
+		if action, ok := current.(interface{ FailedPackage() string }); ok {
+			pkg = action.FailedPackage()
+		}
 		if _, ok := current.(diagnostic.Reporter); ok {
 			break
 		}
 		if committed, ok := current.(*merge.PostCommitError); ok {
-			if joined, ok := committed.Err.(interface{ Unwrap() []error }); ok && len(joined.Unwrap()) > 1 {
+			_, explained := committed.Err.(diagnostic.Reporter)
+			if joined, ok := committed.Err.(interface{ Unwrap() []error }); ok && !explained && len(joined.Unwrap()) > 1 {
 				for _, cause := range joined.Unwrap() {
 					_, childLog := executionErrorDetails(cause, true)
-					printExecutionExplanation(w, &merge.PostCommitError{Err: cause}, childLog)
+					printExecutionExplanation(w, &merge.PostCommitError{Err: cause}, childLog, pkg)
 				}
 				return
 			}
@@ -118,15 +129,14 @@ func printExecutionExplanation(w io.Writer, err error, fallbackLog string) {
 			}
 			for _, cause := range joined.Unwrap() {
 				_, childLog := executionErrorDetails(cause, true)
-				printExecutionExplanation(w, cause, childLog)
+				printExecutionExplanation(w, cause, childLog, pkg)
 			}
 			return
 		}
 	}
 	message := executionDiagnostic(err)
-	var packageFailure interface{ FailedPackage() string }
-	if errors.As(err, &packageFailure) {
-		message.Context = append(message.Context, "Current package action: "+packageFailure.FailedPackage())
+	if pkg != "" {
+		message.Context = append(message.Context, "Current package action: "+pkg)
 	}
 	logFile := fallbackLog
 	if message.LogFile != "" {

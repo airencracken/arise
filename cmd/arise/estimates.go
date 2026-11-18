@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/airencracken/arise/internal/executor"
 	"github.com/airencracken/arise/internal/mergehistory"
 	"github.com/airencracken/arise/internal/resolve"
 )
@@ -113,4 +115,15 @@ func openPackageExecutionLog(path string, buildOnly bool) (*portageMergeLog, err
 		return nil, nil
 	}
 	return openPortageMergeLog(path)
+}
+
+func finishExecutionLog(log *portageMergeLog, executionErr error) error {
+	if err := log.close(); err != nil {
+		logErr := fmt.Errorf("Portage-compatible merge log: %w", err)
+		if executionErr == nil || executor.OnlyCanceled(executionErr) {
+			return logErr
+		}
+		return errors.Join(executionErr, logErr)
+	}
+	return executionErr
 }

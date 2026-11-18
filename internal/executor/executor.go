@@ -36,6 +36,22 @@ func (f PreflightFailure) Error() string {
 	return fmt.Sprintf("preflight %s: %v", actionLabel(f.Action), f.Err)
 }
 
+func (f PreflightFailure) Unwrap() error { return f.Err }
+
+func (f PreflightFailure) FailedPackage() string {
+	if f.Action.Atom == nil {
+		return ""
+	}
+	return actionLabel(f.Action)
+}
+
+func (f PreflightFailure) ErrorHeading() string {
+	if f.Action.Atom == nil {
+		return "Plan preflight failed"
+	}
+	return "preflight " + actionLabel(f.Action)
+}
+
 // PreflightAll validates install actions and their blocker removals without
 // applying Execute's live-root size limits. It performs no fetch, build,
 // merge, VDB/world, journal, resume or operation-lock mutation and returns the
@@ -177,7 +193,7 @@ func Execute(ctx context.Context, result *resolve.ResolveResult, cfg Config) (re
 	for index, action := range result.Install {
 		actionCfg := actionRebuildConfig(cfg.Rebuild, action)
 		if err := cfg.Preflight(action, &actionCfg); err != nil {
-			return fmt.Errorf("executor: preflight %s: %w", actionLabel(action), err)
+			return fmt.Errorf("executor: %w", PreflightFailure{Action: action, Err: err})
 		}
 		actionConfigs[index] = actionCfg
 	}
@@ -525,7 +541,7 @@ func executeConcurrent(ctx context.Context, actions []resolve.PkgAction, actionC
 			failures := []error{&ActionError{Package: actionLabel(actions[outcome.index]), Err: outcome.err}}
 			for running > 0 {
 				peer := <-results
-				if peer.err != nil && !errors.Is(peer.err, context.Canceled) {
+				if peer.err != nil && !OnlyCanceled(peer.err) {
 					failures = append(failures, &ActionError{Package: actionLabel(actions[peer.index]), Err: peer.err})
 				}
 				running--

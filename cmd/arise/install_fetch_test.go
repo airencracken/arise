@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
@@ -123,4 +124,40 @@ func mustFetchAtom(t *testing.T, value string) *atom.Atom {
 		t.Fatal(err)
 	}
 	return parsed
+}
+
+func TestFetchOnlyReportsEveryPackageAndHonorsManualSources(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte("wrong"))
+	}))
+	defer server.Close()
+	distdir, repo := t.TempDir(), t.TempDir()
+	var actions []resolve.PkgAction
+	for _, name := range []string{"manual", "automatic"} {
+		dir := filepath.Join(repo, "cat", name)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "Manifest"), []byte(fmt.Sprintf("DIST %s.tar 5 SHA512 %x\n", name, sha512.Sum512([]byte("right")))), 0644); err != nil {
+			t.Fatal(err)
+		}
+		actions = append(actions, resolve.PkgAction{Atom: mustFetchAtom(t, "cat/"+name+"-1"), RepositoryPath: repo, SrcURI: server.URL + "/" + name + ".tar"})
+	}
+	actions[0].Restrict = "fetch"
+	err := fetchPlanActions(context.Background(), actions, fetch.FetchConfig{DistfilesDir: distdir}, &fetch.Fetcher{}, 2)
+	if err == nil {
+		t.Fatal("invalid downloads accepted")
+	}
+	var out bytes.Buffer
+	printCommandError(&out, "arise: fetch-only failed", err, false)
+	for _, want := range []string{"cat/manual-1", "cat/automatic-1", filepath.Join(distdir, "manual.tar"), "RESTRICT=fetch", "automatic.tar", fmt.Sprintf("%x", sha512.Sum512([]byte("right"))), fmt.Sprintf("%x", sha512.Sum512([]byte("wrong")))} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in %s", want, out.String())
+		}
+	}
+	if requests.Load() != 1 {
+		t.Errorf("HTTP requests = %d, want one automatic download", requests.Load())
+	}
 }

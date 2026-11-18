@@ -1,5 +1,7 @@
 # Audit evidence
 
+The [transaction error audit](ACTIONABLE_TRANSACTION_ERRORS_2026-11-18.md) records actionable failures from preflight through resume and the comparison with Portage.
+
 The [recovery capture and diagnostics audit](RECOVERY_CAPTURE_AND_DIAGNOSTICS_2026-11-09.md)
 records intentionally removed installed payloads, explicit absence in backups,
 restore behavior, and actionable transaction error reporting.

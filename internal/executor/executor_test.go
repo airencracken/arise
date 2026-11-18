@@ -1245,3 +1245,18 @@ func TestExecuteConcurrentRealBuildsOverlapAndCommitValidTransactions(t *testing
 		}
 	}
 }
+
+func TestOnlyCanceledPreservesMixedAndCommittedFailures(t *testing.T) {
+	for _, err := range []error{
+		errors.Join(context.Canceled, errors.New("rollback log failed")),
+		&merge.PostCommitError{Err: context.Canceled},
+		&journal.RollbackError{Cause: context.Canceled, Err: context.Canceled},
+	} {
+		if OnlyCanceled(&ActionError{Package: "cat/pkg-1", Err: err}) {
+			t.Fatalf("real failure discarded: %v", err)
+		}
+	}
+	if !OnlyCanceled(errors.Join(context.Canceled, fmt.Errorf("worker: %w", context.Canceled))) {
+		t.Fatal("stopped workers reported as independent failures")
+	}
+}
