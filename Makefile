@@ -200,7 +200,7 @@ arise.info: arise.texi
 docs: man info
 	@echo "Documentation built."
 
-PROJECT_VERSION := 0.0.58
+PROJECT_VERSION := 0.0.59
 VERSION ?= $(PROJECT_VERSION)
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
 check-release-version:

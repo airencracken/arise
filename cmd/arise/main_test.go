@@ -17,6 +17,7 @@ import (
 	"github.com/airencracken/arise/internal/portage"
 	"github.com/airencracken/arise/internal/resolve"
 	"github.com/airencracken/arise/internal/search"
+	"github.com/airencracken/gentooling"
 )
 
 func TestCancellationRestoresDefaultSignalHandling(t *testing.T) {
@@ -421,13 +422,13 @@ func TestSearchUpgradeAvailable(t *testing.T) {
 	if !searchUpgradeAvailable(search.SearchResult{
 		InstalledVer: "140.10.2",
 		VersionInfo:  []search.VersionInfo{{Version: "152.0.6", Stable: true}},
-	}) {
+	}, gentooling.EffectiveConfig{}) {
 		t.Fatal("expected upgrade to be detected")
 	}
 	if searchUpgradeAvailable(search.SearchResult{
 		InstalledVer: "152.0.6",
 		VersionInfo:  []search.VersionInfo{{Version: "152.0.6", Stable: true}},
-	}) {
+	}, gentooling.EffectiveConfig{}) {
 		t.Fatal("equal versions are not an upgrade")
 	}
 }
@@ -441,7 +442,7 @@ func TestSearchUpgradeAvailableIgnoresTestingAndMaskedVersions(t *testing.T) {
 			{Version: "9999", Masked: true},
 		},
 	}
-	if searchUpgradeAvailable(result) {
+	if searchUpgradeAvailable(result, gentooling.EffectiveConfig{}) {
 		t.Fatal("testing and masked versions produced a false update marker")
 	}
 }
@@ -449,7 +450,7 @@ func TestSearchUpgradeAvailableIgnoresTestingAndMaskedVersions(t *testing.T) {
 func TestSearchUpgradeAvailableMatchesInstalledSlot(t *testing.T) {
 	result := search.SearchResult{
 		InstalledVersions: []search.InstalledVersion{
-			{Version: "2", Slot: "1"},
+			{Version: "2", Slot: "1/2"},
 			{Version: "4", Slot: "2"},
 		},
 		VersionInfo: []search.VersionInfo{
@@ -457,7 +458,7 @@ func TestSearchUpgradeAvailableMatchesInstalledSlot(t *testing.T) {
 			{Version: "3", Slot: "2", Stable: true},
 		},
 	}
-	if !searchUpgradeAvailable(result) {
+	if !searchUpgradeAvailable(result, gentooling.EffectiveConfig{}) {
 		t.Fatal("same-slot stable upgrade was not detected")
 	}
 }
@@ -467,7 +468,7 @@ func TestAdversarialSearchUpgradeAvailableRejectsInvalidVersions(t *testing.T) {
 		InstalledVer: "not-a-version",
 		VersionInfo:  []search.VersionInfo{{Version: "9999", Stable: true}},
 	}
-	if searchUpgradeAvailable(result) {
+	if searchUpgradeAvailable(result, gentooling.EffectiveConfig{}) {
 		t.Fatal("invalid installed version produced an update marker")
 	}
 }

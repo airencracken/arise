@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -130,5 +132,51 @@ func TestInstalledSearchStylesAreVisuallyDistinct(t *testing.T) {
 	}
 	if !strings.Contains(version, "\x1b[44m") || !strings.Contains(version, "\x1b[30m") {
 		t.Fatalf("installed version does not match eix's black-on-blue styling: %q", version)
+	}
+}
+
+func TestSearchUpgradeMarkerUsesHostPolicy(t *testing.T) {
+	t.Setenv("ARCH", "amd64")
+	t.Setenv("ACCEPT_KEYWORDS", "amd64")
+	for _, tc := range []struct {
+		name, accept, mask, keywords string
+		want                         bool
+	}{
+		{"accepted testing", "sys-apps/arise ~amd64", "", "~amd64", true},
+		{"accepted for candidate subslot", "=sys-apps/arise-0.0.58:0/2::arise-overlay ~amd64", "", "~amd64", true},
+		{"only accepted for previous subslot", "sys-apps/arise:0/1 ~amd64", "", "~amd64", false},
+		{"testing without opt-in", "", "", "~amd64", false},
+		{"testing accepted for other repository", "sys-apps/arise::gentoo ~amd64", "", "~amd64", false},
+		{"foreign stable keyword", "", "", "arm64 ~amd64", false},
+		{"accepted testing with package mask", "sys-apps/arise ~amd64", "=sys-apps/arise-0.0.58", "~amd64", false},
+		{"live without keywords", "sys-apps/arise ~amd64", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for name, value := range map[string]string{
+				"make.conf":               "ARCH=amd64\nACCEPT_KEYWORDS=amd64",
+				"package.accept_keywords": tc.accept,
+				"package.mask":            tc.mask,
+			} {
+				if err := os.WriteFile(filepath.Join(root, name), []byte(value+"\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			previous := *portageConfigRoot
+			*portageConfigRoot = root
+			t.Cleanup(func() { *portageConfigRoot = previous })
+			config, err := searchEffectiveConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := search.SearchResult{
+				Category: "sys-apps", Package: "arise", Repository: "arise-overlay",
+				InstalledVersions: []search.InstalledVersion{{Version: "0.0.55", Slot: "0"}},
+				VersionInfo:       []search.VersionInfo{{Version: "0.0.58", Slot: "0", Subslot: "2", Keywords: tc.keywords, Stable: tc.keywords == "arm64 ~amd64"}},
+			}
+			if got := searchUpgradeAvailable(result, config); got != tc.want {
+				t.Errorf("upgrade marker = %t, want %t", got, tc.want)
+			}
+		})
 	}
 }

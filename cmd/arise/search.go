@@ -162,7 +162,8 @@ func runSearch(args []string, dbPath string) int {
 
 	var useExpand, useExpandHidden []string
 	arch := ""
-	if effective, configErr := searchEffectiveConfig(); configErr == nil {
+	effective, configErr := searchEffectiveConfig()
+	if configErr == nil {
 		useExpand = append(useExpand, effective.UseExpand...)
 		useExpand = append(useExpand, effective.UseExpandImplicit...)
 		useExpandHidden = append(useExpandHidden, effective.UseExpandHidden...)
@@ -174,7 +175,7 @@ func runSearch(args []string, dbPath string) int {
 		marker := color.Green("*")
 		if r.Installed {
 			marker = "[" + color.InstalledMarker("I") + "]"
-			if searchUpgradeAvailable(r) {
+			if searchUpgradeAvailable(r, effective) {
 				marker = "[" + color.ReverseBoldCyan("U") + "]"
 			}
 		}
@@ -502,37 +503,46 @@ func availableVersionDisplay(version search.VersionInfo, arch string, installed 
 }
 
 func normalizedSearchSlot(slot string) string {
+	slot, _, _ = strings.Cut(slot, "/")
 	if slot == "" {
 		return "0"
 	}
 	return slot
 }
 
-func searchUpgradeAvailable(result search.SearchResult) bool {
+func searchUpgradeAvailable(result search.SearchResult, effective gentooling.EffectiveConfig) bool {
 	installedBySlot := make(map[string]string, len(result.InstalledVersions))
 	for _, installed := range result.InstalledVersions {
-		slot := installed.Slot
-		if slot == "" {
-			slot = "0"
-		}
+		slot := normalizedSearchSlot(installed.Slot)
 		current := installedBySlot[slot]
 		if current == "" || compareSearchVersions(installed.Version, current) > 0 {
 			installedBySlot[slot] = installed.Version
 		}
 	}
 	for _, available := range result.VersionInfo {
-		if available.Masked || !available.Stable {
-			continue
-		}
-		slot := available.Slot
-		if slot == "" {
-			slot = "0"
-		}
+		slot := normalizedSearchSlot(available.Slot)
 		installed := installedBySlot[slot]
 		if installed == "" && len(installedBySlot) == 0 {
 			installed = result.InstalledVer
 		}
-		if installed != "" && compareSearchVersions(available.Version, installed) > 0 {
+		if installed == "" || compareSearchVersions(available.Version, installed) <= 0 {
+			continue
+		}
+		if effective.Variables["ARCH"] == "" {
+			// Searches without a host profile retain the metadata-only display.
+			if available.Stable && !available.Masked {
+				return true
+			}
+			continue
+		}
+		visibility, err := effective.EvaluateVisibility(context.Background(), gentooling.PackageVisibilityContext{
+			ID: gentooling.PackageID{
+				Category: result.Category, Name: result.Package, Version: available.Version,
+				Slot: slot, Subslot: available.Subslot, Repository: result.Repository,
+			},
+			Keywords: strings.Fields(available.Keywords),
+		})
+		if err == nil && visibility.Visible {
 			return true
 		}
 	}

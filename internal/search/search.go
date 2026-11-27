@@ -55,6 +55,7 @@ type SearchResult struct {
 type VersionInfo struct {
 	Version    string
 	Slot       string
+	Subslot    string `json:",omitempty"`
 	Keywords   string
 	IUSE       string
 	Stable     bool
@@ -774,7 +775,7 @@ func expandAllVersions(results []SearchResult, cfg SearchConfig, installed map[s
 					if data, readErr := os.ReadFile(cachePath); readErr == nil {
 						if m, parseErr := metadata.ParseCacheEntry(r.Category+"/"+r.Package+"-"+ver, data); parseErr == nil {
 							status := toSearchResult(m, installed[m.Key()])
-							versionInfo = append(versionInfo, VersionInfo{Version: ver, Slot: m.SLOT, Keywords: m.KEYWORDS, IUSE: m.IUSE, Stable: status.Stable, Testing: status.Testing, Masked: status.IsMasked, Restrict: m.RESTRICT, Properties: m.PROPERTIES})
+							versionInfo = append(versionInfo, VersionInfo{Version: ver, Slot: m.SLOT, Subslot: m.Subslot, Keywords: m.KEYWORDS, IUSE: m.IUSE, Stable: status.Stable, Testing: status.Testing, Masked: status.IsMasked, Restrict: m.RESTRICT, Properties: m.PROPERTIES})
 							if bestMetadata == nil || compareVersionStrings(ver, bestMetadata.Version) > 0 {
 								bestMetadata = m
 							}

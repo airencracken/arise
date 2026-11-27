@@ -1,5 +1,7 @@
 # Releases
 
+[0.0.59](0.0.59.md) fixes the search upgrade marker for locally accepted testing versions.
+
 [0.0.58](0.0.58.md) makes package failures actionable from preflight through resume.
 
 [0.0.57](0.0.57.md) fixes interleaved terminal output during package transactions.
